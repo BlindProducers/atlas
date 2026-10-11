@@ -669,11 +669,11 @@ namespace analog_oscillator_tests {
     plugin.parameterChanged("osc_1_analog_waveform", A::kSaw);
     SynthEditor editor(plugin);
     pumpEditor();
-    const char* analog_rows[] = { "Oscillator 1 Analog Waveform", "Oscillator 1 Analog Shape", "Oscillator 1 Sub Level",
-                                  "Oscillator 1 Sub Octave", "Oscillator 1 Sub Waveform" };
-    const char* wavetable_rows[] = { "Oscillator 1 Wave Frame", "Load wavetable",
-                                     "Oscillator 1 Frequency Morph Type" };
-    const char* shared_rows[] = { "Oscillator 1 Type", "Oscillator 1 Level", "Oscillator 1 Pan", "Oscillator 1 Unison Voices",
+    const char* analog_rows[] = { "Analog Waveform", "Analog Shape", "Sub Level",
+                                  "Sub Octave", "Sub Waveform" };
+    const char* wavetable_rows[] = { "Wave Frame", "Load wavetable",
+                                     "Frequency Morph Type" };
+    const char* shared_rows[] = { "Type", "Level", "Pan", "Unison Voices",
                                   "Distortion mode", "Secondary distortion mode" };
     auto checkRows = [&](bool analog) {
       const auto& order = editor.getKeyboardFocusOrder();
@@ -699,7 +699,7 @@ namespace analog_oscillator_tests {
 
     // Changing the type rebuilds the editor, so it is a menu: arrows open it
     // rather than stepping through types, and the chosen type applies.
-    auto* type = dynamic_cast<ComboBox*>(findTitled(editor, "Oscillator 1 Type"));
+    auto* type = dynamic_cast<ComboBox*>(findInSection(editor, "Oscillator 1", "Type"));
     expect(type != nullptr, "Type is a menu with named choices");
     if (type != nullptr) {
       expect(type->getNumItems() == vital::source_types::kNumTypes && type->getText() == "Wavetable",
@@ -721,10 +721,10 @@ namespace analog_oscillator_tests {
         auto* control = findInSection(editor, "Oscillator 1", title);
         return int(std::find(order.begin(), order.end(), control) - order.begin());
       };
-      expect(position("Oscillator 1 Switch") < position("Oscillator 1 Solo") &&
-             position("Oscillator 1 Solo") < position("Oscillator 1 Type"), "Solo follows the switch, then Type");
-      expect(position("Oscillator 1 Pan") < position("Oscillator 1 Analog Waveform"), "Analog rows follow Pan");
-      expect(position("Oscillator 1 Sub Waveform") < position("Oscillator 1 Unison Voices"), "Analog rows precede unison");
+      expect(position("Switch") < position("Solo") &&
+             position("Solo") < position("Type"), "Solo follows the switch, then Type");
+      expect(position("Pan") < position("Analog Waveform"), "Analog rows follow Pan");
+      expect(position("Sub Waveform") < position("Unison Voices"), "Analog rows precede unison");
     }
 
     // Distortion modes for Analog: None, Hard Sync, then FM and ring mod sources.
@@ -758,17 +758,17 @@ namespace analog_oscillator_tests {
     plugin.parameterChanged("osc_1_analog_waveform", A::kWhiteNoise);
     pumpEditor();
     expect(findInSection(editor, "Oscillator 1", "Distortion mode") == nullptr, "White Noise hides the Distortion rows");
-    expect(findInSection(editor, "Oscillator 1", "Oscillator 1 Distortion Amount") == nullptr, "White Noise hides Distortion Amount");
+    expect(findInSection(editor, "Oscillator 1", "Distortion Amount") == nullptr, "White Noise hides Distortion Amount");
     plugin.parameterChanged("osc_1_analog_waveform", A::kSaw);
     pumpEditor();
-    auto* shape = findTitled(editor, "Oscillator 1 Analog Shape");
+    auto* shape = findInSection(editor, "Oscillator 1", "Analog Shape");
     expect(shape != nullptr && shape->getDescription().contains("Second saw"), "Shape describes what it does on a saw");
     plugin.parameterChanged("osc_1_analog_waveform", A::kSquare);
     pumpEditor();
-    shape = findTitled(editor, "Oscillator 1 Analog Shape");
+    shape = findInSection(editor, "Oscillator 1", "Analog Shape");
     expect(shape != nullptr && shape->getDescription().contains("Pulse width"), "Shape describes pulse width on a square");
     expect(findTitled(editor, "Oscillator 1, analog square") != nullptr, "Oscillator page title names the analog waveform");
-    if (auto* restored_type = dynamic_cast<ComboBox*>(findTitled(editor, "Oscillator 1 Type"))) {
+    if (auto* restored_type = dynamic_cast<ComboBox*>(findInSection(editor, "Oscillator 1", "Type"))) {
       expect(restored_type->keyPressed(KeyPress(KeyPress::backspaceKey)), "Backspace resets the oscillator type");
       expectClose(controls.at("osc_1_type")->value(), O::kWavetableType, 0, "Backspace restores Wavetable");
     }

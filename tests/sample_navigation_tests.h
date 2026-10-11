@@ -81,8 +81,10 @@ namespace sample_navigation {
               section.toStdString() + " sample actions must follow visual and keyboard order");
         if (button) { previous_bottom = button->getBottom(); previous_focus = button->getExplicitFocusOrder(); }
       }
-      // Every type reads output rows first, then its controls.
-      auto* on = find(editor, section + " Switch");
+      // Every type reads output rows first, then its controls. Rows within the
+      // oscillator's section do not repeat its name.
+      auto* oscillator_section = find(editor, section, true);
+      auto* on = oscillator_section ? find(*oscillator_section, "Switch") : nullptr;
       check(on && editor.getLocalArea(on, on->getLocalBounds()).getBottom() <=
                       editor.getLocalArea(group, group->getLocalBounds()).getY(),
             section.toStdString() + " sample controls must follow the output rows");

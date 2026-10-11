@@ -2523,9 +2523,15 @@ namespace {
     if (suffix == "hold") return "Hold";
     if (suffix == "retrigger") return "Retrigger";
     if (suffix == "channel") return "Output channel";
+    // These rows sit in the arpeggiator's Destinations group, which says what they are.
     if (suffix.startsWith("destination_osc_"))
-      return "Destination oscillator " + suffix.fromLastOccurrenceOf("_", false, false);
+      return "Oscillator " + suffix.fromLastOccurrenceOf("_", false, false);
     return readableId(suffix);
+  }
+
+  bool isArpeggiatorDestination(const String& section, const String& id) {
+    return (section == "Arpeggiator 1" && id.startsWith("arp_1_destination_")) ||
+           (section == "Arpeggiator 2" && id.startsWith("arp_2_destination_"));
   }
 
   String midiControlName(int midi_id) {
@@ -3409,11 +3415,7 @@ namespace {
   }
 
   String transposeQuantizeModeTitleForParameter(const String& id) {
-    if (id.startsWith("osc_")) {
-      const String number = id.fromFirstOccurrenceOf("osc_", false, false)
-                            .upToFirstOccurrenceOf("_", false, false);
-      return "Oscillator " + number + " transpose quantize mode";
-    }
+    // An oscillator's row sits in its own section, which names the oscillator.
     if (id == "sample_transpose_quantize_mode")
       return "Sample transpose quantize mode";
     if (id == "granular_transpose_quantize_mode")
@@ -7295,9 +7297,14 @@ void SynthEditor::addOscillatorSectionContent(int oscillator, const String& sect
   // One row (and its Randomize seed button) inside `row_parent`; `group` is the
   // accessibility group that lists it, null at the section's own level in the
   // single-section view.
+  // The section already names the oscillator, so its rows drop it:
+  // "Oscillator 1 Sample Loop" reads as "Sample Loop".
+  const String row_title_prefix = "Oscillator " + String(oscillator + 1) + " ";
   auto place_row = [&](AudioProcessorParameter& parameter, Component& row_parent, AccessibleSectionHeader* group,
                        int& row_y, int row_x, int row_width) {
     auto row = createConfiguredSectionRow(parameter, section_name);
+    if (const String title = row->focusableControl()->getTitle(); title.startsWith(row_title_prefix))
+      row->setAccessibleName(title.substring(row_title_prefix.length()));
     row->setExplicitFocusOrder(focus_order++);
     row->setControlFocusOrder(focus_order++);
     row->setBounds(row_x, row_y, row_width, 48);
@@ -7770,7 +7777,18 @@ void SynthEditor::showSection(int index, bool announce) {
     addRoutingControl(routing_serial_backward_);
   }
 
-  bool added_arp_destinations_header = false;
+  // An arpeggiator's destination rows nest in a Destinations group that
+  // VoiceOver can enter, after its other rows.
+  AccessibleSectionHeader* arp_destinations = nullptr;
+  int destinations_y = 0;
+  const int section_width = jmax(620, viewport_.getMaximumVisibleWidth());
+  auto close_arp_destinations = [&] {
+    if (arp_destinations == nullptr)
+      return;
+    arp_destinations->setBounds(0, y, section_width, destinations_y + 2);
+    y += destinations_y + 10;
+    arp_destinations = nullptr;
+  };
   for (auto* parameter : sections_[section_name]) {
     if (oscillator_section >= 0)
       break;  // Oscillator rows were grouped above.
@@ -7784,37 +7802,43 @@ void SynthEditor::showSection(int index, bool announce) {
     if (!shouldShowParameterInSection(section_name, parameter))
       continue;
 
-    if (!added_arp_destinations_header) {
-      if (auto* bridge = dynamic_cast<ValueBridge*>(parameter)) {
-        const String id = bridge->getParameterId();
-        if ((section_name == "Arpeggiator 1" && id.startsWith("arp_1_destination_")) ||
-            (section_name == "Arpeggiator 2" && id.startsWith("arp_2_destination_"))) {
-          auto header = std::make_unique<AccessibleSectionHeader>("Destinations", groupRank("Arpeggiators"),
-                                                                  false, section_name);
-          auto* header_ptr = header.get();
-          header_ptr->setExplicitFocusOrder(focus_order++);
-          header_ptr->setBounds(0, y, jmax(620, viewport_.getMaximumVisibleWidth()),
-                                header_ptr->headerHeight());
-          rows_container_.addAndMakeVisible(header_ptr);
-          row_focus_order_.push_back(header_ptr);
-          section_headers_.push_back(std::move(header));
-          y += header_ptr->headerHeight() + 8;
-          added_arp_destinations_header = true;
-        }
-      }
+    auto* parameter_bridge = dynamic_cast<ValueBridge*>(parameter);
+    const String parameter_id = parameter_bridge != nullptr ? parameter_bridge->getParameterId() : String();
+    if (!isArpeggiatorDestination(section_name, parameter_id))
+      close_arp_destinations();
+    else if (arp_destinations == nullptr) {
+      auto header = std::make_unique<AccessibleSectionHeader>("Destinations", groupRank("Arpeggiators"),
+                                                              false, section_name + " destinations");
+      arp_destinations = header.get();
+      arp_destinations->setDescription("Oscillators " + section_name + " plays");
+      arp_destinations->setExplicitFocusOrder(focus_order++);
+      arp_destinations->setBounds(0, y, section_width, arp_destinations->headerHeight());
+      rows_container_.addAndMakeVisible(arp_destinations);
+      row_focus_order_.push_back(arp_destinations);
+      section_headers_.push_back(std::move(header));
+      destinations_y = arp_destinations->headerHeight() + 8;
     }
 
-    if (auto* bridge = dynamic_cast<ValueBridge*>(parameter);
-        bridge != nullptr && bridge->getParameterId() == "volume")
-      addCpuMeter(rows_container_, 0, y, jmax(620, viewport_.getMaximumVisibleWidth()), focus_order);
+    if (parameter_id == "volume")
+      addCpuMeter(rows_container_, 0, y, section_width, focus_order);
 
     auto row = createConfiguredSectionRow(*parameter, section_name);
-    row->setBounds(0, y, jmax(620, viewport_.getMaximumVisibleWidth()), 48);
     row->setExplicitFocusOrder(focus_order++);
     row->setControlFocusOrder(focus_order++);
-    rows_container_.addAndMakeVisible(row.get());
+    if (arp_destinations != nullptr) {
+      row->setBounds(10, destinations_y, jmax(580, section_width - 20), 48);
+      arp_destinations->addAndMakeVisible(row.get());
+      arp_destinations->addAccessibleChild(row->focusableControl());
+      destinations_y += 48;
+    }
+    else {
+      row->setBounds(0, y, section_width, 48);
+      rows_container_.addAndMakeVisible(row.get());
+      y += 48;
+    }
+    // Listed in document order, so Tab reaches grouped rows in place.
+    row_focus_order_.push_back(row->focusableControl());
     rows_.push_back(std::move(row));
-    y += 48;
 
     if (auto* bridge = dynamic_cast<ValueBridge*>(parameter);
         bridge != nullptr && bridge->getParameterId().startsWith("osc_") &&
@@ -7825,6 +7849,7 @@ void SynthEditor::showSection(int index, bool announce) {
                       [this, id] { randomizeAmplitudeSeed(id); });
     }
   }
+  close_arp_destinations();
 
   if (effect_chain_controls_visible_) {
     refreshEffectChainControls();
@@ -8253,7 +8278,19 @@ void SynthEditor::showAllSections(bool announce) {
                         [this, section_name] { saveEffectPresetFile(section_name); });
       }
 
-      bool added_arp_destinations_header = false;
+      // An arpeggiator's destination rows nest in a Destinations group that
+      // VoiceOver can enter, after its other rows.
+      AccessibleSectionHeader* arp_destinations = nullptr;
+      int destinations_y = 0;
+      const int row_x = flatten_section ? 16 : 10;
+      const int row_width = jmax(620, width - (flatten_section ? 32 : 34));
+      auto close_arp_destinations = [&] {
+        if (arp_destinations == nullptr)
+          return;
+        arp_destinations->setBounds(row_x, section_y, row_width, destinations_y + 2);
+        section_y += destinations_y + 10;
+        arp_destinations = nullptr;
+      };
       for (auto* parameter : sections_[section_name]) {
         if (oscillator_section >= 0)
           break;  // Oscillator rows were grouped above.
@@ -8267,42 +8304,43 @@ void SynthEditor::showAllSections(bool announce) {
         if (!shouldShowParameterInSection(section_name, parameter))
           continue;
 
-        if (!added_arp_destinations_header) {
-          if (auto* bridge = dynamic_cast<ValueBridge*>(parameter)) {
-            const String id = bridge->getParameterId();
-            if ((section_name == "Arpeggiator 1" && id.startsWith("arp_1_destination_")) ||
-                (section_name == "Arpeggiator 2" && id.startsWith("arp_2_destination_"))) {
-              auto header = std::make_unique<AccessibleSectionHeader>("Destinations", groupRank(group), false,
-                                                                      section_name);
-              auto* header_ptr = header.get();
-              header_ptr->setExplicitFocusOrder(focus_order++);
-              header_ptr->setBounds(flatten_section ? 16 : 10, section_y,
-                                    jmax(620, width - (flatten_section ? 32 : 34)),
-                                    header_ptr->headerHeight());
-              section_ptr->addAndMakeVisible(header_ptr);
-              section_ptr->addAccessibleChild(header_ptr);
-              row_focus_order_.push_back(header_ptr);
-              section_headers_.push_back(std::move(header));
-              section_y += header_ptr->headerHeight() + 8;
-              added_arp_destinations_header = true;
-            }
-          }
+        auto* parameter_bridge = dynamic_cast<ValueBridge*>(parameter);
+        const String parameter_id = parameter_bridge != nullptr ? parameter_bridge->getParameterId() : String();
+        if (!isArpeggiatorDestination(section_name, parameter_id))
+          close_arp_destinations();
+        else if (arp_destinations == nullptr) {
+          auto header = std::make_unique<AccessibleSectionHeader>("Destinations", groupRank(group), false,
+                                                                  section_name + " destinations");
+          arp_destinations = header.get();
+          arp_destinations->setDescription("Oscillators " + section_name + " plays");
+          arp_destinations->setExplicitFocusOrder(focus_order++);
+          arp_destinations->setBounds(row_x, section_y, row_width, arp_destinations->headerHeight());
+          section_ptr->addAndMakeVisible(arp_destinations);
+          section_ptr->addAccessibleChild(arp_destinations);
+          row_focus_order_.push_back(arp_destinations);
+          section_headers_.push_back(std::move(header));
+          destinations_y = arp_destinations->headerHeight() + 8;
         }
 
-        if (auto* bridge = dynamic_cast<ValueBridge*>(parameter);
-            bridge != nullptr && bridge->getParameterId() == "volume")
-          addCpuMeter(*section_ptr, flatten_section ? 16 : 10, section_y,
-                      jmax(620, width - (flatten_section ? 32 : 34)), focus_order);
+        if (parameter_id == "volume")
+          addCpuMeter(*section_ptr, row_x, section_y, row_width, focus_order);
 
         auto row = createConfiguredSectionRow(*parameter, section_name);
         row->setExplicitFocusOrder(focus_order++);
         row->setControlFocusOrder(focus_order++);
-        row->setBounds(flatten_section ? 16 : 10, section_y, jmax(620, width - (flatten_section ? 32 : 34)), 48);
-        section_ptr->addAndMakeVisible(row.get());
-        section_ptr->addAccessibleChild(row->focusableControl());
+        AccessibleSectionHeader& row_group = arp_destinations != nullptr ? *arp_destinations : *section_ptr;
+        if (arp_destinations != nullptr) {
+          row->setBounds(10, destinations_y, jmax(580, row_width - 20), 48);
+          destinations_y += 48;
+        }
+        else {
+          row->setBounds(row_x, section_y, row_width, 48);
+          section_y += 48;
+        }
+        row_group.addAndMakeVisible(row.get());
+        row_group.addAccessibleChild(row->focusableControl());
         row_focus_order_.push_back(row->focusableControl());
         rows_.push_back(std::move(row));
-        section_y += 48;
 
         if (auto* bridge = dynamic_cast<ValueBridge*>(parameter);
             bridge != nullptr && bridge->getParameterId().startsWith("osc_") &&
@@ -8313,6 +8351,7 @@ void SynthEditor::showAllSections(bool announce) {
                           [this, id] { randomizeAmplitudeSeed(id); });
         }
       }
+      close_arp_destinations();
 
       if (isEffectChainSection(section_name)) {
         auto summary = std::make_unique<Label>();

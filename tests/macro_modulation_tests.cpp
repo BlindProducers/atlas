@@ -7,6 +7,7 @@
 #include "value_bridge.h"
 #include "sample_source.h"
 #include "source_types.h"
+#include "synth_strings.h"
 #include "file_source.h"
 #include "phase_modifier.h"
 #include "wave_source.h"
@@ -644,6 +645,8 @@ int main(int argc, char** argv) {
     testWavetableEditingOnASlotSwitchedToWavetable();
     testEffectMoveKeepsFocusAcrossTimerTick();
     testOscillatorRowGroups();
+    testOscillatorRowsOmitTheOscillatorName();
+    testArpeggiatorDestinationsAreAGroup();
     testWavetableEditorLayersAndInterpolation();
     testPresetAutoloadAndRefresh();
     testConvolutionPredelayRows();

@@ -584,13 +584,25 @@ int main() {
       slope->keyPressed(KeyPress(KeyPress::homeKey));
       if (!slope->getTextFromValue(slope->getValue()).contains("48 dB")) return fail("Utility cannot select 48 dB/octave");
     }
-    // The Sample and Noise sources are oscillator slots 5 and 8 now; their rows carry the slot name.
-    for (const char* title : { "Oscillator 5 Sample Low Cutoff", "Oscillator 5 Sample High Cutoff",
-                               "Oscillator 8 Noise Low Cutoff", "Oscillator 8 Noise High Cutoff" })
-      if (!frequencyKeyboardControls(componentWithTitle(editor, title)))
+    // The Sample and Noise sources are oscillator slots 5 and 8 now; their rows sit in those sections.
+    std::function<Component*(Component&, const String&)> sectionNamed = [&](Component& parent, const String& name) -> Component* {
+      if (parent.getProperties()["SectionName"].toString() == name && parent.getNumChildComponents() > 0)
+        return &parent;
+      for (auto* child : parent.getChildren())
+        if (auto* found = sectionNamed(*child, name)) return found;
+      return nullptr;
+    };
+    const auto oscillatorRow = [&](int oscillator, const String& title) -> Component* {
+      auto* section = sectionNamed(editor, "Oscillator " + String(oscillator));
+      return section != nullptr ? componentWithTitle(*section, title) : nullptr;
+    };
+    for (const auto& [oscillator, title] : std::initializer_list<std::pair<int, const char*>> {
+             { 5, "Sample Low Cutoff" }, { 5, "Sample High Cutoff" }, { 8, "Noise Low Cutoff" }, { 8, "Noise High Cutoff" } })
+      if (!frequencyKeyboardControls(oscillatorRow(oscillator, title)))
         return fail(std::string("incorrect oscillator frequency keyboard/accessibility adjustment: ") + title);
-    for (const char* title : { "Oscillator 5 Sample Filter Slope", "Oscillator 8 Noise Filter Slope" }) {
-      auto* slope = dynamic_cast<Slider*>(componentWithTitle(editor, title));
+    for (const auto& [oscillator, title] : std::initializer_list<std::pair<int, const char*>> {
+             { 5, "Sample Filter Slope" }, { 8, "Noise Filter Slope" } }) {
+      auto* slope = dynamic_cast<Slider*>(oscillatorRow(oscillator, title));
       if (!slope) return fail(std::string("missing oscillator choice: ") + title);
       slope->keyPressed(KeyPress(KeyPress::homeKey));
       if (!slope->getTextFromValue(slope->getValue()).contains("48 dB")) return fail("oscillator slope maximum is not 48 dB/octave");
