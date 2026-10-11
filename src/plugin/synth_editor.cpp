@@ -6161,6 +6161,7 @@ SynthEditor::~SynthEditor() {
   stopTimer();
   // Key releases can no longer reach this editor; don't leave notes held.
   allQwertyNotesOff();
+  detachQwertyKeyInterceptor();
   if (ir_browser_scan_) ir_browser_scan_->cancelled.store(true);
   if (ir_browser_scan_thread_.joinable()) ir_browser_scan_thread_.join();
   preset_scan_cancelled_->store(true);
@@ -18755,7 +18756,40 @@ namespace {
     }
     return false;
   }
+
+  // Keys the virtual keyboard owns while it is on. Command and Control chords stay with the
+  // focused control so shortcuts such as Command S keep working.
+  bool isQwertyReservedKey(const KeyPress& key) {
+    const ModifierKeys modifiers = key.getModifiers();
+    if (modifiers.isCommandDown() || modifiers.isCtrlDown())
+      return false;
+    const int code = key.getKeyCode();
+    return isQwertyNoteKeyCode(code) || code == 'X' || code == 'C' || code == 'V' || code == 'B';
+  }
 } // namespace
+
+bool SynthEditor::QwertyKeyInterceptor::keyPressed(const KeyPress& key, Component*) {
+  if (!editor_.isQwertyKeyboardActive() || !isQwertyReservedKey(key))
+    return false;
+  return editor_.keyPressed(key);
+}
+
+void SynthEditor::attachQwertyKeyInterceptor() {
+  Component* focused = Component::getCurrentlyFocusedComponent();
+  if (focused == qwerty_key_interceptor_target_.getComponent())
+    return;
+  detachQwertyKeyInterceptor();
+  if (focused != nullptr && focused != this && isParentOf(focused)) {
+    focused->addKeyListener(&qwerty_key_interceptor_);
+    qwerty_key_interceptor_target_ = focused;
+  }
+}
+
+void SynthEditor::detachQwertyKeyInterceptor() {
+  if (auto* target = qwerty_key_interceptor_target_.getComponent())
+    target->removeKeyListener(&qwerty_key_interceptor_);
+  qwerty_key_interceptor_target_ = nullptr;
+}
 
 bool SynthEditor::isQwertyKeyboardActive() const {
   return qwerty_keyboard_on_ &&
@@ -18764,9 +18798,13 @@ bool SynthEditor::isQwertyKeyboardActive() const {
 
 void SynthEditor::toggleQwertyKeyboard() {
   qwerty_keyboard_on_ = !qwerty_keyboard_on_;
-  if (!qwerty_keyboard_on_) {
+  if (qwerty_keyboard_on_) {
+    attachQwertyKeyInterceptor();
+  }
+  else {
     allQwertyNotesOff();
     qwerty_control_keys_down_.clear();
+    detachQwertyKeyInterceptor();
   }
   postPluginAnnouncement(qwerty_keyboard_on_ ? "Virtual keyboard on" : "Virtual keyboard off",
                          AccessibilityHandler::AnnouncementPriority::high);
@@ -18812,6 +18850,10 @@ void SynthEditor::allQwertyNotesOff() {
 bool SynthEditor::keyStateChanged(bool isKeyDown) {
   if (!isQwertyKeyboardActive())
     return false;
+
+  // Key-down state changes arrive before the matching keyPressed, so follow focus here to
+  // have the interceptor on whichever control will receive it.
+  attachQwertyKeyInterceptor();
 
   // Release octave/velocity control keys that are no longer held so they can fire again on
   // the next physical press (see keyPressed).

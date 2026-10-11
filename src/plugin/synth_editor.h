@@ -665,6 +665,8 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     bool updateQwertyNotes();
     void allQwertyNotesOff();
     bool isQwertyKeyboardActive() const;
+    void attachQwertyKeyInterceptor();
+    void detachQwertyKeyInterceptor();
     bool focusGroupShortcut(const String& group, const String& fallbackSection = {});
     bool focusSectionShortcut(const String& section);
     bool handleMacroShortcut(const String& parameterId, const KeyPress& key, Component& target);
@@ -982,6 +984,20 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     int qwerty_velocity_ = 127;
     std::set<int> qwerty_notes_down_;
     std::set<int> qwerty_control_keys_down_;
+    // Focused controls see a key before this editor does. While the virtual keyboard is on,
+    // this listener sits on the focused control and hands note, octave and velocity keys to
+    // SynthEditor::keyPressed first, so they play notes instead of also running the
+    // control's own shortcut (for example I and K in the LFO editor).
+    class QwertyKeyInterceptor : public KeyListener {
+      public:
+        explicit QwertyKeyInterceptor(SynthEditor& editor) : editor_(editor) { }
+        bool keyPressed(const KeyPress& key, Component* origin) override;
+
+      private:
+        SynthEditor& editor_;
+    };
+    QwertyKeyInterceptor qwerty_key_interceptor_ { *this };
+    Component::SafePointer<Component> qwerty_key_interceptor_target_;
     mutable String pending_effect_chain_section_;
     mutable int pending_effect_chain_selected_index_ = -1;
     bool effect_chain_rebuild_queued_ = false;
