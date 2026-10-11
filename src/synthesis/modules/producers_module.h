@@ -21,6 +21,9 @@
 #include "source_slot_module.h"
 
 namespace vital {
+  class ModulationConnectionProcessor;
+  class VoiceHandler;
+
   class ProducersModule : public SynthModule {
     public:
       enum {
@@ -80,6 +83,18 @@ namespace vital {
       Wavetable* getWavetable(int index) { return slots_[index]->getWavetable(); }
       Sample* getSample(int index) { return slots_[index]->getSample(); }
       Output* slotPhaseOutput(int index) { return slots_[index]->getPhaseOutput(); }
+      Output* slotModulationOutput(int index) { return slots_[index]->getModulationOutput(); }
+
+      // Routes from a slot's audio (osc_N_output) run here, in render order: a
+      // route into another slot's controls just before that slot renders, any
+      // other route just after its source renders. The voice graph skips them.
+      // `destination` is the slot whose control the route reaches, or -1.
+      // Audio thread, between blocks.
+      void addOscillatorRoute(ModulationConnectionProcessor* processor, int source, int destination);
+      void removeOscillatorRoute(ModulationConnectionProcessor* processor);
+      // Each voice runs its own copies of the routes, found in the voice graph
+      // copy this handler is processing.
+      void setVoiceHandler(const VoiceHandler* voice_handler) { voice_handler_ = voice_handler; }
 
       // Message thread with processing paused: build every slot's active type module.
       bool prepareSelectedSources();
@@ -109,6 +124,17 @@ namespace vital {
       ZoneGain advanceZoneGain(poly_float& gain_state, poly_float target, poly_mask reset_mask,
                                bool crossfade_on, mono_float max_move);
       void addZonedBuffer(poly_float* dest, const poly_float* source, const ZoneGain& gain, int num_samples) const;
+      // Runs this voice's routes into `slot` (into_slot) or out of it to elsewhere.
+      void runOscillatorRoutes(int slot, bool into_slot, int num_samples);
+
+      struct OscillatorRoute {
+        ModulationConnectionProcessor* processor = nullptr;
+        int source = -1;
+        int destination = -1;
+      };
+      // Shared by every voice copy.
+      std::shared_ptr<std::vector<OscillatorRoute>> oscillator_routes_;
+      const VoiceHandler* voice_handler_ = nullptr;
 
       SourceSlotModule* slots_[kNumOscillators];
       Value* slot_destinations_[kNumOscillators];

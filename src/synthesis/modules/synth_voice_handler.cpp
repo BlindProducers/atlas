@@ -158,6 +158,8 @@ namespace vital {
       const std::string name = source_types::slotPrefix(i) + "playhead";
       data_->mod_sources[name] = producers_->slotPhaseOutput(i);
       createStatusOutput(name, producers_->slotPhaseOutput(i));
+      // So is each slot's audio, at audio rate, for audio-rate controls.
+      data_->mod_sources[source_types::outputSourceName(i)] = producers_->slotModulationOutput(i);
     }
     createStatusOutput("num_voices", &num_voices_);
 
@@ -197,6 +199,7 @@ namespace vital {
 
   void SynthVoiceHandler::createProducers() {
     producers_ = new ProducersModule(beats_per_second_);
+    producers_->setVoiceHandler(this);
     producers_->plug(reset(), ProducersModule::kReset);
     producers_->plug(retrigger(), ProducersModule::kRetrigger);
     producers_->plug(voice_event(), ProducersModule::kVoiceEvent);
@@ -474,6 +477,9 @@ namespace vital {
       random_lfos_[i]->enable(false);
 
     random_->enable(false);
+
+    for (int i = 0; i < kNumOscillators; ++i)
+      producers_->slotModulationOutput(i)->owner->enable(false);
   }
 
   void SynthVoiceHandler::disableModSource(const std::string& source) {
@@ -491,6 +497,14 @@ namespace vital {
 
   void SynthVoiceHandler::disableModulationConnection(ModulationConnectionProcessor* processor) {
     enabled_modulation_processors_.remove(processor);
+  }
+
+  void SynthVoiceHandler::addOscillatorRoute(ModulationConnectionProcessor* processor, int source, int destination) {
+    producers_->addOscillatorRoute(processor, source, destination);
+  }
+
+  void SynthVoiceHandler::removeOscillatorRoute(ModulationConnectionProcessor* processor) {
+    producers_->removeOscillatorRoute(processor);
   }
 
   void SynthVoiceHandler::setupPolyModulationReadouts() {

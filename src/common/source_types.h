@@ -16,6 +16,8 @@
 
 #pragma once
 
+#include "synth_constants.h"
+
 #include <string>
 
 namespace vital {
@@ -70,6 +72,26 @@ namespace vital {
     // "osc_5_"
     inline std::string slotPrefix(int slot) {
       return "osc_" + std::to_string(slot + 1) + "_";
+    }
+
+    // The slot a control belongs to ("osc_5_level" -> 4), or -1.
+    inline int slotForControl(const std::string& name) {
+      for (int slot = 0; slot < kNumOscillators; ++slot) {
+        if (name.rfind(slotPrefix(slot), 0) == 0)
+          return slot;
+      }
+      return -1;
+    }
+
+    // A slot's audio as a modulation source: "osc_5_output".
+    inline std::string outputSourceName(int slot) {
+      return slotPrefix(slot) + "output";
+    }
+
+    // The slot whose audio the modulation source `name` is, or -1.
+    inline int slotForOutputSource(const std::string& name) {
+      const int slot = slotForControl(name);
+      return slot >= 0 && name == outputSourceName(slot) ? slot : -1;
     }
 
     // "osc_5_sample_" for Sample, "osc_5_" for Wavetable and Analog.

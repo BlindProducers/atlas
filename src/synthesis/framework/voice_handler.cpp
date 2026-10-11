@@ -228,7 +228,9 @@ namespace vital {
   }
 
   void VoiceHandler::processVoice(AggregateVoice* voice, int num_samples) {
+    processing_voice_router_ = static_cast<ProcessorRouter*>(voice->processor.get());
     voice->processor->process(num_samples);
+    processing_voice_router_ = nullptr;
   }
 
   void VoiceHandler::clearAccumulatedOutputs() {

@@ -315,6 +315,13 @@ namespace vital {
     if (change.poly_modulation_switch)
       change.poly_modulation_switch->set(1);
 
+    // A route from an oscillator's audio runs inside the producers, between
+    // slots, so it reads this block's audio rather than the last one's.
+    if (change.source_slot >= 0) {
+      voice_handler_->addOscillatorRoute(change.modulation_processor, change.source_slot, change.destination_slot);
+      change.modulation_processor->setRunByProducers(true);
+    }
+
     modulation_processors_.push_back(change.modulation_processor);
   }
 
@@ -323,6 +330,8 @@ namespace vital {
   }
 
   void SoundEngine::disconnectModulation(const modulation_change& change) {
+    voice_handler_->removeOscillatorRoute(change.modulation_processor);
+    change.modulation_processor->setRunByProducers(false);
     setIndependentRandomOutputActive(change.independent_random_source,
                                      change.modulation_processor->index(), false);
     change.modulation_processor->unplugIndex(ModulationConnectionProcessor::kIndependentRandomInput);

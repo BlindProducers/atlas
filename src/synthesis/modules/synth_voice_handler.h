@@ -73,6 +73,9 @@ namespace vital {
 
       void enableModulationConnection(ModulationConnectionProcessor* processor);
       void disableModulationConnection(ModulationConnectionProcessor* processor);
+      // A route from slot `source`'s audio; see ProducersModule::addOscillatorRoute.
+      void addOscillatorRoute(ModulationConnectionProcessor* processor, int source, int destination);
+      void removeOscillatorRoute(ModulationConnectionProcessor* processor);
       CircularQueue<ModulationConnectionProcessor*>& enabledModulationConnection() {
         return enabled_modulation_processors_;
       }

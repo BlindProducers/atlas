@@ -26,7 +26,8 @@ namespace vital {
   ModulationConnectionProcessor::ModulationConnectionProcessor(int index) :
       SynthModule(kNumInputs, kNumOutputs), index_(index), polyphonic_(true), collapse_polyphonic_source_(false),
       process_when_idle_(false), refresh_source_when_idle_(false),
-      source_smoothing_(std::make_shared<SourceSmoothingState>()), source_smoothing_revision_(0),
+      source_smoothing_(std::make_shared<SourceSmoothingState>()), run_by_producers_(std::make_shared<bool>(false)),
+      source_smoothing_revision_(0),
       source_smoothing_initialized_(false), current_value_(nullptr), bipolar_(nullptr), stereo_(nullptr),
       bypass_(nullptr), random_mode_(nullptr), smoothed_source_value_(0.0f), collapsed_output_value_(0.0f),
       collapsed_handoff_correction_(0.0f), collapsed_handoff_samples_left_(0),
@@ -62,6 +63,11 @@ namespace vital {
   }
 
   void ModulationConnectionProcessor::process(int num_samples) {
+    if (!*run_by_producers_)
+      processRoute(num_samples);
+  }
+
+  void ModulationConnectionProcessor::processRoute(int num_samples) {
     const unsigned smoothing_revision = source_smoothing_->revision.load(std::memory_order_acquire);
     if (source_smoothing_revision_ != smoothing_revision) {
       source_smoothing_revision_ = smoothing_revision;

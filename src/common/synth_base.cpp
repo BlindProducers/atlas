@@ -390,6 +390,9 @@ vital::modulation_change SynthBase::createModulationChange(vital::ModulationConn
   change.poly_modulation_switch = engine_->getPolyModulationSwitch(connection->destination_name);
   change.poly_destination = engine_->getPolyModulationDestination(connection->destination_name);
   change.modulation_processor = connection->modulation_processor.get();
+  change.source_slot = vital::source_types::slotForOutputSource(connection->source_name);
+  if (change.source_slot >= 0)
+    change.destination_slot = vital::source_types::slotForControl(connection->destination_name);
   change.modulation_processor->setProcessWhenIdle(sourceCanUpdateIdleDestination(connection->source_name));
   change.modulation_processor->setRefreshSourceWhenIdle(sourceIsEnvelope(connection->source_name));
   change.modulation_processor->setSourceSmoothing(
@@ -418,9 +421,25 @@ bool SynthBase::isInvalidConnection(const vital::modulation_change& change) {
   return change.poly_destination && change.poly_destination->router() == change.modulation_processor;
 }
 
+bool SynthBase::acceptsOscillatorModulation(int slot, const std::string& destination) {
+  // Another oscillator or a voice filter: both render after the source
+  // oscillator within the block. LFOs and the like render before it, and
+  // feeding audio back into a modulator invites loops, so they are left out.
+  const int destination_slot = vital::source_types::slotForControl(destination);
+  const bool voice_filter = destination.rfind("filter_1_", 0) == 0 || destination.rfind("filter_2_", 0) == 0;
+  if (slot < 0 || destination_slot == slot || (destination_slot < 0 && !voice_filter))
+    return false;
+  vital::Processor* poly_destination = engine_->getPolyModulationDestination(destination);
+  return poly_destination != nullptr && !poly_destination->isControlRate();
+}
+
 void SynthBase::connectModulation(vital::ModulationConnection* connection) {
   vital::modulation_change change = createModulationChange(connection);
-  if (isInvalidConnection(change)) {
+  // An oscillator's audio reaches only the audio-rate controls of the other
+  // oscillators and the voice filters.
+  const bool refused_oscillator_route =
+      change.source_slot >= 0 && !acceptsOscillatorModulation(change.source_slot, connection->destination_name);
+  if (refused_oscillator_route || isInvalidConnection(change)) {
     connection->destination_name = "";
     connection->source_name = "";
   }

@@ -40,9 +40,16 @@ namespace vital {
       SynthModule(kNumInputs, kNumOutputs), slot_(slot), prefix_(source_types::slotPrefix(slot)),
       beats_per_second_(beats_per_second), wavetable_(std::make_shared<Wavetable>(kNumOscillatorWaveFrames)),
       sample_(std::make_shared<Sample>()), playhead_(std::make_shared<PlayheadOutput>()),
+      modulation_output_(std::make_shared<ModulationOutput>()),
       was_on_(std::make_shared<bool>(true)), state_(std::make_shared<ActiveState>()),
       type_controls_(std::make_shared<std::array<TypeControls, source_types::kNumTypes>>()) {
     playhead_->output()->buffer[0] = 0.0f;
+    // Written only while a route reads it; the engine enables it on connect.
+    Output* modulation = modulation_output_->output();
+    for (int i = 0; i < modulation->buffer_size; ++i)
+      modulation->buffer[i] = 0.5f;
+    modulation->trigger_value = 0.5f;
+    modulation_output_->enable(false);
   }
 
   const std::vector<ControlSpec>& SourceSlotModule::describeType(int type) {
@@ -336,5 +343,21 @@ namespace vital {
     }
     *was_on_ = on;
     clone_was_on_ = on;
+    writeModulationOutput(num_samples);
+  }
+
+  void SourceSlotModule::writeModulationOutput(int num_samples) {
+    if (!modulation_output_->enabled())
+      return;
+
+    // Modulation sources read 0 to 1. The raw audio, before Level, maps
+    // -1..1 onto that range, so silence (or a switched-off slot) is the
+    // neutral 0.5 and a bipolar route swings evenly around the destination.
+    const poly_float* raw = output(kRaw)->buffer;
+    Output* modulation = modulation_output_->output();
+    poly_float* buffer = modulation->buffer;
+    for (int i = 0; i < num_samples; ++i)
+      buffer[i] = utils::clamp(raw[i] * 0.5f + 0.5f, 0.0f, 1.0f);
+    modulation->trigger_value = buffer[0];
   }
 } // namespace vital

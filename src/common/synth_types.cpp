@@ -18,6 +18,7 @@
 
 #include "synth_constants.h"
 #include "modulation_connection_processor.h"
+#include "source_types.h"
 
 namespace vital {
   namespace {
@@ -42,6 +43,9 @@ namespace vital {
   ModulationConnection::~ModulationConnection() { }
 
   bool ModulationConnection::isModulationSourceDefaultBipolar(const std::string& source) {
+    // An oscillator's audio swings around its centre, like an LFO.
+    if (source_types::slotForOutputSource(source) >= 0)
+      return true;
     std::size_t pos = source.find(kModulationSourceDelimiter);
     std::string prefix = source.substr(0, pos);
     return kBipolarModulationSourcePrefixes.count(prefix) > 0;

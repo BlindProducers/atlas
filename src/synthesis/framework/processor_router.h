@@ -152,6 +152,13 @@ namespace vital {
       virtual ProcessorRouter* getPolyRouter();
       virtual void resetFeedbacks(poly_mask reset_mask);
 
+      // This router's copy of a processor it holds, or null. Unlike
+      // getLocalProcessor, a processor it doesn't hold adds no entry.
+      Processor* findLocalProcessor(const Processor* global_processor) const {
+        const auto found = processors_.find(global_processor);
+        return found == processors_.end() ? nullptr : found->second.second.get();
+      }
+
     protected:
       // When we create a cycle into the ProcessorRouter graph, we must insert
       // a Feedback node and add it here.
