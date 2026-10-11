@@ -315,6 +315,9 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     bool refreshZoneCrossfadeRowIfNeeded();
     String focusedParameterId() const;
     String focusedAccessibleTitle() const;
+    // The SectionName of the focused control or its nearest group, so a rebuild
+    // can find the same control when several sections share its title.
+    String focusedSectionKey() const;
     Component* persistentFocusedComponent() const;
     // Focuses the control a rebuild replaced; false when there is none to focus.
     // refocusScreenReader moves the screen reader to it again once the rows
@@ -496,7 +499,12 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void stepInstrumentPreset(int oscillator, int direction);
     void openInstrumentInTextEditor(int oscillator);
     void reloadInstrument(int oscillator);
+    // Empties a Multi-sample slot (and cancels a load in progress).
+    void clearInstrument(int oscillator);
     void refreshMultiSampleStatus();
+    // Keeps the SF2 preset menu on the SoundFont the slot plays: a new
+    // selection moves the menu, another SoundFont rebuilds the rows.
+    void syncInstrumentPresetMenu(int oscillator);
     String instrumentStatusTitle(int oscillator) const;
     String instrumentDetails(int oscillator) const;
     // 0 nothing loaded, 1 SFZ, 2 SF2 with one preset, 3 SF2 with several.
@@ -974,6 +982,8 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     std::map<String, std::pair<int, int>> last_filter_states_;
     std::map<String, bool> last_random_amplitude_modes_;
     std::map<String, int> last_oscillator_modes_;
+    // An SF2 preset menu lists another SoundFont than its slot plays.
+    bool instrument_preset_menu_stale_ = false;
     int last_glide_zones_ = -1;
     int lfo_cycle_index_ = 3;
     int lfo_grid_index_ = 14;
