@@ -959,6 +959,8 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     mutable String pending_effect_chain_section_;
     mutable int pending_effect_chain_selected_index_ = -1;
     bool effect_chain_rebuild_queued_ = false;
+    // Bumped by each rebuild so only the last one re-focuses the screen reader.
+    int screen_reader_refocus_generation_ = 0;
     String queued_effect_chain_rebuild_section_;
     String queued_effect_chain_rebuild_title_;
     String queued_effect_chain_rebuild_parameter_;

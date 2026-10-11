@@ -829,14 +829,32 @@ namespace {
       editor.removeFromDesktop();
       return;
     }
-    // Each type change rebuilds the editor: an arrow opens the menu instead of stepping.
+    // An arrow steps the type without opening the menu; each step rebuilds the rows.
     editor.ensureComponentVisible(type);
     type->grabKeyboardFocus();
     expect(type->getText() == "Spectral", "the Type menu shows the slot's type");
+    const int spectral_index = type->getSelectedItemIndex();
+    Component::SafePointer<Component> stepped_type(type);
     type->keyPressed(KeyPress(KeyPress::leftKey));
-    expect(type->isPopupActive(), "an arrow opens the Type menu");
-    expect(synth.getControls().at("osc_7_type")->value() == float(vital::source_types::kSpectral),
-           "an arrow does not change the type by itself");
+    expect(!type->isPopupActive(), "an arrow does not open the Type menu");
+    expect(type->getSelectedItemIndex() == spectral_index - 1, "an arrow steps to the previous type");
+    expect(synth.getControls().at("osc_7_type")->value() != float(vital::source_types::kSpectral),
+           "an arrow changes the type");
+    pumpUntil([&] {
+      auto* focused = Component::getCurrentlyFocusedComponent();
+      return stepped_type == nullptr && focused != nullptr && focused->getTitle() == "Oscillator 7 Type";
+    });
+    type = dynamic_cast<ComboBox*>(Component::getCurrentlyFocusedComponent());
+    expect(type != nullptr && type->getTitle() == "Oscillator 7 Type",
+           "after an arrow step rebuilds the rows, focus is on the new Type menu");
+    if (type == nullptr) {
+      editor.removeFromDesktop();
+      return;
+    }
+    type->keyPressed(KeyPress(KeyPress::spaceKey));
+    expect(type->isPopupActive(), "Space opens the Type menu");
+    type->keyPressed(KeyPress(KeyPress::rightKey));
+    expect(type->getSelectedItemIndex() == spectral_index - 1, "an arrow forwarded by the open menu keeps the choice");
     PopupMenu::dismissAllActiveMenus();
     pumpEditorEvents();
     type->setSelectedItemIndex(vital::source_types::kWavetable, sendNotificationSync);
@@ -849,6 +867,9 @@ namespace {
     auto* refocused = Component::getCurrentlyFocusedComponent();
     expect(refocused != nullptr && refocused->getTitle() == "Oscillator 7 Type",
            "after the rebuild, focus returns to the Type menu");
+    auto* refocused_handler = refocused != nullptr ? refocused->getAccessibilityHandler() : nullptr;
+    expect(refocused_handler != nullptr && refocused_handler->hasFocus(false),
+           "after the rebuild, the screen reader's focus is on the Type menu");
     auto* section = editorSection(editor, "Oscillator 7");
     expect(section != nullptr && titled(*section, "Load wavetable") != nullptr, "a slot switched to Wavetable shows Load wavetable");
     expect(section != nullptr && titled(*section, "Next wavetable") != nullptr, "a slot switched to Wavetable shows Next wavetable");

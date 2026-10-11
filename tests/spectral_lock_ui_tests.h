@@ -60,13 +60,13 @@ int testSpectralLockUi(SynthPlugin& synth, SynthPlugin& restored) {
       auto handler = combo->createAccessibilityHandler();
       if (!handler || handler->getRole() != AccessibilityRole::comboBox || !handler->getValueInterface())
         return fail("Root/Scale combo boxes have no accessible role or selected value");
-      combo->keyPressed(KeyPress(KeyPress::endKey));
+      combo->keyPressed(KeyPress(KeyPress::homeKey));
       combo->keyPressed(KeyPress(KeyPress::rightKey));
       if (combo->getSelectedItemIndex() != 1) return fail("Root/Scale keyboard choice did not advance");
       if (restored.getControls().at(prefix + String(name).toLowerCase().toStdString())->value() != 1)
         return fail("Root/Scale combo change not applied to the engine");
-      combo->keyPressed(KeyPress(KeyPress::homeKey));
-      if (combo->getSelectedItemIndex() != 11) return fail("Root/Scale maximum shortcut failed");
+      combo->keyPressed(KeyPress(KeyPress::endKey));
+      if (combo->getSelectedItemIndex() != 11) return fail("Root/Scale End shortcut did not select the last choice");
       combo->keyPressed(KeyPress(KeyPress::backspaceKey));
       if (combo->getSelectedItemIndex() != 0) return fail("Root/Scale default shortcut failed");
     }

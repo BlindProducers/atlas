@@ -82,6 +82,8 @@ namespace {
   constexpr const char* kAllCategories = "All categories";
   constexpr const char* kAllTags = "All tags";
   constexpr int kBrowserRescanMenuId = 0x3fff0001;
+  // How long after a rebuild the screen reader is moved back to the focused control.
+  constexpr int kScreenReaderRefocusDelayMs = 250;
 
   enum PresetFacetKind {
     kLibraryFacet = 1,
@@ -1638,7 +1640,8 @@ namespace {
   // Choices that change which rows the editor shows, so choosing one rebuilds
   // it: oscillator type and analog waveform, frequency morph type (Random
   // Amplitudes adds a seed), filter model and style, and the effect slot
-  // variants above. They are menus, not sliders that rebuild on every step.
+  // variants above. They are menus; arrows step through the choices and each
+  // step rebuilds the rows.
   bool isRowSwitchingChoice(const String& id) {
     if (const int slot = sourceSlotForId(id); slot >= 0) {
       const String suffix = id.substring(String("osc_" + String(slot + 1) + "_").length());
@@ -3925,8 +3928,6 @@ namespace {
       std::function<bool(const KeyPress&, Component&)> onAccessibleCommand;
       std::function<void()> onDefaultCommand;
       std::function<void()> onContextMenuCommand;
-      // Arrow and Page keys open the menu instead of stepping through choices.
-      bool arrowsOpenMenu = false;
 
       void showAccessibleContextMenu() override {
         if (onContextMenuCommand)
@@ -3944,21 +3945,23 @@ namespace {
           if (onDefaultCommand) onDefaultCommand();
           return true;
         }
-        const bool step = code == KeyPress::upKey || code == KeyPress::downKey || code == KeyPress::leftKey ||
-                          code == KeyPress::rightKey || code == KeyPress::pageUpKey || code == KeyPress::pageDownKey;
-        // The open menu forwards Left and Right here; they must not open a second one.
-        if (code == KeyPress::spaceKey || (step && arrowsOpenMenu)) {
+        if (code == KeyPress::spaceKey) {
           if (!isPopupActive())
             showPopup();
           return true;
         }
+        // The open menu forwards Left and Right here; they must not change the choice behind it.
+        if (isPopupActive() && (code == KeyPress::upKey || code == KeyPress::downKey || code == KeyPress::leftKey ||
+                                code == KeyPress::rightKey || code == KeyPress::pageUpKey || code == KeyPress::pageDownKey))
+          return true;
         int index = getSelectedItemIndex();
-        if (code == KeyPress::homeKey) index = getNumItems() - 1;
-        else if (code == KeyPress::endKey) index = 0;
-        else if (code == KeyPress::upKey || code == KeyPress::rightKey) ++index;
-        else if (code == KeyPress::downKey || code == KeyPress::leftKey) --index;
-        else if (code == KeyPress::pageUpKey) index += 10;
-        else if (code == KeyPress::pageDownKey) index -= 10;
+        // Keys move through the list as it reads, top to bottom, as in the open menu.
+        if (code == KeyPress::homeKey) index = 0;
+        else if (code == KeyPress::endKey) index = getNumItems() - 1;
+        else if (code == KeyPress::downKey || code == KeyPress::rightKey) ++index;
+        else if (code == KeyPress::upKey || code == KeyPress::leftKey) --index;
+        else if (code == KeyPress::pageDownKey) index += 10;
+        else if (code == KeyPress::pageUpKey) index -= 10;
         else return OffscreenComboBox::keyPressed(key);
         setSelectedItemIndex(jlimit(0, getNumItems() - 1, index), sendNotificationSync);
         return true;
@@ -4399,11 +4402,7 @@ class AccessibleParameterRow : public Component {
         combo_.setTitle(accessible_name);
         combo_.setDescription(parameter_description);
         combo_.setTooltip(parameter_description);
-        // Stepping through these would rebuild the editor at every choice.
-        combo_.arrowsOpenMenu = row_switching_choice;
-        combo_.setHelpText(row_switching_choice
-            ? "Press Enter, Space or an arrow key to open the list of choices, then choose one with the arrows and Enter. Escape keeps the current choice. Backspace resets to default. Home selects the last choice, End the first. Shift M opens the context menu; Shift L learns MIDI; Shift C clears MIDI learn."
-            : "Use arrows to choose, Enter or Space to open the menu, Backspace to reset. Home selects the last choice, End the first. Shift M opens the context menu; Shift L learns MIDI; Shift C clears MIDI learn.");
+        combo_.setHelpText("Use arrows to choose, Enter or Space to open the menu, Backspace to reset. Home selects the first choice, End the last. Shift M opens the context menu; Shift L learns MIDI; Shift C clears MIDI learn.");
         combo_.setWantsKeyboardFocus(true);
         // One item per choice in the row's range, named as the row reads it.
         const int steps = parameter_.getNumSteps();
@@ -7435,8 +7434,16 @@ void SynthEditor::addOscillatorSectionContent(int oscillator, const String& sect
 
 void SynthEditor::restoreFocusAfterRebuild(const String& parameterId, Component* persistentComponent,
                                            const String& accessibleTitle, const String& preferredSection) {
-  if (findRebuildFocusTarget(parameterId, persistentComponent, accessibleTitle, preferredSection) == nullptr)
+  Component* initial = findRebuildFocusTarget(parameterId, persistentComponent, accessibleTitle, preferredSection);
+  if (initial == nullptr)
     return;
+
+  // Focus the new control now, so keys pressed while a choice is stepped
+  // (an arrow held on a Type menu) keep reaching it rather than the window.
+  if (initial->isShowing()) {
+    ensureComponentVisible(initial);
+    initial->grabKeyboardFocus();
+  }
 
   // Resolve again when the grab runs: another rebuild may have replaced the
   // control in between, and the fresh one is the right target.
@@ -7450,6 +7457,24 @@ void SynthEditor::restoreFocusAfterRebuild(const String& parameterId, Component*
     if (target != nullptr && target->isShowing()) {
       safe_this->ensureComponentVisible(target);
       target->grabKeyboardFocus();
+    }
+  });
+
+  // The rebuild deleted the control the screen reader was on, and its focus
+  // notice for the new one can arrive before the reader has the new rows, so
+  // it loses its place while keyboard focus is fine. Once the rows have
+  // settled, move the reader's focus to the control again.
+  // Only the last of several quick rebuilds (a held arrow) does this.
+  const int generation = ++screen_reader_refocus_generation_;
+  Timer::callAfterDelay(kScreenReaderRefocusDelayMs, [safe_this, generation] {
+    if (safe_this == nullptr || safe_this->screen_reader_refocus_generation_ != generation)
+      return;
+    auto* focused = Component::getCurrentlyFocusedComponent();
+    if (focused == nullptr || !safe_this->isParentOf(focused) || !focused->isShowing())
+      return;
+    if (auto* handler = focused->getAccessibilityHandler()) {
+      handler->giveAwayFocus();
+      handler->grabFocus();
     }
   });
 }

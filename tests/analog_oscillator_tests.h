@@ -697,17 +697,21 @@ namespace analog_oscillator_tests {
     };
     checkRows(false);
 
-    // Changing the type rebuilds the editor, so it is a menu: arrows open it
-    // rather than stepping through types, and the chosen type applies.
+    // Changing the type rebuilds the editor, so it is a menu. Arrows step
+    // through types without opening it, and the chosen type applies.
     auto* type = dynamic_cast<ComboBox*>(findTitled(editor, "Oscillator 1 Type"));
     expect(type != nullptr, "Type is a menu with named choices");
     if (type != nullptr) {
       expect(type->getNumItems() == vital::source_types::kNumTypes && type->getText() == "Wavetable",
              "The type menu lists every type and shows the current one");
-      expect(type->keyPressed(KeyPress(KeyPress::rightKey)), "Arrow keys open the type menu");
-      expectClose(controls.at("osc_1_type")->value(), O::kWavetableType, 0, "An arrow does not change the type by itself");
-      PopupMenu::dismissAllActiveMenus();
+      expect(type->keyPressed(KeyPress(KeyPress::rightKey)), "Arrow keys step the type");
+      expect(!type->isPopupActive(), "An arrow does not open the type menu");
+      expectClose(controls.at("osc_1_type")->value(), O::kWavetableType + 1, 0, "An arrow steps to the next type");
       pumpEditor();
+      type = dynamic_cast<ComboBox*>(findTitled(editor, "Oscillator 1 Type"));
+    }
+    expect(type != nullptr, "Type is still a menu after the rebuild");
+    if (type != nullptr) {
       type->setSelectedItemIndex(O::kAnalogType, sendNotificationSync);
       expectClose(controls.at("osc_1_type")->value(), O::kAnalogType, 0, "Choosing Analog from the menu applies it");
     }
