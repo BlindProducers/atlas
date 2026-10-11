@@ -732,7 +732,7 @@ namespace {
     const auto& controls = synth.getControls();
 
     // Oscillator 5 is a Sample slot: FM and ring modulation, FM first after None.
-    auto* mode5 = dynamic_cast<Slider*>(titled(*editorSection(editor, "Oscillator 5"), "Distortion mode"));
+    auto* mode5 = dynamic_cast<Slider*>(titled(*editorSection(editor, "Oscillator 5"), "5 Distortion mode"));
     expect(mode5 != nullptr, "a Sample slot shows the Distortion mode row");
     if (mode5 != nullptr) {
       expect(mode5->getDescription().contains("playback rate"), "the Sample distortion help explains playback-rate FM");
@@ -749,15 +749,15 @@ namespace {
       expect(mode5->getTextFromValue(mode5->getValue()) == "Ring Mod from Oscillator 1", "the RM mode names its source slot");
       mode5->keyPressed(KeyPress(KeyPress::backspaceKey));
     }
-    expect(titled(*editorSection(editor, "Oscillator 5"), "Oscillator 5 Distortion Amount") != nullptr,
+    expect(titled(*editorSection(editor, "Oscillator 5"), "5 Distortion Amount") != nullptr,
            "a Sample slot shows the distortion amount");
-    expect(titled(*editorSection(editor, "Oscillator 5"), "Secondary distortion mode") != nullptr,
+    expect(titled(*editorSection(editor, "Oscillator 5"), "5 Secondary distortion mode") != nullptr,
            "a Sample slot shows the secondary distortion mode");
-    expect(titled(*editorSection(editor, "Oscillator 5"), "Oscillator 5 Distortion Spread") == nullptr,
+    expect(titled(*editorSection(editor, "Oscillator 5"), "5 Distortion Spread") == nullptr,
            "a Sample slot hides the unison-only distortion spread");
 
     // Oscillator 8 is a Noise slot: ring modulation only.
-    auto* mode8 = dynamic_cast<Slider*>(titled(*editorSection(editor, "Oscillator 8"), "Distortion mode"));
+    auto* mode8 = dynamic_cast<Slider*>(titled(*editorSection(editor, "Oscillator 8"), "8 Distortion mode"));
     expect(mode8 != nullptr, "a Noise slot shows the Distortion mode row");
     if (mode8 != nullptr) {
       expect(mode8->getDescription().contains("cannot be frequency modulated"), "the Noise distortion help says FM is unavailable");
@@ -783,8 +783,11 @@ namespace {
     expect(titled(editor, "Oscillator 8, noise") != nullptr, "the Noise slot header names its type");
 
     // Arpeggiator destinations say what each slot plays.
-    expect(titled(editor, "Destination oscillator 1, wavetable") != nullptr, "arp destination rows name a wavetable slot's type");
-    expect(titled(editor, "Destination oscillator 6, granular") != nullptr, "arp destination rows name a granular slot's type");
+    auto* destinations = editorSection(editor, "Arpeggiator 1 destinations");
+    expect(destinations != nullptr && titled(*destinations, "Oscillator 1, wavetable") != nullptr,
+           "arp destination rows name a wavetable slot's type");
+    expect(destinations != nullptr && titled(*destinations, "Oscillator 6, granular") != nullptr,
+           "arp destination rows name a granular slot's type");
 
     // Playheads: offered for Sample and Granular slots only.
     std::map<int, String> choices;
@@ -823,7 +826,7 @@ namespace {
 
     expect(titled(*editorSection(editor, "Oscillator 7"), "Load wavetable") == nullptr,
            "a Spectral slot has no wavetable actions");
-    auto* type = dynamic_cast<ComboBox*>(titled(*editorSection(editor, "Oscillator 7"), "Oscillator 7 Type"));
+    auto* type = dynamic_cast<ComboBox*>(titled(*editorSection(editor, "Oscillator 7"), "7 Type"));
     expect(type != nullptr, "Oscillator 7 exposes its Type menu");
     if (type == nullptr) {
       editor.removeFromDesktop();
@@ -842,10 +845,10 @@ namespace {
            "an arrow changes the type");
     pumpUntil([&] {
       auto* focused = Component::getCurrentlyFocusedComponent();
-      return stepped_type == nullptr && focused != nullptr && focused->getTitle() == "Oscillator 7 Type";
+      return stepped_type == nullptr && focused != nullptr && focused->getTitle() == "7 Type";
     });
     type = dynamic_cast<ComboBox*>(Component::getCurrentlyFocusedComponent());
-    expect(type != nullptr && type->getTitle() == "Oscillator 7 Type",
+    expect(type != nullptr && type->getTitle() == "7 Type",
            "after an arrow step rebuilds the rows, focus is on the new Type menu");
     if (type == nullptr) {
       editor.removeFromDesktop();
@@ -865,8 +868,10 @@ namespace {
       return section != nullptr && titled(*section, "Load wavetable") != nullptr;
     });
     auto* refocused = Component::getCurrentlyFocusedComponent();
-    expect(refocused != nullptr && refocused->getTitle() == "Oscillator 7 Type",
-           "after the rebuild, focus returns to the Type menu");
+    auto* rebuilt_section = editorSection(editor, "Oscillator 7");
+    expect(refocused != nullptr && refocused->getTitle() == "7 Type" && rebuilt_section != nullptr &&
+               rebuilt_section->isParentOf(refocused),
+           "after the rebuild, focus returns to Oscillator 7's Type menu");
     auto* refocused_handler = refocused != nullptr ? refocused->getAccessibilityHandler() : nullptr;
     expect(refocused_handler != nullptr && refocused_handler->hasFocus(false),
            "after the rebuild, the screen reader's focus is on the Type menu");
@@ -1239,27 +1244,32 @@ namespace {
       }
       return {};
     };
-    auto check = [&](const String& title, const String& expected_group) {
-      auto* control = titled(editor, title);
-      expect(control != nullptr, title.toStdString() + " exists");
+    // Rows carry their oscillator's number, not its name: "1 Level".
+    auto row = [&](int oscillator, const String& title) -> Component* {
+      auto* section = editorSection(editor, "Oscillator " + String(oscillator));
+      return section != nullptr ? titled(*section, String(oscillator) + " " + title) : nullptr;
+    };
+    auto check = [&](int oscillator, const String& title, const String& expected_group) {
+      auto* control = row(oscillator, title);
+      expect(control != nullptr, "Oscillator " + std::to_string(oscillator) + " " + title.toStdString() + " exists");
       if (control != nullptr)
         expect(groupOf(control) == expected_group,
                title.toStdString() + " sits in " + expected_group.toStdString() + " (found " +
                groupOf(control).toStdString() + ")");
     };
-    check("Oscillator 1 Switch", "Oscillator 1");
-    check("Oscillator 1 Type", "Oscillator 1");
-    check("Oscillator 1 Level", "Oscillator 1");
-    check("Oscillator 1 Pan", "Oscillator 1");
-    check("Oscillator 1 Solo", "Oscillator 1");
-    check("Oscillator 1 Transpose", "Oscillator 1 pitch and unison");
-    check("Oscillator 1 Unison Voices", "Oscillator 1 pitch and unison");
-    check("Oscillator 1 Transpose Quantize Key", "Oscillator 1 scale lock");
-    check("Distortion mode", "Oscillator 1 warp");
-    check("Secondary Distortion Spread", "Oscillator 1 warp");
-    check("Secondary Frequency Morph Spread", "Oscillator 1 warp");
-    check("Oscillator 1 Frequency Morph Type", "Oscillator 1 warp");
-    check("Oscillator 1 Wave Frame", "Oscillator 1 wavetable controls");
+    check(1, "Switch", "Oscillator 1");
+    check(1, "Type", "Oscillator 1");
+    check(1, "Level", "Oscillator 1");
+    check(1, "Pan", "Oscillator 1");
+    check(1, "Solo", "Oscillator 1");
+    check(1, "Transpose", "Oscillator 1 pitch and unison");
+    check(1, "Unison Voices", "Oscillator 1 pitch and unison");
+    check(1, "Transpose Quantize Key", "Oscillator 1 scale lock");
+    check(1, "Distortion mode", "Oscillator 1 warp");
+    check(1, "Secondary Distortion Spread", "Oscillator 1 warp");
+    check(1, "Secondary Frequency Morph Spread", "Oscillator 1 warp");
+    check(1, "Frequency Morph Type", "Oscillator 1 warp");
+    check(1, "Wave Frame", "Oscillator 1 wavetable controls");
     auto* scale = editorSection(editor, "Oscillator 1 scale lock");
     expect(scale != nullptr && groupOf(scale) == "Oscillator 1 pitch and unison", "Scale lock nests inside Pitch and unison");
     expect(scale != nullptr && scale->getTitle() == "Scale lock", "the Scale lock group is titled");
@@ -1269,18 +1279,18 @@ namespace {
     expect(editorSection(editor, "Oscillator 1 analog controls") == nullptr, "a wavetable slot has no Analog controls group");
 
     // Sample, Granular and Noise slots.
-    check("Oscillator 5 Sample Start", "Oscillator 5 sample controls");
-    check("Oscillator 5 Sample Transpose", "Oscillator 5 pitch and unison");
+    check(5, "Sample Start", "Oscillator 5 sample controls");
+    check(5, "Sample Transpose", "Oscillator 5 pitch and unison");
     auto* sample_scale = editorSection(editor, "Oscillator 5 scale lock");
     expect(sample_scale != nullptr && groupOf(sample_scale) == "Oscillator 5 pitch and unison",
            "a Sample slot's scale lock rows nest in its Pitch and unison group");
-    check("Oscillator 6 Granular Density", "Oscillator 6 granular controls");
-    check("Oscillator 6 Granular Transpose", "Oscillator 6 pitch and unison");
+    check(6, "Granular Density", "Oscillator 6 granular controls");
+    check(6, "Granular Transpose", "Oscillator 6 pitch and unison");
     expect(editorSection(editor, "Oscillator 6 sample controls") != nullptr, "a Granular slot keeps the sample loading group");
-    check("Oscillator 8 Noise Width", "Oscillator 8 noise controls");
+    check(8, "Noise Width", "Oscillator 8 noise controls");
     expect(editorSection(editor, "Oscillator 8 pitch and unison") == nullptr, "a Noise slot has no pitch rows, so no group");
     expect(editorSection(editor, "Oscillator 8 warp") != nullptr, "a Noise slot keeps its Warp group");
-    expect(titled(*editorSection(editor, "Oscillator 8"), "Secondary Distortion Spread") == nullptr,
+    expect(titled(*editorSection(editor, "Oscillator 8"), "8 Secondary Distortion Spread") == nullptr,
            "unison spreads are hidden on a Noise slot");
 
     // Keyboard order follows the document: output rows, then the groups in order.
@@ -1288,13 +1298,13 @@ namespace {
     auto position = [&](Component* control) {
       return int(std::find(order.begin(), order.end(), control) - order.begin());
     };
-    auto pos = [&](const String& title) { return position(titled(editor, title)); };
-    expect(pos("Oscillator 1 Switch") < pos("Oscillator 1 Solo") && pos("Oscillator 1 Solo") < pos("Oscillator 1 Type") &&
-           pos("Oscillator 1 Type") < pos("Oscillator 1 Level") && pos("Oscillator 1 Level") < pos("Oscillator 1 Pan"),
+    auto pos = [&](const String& title) { return position(row(1, title)); };
+    expect(pos("Switch") < pos("Solo") && pos("Solo") < pos("Type") &&
+           pos("Type") < pos("Level") && pos("Level") < pos("Pan"),
            "output rows read switch, solo, type, level, pan");
-    expect(pos("Oscillator 1 Pan") < position(pitch) && position(pitch) < pos("Oscillator 1 Transpose") &&
-           pos("Oscillator 1 Transpose") < position(scale) && position(scale) < pos("Oscillator 1 Transpose Quantize Key") &&
-           pos("Oscillator 1 Transpose Quantize Key") < pos("Distortion mode"),
+    expect(pos("Pan") < position(pitch) && position(pitch) < pos("Transpose") &&
+           pos("Transpose") < position(scale) && position(scale) < pos("Transpose Quantize Key") &&
+           pos("Transpose Quantize Key") < pos("Distortion mode"),
            "groups follow the output rows in order: pitch, scale lock, warp");
 
     // Every type reads the same way: output rows, controls, pitch, warp.
@@ -1318,8 +1328,8 @@ namespace {
         continue;
       std::vector<std::pair<String, int>> sequence;
       for (const String row : { "Switch", "Solo", "Type", "Level", "Pan" })
-        sequence.push_back({ row, at(titled(*section, name + " " + row)) });
-      sequence.push_back({ "Destination", at(titled(*section, "Destination")) });
+        sequence.push_back({ row, at(titled(*section, String(oscillator) + " " + row)) });
+      sequence.push_back({ "Destination", at(titled(*section, String(oscillator) + " Destination")) });
       sequence.push_back({ "controls", at(editorSection(typed_editor, name + " " + controls_keys[oscillator - 1])) });
       if (oscillator == 6)
         sequence.push_back({ "granular controls", at(editorSection(typed_editor, name + " granular controls")) });
@@ -1336,12 +1346,101 @@ namespace {
     }
   }
 
+  // Each arpeggiator's destinations are a Destinations group VoiceOver can
+  // enter, holding one row per oscillator named "Oscillator N, <type>".
+  void testArpeggiatorDestinationsAreAGroup() {
+    SynthPlugin synth;
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    pumpEditorEvents();
+    const auto& order = editor.getKeyboardFocusOrder();
+    auto position = [&](Component* control) {
+      const auto found = std::find(order.begin(), order.end(), control);
+      return found == order.end() ? -1 : int(found - order.begin());
+    };
+    const char* types[] = { "wavetable", "wavetable", "wavetable", "wavetable", "sample", "granular", "spectral", "noise" };
+    for (int arp = 1; arp <= 2; ++arp) {
+      const String name = "Arpeggiator " + String(arp);
+      auto* section = editorSection(editor, name);
+      auto* group = editorSection(editor, name + " destinations");
+      expect(section != nullptr && group != nullptr, (name + " has a Destinations group").toStdString());
+      if (section == nullptr || group == nullptr)
+        continue;
+      expect(group->getTitle() == "Destinations" && section->isParentOf(group) &&
+                 group->isFocusContainer(),
+             (name + "'s Destinations group is a focus container inside the arpeggiator").toStdString());
+      const auto handler = group->createAccessibilityHandler();
+      expect(handler != nullptr && handler->getRole() == AccessibilityRole::group, "Destinations reads as a group");
+
+      int previous = position(group);
+      expect(previous > position(titled(*section, "Output channel")), "Destinations follow the arpeggiator's other rows");
+      for (int oscillator = 1; oscillator <= 8; ++oscillator) {
+        const String title = "Oscillator " + String(oscillator) + ", " + types[oscillator - 1];
+        auto* row = titled(*group, title);
+        expect(row != nullptr && group->isParentOf(row), (name + " groups " + title).toStdString());
+        expect(position(row) > previous, (name + " reads " + title + " in order").toStdString());
+        previous = position(row);
+      }
+      // Nothing is left outside the group, and no row still says Destination.
+      std::function<int(Component&)> count = [&](Component& parent) {
+        int found = parent.getTitle().startsWith("Destination oscillator") ? 1 : 0;
+        if (&parent != group && parent.getTitle().startsWith("Oscillator ") && parent.getWantsKeyboardFocus())
+          ++found;
+        for (auto* child : parent.getChildren())
+          if (child != group) found += count(*child);
+        return found;
+      };
+      expect(count(*section) == 0, (name + " keeps every destination inside its group").toStdString());
+    }
+  }
+
+  // An oscillator's section names it, so its rows do not repeat the name but
+  // keep its number, for every type: "Oscillator 1 Sample Loop" reads "1 Sample Loop".
+  void testOscillatorRowsNameTheirOscillatorNumber() {
+    for (int type = 0; type < vital::source_types::kNumTypes; ++type) {
+      SynthPlugin synth;
+      synth.parameterChanged("osc_1_type", float(type));
+      SynthEditor editor(synth);
+      editor.updateFullGui();
+      pumpEditorEvents();
+      auto* section = editorSection(editor, "Oscillator 1");
+      const std::string type_name = strings::kOscillatorTypeNames[type];
+      expect(section != nullptr, "Oscillator 1 section exists for type " + type_name);
+      if (section == nullptr)
+        continue;
+      int rows = 0;
+      StringArray misnamed;
+      std::function<void(Component&)> visit = [&](Component& component) {
+        const bool row_control = dynamic_cast<Slider*>(&component) != nullptr ||
+                                 dynamic_cast<ComboBox*>(&component) != nullptr ||
+                                 dynamic_cast<ToggleButton*>(&component) != nullptr;
+        if (row_control && component.getWantsKeyboardFocus() && component.getTitle().isNotEmpty()) {
+          ++rows;
+          if (!component.getTitle().startsWith("1 ") || component.getTitle().contains("Oscillator 1"))
+            misnamed.add(component.getTitle());
+        }
+        for (auto* child : component.getChildren())
+          visit(*child);
+      };
+      visit(*section);
+      expect(rows > 10, type_name + " shows its controls");
+      expect(misnamed.isEmpty(), type_name + " rows read the oscillator number, not its name: " +
+                                     misnamed.joinIntoString(", ").toStdString());
+      expect(titled(*section, "1 Switch") != nullptr && titled(*section, "1 Solo") != nullptr &&
+                 titled(*section, "1 Level") != nullptr && titled(*section, "1 Destination") != nullptr,
+             type_name + " reads 1 Switch, 1 Solo, 1 Level and 1 Destination");
+      if (type == vital::source_types::kSample)
+        expect(titled(*section, "1 Sample Loop") != nullptr && titled(*section, "1 Sample Bounce") != nullptr,
+               "a Sample oscillator reads 1 Sample Loop and 1 Sample Bounce");
+    }
+  }
+
   void testGranularSizeModeNamesBothChoices() {
     SynthPlugin synth;
     SynthEditor editor(synth);
     pumpEditorEvents();
     const auto valueText = [&]() {
-      auto* control = dynamic_cast<Slider*>(titled(editor, "Granular size mode"));
+      auto* control = dynamic_cast<Slider*>(titled(editor, "6 Granular size mode"));
       expect(control != nullptr, "Granular size mode must be a named choice, not an on/off toggle");
       auto handler = control ? control->createAccessibilityHandler() : nullptr;
       auto* value = handler ? handler->getValueInterface() : nullptr;
@@ -1403,7 +1502,7 @@ namespace {
       expect(amount->getTextFromValue(amount->getValue()) == "1%", "the Amount row reads 1%");
       amount->keyPressed(KeyPress(KeyPress::backspaceKey));
     }
-    auto* level = dynamic_cast<ParameterSlider*>(titled(editor, "Oscillator 1 Level"));
+    auto* level = dynamic_cast<ParameterSlider*>(titled(*editorSection(editor, "Oscillator 1"), "1 Level"));
     expect(level != nullptr, "Oscillator 1 has a Level row");
     if (level != nullptr) {
       level->keyPressed(KeyPress(KeyPress::endKey));

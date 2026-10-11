@@ -195,8 +195,8 @@ namespace oscillator_warp_tests {
       ++legacy_index;
     }
     SynthEditor editor(plugin);
-    for (const char* title : {"Secondary distortion mode", "Secondary Distortion Amount",
-                              "Secondary Frequency Morph Amount"}) {
+    for (const char* title : {"1 Secondary distortion mode", "1 Secondary Distortion Amount",
+                              "1 Secondary Frequency Morph Amount"}) {
       auto* control = sliderWithTitle(editor, title);
       expect(control != nullptr, std::string("Accessible slider exists: ") + title);
       if (!control) continue;
@@ -207,7 +207,7 @@ namespace oscillator_warp_tests {
       expect(control->keyPressed(KeyPress(KeyPress::backspaceKey)), "Secondary slider handles reset");
     }
     // Random Amplitudes adds a seed row, so the morph mode is a menu, not a slider.
-    auto* morph = menuWithTitle(editor, "Secondary Frequency Morph Mode");
+    auto* morph = menuWithTitle(editor, "1 Secondary Frequency Morph Mode");
     expect(morph != nullptr, "Secondary Frequency Morph Mode is a menu");
     if (morph != nullptr) {
       const auto& order = editor.getKeyboardFocusOrder();
