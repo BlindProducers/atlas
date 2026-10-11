@@ -2567,6 +2567,8 @@ namespace {
   String modulationSourceLabelForId(const String& id) {
     if (const int slot = sourceSlotForId(id); slot >= 0 && id.endsWith("_playhead"))
       return "Oscillator " + String(slot + 1) + " playhead";
+    if (const int slot = vital::source_types::slotForOutputSource(id.toStdString()); slot >= 0)
+      return "Oscillator " + String(slot + 1);
     if (id.startsWith("lfo_") && id.fromFirstOccurrenceOf("lfo_", false, false).containsOnly("0123456789"))
       return "LFO " + id.fromFirstOccurrenceOf("lfo_", false, false);
     if (id.startsWith("env_") && id.fromFirstOccurrenceOf("env_", false, false).containsOnly("0123456789"))
@@ -2587,6 +2589,10 @@ namespace {
   bool isInvalidModulationPair(const String& source_id, const String& destination_id) {
     if (source_id.isEmpty() || destination_id.isEmpty())
       return false;
+
+    // An oscillator's audio can't modulate the oscillator itself (no self FM yet).
+    if (const int slot = vital::source_types::slotForOutputSource(source_id.toStdString()); slot >= 0)
+      return vital::source_types::slotForControl(destination_id.toStdString()) == slot;
 
     const StringArray self_modulating_prefixes { "lfo_", "env_", "random_" };
     for (const auto& prefix : self_modulating_prefixes) {
@@ -3317,6 +3323,8 @@ namespace {
       return 3000;
     if (id.startsWith("random_"))
       return 3000 + id.fromFirstOccurrenceOf("random_", false, false).getIntValue();
+    if (const int slot = vital::source_types::slotForOutputSource(id.toStdString()); slot >= 0)
+      return 4400 + slot;
     if (const int slot = sourceSlotForId(id); slot >= 0 && id.endsWith("_playhead"))
       return 4500 + slot;
     if (id == "velocity") return 5000;
@@ -14295,6 +14303,12 @@ void SynthEditor::connectModulationAndPromptForAmount(const String& sourceId, co
                                            AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
+  if (const int slot = vital::source_types::slotForOutputSource(sourceId.toStdString());
+      slot >= 0 && !synth_.acceptsOscillatorModulation(slot, destinationId.toStdString())) {
+    postPluginAnnouncement(modulationSourceLabelForId(sourceId) + " can only modulate audio-rate controls",
+                           AccessibilityHandler::AnnouncementPriority::high);
+    return;
+  }
 
   const bool created = synth_.connectModulation(sourceId.toStdString(), destinationId.toStdString());
   const int connection = synth_.getConnectionIndex(sourceId.toStdString(), destinationId.toStdString());
@@ -14924,6 +14938,11 @@ PopupMenu SynthEditor::createModulationSourceSubmenu(const String& destinationId
       addSource(groups, "Random", id);
     else if (id.startsWith("macro_"))
       addSource(groups, "Macros", id);
+    else if (const int slot = vital::source_types::slotForOutputSource(id.toStdString()); slot >= 0) {
+      // Only audio-rate, per-voice controls follow an oscillator's audio.
+      if (synth_.acceptsOscillatorModulation(slot, destinationId.toStdString()))
+        addSource(groups, "Oscillators", id);
+    }
     else if (const int slot = sourceSlotForId(id); slot >= 0 && id.endsWith("_playhead")) {
       // Only Sample and Granular slots have a playhead to read.
       if (vital::source_types::describe(sourceSlotType(slot)).has_playhead)
@@ -14937,7 +14956,7 @@ PopupMenu SynthEditor::createModulationSourceSubmenu(const String& destinationId
 
   PopupMenu menu;
   int item_id = firstItemId;
-  for (const auto& group_name : StringArray{ "LFOs", "Envelopes", "Random", "Macros",
+  for (const auto& group_name : StringArray{ "LFOs", "Envelopes", "Random", "Macros", "Oscillators",
                                              "Oscillator playheads", "MIDI and expression" }) {
     const auto found = groups.find(group_name);
     if (found == groups.end() || found->second.empty())

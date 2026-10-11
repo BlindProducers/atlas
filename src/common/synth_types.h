@@ -96,6 +96,10 @@ namespace vital {
     ModulationConnectionProcessor* modulation_processor;
     bool disconnecting;
     int num_audio_rate;
+    // For a route from an oscillator's audio (osc_N_output): that slot, and
+    // the slot whose control it reaches or -1. Otherwise both -1.
+    int source_slot = -1;
+    int destination_slot = -1;
   } modulation_change;
 
   typedef std::map<std::string, Value*> control_map;

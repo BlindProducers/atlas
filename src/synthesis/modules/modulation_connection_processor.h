@@ -45,7 +45,10 @@ namespace vital {
       virtual ~ModulationConnectionProcessor() { }
 
       void init() override;
+      // Skips a route that ProducersModule runs itself; see setRunByProducers.
       void process(int num_samples) override;
+      // Computes the route's output for this block.
+      void processRoute(int num_samples);
       void processAudioRate(int num_samples, const Output* source);
       void processAudioRateLinear(int num_samples, const Output* source);
       void processAudioRateRemapped(int num_samples, const Output* source);
@@ -90,6 +93,10 @@ namespace vital {
       bool isStereo() const { return stereo_->value() != 0.0f; }
       void setStereo(bool stereo) { stereo_->set(stereo ? 1.0f : 0.0f); }
       bool isBypassed() const { return bypass_->value() != 0.0f; }
+      // A route from an oscillator's audio runs inside ProducersModule, in
+      // render order, so the voice graph leaves it alone. Audio thread only.
+      void setRunByProducers(bool run) { *run_by_producers_ = run; }
+      bool runByProducers() const { return *run_by_producers_; }
       bool usesIndependentRandom() const { return random_mode_->value() >= 0.5f; }
       force_inline void setDestinationScale(mono_float scale) { *destination_scale_ = scale; }
       force_inline int index() const { return index_; }
@@ -110,6 +117,7 @@ namespace vital {
         std::atomic<unsigned> revision { 0 };
       };
       std::shared_ptr<SourceSmoothingState> source_smoothing_;
+      std::shared_ptr<bool> run_by_producers_;
       unsigned source_smoothing_revision_;
       bool source_smoothing_initialized_;
       Value* current_value_;

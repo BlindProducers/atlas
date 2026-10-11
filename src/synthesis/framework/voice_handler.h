@@ -442,6 +442,9 @@ namespace vital {
       void setActiveNonaccumulatedOutput(Output* output);
       void setInactiveNonaccumulatedOutput(Output* output);
 
+      // The copy of the voice graph being processed right now, or null between voices.
+      ProcessorRouter* processingVoiceRouter() const { return processing_voice_router_; }
+
     protected:
       virtual bool shouldAccumulate(Output* output);
 
@@ -518,6 +521,7 @@ namespace vital {
 
       ProcessorRouter voice_router_;
       ProcessorRouter global_router_;
+      ProcessorRouter* processing_voice_router_ = nullptr;
 
       JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(VoiceHandler)
   };

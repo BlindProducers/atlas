@@ -99,6 +99,10 @@ slots of its own.
   free or tempo synced, mono or stereo.
 - **16 macros**, plus velocity, aftertouch, mod wheel, pitch bend, note and other
   MIDI sources.
+- **Oscillators as sources**: each oscillator's audio can modulate the audio-rate
+  controls of the other oscillators (pitch, level, phase, shape and so on) and of
+  the voice filters, sample by sample, like FM routed through the modulation
+  matrix. An oscillator cannot modulate its own controls.
 - Any source modulates any parameter. Each route has an amount from -100% to 100%
   (typed in the destination's own units when assigned), bipolar or unipolar
   polarity, stereo, a curve and a remap shape. A slot in use has a Clear modulation

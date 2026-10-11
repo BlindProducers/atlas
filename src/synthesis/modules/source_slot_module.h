@@ -88,6 +88,8 @@ namespace vital {
       Sample* getSample() { return sample_.get(); }
       MultiSampleSlot* getMultiSample() { return multisample_.get(); }
       Output* getPhaseOutput() const { return playhead_->output(); }
+      // The slot's audio as an audio-rate modulation source (osc_N_output).
+      Output* getModulationOutput() const { return modulation_output_->output(); }
       SynthModule* activeModule() const { return state_->module; }
       OscillatorModule* oscillatorModule() const { return state_->oscillator; }
 
@@ -142,6 +144,19 @@ namespace vital {
           Processor* clone() const override { return new PlayheadOutput(*this); }
       };
       std::shared_ptr<PlayheadOutput> playhead_;
+      // Owns the audio modulation output, one signal per voice. No router owns
+      // it, so connecting a route never reorders the voice graph around it:
+      // ProducersModule runs every route from a slot's audio itself.
+      class ModulationOutput : public Processor {
+        public:
+          ModulationOutput() : Processor(0, 1, false, kMaxOversample) { }
+          void process(int) override { }
+          bool isPolyphonic() const override { return true; }
+          Processor* clone() const override { return new ModulationOutput(*this); }
+      };
+      std::shared_ptr<ModulationOutput> modulation_output_;
+      // Writes the slot's raw audio as a modulation value, 0 to 1 around 0.5.
+      void writeModulationOutput(int num_samples);
       Value* on_ = nullptr;
       Value* type_ = nullptr;
       // The shared distortion controls, read for render ordering whatever the type.

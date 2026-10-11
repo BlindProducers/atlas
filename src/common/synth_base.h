@@ -70,6 +70,9 @@ class SynthBase : public MidiManager::Listener {
     void valueChangedExternal(const std::string& name, vital::mono_float value);
     void valueChangedInternal(const std::string& name, vital::mono_float value);
     bool connectModulation(const std::string& source, const std::string& destination);
+    // Whether oscillator `slot`'s audio (osc_N_output) can modulate `destination`:
+    // a per-voice, audio-rate control of another oscillator or of a voice filter.
+    bool acceptsOscillatorModulation(int slot, const std::string& destination);
     void connectModulation(vital::ModulationConnection* connection);
     void disconnectModulation(const std::string& source, const std::string& destination);
     void disconnectModulation(vital::ModulationConnection* connection);

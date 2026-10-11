@@ -591,6 +591,7 @@ namespace {
 }
 
 #include "editor_accessibility_tests.h"
+#include "oscillator_modulation_tests.h"
 
 int main(int argc, char** argv) {
   ScopedJuceInitialiser_GUI juce;
@@ -634,6 +635,15 @@ int main(int argc, char** argv) {
                 << " ms, editor refresh " << int(refreshed - loaded) << " ms\n";
     }
     return 0;
+  }
+  if (argc > 1 && String(argv[1]) == "--oscillator-modulation") {
+    testOscillatorSourcesReachOnlyAudioRateControls();
+    testOscillatorRoutesFollowTheirSourceWithinTheBlock();
+    testOscillatorRouteKeepsOtherRoutesInPlace();
+    testEditorOffersOscillatorSources();
+    if (failures == 0)
+      std::cout << "Atlas oscillator modulation tests passed\n";
+    return failures == 0 ? 0 : 1;
   }
   if (argc > 1 && String(argv[1]) == "--editor-accessibility") {
     testPresetGroupWorksWithoutKeyboardFocus();

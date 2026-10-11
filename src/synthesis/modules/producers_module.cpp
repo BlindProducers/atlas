@@ -16,6 +16,8 @@
 
 #include "producers_module.h"
 #include "filter_routing.h"
+#include "modulation_connection_processor.h"
+#include "voice_handler.h"
 
 #include <algorithm>
 
@@ -27,8 +29,12 @@ namespace vital {
   }
 
   ProducersModule::ProducersModule(const Output* beats_per_second) :
-      SynthModule(kNumInputs, kNumOutputs), portamento_glide_zones_(nullptr), zone_crossfade_(nullptr),
+      SynthModule(kNumInputs, kNumOutputs),
+      oscillator_routes_(std::make_shared<std::vector<OscillatorRoute>>()),
+      portamento_glide_zones_(nullptr), zone_crossfade_(nullptr),
       filter1_on_(nullptr), filter2_on_(nullptr) {
+    // Routes change on the audio thread; never allocate there.
+    oscillator_routes_->reserve(kMaxModulationConnections);
     for (int i = 0; i < kNumOscillators; ++i) {
       slots_[i] = new SourceSlotModule(i, beats_per_second);
       addSubmodule(slots_[i]);
@@ -216,40 +222,78 @@ namespace vital {
     }
   }
 
+  void ProducersModule::addOscillatorRoute(ModulationConnectionProcessor* processor, int source, int destination) {
+    removeOscillatorRoute(processor);
+    if (oscillator_routes_->size() < oscillator_routes_->capacity())
+      oscillator_routes_->push_back({ processor, source, destination });
+  }
+
+  void ProducersModule::removeOscillatorRoute(ModulationConnectionProcessor* processor) {
+    auto& routes = *oscillator_routes_;
+    routes.erase(std::remove_if(routes.begin(), routes.end(),
+                                [processor](const OscillatorRoute& route) { return route.processor == processor; }),
+                 routes.end());
+  }
+
+  void ProducersModule::runOscillatorRoutes(int slot, bool into_slot, int num_samples) {
+    ProcessorRouter* voice = voice_handler_ != nullptr ? voice_handler_->processingVoiceRouter() : nullptr;
+    if (voice == nullptr)
+      return;
+
+    for (const OscillatorRoute& route : *oscillator_routes_) {
+      const bool runs_now = into_slot ? route.destination == slot
+                                      : route.source == slot && route.destination < 0;
+      if (!runs_now)
+        continue;
+      if (Processor* local = voice->findLocalProcessor(route.processor))
+        static_cast<ModulationConnectionProcessor*>(local)->processRoute(num_samples);
+    }
+  }
+
   void ProducersModule::process(int num_samples) {
     SynthModule::process(num_samples);
 
-    // A slot reading another slot through FM, RM or sync renders after it.
-    int dependencies[kNumOscillators][2];
-    bool processed[kNumOscillators];
+    // A slot reading another slot through FM, RM or sync, or through a
+    // modulation route from that slot's audio, renders after it.
+    unsigned dependencies[kNumOscillators];
     for (int i = 0; i < kNumOscillators; ++i) {
+      dependencies[i] = 0;
       for (int which = 0; which < 2; ++which) {
         const int position = slots_[i]->modulatorPosition(which == 1);
-        dependencies[i][which] = position >= 0 ? getModulationIndex(i, position) : -1;
+        if (position >= 0)
+          dependencies[i] |= 1u << getModulationIndex(i, position);
       }
-      processed[i] = false;
     }
+    for (const OscillatorRoute& route : *oscillator_routes_) {
+      if (route.destination >= 0)
+        dependencies[route.destination] |= 1u << route.source;
+    }
+
+    unsigned processed = 0;
+    auto render = [&](int slot) {
+      runOscillatorRoutes(slot, true, num_samples);
+      getLocalProcessor(slots_[slot])->process(num_samples);
+      processed |= 1u << slot;
+      runOscillatorRoutes(slot, false, num_samples);
+    };
 
     int num_processed = 0;
     int index = 0;
     for (int i = 0; i < kNumOscillators * kNumOscillators && num_processed < kNumOscillators; ++i) {
-      const bool ready = !processed[index] &&
-                         (dependencies[index][0] < 0 || processed[dependencies[index][0]]) &&
-                         (dependencies[index][1] < 0 || processed[dependencies[index][1]]);
-      if (ready) {
+      const unsigned slot_bit = 1u << index;
+      if ((processed & slot_bit) == 0 && (dependencies[index] & ~processed) == 0) {
         num_processed++;
-        processed[index] = true;
-        getLocalProcessor(slots_[index])->process(num_samples);
+        render(index);
       }
       index = (index + 1) % kNumOscillators;
     }
-    // Modulation routes (primary or secondary) can form a cycle. Break it in
-    // slot order using the preceding block for sources not yet rendered,
-    // so every slot advances instead of replaying a stale output.
+    // FM, RM, sync and audio routes can form a cycle. Break it in slot order
+    // using the preceding block for sources not yet rendered, so every slot
+    // advances instead of replaying a stale output.
     if (num_processed < kNumOscillators) {
       for (int i = 0; i < kNumOscillators; ++i) {
-        if (!processed[i])
-          getLocalProcessor(slots_[i])->process(num_samples);
+        if ((processed & (1u << i)) == 0)
+          render(i);
       }
     }
 
