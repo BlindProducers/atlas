@@ -25,6 +25,9 @@ their sources.
   Those files are AGPL-3.0; the AGPL permits combining them with this GPL v3
   program (GPL v3 section 13). The original source is the opt-in
   third_party/aquanode-plugins submodule, used only by the tests.
+- Mutable Instruments Braids and stmlib by Emilie Gillet (MIT,
+  https://github.com/pichenettes/eurorack): the Braids oscillator type
+  (src/synthesis/effects/braids, licence in each file and LICENSE.stmlib).
 - nlohmann json (MIT), moodycamel concurrentqueue (simplified BSD) and KISS FFT
   (BSD-3), as submodules under third_party.
 - Test-only submodules, never built into Atlas: WDL's EEL2 (zlib licence) and

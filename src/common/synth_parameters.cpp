@@ -16,6 +16,7 @@
 
 #include "synth_parameters.h"
 #include "source_types.h"
+#include "braids_engine.h"
 
 #include "compressor.h"
 #include "distortion.h"
@@ -1750,6 +1751,26 @@ namespace vital {
       ValueDetails::kLinear, false, "", "Multi-sample Tune", nullptr },
   };
 
+  // Braids oscillator type (Mutable Instruments macro-oscillator): registered
+  // once per slot as osc_N_braids_*. Timbre and Color mean something different
+  // in each mode; the editor names them after the mode.
+  const ValueDetails ValueDetailsLookup::braids_slot_parameter_list[] = {
+    { "braids_model", 0x000000, 0.0, braids_engine::kNumModels - 1, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Braids Synthesis Mode", strings::kBraidsModelNames },
+    { "braids_timbre", 0x000000, 0.0, 1.0, 0.5, 0.0, 100.0,
+      ValueDetails::kLinear, false, "%", "Braids Timbre", nullptr },
+    { "braids_color", 0x000000, 0.0, 1.0, 0.5, 0.0, 100.0,
+      ValueDetails::kLinear, false, "%", "Braids Color", nullptr },
+    { "braids_resolution", 0x000000, 0.0, braids_engine::kNumResolutions - 1, braids_engine::kFullResolution,
+      0.0, 1.0, ValueDetails::kIndexed, false, "", "Braids Bit Depth", strings::kBraidsResolutionNames },
+    { "braids_sample_rate", 0x000000, 0.0, braids_engine::kNumSampleRates - 1, braids_engine::kFullSampleRate,
+      0.0, 1.0, ValueDetails::kIndexed, false, "", "Braids Sample Rate", strings::kBraidsSampleRateNames },
+    { "braids_transpose", 0x000000, -48.0, 48.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Braids Transpose", nullptr },
+    { "braids_tune", 0x000000, -1.0, 1.0, 0.0, 0.0, 100.0,
+      ValueDetails::kLinear, false, "", "Braids Tune", nullptr },
+  };
+
   const ValueDetails ValueDetailsLookup::mod_parameter_list[] = {
     { "amount", 0x000000, -1.0, 1.0, 0.0, 0.0, 1.0,
       ValueDetails::kLinear, false, "", "Amount", nullptr },
@@ -1959,6 +1980,12 @@ namespace vital {
     for (int osc = 0; osc < kNumOscillators; ++osc) {
       addParameterGroup(multisample_slot_parameter_list, num_multisample_parameters, osc, kOscIdPrefix,
                         kOscNamePrefix, kMultiSampleVersion);
+    }
+    static constexpr int kBraidsVersion = 0x02011a;
+    const int num_braids_parameters = sizeof(braids_slot_parameter_list) / sizeof(ValueDetails);
+    for (int osc = 0; osc < kNumOscillators; ++osc) {
+      addParameterGroup(braids_slot_parameter_list, num_braids_parameters, osc, kOscIdPrefix,
+                        kOscNamePrefix, kBraidsVersion);
     }
 
     int num_filter_parameters = sizeof(filter_parameter_list) / sizeof(ValueDetails);

@@ -501,6 +501,8 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     String instrumentDetails(int oscillator) const;
     // 0 nothing loaded, 1 SFZ, 2 SF2 with one preset, 3 SF2 with several.
     int multiSampleUiState(int oscillator) const;
+    // The Braids synthesis mode a slot has selected, 0 to 47.
+    int braidsModel(int oscillator) const;
     // A section row with every callback wired (modulation, MIDI learn, value entry, automation).
     std::unique_ptr<AccessibleParameterRow> createConfiguredSectionRow(AudioProcessorParameter& parameter,
                                                                        const String& sectionName);

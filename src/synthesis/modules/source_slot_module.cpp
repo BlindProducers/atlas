@@ -16,6 +16,7 @@
 
 #include "source_slot_module.h"
 
+#include "braids_module.h"
 #include "granular_module.h"
 #include "multisample_module.h"
 #include "multisample_slot.h"
@@ -96,6 +97,8 @@ namespace vital {
       case source_types::kSpectral:
         return new SpectralModule(source_types::groupPrefix(slot, type), std::move(sample),
                                   source_types::slotPrefix(slot));
+      case source_types::kBraids:
+        return new BraidsModule(source_types::groupPrefix(slot, type), source_types::slotPrefix(slot));
       case source_types::kNoise:
         return new NoiseModule(source_types::groupPrefix(slot, type), source_types::slotPrefix(slot));
       case source_types::kWavetable:
@@ -230,6 +233,16 @@ namespace vital {
         multisample->useOutput(output(kLevelled), MultiSampleModule::kLevelled);
         multisample->useOutput(output(kHold), MultiSampleModule::kHold);
         state_->modulation_target = multisample;
+        break;
+      }
+      case source_types::kBraids: {
+        auto* braids = static_cast<BraidsModule*>(module);
+        braids->useInput(input(kReset), BraidsModule::kReset);
+        braids->useInput(input(kVoiceEvent), BraidsModule::kVoiceEvent);
+        braids->useInput(input(kMidi), BraidsModule::kMidi);
+        braids->useOutput(output(kRaw), BraidsModule::kRaw);
+        braids->useOutput(output(kLevelled), BraidsModule::kLevelled);
+        state_->modulation_target = braids;
         break;
       }
       case source_types::kNoise: {

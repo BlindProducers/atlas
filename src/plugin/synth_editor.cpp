@@ -37,6 +37,7 @@
 #include "filter_routing.h"
 #include "sample_source.h"
 #include "source_types.h"
+#include "braids_engine.h"
 #include "synth_lfo.h"
 #include "synth_oscillator.h"
 #include "synth_strings.h"
@@ -511,7 +512,8 @@ namespace {
   // Where a row sits inside an oscillator section. Output rows stay at the top
   // level; the rest go into Pitch and unison (with Scale lock inside), Warp,
   // the wavetable / sample material groups, or the type's own group.
-  enum class OscillatorRowGroup { kOutput, kWavetable, kSample, kAnalog, kPitch, kScaleLock, kWarp, kType };
+  // kTypeMode holds parameters whose meaning follows a mode of the type (Braids Timbre and Color).
+  enum class OscillatorRowGroup { kOutput, kWavetable, kSample, kAnalog, kPitch, kScaleLock, kWarp, kType, kTypeMode };
 
   OscillatorRowGroup oscillatorRowGroup(const String& suffix) {
     if (vital::source_types::typeForParameterSuffix(suffix.toStdString()) >= 0) {
@@ -521,6 +523,8 @@ namespace {
         return OscillatorRowGroup::kScaleLock;
       if (rest == "transpose" || rest == "tune" || rest == "keytrack" || rest == "root_key")
         return OscillatorRowGroup::kPitch;
+      if (suffix == "braids_timbre" || suffix == "braids_color")
+        return OscillatorRowGroup::kTypeMode;
       return suffix.startsWith("sample_") ? OscillatorRowGroup::kSample : OscillatorRowGroup::kType;
     }
     if (isSlotLevelOscillatorSuffix(suffix))
@@ -1650,7 +1654,8 @@ namespace {
   bool isRowSwitchingChoice(const String& id) {
     if (const int slot = sourceSlotForId(id); slot >= 0) {
       const String suffix = id.substring(String("osc_" + String(slot + 1) + "_").length());
-      return suffix == "type" || suffix == "analog_waveform" || suffix.endsWith("spectral_morph_type");
+      return suffix == "type" || suffix == "analog_waveform" || suffix == "braids_model" ||
+             suffix.endsWith("spectral_morph_type");
     }
     const String filter_suffix = filterSuffixForParameter(id);
     if (filter_suffix == "model" || filter_suffix == "style")
@@ -2812,6 +2817,19 @@ namespace {
       if (suffix == "position_grid") return "Snap grain start positions to equal slices of the selected region.";
       if (suffix == "start") return "Set the start of the sample region used by the granular oscillator.";
       if (suffix == "end") return "Set the end of the sample region used by the granular oscillator.";
+    }
+
+    if (legacy_id.startsWith("braids_")) {
+      const String suffix = legacy_id.fromFirstOccurrenceOf("braids_", false, false);
+      if (suffix == "model")
+        return "Choose one of the 48 synthesis modes of Mutable Instruments Braids. Timbre and Color take a new "
+               "meaning with each mode, and their group is named after it.";
+      if (suffix == "timbre") return "Set Timbre, the mode's first parameter. What it changes depends on the synthesis mode.";
+      if (suffix == "color") return "Set Color, the mode's second parameter. What it changes depends on the synthesis mode.";
+      if (suffix == "resolution") return "Reduce the bit depth, as Braids' BITS setting does. 16 bit is the clean signal.";
+      if (suffix == "sample_rate") return "Hold samples to reduce the sample rate, as Braids' RATE setting does. 96 kHz is the clean signal.";
+      if (suffix == "transpose") return "Transpose the Braids oscillator in semitones.";
+      if (suffix == "tune") return "Fine tune the Braids oscillator in cents.";
     }
 
     if (id.startsWith("filter_") || id.startsWith("filter_fx_") || id.contains("_filter_fx_")) {
@@ -7303,6 +7321,34 @@ void SynthEditor::addOscillatorSectionContent(int oscillator, const String& sect
   auto* accessible_parent = dynamic_cast<AccessibleSectionHeader*>(&parent);
   const int slot_type = sourceSlotType(oscillator);
   const auto& type = vital::source_types::describe(slot_type);
+  // Braids: Timbre and Color are named after the selected synthesis mode,
+  // "Plucking position (Color)", and say what they do there.
+  const int braids_model = slot_type == vital::source_types::kBraids ? braidsModel(oscillator) : -1;
+  const String braids_mode_name = braids_model >= 0 ? String(strings::kBraidsModelNames[braids_model]) : String();
+  auto braids_suffix = [&](AudioProcessorParameter& parameter) {
+    auto* bridge = dynamic_cast<ValueBridge*>(&parameter);
+    if (braids_model < 0 || bridge == nullptr)
+      return String();
+    const String id = bridge->getParameterId();
+    const String prefix_id = "osc_" + String(oscillator + 1) + "_braids_";
+    return id.startsWith(prefix_id) ? id.substring(prefix_id.length()) : String();
+  };
+  auto braidsModeRowName = [&](AudioProcessorParameter& parameter) {
+    const String suffix = braids_suffix(parameter);
+    if (suffix == "timbre")
+      return String(strings::kBraidsTimbreNames[braids_model]) + " (Timbre)";
+    if (suffix == "color")
+      return String(strings::kBraidsColorNames[braids_model]) + " (Color)";
+    return String();
+  };
+  auto braidsModeRowDescription = [&](AudioProcessorParameter& parameter) {
+    const String suffix = braids_suffix(parameter);
+    const bool timbre = suffix == "timbre";
+    const String meaning = timbre ? String(strings::kBraidsTimbreNames[braids_model])
+                                  : String(strings::kBraidsColorNames[braids_model]);
+    return String(timbre ? "Timbre" : "Color") + " sets " + meaning.toLowerCase() + " in the " +
+           braids_mode_name + " mode.";
+  };
 
   std::map<OscillatorRowGroup, std::vector<AudioProcessorParameter*>> groups;
   const String prefix = "osc_" + String(oscillator + 1) + "_";
@@ -7327,8 +7373,11 @@ void SynthEditor::addOscillatorSectionContent(int oscillator, const String& sect
                        int& row_y, int row_x, int row_width) {
     auto row = createConfiguredSectionRow(parameter, section_name);
     const String name = row->focusableControl()->getTitle();
-    row->setAccessibleName(row_number + (name.startsWith(row_title_prefix) ? name.substring(row_title_prefix.length())
-                                                                           : name));
+    if (const String braids = braidsModeRowName(parameter); braids.isNotEmpty())
+      row->setAccessibleName(row_number + braids, braidsModeRowDescription(parameter));
+    else
+      row->setAccessibleName(row_number + (name.startsWith(row_title_prefix) ? name.substring(row_title_prefix.length())
+                                                                             : name));
     row->setExplicitFocusOrder(focus_order++);
     row->setControlFocusOrder(focus_order++);
     row->setBounds(row_x, row_y, row_width, 48);
@@ -7446,6 +7495,12 @@ void SynthEditor::addOscillatorSectionContent(int oscillator, const String& sect
   else {
     add_group(OscillatorRowGroup::kType, type_name + " controls", type_name.toLowerCase() + " controls",
               type_name + " settings of " + section_name);
+  }
+  // The selected mode's own parameters, in a group named after the mode. The
+  // key stays the same across modes so the group keeps its place.
+  if (braids_model >= 0) {
+    add_group(OscillatorRowGroup::kTypeMode, braids_mode_name + " parameters", "braids mode parameters",
+              "Timbre and Color of the " + braids_mode_name + " mode in " + section_name);
   }
 
   // 3. Pitch and unison, with Scale lock inside.
@@ -7656,9 +7711,27 @@ int SynthEditor::oscillatorModeKey(int oscillator) const {
   // A Multi-sample slot's rows follow what is loaded (SF2 presets, SFZ buttons).
   if (type == vital::source_types::kMultiSample)
     return type * 64 + multiSampleUiState(oscillator);
+  if (type == vital::source_types::kBraids)
+    return type * 64 + braidsModel(oscillator);
   if (!isAnalogOscillator(oscillator))
     return type * 64 - 1;
   return type * 64 + roundToInt(engineValueFor(parameterBridge("osc_" + String(oscillator + 1) + "_analog_waveform")));
+}
+
+int SynthEditor::braidsModel(int oscillator) const {
+  if (!isPositiveAndBelow(oscillator, vital::kNumOscillators))
+    return 0;
+  const std::string id = vital::source_types::slotPrefix(oscillator) + "braids_model";
+  float value = 0.0f;
+  if (auto* bridge = parameterBridge(id))
+    value = engineValueFor(bridge);
+  else {
+    const auto& controls = synth_.getControls();
+    const auto found = controls.find(id);
+    if (found != controls.end() && found->second != nullptr)
+      value = found->second->value();
+  }
+  return jlimit(0, vital::braids_engine::kNumModels - 1, roundToInt(value));
 }
 
 int SynthEditor::sourceSlotType(int oscillator) const {

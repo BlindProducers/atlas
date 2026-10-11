@@ -39,13 +39,15 @@ namespace vital {
       kSpectral,
       kNoise,
       kMultiSample,
+      kBraids,
       kNumTypes
     };
 
     struct Description {
       const char* id;
       // Parameter group inside the slot: "" shares the slot's wavetable
-      // parameters (osc_N_wave_frame ...), "sample" owns osc_N_sample_*.
+      // parameters (osc_N_wave_frame ...), "sample" owns osc_N_sample_*,
+      // "braids" owns osc_N_braids_*.
       const char* group;
       bool uses_wavetable;
       bool uses_sample;
@@ -65,6 +67,7 @@ namespace vital {
       { "spectral", "spectral", false, true, true, false, false, true },
       { "noise", "noise", false, false, false, false, false, true },
       { "multisample", "multisample", false, false, true, false, false, false },
+      { "braids", "braids", false, false, true, false, true, true },
     };
 
     inline constexpr const Description& describe(int type) {
