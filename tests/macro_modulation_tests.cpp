@@ -648,6 +648,7 @@ int main(int argc, char** argv) {
     testPresetAutoloadAndRefresh();
     testConvolutionPredelayRows();
     testFractionalModulationAmountOnTranspose();
+    testModulationPromptsKeepFocus();
     testFxBusControlsAndFocus();
     testEffectSlotContextMenu();
     testModulationSlotTitlesDescribeOneRoute();

@@ -1150,6 +1150,79 @@ namespace {
            ("the confirmation names the swing: " + summary).toStdString());
   }
 
+  // Typing a value, adding modulation and removing it all close or rebuild
+  // around the focused control; focus must come back to it, not the top of the window.
+  void testModulationPromptsKeepFocus() {
+    SynthPlugin synth;
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    editor.toFront(true);
+    pumpEditorEvents();
+
+    const String id = "filter_1_cutoff";
+    auto focusRow = [&]() -> Component* {
+      auto* control = editor.controlForParameter(id);
+      if (control != nullptr) {
+        editor.ensureComponentVisible(control);
+        control->grabKeyboardFocus();
+      }
+      return control;
+    };
+    auto focusedName = [] {
+      auto* focused = Component::getCurrentlyFocusedComponent();
+      return focused != nullptr ? focused->getTitle().toStdString() : std::string("nothing");
+    };
+    auto typeValue = [&](Component& control, const String& text, std::function<void()> whileOpen = {}) {
+      control.keyPressed(KeyPress(KeyPress::returnKey));
+      auto* field = dynamic_cast<TextEditor*>(Component::getCurrentlyFocusedComponent());
+      expect(field != nullptr, "Return on a slider opens the value field, focused " + focusedName());
+      if (field == nullptr)
+        return;
+      if (whileOpen)
+        whileOpen();
+      field->setText(text, dontSendNotification);
+      field->keyPressed(KeyPress(KeyPress::returnKey));
+      pumpEditorEvents();
+    };
+
+    auto* cutoff = focusRow();
+    expect(cutoff != nullptr, "Filter 1 Cutoff has a row");
+    if (cutoff == nullptr) {
+      editor.removeFromDesktop();
+      return;
+    }
+    typeValue(*cutoff, "1000 Hz");
+    expect(editor.focusedRowParameterId() == id, "a typed value returns focus to its control, focused " + focusedName());
+
+    // The rows are rebuilt while the field is open: focus finds the new row.
+    if ((cutoff = focusRow()) != nullptr)
+      typeValue(*cutoff, "2000 Hz", [&] { editor.updateFullGui(); });
+    expect(editor.focusedRowParameterId() == id,
+           "a value typed while the rows were rebuilt returns focus to the new control, focused " + focusedName());
+
+    // A new route adds a slot, which rebuilds the rows.
+    if ((cutoff = focusRow()) != nullptr)
+      editor.assignModulation("lfo_1", id, "50%", cutoff);
+    pumpEditorEvents();
+    expect(synth.getConnectionIndex("lfo_1", id.toStdString()) >= 0, "LFO 1 modulates Filter 1 Cutoff");
+    expect(editor.focusedRowParameterId() == id, "adding modulation returns focus to its control, focused " + focusedName());
+
+    // A typed value after adding modulation, as the next edit would be.
+    if ((cutoff = focusRow()) != nullptr)
+      typeValue(*cutoff, "500 Hz");
+    expect(editor.focusedRowParameterId() == id,
+           "a value typed after adding modulation returns focus to its control, focused " + focusedName());
+
+    if ((cutoff = focusRow()) != nullptr)
+      editor.removeModulation("lfo_1", id, *cutoff);
+    pumpEditorEvents();
+    expect(synth.getConnectionIndex("lfo_1", id.toStdString()) < 0, "the route is removed");
+    expect(editor.focusedRowParameterId() == id, "removing modulation returns focus to its control, focused " + focusedName());
+    editor.removeFromDesktop();
+  }
+
   void testOscillatorRowGroups() {
     SynthPlugin synth;
     SynthEditor editor(synth);

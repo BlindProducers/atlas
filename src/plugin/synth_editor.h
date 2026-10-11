@@ -243,12 +243,21 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     // Runs one poll of the 20 Hz state timer now (tests interleave it with actions).
     void pollStateNow() { timerCallback(); }
     // What a row's Assign modulation does, with `amountText` typed into the amount prompt.
-    String assignModulation(const String& sourceId, const String& destinationId, const String& amountText) {
-      connectModulationAndPromptForAmount(sourceId, destinationId, *this);
+    // `target` is the control the menu was opened on; focus returns to it.
+    String assignModulation(const String& sourceId, const String& destinationId, const String& amountText,
+                            Component* target = nullptr) {
+      connectModulationAndPromptForAmount(sourceId, destinationId, target != nullptr ? *target : *this);
       modulation_amount_editor_.setText(amountText, dontSendNotification);
       const float amount = modulationAmountFromPeakText(destinationId, amountText);
       applyInlineTextPrompt();
       return modulationAmountSummary(sourceId, destinationId, amount);
+    }
+    // The focusable control of the row showing `parameterId`, and the focused row's parameter.
+    Component* controlForParameter(const String& parameterId) const;
+    String focusedRowParameterId() const { return focusedParameterId(); }
+    // What a row's Remove modulation does when chosen from the menu opened on `target`.
+    void removeModulation(const String& sourceId, const String& destinationId, Component& target) {
+      removeModulationFromParameter(sourceId, destinationId, target);
     }
     // Preset library: refresh it (as the Preset menu does) and ask whether a scan is running.
     void refreshPresetLibrary() { refreshPresetList(false); }
@@ -296,8 +305,13 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     String focusedParameterId() const;
     String focusedAccessibleTitle() const;
     Component* persistentFocusedComponent() const;
-    void restoreFocusAfterRebuild(const String& parameterId, Component* persistentComponent,
-                                  const String& accessibleTitle = {}, const String& preferredSection = {});
+    // Focuses the control a rebuild replaced; false when there is none to focus.
+    // refocusScreenReader moves the screen reader to it again once the rows
+    // settle; callers that announce the change leave it off so the move does
+    // not cut the announcement short.
+    bool restoreFocusAfterRebuild(const String& parameterId, Component* persistentComponent,
+                                  const String& accessibleTitle = {}, const String& preferredSection = {},
+                                  bool refocusScreenReader = false);
     Component* findRebuildFocusTarget(const String& parameterId, Component* persistentComponent,
                                       const String& accessibleTitle, const String& preferredSection) const;
     // The active effect slot that holds the focused control, or -1.
@@ -532,6 +546,13 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void applyParameterValue();
     void cancelInlineTextPrompt();
     void cancelInitialModulationAmount();
+    // Where the inline text prompt sends focus back when it closes.
+    void rememberPromptFocus(Component& target);
+    // Focuses that control again, after rebuilding the sections if `rebuild`.
+    // Call before hiding the prompt: hiding the focused text field first hands
+    // focus to the top of the window. Falls back to fallbackParameterId's row.
+    void returnFocusFromPrompt(bool rebuild, const String& fallbackParameterId);
+    void hideInlineTextPrompt();
     ValueBridge* parameterBridge(const String& id) const;
     void setParameterEngineValue(const String& id, float engineValue);
     void randomizeAmplitudeSeed(const String& id);
@@ -898,7 +919,12 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     String pending_modulation_source_;
     String pending_modulation_destination_;
     String pending_parameter_value_id_;
+    // The control the inline text prompt returns to, and how to find it again
+    // if a rebuild replaces it while the prompt is open.
     Component::SafePointer<Component> pending_parameter_value_focus_;
+    String pending_prompt_focus_parameter_;
+    String pending_prompt_focus_title_;
+    String pending_prompt_focus_section_;
     String pending_custom_value_title_;
     std::function<void(const String&)> pending_custom_value_apply_;
     bool pending_modulation_created_ = false;
@@ -961,6 +987,8 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     bool effect_chain_rebuild_queued_ = false;
     // Bumped by each rebuild so only the last one re-focuses the screen reader.
     int screen_reader_refocus_generation_ = 0;
+    // Set when a queued rebuild should re-focus the screen reader once it runs.
+    bool screen_reader_refocus_requested_ = false;
     String queued_effect_chain_rebuild_section_;
     String queued_effect_chain_rebuild_title_;
     String queued_effect_chain_rebuild_parameter_;

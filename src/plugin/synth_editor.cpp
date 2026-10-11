@@ -7192,6 +7192,13 @@ bool SynthEditor::shouldShowParameterInSection(const String& sectionName, AudioP
   return true;
 }
 
+Component* SynthEditor::controlForParameter(const String& parameterId) const {
+  for (const auto& row : rows_)
+    if (row != nullptr && row->parameterId() == parameterId)
+      return row->focusableControl();
+  return nullptr;
+}
+
 String SynthEditor::focusedParameterId() const {
   for (const auto& row : rows_) {
     if (row != nullptr && row->focusableControl()->hasKeyboardFocus(true))
@@ -7432,11 +7439,14 @@ void SynthEditor::addOscillatorSectionContent(int oscillator, const String& sect
             "Distortion, FM, ring modulation and frequency morph modes of " + section_name);
 }
 
-void SynthEditor::restoreFocusAfterRebuild(const String& parameterId, Component* persistentComponent,
-                                           const String& accessibleTitle, const String& preferredSection) {
+bool SynthEditor::restoreFocusAfterRebuild(const String& parameterId, Component* persistentComponent,
+                                           const String& accessibleTitle, const String& preferredSection,
+                                           bool refocusScreenReader) {
+  // A queued rebuild (an effect slot variant) asks for this before it runs.
+  refocusScreenReader = std::exchange(screen_reader_refocus_requested_, false) || refocusScreenReader;
   Component* initial = findRebuildFocusTarget(parameterId, persistentComponent, accessibleTitle, preferredSection);
   if (initial == nullptr)
-    return;
+    return false;
 
   // Focus the new control now, so keys pressed while a choice is stepped
   // (an arrow held on a Type menu) keep reaching it rather than the window.
@@ -7466,6 +7476,8 @@ void SynthEditor::restoreFocusAfterRebuild(const String& parameterId, Component*
   // settled, move the reader's focus to the control again.
   // Only the last of several quick rebuilds (a held arrow) does this.
   const int generation = ++screen_reader_refocus_generation_;
+  if (!refocusScreenReader)
+    return true;
   Timer::callAfterDelay(kScreenReaderRefocusDelayMs, [safe_this, generation] {
     if (safe_this == nullptr || safe_this->screen_reader_refocus_generation_ != generation)
       return;
@@ -7477,6 +7489,7 @@ void SynthEditor::restoreFocusAfterRebuild(const String& parameterId, Component*
       handler->grabFocus();
     }
   });
+  return true;
 }
 
 Component* SynthEditor::findRebuildFocusTarget(const String& parameterId, Component* persistentComponent,
@@ -7571,7 +7584,7 @@ bool SynthEditor::refreshFilterRowsIfNeeded() {
   else
     selectSectionByName(last_section_name, false);
 
-  restoreFocusAfterRebuild(parameter_id, persistent_focus, accessible_title);
+  restoreFocusAfterRebuild(parameter_id, persistent_focus, accessible_title, {}, true);
 
   return true;
 }
@@ -7594,7 +7607,7 @@ bool SynthEditor::refreshRandomAmplitudeRowsIfNeeded() {
     showAllSections(false);
   else
     selectSectionByName(last_section_name, false);
-  restoreFocusAfterRebuild(parameter_id, persistent_focus, accessible_title);
+  restoreFocusAfterRebuild(parameter_id, persistent_focus, accessible_title, {}, true);
   return true;
 }
 
@@ -7642,7 +7655,7 @@ bool SynthEditor::refreshOscillatorModeRowsIfNeeded() {
     showAllSections(false);
   else
     selectSectionByName(last_section_name, false);
-  restoreFocusAfterRebuild(parameter_id, persistent_focus, accessible_title);
+  restoreFocusAfterRebuild(parameter_id, persistent_focus, accessible_title, {}, true);
   return true;
 }
 
@@ -7669,7 +7682,7 @@ bool SynthEditor::refreshZoneCrossfadeRowIfNeeded() {
   else
     selectSectionByName(last_section_name, false);
 
-  restoreFocusAfterRebuild(parameter_id, persistent_focus, accessible_title);
+  restoreFocusAfterRebuild(parameter_id, persistent_focus, accessible_title, {}, true);
 
   return true;
 }
@@ -9020,17 +9033,21 @@ void SynthEditor::removeModulationFromParameter(const String& sourceId, const St
   const String restore_title = target.getTitle();
   const String restore_section = restore_parameter.isNotEmpty() ? sectionForParameter(restore_parameter) : String();
   // Refreshing the routes can rebuild the modulation rows, deleting target.
+  // A control outside the rows outlives the rebuild, though its title may
+  // change now that the route is gone, so keep a pointer to it as well.
   Component::SafePointer<Component> safe_target(&target);
+  Component::SafePointer<Component> persistent(rows_container_.isParentOf(&target) ? nullptr : &target);
   synth_.disconnectModulation(sourceId.toStdString(), destinationId.toStdString());
   refreshModulationRoutes();
-  if (show_all_sections_) {
+  if (show_all_sections_)
     showAllSections(false);
-    restoreFocusAfterRebuild(restore_parameter, nullptr, restore_title, restore_section);
-  }
   else if (safe_target != nullptr)
     safe_target->grabKeyboardFocus();
-  else
-    restoreFocusAfterRebuild(restore_parameter, nullptr, restore_title, restore_section);
+  if (show_all_sections_ || safe_target == nullptr) {
+    if (!restoreFocusAfterRebuild(restore_parameter, persistent.getComponent(), restore_title, restore_section) &&
+        destinationId != restore_parameter)
+      restoreFocusAfterRebuild(destinationId, nullptr, {}, sectionForParameter(destinationId));
+  }
   postPluginAnnouncement("Removed modulation from " + source_label + " to " + destination_label,
                                          AccessibilityHandler::AnnouncementPriority::high);
 }
@@ -9064,7 +9081,17 @@ void SynthEditor::clearModulationSlot(int slot) {
     if (safe_this == nullptr)
       return;
     safe_this->showAllSections(false);
-    safe_this->restoreFocusAfterRebuild({}, nullptr, safe_this->modulationSlotTitle(slot));
+    // Find the heading by its slot: its title is the whole route summary, and
+    // the timer may have refreshed it since this was queued.
+    Component* heading = nullptr;
+    for (auto& header : safe_this->section_headers_) {
+      if (header != nullptr && header->getProperties().contains("ModulationSlot") &&
+          static_cast<int>(header->getProperties()["ModulationSlot"]) == slot) {
+        heading = header.get();
+        break;
+      }
+    }
+    safe_this->restoreFocusAfterRebuild({}, heading, safe_this->modulationSlotTitle(slot));
     postPluginAnnouncement(announcement, AccessibilityHandler::AnnouncementPriority::high);
   });
 }
@@ -14225,7 +14252,7 @@ void SynthEditor::promptForInitialModulationAmount(const String& sourceId, const
   pending_parameter_value_id_.clear();
   pending_custom_value_title_.clear();
   pending_custom_value_apply_ = nullptr;
-  pending_parameter_value_focus_ = &target;
+  rememberPromptFocus(target);
   pending_modulation_source_ = sourceId;
   pending_modulation_destination_ = destinationId;
   pending_modulation_created_ = created;
@@ -14289,7 +14316,7 @@ void SynthEditor::promptForParameterValue(const String& parameterId, Component& 
   pending_parameter_value_id_ = parameterId;
   pending_custom_value_title_.clear();
   pending_custom_value_apply_ = nullptr;
-  pending_parameter_value_focus_ = &target;
+  rememberPromptFocus(target);
 
   const String name = bridge->getName(128);
   String value = accessibleParameterText(*bridge, bridge->getValue());
@@ -14358,7 +14385,7 @@ void SynthEditor::promptForCustomValue(const String& title, const String& value,
   pending_parameter_value_id_.clear();
   pending_custom_value_title_ = title;
   pending_custom_value_apply_ = std::move(apply);
-  pending_parameter_value_focus_ = &target;
+  rememberPromptFocus(target);
 
   modulation_amount_prompt_.setText("Set " + title + ". Current value " + value, dontSendNotification);
   modulation_amount_prompt_.setTitle("Set " + title);
@@ -14395,6 +14422,60 @@ void SynthEditor::promptForCustomValue(const String& title, const String& value,
                            AccessibilityHandler::AnnouncementPriority::high);
 }
 
+void SynthEditor::rememberPromptFocus(Component& target) {
+  pending_parameter_value_focus_ = &target;
+  pending_prompt_focus_title_ = target.getTitle();
+  pending_prompt_focus_parameter_.clear();
+  pending_prompt_focus_section_.clear();
+  for (const auto& row : rows_) {
+    if (row != nullptr && row->focusableControl() == &target) {
+      pending_prompt_focus_parameter_ = row->parameterId();
+      pending_prompt_focus_section_ = sectionForParameter(pending_prompt_focus_parameter_);
+      break;
+    }
+  }
+}
+
+void SynthEditor::returnFocusFromPrompt(bool rebuild, const String& fallbackParameterId) {
+  Component::SafePointer<Component> target = pending_parameter_value_focus_;
+  const String parameter_id = pending_prompt_focus_parameter_;
+  const String title = pending_prompt_focus_title_;
+  const String section = pending_prompt_focus_section_;
+  pending_parameter_value_focus_ = nullptr;
+  pending_prompt_focus_parameter_.clear();
+  pending_prompt_focus_title_.clear();
+  pending_prompt_focus_section_.clear();
+
+  // Controls outside the rows (the wavetable and LFO controls) outlive a
+  // rebuild, and their titles can change with the modulation just added.
+  Component::SafePointer<Component> persistent;
+  if (target != nullptr && !rows_container_.isParentOf(target.getComponent()))
+    persistent = target.getComponent();
+
+  if (rebuild)
+    showAllSections(false);
+  else if (target != nullptr && target->isShowing()) {
+    target->grabKeyboardFocus();
+    return;
+  }
+
+  // A rebuild, or one while the prompt was open, replaced the control: find
+  // the new one, or else the row the prompt changed.
+  if (restoreFocusAfterRebuild(parameter_id, persistent.getComponent(), title, section))
+    return;
+  if (fallbackParameterId.isNotEmpty() && fallbackParameterId != parameter_id)
+    restoreFocusAfterRebuild(fallbackParameterId, nullptr, {}, sectionForParameter(fallbackParameterId));
+}
+
+void SynthEditor::hideInlineTextPrompt() {
+  modulation_amount_prompt_.setVisible(false);
+  modulation_amount_editor_.setVisible(false);
+  modulation_amount_ok_.setVisible(false);
+  modulation_amount_cancel_.setVisible(false);
+  rebuildFocusOrder();
+  resized();
+}
+
 void SynthEditor::applyInlineTextPrompt() {
   if (parameter_value_prompt_visible_)
     applyParameterValue();
@@ -14406,19 +14487,6 @@ void SynthEditor::applyInitialModulationAmount() {
   const String source_id = pending_modulation_source_;
   const String destination_id = pending_modulation_destination_;
   const bool rebuild_modulation_slots = pending_modulation_created_ && show_all_sections_;
-  String restore_parameter;
-  String restore_title;
-  String restore_section;
-  if (pending_parameter_value_focus_ != nullptr) {
-    restore_title = pending_parameter_value_focus_->getTitle();
-    for (const auto& row : rows_) {
-      if (row != nullptr && row->focusableControl() == pending_parameter_value_focus_.getComponent()) {
-        restore_parameter = row->parameterId();
-        restore_section = sectionForParameter(restore_parameter);
-        break;
-      }
-    }
-  }
   const float amount = modulationAmountFromPeakText(destination_id, modulation_amount_editor_.getText());
   const int connection = synth_.getConnectionIndex(source_id.toStdString(), destination_id.toStdString());
   if (connection >= 0) {
@@ -14428,24 +14496,11 @@ void SynthEditor::applyInitialModulationAmount() {
   }
 
   modulation_amount_prompt_visible_ = false;
-  modulation_amount_prompt_.setVisible(false);
-  modulation_amount_editor_.setVisible(false);
-  modulation_amount_ok_.setVisible(false);
-  modulation_amount_cancel_.setVisible(false);
   pending_modulation_source_.clear();
   pending_modulation_destination_.clear();
   pending_modulation_created_ = false;
-  rebuildFocusOrder();
-  resized();
-
-  if (rebuild_modulation_slots) {
-    pending_parameter_value_focus_ = nullptr;
-    showAllSections(false);
-    restoreFocusAfterRebuild(restore_parameter, nullptr, restore_title, restore_section);
-  }
-  else if (pending_parameter_value_focus_ != nullptr)
-    pending_parameter_value_focus_->grabKeyboardFocus();
-  pending_parameter_value_focus_ = nullptr;
+  returnFocusFromPrompt(rebuild_modulation_slots, destination_id);
+  hideInlineTextPrompt();
 
   postPluginAnnouncement(modulationSourceLabelForId(source_id) + " assigned to " +
                              modulationDestinationLabelForId(destination_id) + ", " +
@@ -14521,17 +14576,9 @@ void SynthEditor::applyParameterValue() {
     apply(modulation_amount_editor_.getText());
 
     parameter_value_prompt_visible_ = false;
-    modulation_amount_prompt_.setVisible(false);
-    modulation_amount_editor_.setVisible(false);
-    modulation_amount_ok_.setVisible(false);
-    modulation_amount_cancel_.setVisible(false);
     pending_custom_value_title_.clear();
-    rebuildFocusOrder();
-    resized();
-
-    if (pending_parameter_value_focus_ != nullptr)
-      pending_parameter_value_focus_->grabKeyboardFocus();
-    pending_parameter_value_focus_ = nullptr;
+    returnFocusFromPrompt(false, {});
+    hideInlineTextPrompt();
 
     postPluginAnnouncement(custom_title + " " + modulation_amount_editor_.getText(),
                                            AccessibilityHandler::AnnouncementPriority::high);
@@ -14588,19 +14635,11 @@ void SynthEditor::applyParameterValue() {
   }
 
   parameter_value_prompt_visible_ = false;
-  modulation_amount_prompt_.setVisible(false);
-  modulation_amount_editor_.setVisible(false);
-  modulation_amount_ok_.setVisible(false);
-  modulation_amount_cancel_.setVisible(false);
   pending_parameter_value_id_.clear();
   pending_custom_value_title_.clear();
   pending_custom_value_apply_ = nullptr;
-  rebuildFocusOrder();
-  resized();
-
-  if (pending_parameter_value_focus_ != nullptr)
-    pending_parameter_value_focus_->grabKeyboardFocus();
-  pending_parameter_value_focus_ = nullptr;
+  returnFocusFromPrompt(false, parameter_id);
+  hideInlineTextPrompt();
 
   if (bridge != nullptr) {
     const int macro_index = macroIndexForControlId(parameter_id);
@@ -14741,18 +14780,12 @@ bool SynthEditor::handleMacroShortcut(const String& parameterId, const KeyPress&
 void SynthEditor::cancelInlineTextPrompt() {
   if (parameter_value_prompt_visible_) {
     parameter_value_prompt_visible_ = false;
-    modulation_amount_prompt_.setVisible(false);
-    modulation_amount_editor_.setVisible(false);
-    modulation_amount_ok_.setVisible(false);
-    modulation_amount_cancel_.setVisible(false);
+    const String parameter_id = pending_parameter_value_id_;
     pending_parameter_value_id_.clear();
     pending_custom_value_title_.clear();
     pending_custom_value_apply_ = nullptr;
-    rebuildFocusOrder();
-    resized();
-    if (pending_parameter_value_focus_ != nullptr)
-      pending_parameter_value_focus_->grabKeyboardFocus();
-    pending_parameter_value_focus_ = nullptr;
+    returnFocusFromPrompt(false, parameter_id);
+    hideInlineTextPrompt();
     postPluginAnnouncement("Value entry cancelled",
                                            AccessibilityHandler::AnnouncementPriority::medium);
     return;
@@ -14767,38 +14800,12 @@ void SynthEditor::cancelInitialModulationAmount() {
   const String destination_id = pending_modulation_destination_;
   const bool created = pending_modulation_created_;
   const bool rebuild_modulation_slots = created && show_all_sections_;
-  String restore_parameter;
-  String restore_title;
-  String restore_section;
-  if (pending_parameter_value_focus_ != nullptr) {
-    restore_title = pending_parameter_value_focus_->getTitle();
-    for (const auto& row : rows_) {
-      if (row != nullptr && row->focusableControl() == pending_parameter_value_focus_.getComponent()) {
-        restore_parameter = row->parameterId();
-        restore_section = sectionForParameter(restore_parameter);
-        break;
-      }
-    }
-  }
   modulation_amount_prompt_visible_ = false;
-  modulation_amount_prompt_.setVisible(false);
-  modulation_amount_editor_.setVisible(false);
-  modulation_amount_ok_.setVisible(false);
-  modulation_amount_cancel_.setVisible(false);
   pending_modulation_source_.clear();
   pending_modulation_destination_.clear();
   pending_modulation_created_ = false;
-  rebuildFocusOrder();
-  resized();
-
-  if (rebuild_modulation_slots) {
-    pending_parameter_value_focus_ = nullptr;
-    showAllSections(false);
-    restoreFocusAfterRebuild(restore_parameter, nullptr, restore_title, restore_section);
-  }
-  else if (pending_parameter_value_focus_ != nullptr)
-    pending_parameter_value_focus_->grabKeyboardFocus();
-  pending_parameter_value_focus_ = nullptr;
+  returnFocusFromPrompt(rebuild_modulation_slots, destination_id);
+  hideInlineTextPrompt();
 
   postPluginAnnouncement(modulationSourceLabelForId(source_id) + " assigned to " +
                                          modulationDestinationLabelForId(destination_id) +
@@ -18926,6 +18933,7 @@ void SynthEditor::timerCallback() {
       const int current = effectSlotRowVariant(mode.first, found != synth_.getControls().end() ? found->second->value() : 0.0f);
       if (current != mode.second) {
         mode.second = current;
+        screen_reader_refocus_requested_ = true;
         scheduleEffectChainRebuild(last_section_name, focusedAccessibleTitle(), focusedParameterId());
         return;
       }
