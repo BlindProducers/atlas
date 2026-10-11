@@ -381,6 +381,8 @@ namespace vital {
       force_inline Output* note_in_octave() { return &note_in_octave_; }
       force_inline Output* channel() { return &channel_; }
       force_inline Output* velocity() { return &velocity_; }
+      // The MIDI key that started the voice, before tuning.
+      force_inline Output* midi_key() { return &midi_key_; }
       force_inline Output* lift() { return &lift_; }
       force_inline Output* aftertouch() { return &aftertouch_; }
       force_inline Output* slide() { return &slide_; }
@@ -483,6 +485,7 @@ namespace vital {
       cr::Output note_in_octave_;
       cr::Output channel_;
       cr::Output velocity_;
+      cr::Output midi_key_;
       cr::Output lift_;
       cr::Output aftertouch_;
       cr::Output slide_;

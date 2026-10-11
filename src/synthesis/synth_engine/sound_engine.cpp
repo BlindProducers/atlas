@@ -25,6 +25,9 @@
 #include "modulation_connection_processor.h"
 #include "synth_constants.h"
 #include "synth_voice_handler.h"
+#include "multisample_midi_state.h"
+#include "multisample_slot.h"
+#include "source_slot_module.h"
 #include "peak_meter.h"
 #include "operators.h"
 #include "latency_compensated_sum.h"
@@ -101,6 +104,7 @@ namespace vital {
   SoundEngine::SoundEngine() : SynthModule(0, 1),
                                convolution_worker_(std::make_shared<ConvolutionIrWorker>()),
                                preparation_worker_(std::make_shared<EffectPreparationWorker>()),
+                               multisample_midi_state_(std::make_unique<MultiSampleMidiState>()),
                                voice_handler_(nullptr), effect_chain_(nullptr),
                                main_chain_input_(nullptr), output_total_(nullptr),
                                last_oversampling_amount_(-1), last_sample_rate_(-1),
@@ -257,6 +261,8 @@ namespace vital {
     SynthModule::init();
     // Controls hold their defaults now; build each oscillator slot's default type.
     voice_handler_->prepareSelectedSources();
+    for (int i = 0; i < kNumOscillators; ++i)
+      getMultiSample(i)->setMidiState(multisample_midi_state_.get());
     // Resonator's MIDI pitch follows the voices' bend range, transpose and tune.
     static_assert(NoteMonitor::kLocalBendRange == VoiceHandler::kLocalPitchBendRange);
     const control_map voice_controls = voice_handler_->getControls();
@@ -440,6 +446,7 @@ namespace vital {
     trance_gate_clock_.prepare(num_samples, getSampleRate(), bps_->value());
     voice_handler_->setLegato(legato_->value());
     ProcessorRouter::process(num_samples);
+    multisample_midi_state_->endBlock();
 
     if (getNumActiveVoices() == 0) {
       CircularQueue<ModulationConnectionProcessor*>& connections = voice_handler_->enabledModulationConnection();
@@ -485,6 +492,8 @@ namespace vital {
     trance_gate_clock_.reset();
     note_monitor_.reset();
     voice_handler_->allSoundsOff();
+    for (int i = 0; i < kNumOscillators; ++i)
+      voice_handler_->getSourceSlot(i)->getMultiSample()->resetVoicesState();
     for (int i = 0; i < kNumBuses; ++i)
       bus_effect_chains_[i]->hardReset();
     effect_chain_->hardReset();
@@ -672,6 +681,18 @@ namespace vital {
 
   SourceSlotModule* SoundEngine::getSourceSlot(int index) {
     return voice_handler_->getSourceSlot(index);
+  }
+
+  MultiSampleSlot* SoundEngine::getMultiSample(int index) {
+    return voice_handler_->getSourceSlot(index)->getMultiSample();
+  }
+
+  void SoundEngine::controlChange(int controller, int value, int sample) {
+    // All Controllers Off returns every CC to the instrument defaults.
+    if (controller == 121)
+      multisample_midi_state_->resetControllers();
+    else
+      multisample_midi_state_->controlChange(controller, static_cast<float>(value), sample);
   }
 
   bool SoundEngine::prepareSelectedSources() {

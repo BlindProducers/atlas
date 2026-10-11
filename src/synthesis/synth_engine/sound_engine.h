@@ -34,6 +34,8 @@ namespace vital {
   class EffectPreparationWorker;
   class Decimator;
   class PeakMeter;
+  class MultiSampleSlot;
+  struct MultiSampleMidiState;
   class Sample;
   class SourceSlotModule;
   class BusRouter;
@@ -83,6 +85,8 @@ namespace vital {
       void noteOn(int note, mono_float velocity, int sample, int channel) override;
       void noteOff(int note, mono_float lift, int sample, int channel) override;
       void setModWheel(mono_float value, int channel);
+      // Any MIDI controller (all channels): the Multi-sample CC state.
+      void controlChange(int controller, int value, int sample);
       void setModWheelAllChannels(mono_float value);
       void setPitchWheel(mono_float value, int channel);
       void setZonedPitchWheel(mono_float value, int from_channel, int to_channel);
@@ -107,6 +111,7 @@ namespace vital {
       Wavetable* getWavetable(int index);
       Sample* getSample(int index);
       SourceSlotModule* getSourceSlot(int index);
+      MultiSampleSlot* getMultiSample(int index);
       // Message thread with processing paused: build every oscillator slot's active type module.
       bool prepareSelectedSources();
       LineGenerator* getLfoSource(int index);
@@ -132,6 +137,7 @@ namespace vital {
       void setOversamplingAmount(int oversampling_amount, int sample_rate);
 
       std::shared_ptr<ConvolutionIrWorker> convolution_worker_;
+      std::unique_ptr<MultiSampleMidiState> multisample_midi_state_;
       std::shared_ptr<EffectPreparationWorker> preparation_worker_;
       SynthVoiceHandler* voice_handler_;
       ReorderableEffectChain* effect_chain_;

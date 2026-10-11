@@ -17,6 +17,8 @@
 #include "source_slot_module.h"
 
 #include "granular_module.h"
+#include "multisample_module.h"
+#include "multisample_slot.h"
 #include "noise_module.h"
 #include "oscillator_module.h"
 #include "sample_module.h"
@@ -39,7 +41,7 @@ namespace vital {
   SourceSlotModule::SourceSlotModule(int slot, const Output* beats_per_second) :
       SynthModule(kNumInputs, kNumOutputs), slot_(slot), prefix_(source_types::slotPrefix(slot)),
       beats_per_second_(beats_per_second), wavetable_(std::make_shared<Wavetable>(kNumOscillatorWaveFrames)),
-      sample_(std::make_shared<Sample>()), playhead_(std::make_shared<PlayheadOutput>()),
+      sample_(std::make_shared<Sample>()), multisample_(std::make_shared<MultiSampleSlot>()), playhead_(std::make_shared<PlayheadOutput>()),
       was_on_(std::make_shared<bool>(true)), state_(std::make_shared<ActiveState>()),
       type_controls_(std::make_shared<std::array<TypeControls, source_types::kNumTypes>>()) {
     playhead_->output()->buffer[0] = 0.0f;
@@ -72,8 +74,12 @@ namespace vital {
 
   SynthModule* SourceSlotModule::createTypeModuleFor(int slot, int type, std::shared_ptr<Wavetable> wavetable,
                                                      std::shared_ptr<Sample> sample,
-                                                     const Output* beats_per_second) {
+                                                     const Output* beats_per_second,
+                                                     std::shared_ptr<MultiSampleSlot> multisample) {
     switch (type) {
+      case source_types::kMultiSample:
+        return new MultiSampleModule(source_types::groupPrefix(slot, type), std::move(multisample),
+                                     source_types::slotPrefix(slot));
       case source_types::kSample:
         return new SampleModule(source_types::groupPrefix(slot, type), std::move(sample),
                                 source_types::slotPrefix(slot));
@@ -93,7 +99,7 @@ namespace vital {
   }
 
   SynthModule* SourceSlotModule::createTypeModule(int type) const {
-    return createTypeModuleFor(slot_, type, wavetable_, sample_, beats_per_second_);
+    return createTypeModuleFor(slot_, type, wavetable_, sample_, beats_per_second_, multisample_);
   }
 
   void SourceSlotModule::init() {
@@ -107,6 +113,7 @@ namespace vital {
     };
     distortion_type_ = find_control("distortion_type");
     secondary_distortion_type_ = find_control("secondary_distortion_type");
+    multisample_amp_env_ = find_control("multisample_amp_env");
     SynthModule::init();
   }
 
@@ -203,6 +210,21 @@ namespace vital {
         state_->modulation_target = spectral;
         break;
       }
+      case source_types::kMultiSample: {
+        auto* multisample = static_cast<MultiSampleModule*>(module);
+        multisample->useInput(input(kReset), MultiSampleModule::kReset);
+        multisample->useInput(input(kRetrigger), MultiSampleModule::kRetrigger);
+        multisample->useInput(input(kVoiceEvent), MultiSampleModule::kVoiceEvent);
+        multisample->useInput(input(kMidi), MultiSampleModule::kMidi);
+        multisample->useInput(input(kNote), MultiSampleModule::kNote);
+        multisample->useInput(input(kMidiKey), MultiSampleModule::kMidiKey);
+        multisample->useInput(input(kVelocity), MultiSampleModule::kVelocity);
+        multisample->useOutput(output(kRaw), MultiSampleModule::kRaw);
+        multisample->useOutput(output(kLevelled), MultiSampleModule::kLevelled);
+        multisample->useOutput(output(kHold), MultiSampleModule::kHold);
+        state_->modulation_target = multisample;
+        break;
+      }
       case source_types::kNoise: {
         auto* noise = static_cast<NoiseModule*>(module);
         noise->useInput(input(kReset), NoiseModule::kReset);
@@ -268,6 +290,7 @@ namespace vital {
     clone_was_on_ = false;
     output(kRaw)->clearBuffer();
     output(kLevelled)->clearBuffer();
+    output(kHold)->clearBuffer();
     playhead_->output()->buffer[0] = 0.0f;
     return true;
   }
@@ -288,6 +311,11 @@ namespace vital {
     removeSubmodule(module);
     removeProcessor(module);
     delete module;
+  }
+
+  bool SourceSlotModule::holdsVoiceOpen() const {
+    return state_->module != nullptr && state_->active_type == source_types::kMultiSample &&
+           multisample_amp_env_ != nullptr && multisample_amp_env_->value() < 0.5f;
   }
 
   void SourceSlotModule::setModulatorOutput(int position, Output* output) {
@@ -332,7 +360,14 @@ namespace vital {
     else if (*was_on_) {
       output(kRaw)->clearBuffer();
       output(kLevelled)->clearBuffer();
+      output(kHold)->clearBuffer();
       playhead_->output()->buffer[0] = 0.0f;
+    }
+    // Only a sounding Multi-sample type holds the voice open.
+    if (!on || state.active_type != source_types::kMultiSample) {
+      Output* hold = output(kHold);
+      if (poly_float::notEqual(hold->buffer[0], 0.0f).anyMask())
+        hold->clearBuffer();
     }
     *was_on_ = on;
     clone_was_on_ = on;

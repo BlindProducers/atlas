@@ -22,6 +22,7 @@
 #include "load_save.h"
 #include "convolution_reverb_module.h"
 #include "synth_strings.h"
+#include "multisample_manager.h"
 
 #include <limits>
 #include <optional>
@@ -430,6 +431,13 @@ void SynthPlugin::processBlock(AudioSampleBuffer& buffer, MidiBuffer& midi_messa
   // with the editor closed and during offline rendering. Do not reconfigure
   // the graph from a parameter callback while audio may be using its buffers.
   engine_->checkOversampling();
+
+  // Offline renders right after a state restore must not run ahead of the
+  // instruments still loading; apply them here instead of on the message thread.
+  if (isNonRealtime() && multisample_manager_->hasPendingLoads()) {
+    multisample_manager_->waitForPendingLoads(300000);
+    multisample_manager_->processPendingResults(false);
+  }
 
   updateHostLatency();
 

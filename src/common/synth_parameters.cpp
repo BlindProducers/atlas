@@ -1739,6 +1739,17 @@ namespace vital {
       ValueDetails::kIndexed, false, "", "Noise Filter Slope", strings::kCutFilterSlopeNames },
   };
 
+  // Multi-sample oscillator type (SFZ / SF2): registered once per slot as osc_N_multisample_*.
+  // The instrument itself is preset state, not a parameter.
+  const ValueDetails ValueDetailsLookup::multisample_slot_parameter_list[] = {
+    { "multisample_amp_env", 0x000000, 0.0, 1.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Multi-sample Amplitude Envelope", strings::kMultiSampleAmpEnvNames },
+    { "multisample_transpose", 0x000000, -48.0, 48.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Multi-sample Transpose", nullptr },
+    { "multisample_tune", 0x000000, -1.0, 1.0, 0.0, 0.0, 100.0,
+      ValueDetails::kLinear, false, "", "Multi-sample Tune", nullptr },
+  };
+
   const ValueDetails ValueDetailsLookup::mod_parameter_list[] = {
     { "amount", 0x000000, -1.0, 1.0, 0.0, 0.0, 1.0,
       ValueDetails::kLinear, false, "", "Amount", nullptr },
@@ -1941,6 +1952,13 @@ namespace vital {
     for (int osc = 0; osc < kNumOscillators; ++osc) {
       for (const auto& type_list : slot_type_lists)
         addParameterGroup(type_list.list, type_list.count, osc, kOscIdPrefix, kOscNamePrefix, kSourceSlotVersion);
+    }
+    // Added after the slot types: a later version keeps existing host parameter ids.
+    static constexpr int kMultiSampleVersion = 0x020119;
+    const int num_multisample_parameters = sizeof(multisample_slot_parameter_list) / sizeof(ValueDetails);
+    for (int osc = 0; osc < kNumOscillators; ++osc) {
+      addParameterGroup(multisample_slot_parameter_list, num_multisample_parameters, osc, kOscIdPrefix,
+                        kOscNamePrefix, kMultiSampleVersion);
     }
 
     int num_filter_parameters = sizeof(filter_parameter_list) / sizeof(ValueDetails);

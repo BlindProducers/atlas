@@ -35,6 +35,10 @@ namespace vital {
         kNoteCount,
         kNotePressed,
         kChannel,
+        // The played MIDI key, for Multi-sample region lookup.
+        kMidiKey,
+        // Env 1, the voice's amplitude envelope.
+        kAmplitudeEnvelope,
         kNumInputs
       };
 
@@ -46,6 +50,10 @@ namespace vital {
         kBus2Out,
         kBus3Out,
         kDirectOut,
+        // Env 1, raised to full while a Multi-sample instrument in Instrument
+        // envelope mode still sounds in the voice. The voice amplitude follows
+        // it, so the voice lives as long as the instrument sounds.
+        kGatedAmplitudeEnvelope,
         kNumOutputs
       };
 
@@ -108,7 +116,9 @@ namespace vital {
       void plugPitchClamp(cr::ZonePitchClamp* clamp, Value* key_start, Value* key_end);
       ZoneGain advanceZoneGain(poly_float& gain_state, poly_float target, poly_mask reset_mask,
                                bool crossfade_on, mono_float max_move);
-      void addZonedBuffer(poly_float* dest, const poly_float* source, const ZoneGain& gain, int num_samples) const;
+      // `ratio`, when given, scales each sample (slots that follow Env 1 while an instrument holds the voice).
+      void addZonedBuffer(poly_float* dest, const poly_float* source, const ZoneGain& gain, int num_samples,
+                          const poly_float* ratio = nullptr) const;
 
       SourceSlotModule* slots_[kNumOscillators];
       Value* slot_destinations_[kNumOscillators];
@@ -121,6 +131,9 @@ namespace vital {
       Value* slot_velocity_zone_end_[kNumOscillators];
       cr::ZonePitchClamp* slot_pitch_clamp_[kNumOscillators];
       poly_float slot_zone_gain_[kNumOscillators];
+
+      static constexpr mono_float kInstrumentGateSeconds = 0.005f;
+      poly_float envelope_gate_ = 0.0f;
 
       Value* portamento_glide_zones_;
       Value* zone_crossfade_;

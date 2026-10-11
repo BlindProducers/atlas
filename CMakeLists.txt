@@ -105,6 +105,7 @@ set_source_files_properties(src/synthesis/modules/defuse_module.cpp PROPERTIES
 
 target_include_directories(Atlas PRIVATE
   src/common
+  src/common/multisample
   src/common/wavetable
   src/interface/look_and_feel
   src/plugin
@@ -369,6 +370,24 @@ if(ATLAS_BUILD_TIMING_TESTS)
   # (AtlasSourceSlotTests --capture <dir> on the pre-slot build).
   add_test(NAME atlas_source_slot_regression COMMAND AtlasSourceSlotTests
            --compare "${CMAKE_CURRENT_BINARY_DIR}/slot-reference")
+
+  juce_add_console_app(AtlasMultiSampleTests PRODUCT_NAME "Atlas Multi-sample Tests")
+  juce_generate_juce_header(AtlasMultiSampleTests)
+  target_sources(AtlasMultiSampleTests PRIVATE tests/multisample_tests.cpp)
+  target_include_directories(AtlasMultiSampleTests PRIVATE
+    src/common src/common/multisample src/common/wavetable src/plugin src/interface/look_and_feel
+    src/synthesis/framework src/synthesis/modules src/synthesis/effects
+    src/synthesis/filters src/synthesis/producers src/synthesis/synth_engine
+    src/synthesis/lookups src/synthesis/modulators src/synthesis/utilities third_party)
+  target_compile_definitions(AtlasMultiSampleTests PRIVATE
+    VITAL_ACCESSIBLE_UI=1 HEADLESS=0 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_DSP_USE_SHARED_FFTW=0
+    JUCE_MODAL_LOOPS_PERMITTED=1)
+  target_link_libraries(AtlasMultiSampleTests PRIVATE
+    Atlas juce::juce_audio_utils juce::juce_dsp juce::juce_gui_extra juce::juce_recommended_config_flags)
+  foreach(multisample_test sfz-parser sf2-parser decode pitch select envelope-mode release-trigger choke
+          cc-trigger container host-state sf2-preset-switch editor)
+    add_test(NAME atlas_multisample_${multisample_test} COMMAND AtlasMultiSampleTests --${multisample_test})
+  endforeach()
 
   # Optional independent oracle: production builds do not require Rust or
   # the external Diopser checkout. Point this at nih-plug/plugins/diopser, or

@@ -80,6 +80,8 @@ class LoadSave {
     static void loadModulations(SynthBase* synth, const json& modulations);
     // Loads each oscillator slot's sample from "osc_N_sample" entries.
     static void loadSlotSamples(SynthBase* synth, const json& settings);
+    // Multi-sample instruments (osc_N_multisample); slots without one are cleared.
+    static void loadSlotInstruments(SynthBase* synth, const json& settings);
     // Rewrites a preset saved with fixed Sample/Granular/Spectral/Noise sources
     // into oscillator slots 5-8. Safe to call on presets already migrated.
     static void migrateFixedSourcesToSlots(json& settings, json& modulations);

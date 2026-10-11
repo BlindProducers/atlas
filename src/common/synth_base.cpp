@@ -15,6 +15,9 @@
  */
 
 #include "synth_base.h"
+#include "multisample_container.h"
+#include "multisample_manager.h"
+#include "multisample_slot.h"
 #include "source_types.h"
 #include "source_slot_module.h"
 
@@ -183,6 +186,15 @@ SynthBase::SynthBase() : expired_(false) {
   expired_ = LoadSave::isExpired();
   engine_ = std::make_unique<vital::SoundEngine>();
   engine_->setTuning(&tuning_);
+  multisample_manager_ = std::make_unique<vital::multisample::Manager>(
+      [this](int slot, std::shared_ptr<const vital::multisample::Instrument> instrument) {
+        vital::MultiSampleSlot* target = engine_->getMultiSample(slot);
+        // Freeing an instrument's audio can take a while: keep it out of the lock.
+        std::shared_ptr<const vital::multisample::Instrument> previous = target->instrument();
+        // A lock, not pauseProcessing: this also runs inside a paused preset load.
+        ScopedLock lock(getCriticalSection());
+        target->setInstrument(std::move(instrument));
+      });
 
   mod_connections_.reserve(vital::kMaxModulationConnections);
 
@@ -733,6 +745,7 @@ int SynthBase::getSampleRate() {
 void SynthBase::initEngine() {
   clearPendingGuiUpdates();
   clearModulations();
+  multisample_manager_->clearAll();
   if (getWavetableCreator(0)) {
     for (int i = 0; i < vital::kNumOscillators; ++i)
       getWavetableCreator(i)->init();
@@ -791,9 +804,17 @@ bool SynthBase::loadFromFile(File preset, std::string& error) {
   if (!preset.exists())
     return false;
   
+  std::string text;
+  if (!vital::multisample::container::readPresetText(preset, text)) {
+    error = "Preset file is corrupted.";
+    return false;
+  }
+  // A container preset carries its instruments' files; the state names them.
+  multisample_container_ = vital::multisample::container::isContainer(preset) ? preset : File();
   try {
-    json parsed_json_state = json::parse(preset.loadFileAsString().toStdString(), nullptr);
+    json parsed_json_state = json::parse(text, nullptr);
     if (!loadFromJson(parsed_json_state)) {
+      multisample_container_ = File();
       error = "Preset was created with a newer version.";
       return false;
     }
@@ -801,9 +822,11 @@ bool SynthBase::loadFromFile(File preset, std::string& error) {
     active_file_ = preset;
   }
   catch (const json::exception& e) {
+    multisample_container_ = File();
     error = "Preset file is corrupted.";
     return false;
   }
+  multisample_container_ = File();
   
   setPresetName(preset.getFileNameWithoutExtension());
 
@@ -989,7 +1012,43 @@ bool SynthBase::saveCopyToFile(File preset) {
       return false;
   }
 
-  return preset.replaceWithText(saveToJson().dump());
+  return writePresetFile(preset);
+}
+
+bool SynthBase::writePresetFile(const File& preset, std::string* error) {
+  namespace multisample = vital::multisample;
+  // Loads still running would change what the state names.
+  multisample_manager_->waitForPendingLoads(120000);
+  multisample_manager_->processPendingResults();
+
+  json data = saveToJson();
+  std::vector<multisample::container::Instrument> instruments;
+  json& settings = data["settings"];
+  for (int slot = 0; slot < vital::kNumOscillators; ++slot) {
+    const std::string key = vital::source_types::slotPrefix(slot) + "multisample";
+    if (!settings.count(key))
+      continue;
+    std::shared_ptr<const multisample::LoadResult> result = multisample_manager_->result(slot);
+    multisample::InstrumentSpec spec = multisample_manager_->spec(slot);
+    if (result == nullptr || result->hash != spec.hash)
+      continue;
+    spec.files = result->files;
+    for (const multisample::FileInfo& file : result->files) {
+      if (file.relative.rfind("_external/", 0) == 0 && !file.written.empty())
+        spec.path_overrides[file.written] = file.relative;
+    }
+    settings[key] = spec.toJson(true);
+    instruments.push_back({ result->hash, result->files });
+  }
+
+  if (instruments.empty())
+    return preset.replaceWithText(data.dump());
+
+  std::string message;
+  const bool written = multisample::container::write(preset, data.dump(), instruments, message);
+  if (!written && error != nullptr)
+    *error = message;
+  return written;
 }
 
 bool SynthBase::saveToFile(File preset) {
@@ -1007,7 +1066,7 @@ bool SynthBase::saveToFile(File preset) {
   if (gui_interface)
     gui_interface->notifyFresh();
 
-  if (preset.replaceWithText(saveToJson().dump())) {
+  if (writePresetFile(preset)) {
     active_file_ = preset;
     return true;
   }

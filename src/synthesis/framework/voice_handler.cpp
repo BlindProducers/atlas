@@ -107,6 +107,7 @@ namespace vital {
     note_in_octave_.owner = &voice_router_;
     channel_.owner = &voice_router_;
     velocity_.owner = &voice_router_;
+    midi_key_.owner = &voice_router_;
     lift_.owner = &voice_router_;
     aftertouch_.owner = &voice_router_;
     slide_.owner = &voice_router_;
@@ -128,6 +129,7 @@ namespace vital {
     last_note_.clearTrigger();
     channel_.clearTrigger();
     velocity_.clearTrigger();
+    midi_key_.clearTrigger();
     lift_.clearTrigger();
     voice_event_.clearTrigger();
     retrigger_.clearTrigger();
@@ -148,6 +150,7 @@ namespace vital {
             note_.trigger(mask, voice->state().tuned_note, offset);
             last_note_.trigger(mask, voice->state().last_note, offset);
             velocity_.trigger(mask, voice->state().velocity, offset);
+            midi_key_.trigger(mask, voice->state().midi_note, offset);
             channel_.trigger(mask, voice->state().channel, offset);
 
             if (voice->needsSourceResetOnActivation())
@@ -199,6 +202,7 @@ namespace vital {
       note_in_octave_.trigger_value = utils::mod(note * (1.0f / kNotesPerOctave));
       channel_.trigger_value = utils::maskLoad(channel_.trigger_value, channel, mask);
       velocity_.trigger_value = utils::maskLoad(velocity_.trigger_value, voice->state().velocity, mask);
+      midi_key_.trigger_value = utils::maskLoad(midi_key_.trigger_value, voice->state().midi_note, mask);
 
       mono_float lift = 0.0f;
       if (voice->released())

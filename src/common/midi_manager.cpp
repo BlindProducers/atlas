@@ -276,6 +276,9 @@ void MidiManager::processMidiMessage(const MidiMessage& midi_message, int sample
       return;
     }
     case kController: {
+      // Multi-sample instruments read every CC (mic mixes, pedal noises).
+      engine_->controlChange(midi_message.getControllerNumber(), midi_message.getControllerValue(),
+                             sample_position);
       MidiSecondaryType secondary_type = static_cast<MidiSecondaryType>(midi_message.getControllerNumber());
       switch (secondary_type) {
         case kSlide: {

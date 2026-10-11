@@ -45,6 +45,12 @@ namespace vital {
 
 class SynthGuiInterface;
 
+namespace vital {
+namespace multisample {
+  class Manager;
+}
+}
+
 class SynthBase : public MidiManager::Listener {
   public:
     static constexpr float kOutputWindowMinNote = 16.0f;
@@ -92,6 +98,11 @@ class SynthBase : public MidiManager::Listener {
     static std::string filterPrefixForModelControl(const std::string& name);
     void prepareFilterTable(const std::string& prefix);
     vital::Sample* getSample(int index);
+    // Loads and tracks each oscillator slot's SFZ/SF2 instrument.
+    vital::multisample::Manager* getMultiSampleManager() { return multisample_manager_.get(); }
+    // The container preset being read, while its state is applied (its
+    // instruments' files are inside it).
+    const File& multiSampleContainer() const { return multisample_container_; }
     // Builds the engine for each oscillator slot's selected type and drops
     // modulation routes into parameters of the types it left. Message thread;
     // callers pause processing around it.
@@ -114,6 +125,9 @@ class SynthBase : public MidiManager::Listener {
     void renderAudioToFile(File file, float seconds, float bpm, std::vector<int> notes, bool render_images);
     void renderAudioForResynthesis(float* data, int samples, int note);
     bool saveCopyToFile(File preset);
+    // Writes the current state: plain JSON, or a container holding the
+    // instruments' files when an oscillator plays an SFZ/SF2 instrument.
+    bool writePresetFile(const File& preset, std::string* error = nullptr);
     bool saveToFile(File preset);
     bool saveToActiveFile();
     void clearActiveFile() { active_file_ = File(); }
@@ -234,6 +248,9 @@ class SynthBase : public MidiManager::Listener {
     static int scheduledMidiEventPriority(const ScheduledMidiEvent& event);
 
     std::unique_ptr<vital::SoundEngine> engine_;
+    // Declared after the engine so it is destroyed first.
+    std::unique_ptr<vital::multisample::Manager> multisample_manager_;
+    File multisample_container_;
     std::unique_ptr<MidiManager> midi_manager_;
     std::unique_ptr<MidiKeyboardState> keyboard_state_;
     std::array<std::array<AtlasArpeggiator, 8>, 2> arpeggiators_;

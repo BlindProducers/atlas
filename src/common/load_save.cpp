@@ -15,6 +15,8 @@
  */
 
 #include "load_save.h"
+#include "multisample_container.h"
+#include "multisample_manager.h"
 #include <mutex>
 #include "source_types.h"
 #include "convolution_reverb_module.h"
@@ -346,6 +348,15 @@ json LoadSave::stateToJson(SynthBase* synth, const CriticalSection& critical_sec
     vital::Sample* sample = synth->getSample(slot);
     if (sample && vital::source_types::describe(type_value).uses_sample && !sample->isDefault())
       settings_data[prefix + "sample"] = sample->stateToJson();
+
+    // A Multi-sample slot names its instrument (path and content hash);
+    // container presets add the file list when they are written.
+    vital::multisample::Manager* multisample = synth->getMultiSampleManager();
+    if (multisample != nullptr && type_value == vital::source_types::kMultiSample) {
+      const vital::multisample::InstrumentSpec spec = multisample->spec(slot);
+      if (!spec.empty())
+        settings_data[prefix + "multisample"] = spec.toJson(false);
+    }
   }
 
   json convolution_irs = json::object();
@@ -504,6 +515,23 @@ void LoadSave::loadSlotSamples(SynthBase* synth, const json& settings) {
       sample->jsonToState(json_sample);
     }
     catch (const json::exception&) { }
+  }
+}
+
+void LoadSave::loadSlotInstruments(SynthBase* synth, const json& settings) {
+  vital::multisample::Manager* multisample = synth->getMultiSampleManager();
+  if (multisample == nullptr)
+    return;
+  for (int slot = 0; slot < vital::kNumOscillators; ++slot) {
+    const std::string prefix = vital::source_types::slotPrefix(slot);
+    const json data = objectFieldOrEmpty(settings, (prefix + "multisample").c_str());
+    vital::multisample::InstrumentSpec spec;
+    const auto type = settings.find(prefix + "type");
+    const bool multisample_type = type != settings.end() && type->is_number() &&
+                                  static_cast<int>(type->get<float>() + 0.5f) == vital::source_types::kMultiSample;
+    if (multisample_type && data.is_object() && !data.empty())
+      spec = vital::multisample::InstrumentSpec::fromJson(data);
+    multisample->applySpec(slot, spec, synth->multiSampleContainer());
   }
 }
 
@@ -1603,6 +1631,7 @@ bool LoadSave::jsonToState(SynthBase* synth, std::map<std::string, String>& save
   loadControls(synth, settings);
   loadModulations(synth, modulations);
   loadSlotSamples(synth, settings);
+  loadSlotInstruments(synth, settings);
   loadConvolutionIrs(synth, objectFieldOrEmpty(settings, "convolution_irs"));
   loadWavetables(synth, wavetables);
   loadFilterTables(synth, objectFieldOrEmpty(settings, "filter_tables"));
@@ -1614,10 +1643,35 @@ bool LoadSave::jsonToState(SynthBase* synth, std::map<std::string, String>& save
   return true;
 }
 
+namespace {
+  // Preset metadata reads work on plain and container presets alike.
+  std::unique_ptr<InputStream> openPresetStream(const File& file) {
+    if (vital::multisample::container::isContainer(file)) {
+      std::string text;
+      if (!vital::multisample::container::readPresetText(file, text, 65536))
+        return nullptr;
+      return std::make_unique<MemoryInputStream>(text.data(), text.size(), true);
+    }
+    auto stream = std::make_unique<FileInputStream>(file);
+    if (!stream->openedOk())
+      return nullptr;
+    return stream;
+  }
+
+  std::string loadPresetText(const File& file) {
+    std::string text;
+    vital::multisample::container::readPresetText(file, text);
+    return text;
+  }
+}
+
 String LoadSave::getAuthorFromFile(const File& file) {
   static constexpr int kMaxCharacters = 40;
   static constexpr int kMinSize = 60;
-  FileInputStream file_stream(file);
+  std::unique_ptr<InputStream> stream_owner = openPresetStream(file);
+  if (stream_owner == nullptr)
+    return "";
+  InputStream& file_stream = *stream_owner;
 
   if (file_stream.getTotalLength() < kMinSize)
     return "";
@@ -1632,7 +1686,7 @@ String LoadSave::getAuthorFromFile(const File& file) {
   char begin_quote = file_stream.readByte();
   if (author_memory_block.toString() != "author" || end_quote != '"' || colon != ':' || begin_quote != '"') {
     try {
-      json parsed_json_state = json::parse(file.loadFileAsString().toStdString(), nullptr, false);
+      json parsed_json_state = json::parse(loadPresetText(file), nullptr, false);
       return getAuthor(parsed_json_state);
     }
     catch (const json::exception& e) {
@@ -1655,7 +1709,10 @@ String LoadSave::getAuthorFromFile(const File& file) {
 
 String LoadSave::getStyleFromFile(const File& file) {
   static constexpr int kMinSize = 5000;
-  FileInputStream file_stream(file);
+  std::unique_ptr<InputStream> stream_owner = openPresetStream(file);
+  if (stream_owner == nullptr)
+    return "";
+  InputStream& file_stream = *stream_owner;
 
   if (file_stream.getTotalLength() < kMinSize)
     return "";
@@ -1678,9 +1735,10 @@ String LoadSave::getStyleFromFile(const File& file) {
 
 String LoadSave::getTagsFromFile(const File& file) {
   static constexpr int kMetadataScanSize = 16384;
-  FileInputStream file_stream(file);
-  if (!file_stream.openedOk())
+  std::unique_ptr<InputStream> stream_owner = openPresetStream(file);
+  if (stream_owner == nullptr)
     return "";
+  InputStream& file_stream = *stream_owner;
 
   MemoryBlock memory_block;
   file_stream.readIntoMemoryBlock(memory_block, kMetadataScanSize);

@@ -98,6 +98,9 @@ namespace vital {
       slots_[i]->useInput(input(kActiveVoices), SourceSlotModule::kActiveVoices);
       slots_[i]->useInput(input(kNoteCount), SourceSlotModule::kNoteCount);
       slots_[i]->useInput(input(kNotePressed), SourceSlotModule::kNotePressed);
+      slots_[i]->useInput(input(kVelocity), SourceSlotModule::kVelocity);
+      slots_[i]->useInput(input(kZoneMidi), SourceSlotModule::kNote);
+      slots_[i]->useInput(input(kMidiKey), SourceSlotModule::kMidiKey);
     }
 
     SynthModule::init();
@@ -197,9 +200,16 @@ namespace vital {
   }
 
   void ProducersModule::addZonedBuffer(poly_float* dest, const poly_float* source,
-                                       const ZoneGain& gain, int num_samples) const {
+                                       const ZoneGain& gain, int num_samples, const poly_float* ratio) const {
     poly_float current = gain.start;
     poly_float delta = (gain.end - gain.start) * (1.0f / num_samples);
+    if (ratio != nullptr) {
+      for (int i = 0; i < num_samples; ++i) {
+        dest[i] += source[i] * current * ratio[i];
+        current += delta;
+      }
+      return;
+    }
     for (int i = 0; i < num_samples; ++i) {
       dest[i] += source[i] * current;
       current += delta;
@@ -277,16 +287,57 @@ namespace vital {
     bool crossfade_on = portamento_glide_zones_->value() != 0.0f && crossfade_seconds > 0.0f;
     mono_float zone_max_move = crossfade_on ? (num_samples / (crossfade_seconds * getSampleRate())) : 0.0f;
 
+    // First the zone gains, and whether a Multi-sample instrument holds a voice open.
+    ZoneGain zone_gains[kNumOscillators];
+    bool audible[kNumOscillators];
+    poly_float instrument_hold = 0.0f;
     for (int i = 0; i < kNumOscillators; ++i) {
-      if (any_source_solo && slot_solo_[i]->value() < 0.5f)
+      audible[i] = !(any_source_solo && slot_solo_[i]->value() < 0.5f);
+      if (!audible[i])
         continue;
-
-      const poly_float* buffer = slots_[i]->output(SourceSlotModule::kLevelled)->buffer;
       poly_float source_mask = getSourcePlaybackMask(i,
           getZoneMask(slot_key_zone_start_[i], slot_key_zone_end_[i],
                       slot_velocity_zone_start_[i], slot_velocity_zone_end_[i]));
-      ZoneGain zone_gain = advanceZoneGain(slot_zone_gain_[i], source_mask,
-                                           zone_reset_mask, crossfade_on, zone_max_move);
+      zone_gains[i] = advanceZoneGain(slot_zone_gain_[i], source_mask,
+                                      zone_reset_mask, crossfade_on, zone_max_move);
+      instrument_hold = utils::max(instrument_hold,
+                                   slots_[i]->output(SourceSlotModule::kHold)->buffer[0] * source_mask);
+    }
+
+    // The voice amplitude follows Env 1, raised to full while an instrument in
+    // Instrument envelope mode still sounds (closing over 5 ms after). Only that
+    // instrument's slot plays at the raised level: every other slot is scaled by
+    // (Env 1 / raised)^2, the voice amplitude being the square of the envelope,
+    // so it still follows Env 1. With no instrument holding nothing changes.
+    const poly_float* envelope = input(kAmplitudeEnvelope)->source->buffer;
+    poly_float* gated_envelope = output(kGatedAmplitudeEnvelope)->buffer;
+    envelope_gate_ = envelope_gate_ & ~zone_reset_mask;
+    const bool gating = poly_float::greaterThan(envelope_gate_, 0.0f).anyMask() ||
+                        poly_float::greaterThan(instrument_hold, 0.0f).anyMask();
+    poly_float envelope_ratio[kMaxBufferSize * kMaxOversample];
+    if (gating) {
+      const mono_float step = 1.0f / std::max(1.0f, kInstrumentGateSeconds * getSampleRate());
+      const int count = std::min(num_samples, kMaxBufferSize * kMaxOversample);
+      for (int i = 0; i < count; ++i) {
+        envelope_gate_ = utils::max(instrument_hold, utils::max(envelope_gate_ - step, 0.0f));
+        const poly_float gated = utils::max(envelope[i], envelope_gate_);
+        gated_envelope[i] = gated;
+        const poly_float ratio = envelope[i] / utils::max(gated, 1.0e-30f);
+        envelope_ratio[i] = ratio * ratio;
+      }
+    }
+    else {
+      for (int i = 0; i < num_samples; ++i)
+        gated_envelope[i] = envelope[i];
+    }
+
+    for (int i = 0; i < kNumOscillators; ++i) {
+      if (!audible[i])
+        continue;
+
+      const poly_float* buffer = slots_[i]->output(SourceSlotModule::kLevelled)->buffer;
+      const ZoneGain& zone_gain = zone_gains[i];
+      const poly_float* ratio = gating && !slots_[i]->holdsVoiceOpen() ? envelope_ratio : nullptr;
       int destination = sourceDestination(slot_destinations_[i]);
       bool raw = destination == constants::kEffects;
       bool filter1 = destination == constants::kFilter1 || destination == constants::kDualFilters;
@@ -299,20 +350,20 @@ namespace vital {
       if (raw || (!filter2 && filter1 && !filter1_on) ||
                  (!filter1 && filter2 && !filter2_on) ||
                  (filter1 && filter2 && !filter1_on && !filter2_on)) {
-        addZonedBuffer(raw_output, buffer, zone_gain, num_samples);
+        addZonedBuffer(raw_output, buffer, zone_gain, num_samples, ratio);
       }
       if (filter1)
-        addZonedBuffer(filter1_output, buffer, zone_gain, num_samples);
+        addZonedBuffer(filter1_output, buffer, zone_gain, num_samples, ratio);
       if (filter2)
-        addZonedBuffer(filter2_output, buffer, zone_gain, num_samples);
+        addZonedBuffer(filter2_output, buffer, zone_gain, num_samples, ratio);
       if (bus1)
-        addZonedBuffer(bus1_output, buffer, zone_gain, num_samples);
+        addZonedBuffer(bus1_output, buffer, zone_gain, num_samples, ratio);
       if (bus2)
-        addZonedBuffer(bus2_output, buffer, zone_gain, num_samples);
+        addZonedBuffer(bus2_output, buffer, zone_gain, num_samples, ratio);
       if (bus3)
-        addZonedBuffer(bus3_output, buffer, zone_gain, num_samples);
+        addZonedBuffer(bus3_output, buffer, zone_gain, num_samples, ratio);
       if (direct_out)
-        addZonedBuffer(direct_output, buffer, zone_gain, num_samples);
+        addZonedBuffer(direct_output, buffer, zone_gain, num_samples, ratio);
     }
   }
 

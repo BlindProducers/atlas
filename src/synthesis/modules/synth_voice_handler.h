@@ -85,6 +85,20 @@ namespace vital {
       void createFilters(Output* keytrack);
 
       void setupPolyModulationReadouts();
+      // Mixes Multi-sample CC-triggered regions (pedal noises), which play
+      // outside any voice, into the voice outputs.
+      void mixMultiSampleTails(int num_samples, bool voices_rendered);
+
+      struct TailControls {
+        Value* on = nullptr;
+        Value* type = nullptr;
+        Value* solo = nullptr;
+        Value* level = nullptr;
+        Value* pan = nullptr;
+        Value* destination = nullptr;
+      };
+      TailControls tail_controls_[kNumOscillators];
+      bool tails_written_ = false;
 
       ModulationConnectionBank modulation_bank_;
       CircularQueue<ModulationConnectionProcessor*> enabled_modulation_processors_;

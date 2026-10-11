@@ -227,6 +227,12 @@ namespace strings {
     "Granular",
     "Spectral",
     "Noise",
+    "Multi-sample",
+  };
+
+  const std::string kMultiSampleAmpEnvNames[] = {
+    "Instrument",
+    "Envelope 1",
   };
 
   const std::string kAnalogWaveformNames[] = {

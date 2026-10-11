@@ -215,6 +215,12 @@ class WavetableKeyboardComponent : public Component {
     }
 };
 
+namespace vital {
+namespace multisample {
+  struct PresetName;
+}
+}
+
 class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
                     private Timer, private ListBoxModel {
   public:
@@ -226,6 +232,11 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void paint(Graphics&) override;
     void resized() override;
     void updateFullGui() override;
+    // The SF2 preset menu: flat for a few presets, otherwise grouped by bank and
+    // into runs of 16 programs so every submenu fits on screen (a screen reader
+    // reaches only the menu items that are visible). Item ids are list positions + 1.
+    static PopupMenu createInstrumentPresetMenu(const std::vector<vital::multisample::PresetName>& presets,
+                                                int selected_position);
     void notifyMidiLearned(const std::string& name, int midi_id) override;
     bool keyPressed(const KeyPress& key) override;
     bool keyStateChanged(bool isKeyDown) override;
@@ -475,6 +486,21 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void addSampleControlsGroup(int sample_target, Component& parent, int& y, int x, int width,
                                 int& focus_order, const String& section_name,
                                 const GroupRowAppender& appendRows = {});
+    // Multi-sample oscillators: the Instrument group (load, status, SF2 preset,
+    // SFZ editing) and the status the editor polls while instruments load.
+    void addMultiSampleControlsGroup(int oscillator, Component& parent, int& y, int x, int width,
+                                     int& focus_order, const String& section_name,
+                                     const GroupRowAppender& appendRows = {});
+    void chooseInstrumentFile(int oscillator);
+    // Moves an SF2 slot to the previous (-1) or next (1) preset, wrapping.
+    void stepInstrumentPreset(int oscillator, int direction);
+    void openInstrumentInTextEditor(int oscillator);
+    void reloadInstrument(int oscillator);
+    void refreshMultiSampleStatus();
+    String instrumentStatusTitle(int oscillator) const;
+    String instrumentDetails(int oscillator) const;
+    // 0 nothing loaded, 1 SFZ, 2 SF2 with one preset, 3 SF2 with several.
+    int multiSampleUiState(int oscillator) const;
     // A section row with every callback wired (modulation, MIDI learn, value entry, automation).
     std::unique_ptr<AccessibleParameterRow> createConfiguredSectionRow(AudioProcessorParameter& parameter,
                                                                        const String& sectionName);
@@ -832,6 +858,8 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
       bool include_modulations = false;
       json wavetable;
       json sample;
+      // A Multi-sample slot's instrument (shared, not reloaded, when pasted).
+      json instrument;
       std::vector<CopiedOscillatorParameter> parameters;
       std::vector<CopiedModulation> modulations;
     };
@@ -911,6 +939,16 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     std::unique_ptr<FileChooser> preset_chooser_;
     std::unique_ptr<FileChooser> wavetable_chooser_;
     std::unique_ptr<FileChooser> sample_chooser_;
+    std::unique_ptr<FileChooser> instrument_chooser_;
+    std::unique_ptr<ChildProcess> text_editor_process_;
+    File last_instrument_folder_;
+    struct InstrumentAnnouncementState {
+      uint32_t revision = 0;
+      int state = 0;
+      int announced_percent = 0;
+      uint32 announced_at = 0;
+    };
+    std::array<InstrumentAnnouncementState, vital::kNumOscillators> instrument_announcements_ {};
     std::unique_ptr<FileChooser> lfo_chooser_;
     std::unique_ptr<FileChooser> fx_chooser_;
     std::unique_ptr<FileChooser> fx_bus_chooser_;

@@ -36,6 +36,7 @@ namespace vital {
       kGranular,
       kSpectral,
       kNoise,
+      kMultiSample,
       kNumTypes
     };
 
@@ -61,6 +62,7 @@ namespace vital {
       { "granular", "granular", false, true, true, true, true, true },
       { "spectral", "spectral", false, true, true, false, false, true },
       { "noise", "noise", false, false, false, false, false, true },
+      { "multisample", "multisample", false, false, true, false, false, false },
     };
 
     inline constexpr const Description& describe(int type) {

@@ -29,6 +29,8 @@
 #include "trigger_random.h"
 #include "value_switch.h"
 #include "modulation_connection_processor.h"
+#include "futils.h"
+#include "multisample_slot.h"
 
 #include <cstdlib>
 
@@ -161,6 +163,17 @@ namespace vital {
     }
     createStatusOutput("num_voices", &num_voices_);
 
+    control_map controls = getControls();
+    auto control = [&controls](const std::string& name) -> Value* {
+      auto found = controls.find(name);
+      return found == controls.end() ? nullptr : found->second;
+    };
+    for (int i = 0; i < kNumOscillators; ++i) {
+      const std::string prefix = source_types::slotPrefix(i);
+      tail_controls_[i] = { control(prefix + "on"), control(prefix + "type"), control(prefix + "solo"),
+                            control(prefix + "level"), control(prefix + "pan"), control(prefix + "destination") };
+    }
+
     std::string modulation_source_prefix = "modulation_source_";
     std::string modulation_amount_prefix = "modulation_amount_";
     for (int i = 0; i < vital::kMaxModulationConnections; ++i) {
@@ -208,6 +221,7 @@ namespace vital {
     producers_->plug(note_pressed(), ProducersModule::kNotePressed);
     producers_->plug(channel(), ProducersModule::kChannel);
     producers_->plug(active_mask(), ProducersModule::kActiveVoices);
+    producers_->plug(midi_key(), ProducersModule::kMidiKey);
     addSubmodule(producers_);
     addProcessor(producers_);
   }
@@ -371,8 +385,12 @@ namespace vital {
     amplitude_envelope_ = envelopes_[0];
     amplitude_envelope_->setControlRate(false);
 
+    // Env 1 reaches the voice amplitude through the producers, which hold it
+    // open for a Multi-sample instrument still sounding (see ProducersModule).
+    producers_->plug(amplitude_envelope_->output(Envelope::kValue), ProducersModule::kAmplitudeEnvelope);
+
     Processor* control_amplitude = new SmoothMultiply();
-    control_amplitude->plug(amplitude_envelope_->output(Envelope::kValue), SmoothMultiply::kAudioRate);
+    control_amplitude->plug(producers_->output(ProducersModule::kGatedAmplitudeEnvelope), SmoothMultiply::kAudioRate);
     control_amplitude->plug(amplitude, SmoothMultiply::kControlRate);
     control_amplitude->plug(reset(), SmoothMultiply::kReset);
 
@@ -393,7 +411,9 @@ namespace vital {
     // FX modulation can be collapsed before that identity disappears.
     const poly_mask rendered_voice_mask = getCurrentVoiceMask();
     const Voice* rendered_voice = getCurrentVoice();
+    const bool voices_rendered = getNumActiveVoices() > 0;
     VoiceHandler::process(num_samples);
+    mixMultiSampleTails(num_samples, voices_rendered);
     int num_voices = getNumActiveVoices();
     num_voices_.buffer[0] = num_voices;
     note_retriggered_.clearTrigger();
@@ -427,6 +447,82 @@ namespace vital {
       last_active_voice_mask_ = getCurrentVoiceMask();
       for (auto& status_source : data_->status_outputs)
         status_source.second->update(last_active_voice_mask_);
+    }
+  }
+
+  void SynthVoiceHandler::mixMultiSampleTails(int num_samples, bool voices_rendered) {
+    bool any_solo = false;
+    for (const TailControls& controls : tail_controls_)
+      any_solo = any_solo || (controls.solo != nullptr && controls.solo->value() >= 0.5f);
+
+    Output* cleared[2 + kNumBuses] = {};
+    int num_cleared = 0;
+    // Without voices the voice handler leaves its outputs alone: clear the
+    // tails written last block before anything else is added.
+    if (!voices_rendered && tails_written_) {
+      Output* targets[2 + kNumBuses] = { getAccumulatedOutput(output_->output()),
+                                         getAccumulatedOutput(direct_output_->output()) };
+      for (int i = 0; i < kNumBuses; ++i)
+        targets[2 + i] = getAccumulatedOutput(bus_outputs_[i]->output());
+      for (Output* target : targets) {
+        if (target != nullptr) {
+          utils::zeroBuffer(target->buffer, std::min(num_samples, target->buffer_size));
+          cleared[num_cleared++] = target;
+        }
+      }
+    }
+    tails_written_ = false;
+    for (int i = 0; i < kNumOscillators; ++i) {
+      const TailControls& controls = tail_controls_[i];
+      MultiSampleSlot* slot = producers_->slot(i)->getMultiSample();
+      if (slot == nullptr || slot->get() == nullptr || controls.on == nullptr || controls.type == nullptr)
+        continue;
+      const bool active = controls.on->value() >= 0.5f &&
+                          static_cast<int>(controls.type->value() + 0.5f) == source_types::kMultiSample &&
+                          !(any_solo && (controls.solo == nullptr || controls.solo->value() < 0.5f));
+      if (!active) {
+        if (slot->tailsActive())
+          slot->fadeOutAll(getSampleRate());
+        else
+          continue;
+      }
+
+      mono_float left[kMaxBufferSize * kMaxOversample];
+      mono_float right[kMaxBufferSize * kMaxOversample];
+      const int count = std::min(num_samples, kMaxBufferSize * kMaxOversample);
+      std::fill(left, left + count, 0.0f);
+      std::fill(right, right + count, 0.0f);
+      if (!slot->renderTails(left, right, count, static_cast<float>(getSampleRate()), getOversampleAmount()))
+        continue;
+
+      Output* target = output_->output();
+      const int destination = controls.destination ? static_cast<int>(controls.destination->value() + 0.5f) : 0;
+      if (destination == constants::kDirectOut)
+        target = direct_output_->output();
+      else if (destination == constants::kBus1)
+        target = bus_outputs_[0]->output();
+      else if (destination == constants::kBus2)
+        target = bus_outputs_[1]->output();
+      else if (destination == constants::kBus3 && kNumBuses > 2)
+        target = bus_outputs_[2]->output();
+      Output* accumulated = getAccumulatedOutput(target);
+      if (accumulated == nullptr)
+        continue;
+      if (!voices_rendered && std::find(cleared, cleared + num_cleared, accumulated) == cleared + num_cleared) {
+        utils::zeroBuffer(accumulated->buffer, num_samples);
+        cleared[num_cleared++] = accumulated;
+      }
+      tails_written_ = true;
+
+      const mono_float level = controls.level ? utils::clamp(controls.level->value(), 0.0f, 1.41421356237f) : 1.0f;
+      const poly_float pan = futils::panAmplitude(controls.pan ? controls.pan->value() : 0.0f);
+      const mono_float left_gain = level * level * pan[0];
+      const mono_float right_gain = level * level * pan[1];
+      poly_float* buffer = accumulated->buffer;
+      for (int s = 0; s < count; ++s) {
+        poly_float value(left[s] * left_gain, right[s] * right_gain, left[s] * left_gain, right[s] * right_gain);
+        buffer[s] += value;
+      }
     }
   }
 
