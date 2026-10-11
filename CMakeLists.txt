@@ -364,8 +364,7 @@ if(ATLAS_BUILD_TIMING_TESTS)
     Atlas juce::juce_audio_utils juce::juce_dsp juce::juce_gui_extra juce::juce_recommended_config_flags)
   add_test(NAME atlas_source_slots COMMAND AtlasSourceSlotTests --behaviour)
   add_test(NAME atlas_source_slot_cpu COMMAND AtlasSourceSlotTests --cpu)
-  # Timing tests: never share the machine with other tests.
-  set_tests_properties(atlas_source_slot_cpu PROPERTIES RUN_SERIAL TRUE LABELS cpu)
+  set_tests_properties(atlas_source_slot_cpu PROPERTIES LABELS cpu)
   # Bit-exact regression against renders captured before the slot engine
   # (AtlasSourceSlotTests --capture <dir> on the pre-slot build).
   add_test(NAME atlas_source_slot_regression COMMAND AtlasSourceSlotTests
@@ -543,7 +542,7 @@ if(ATLAS_BUILD_TIMING_TESTS)
   add_test(NAME atlas_analogue_spring COMMAND AtlasAnalogueTests --spring)
   add_test(NAME atlas_analogue_wah COMMAND AtlasAnalogueTests --wah)
   add_test(NAME atlas_analogue_cpu COMMAND AtlasAnalogueTests --cpu)
-  set_tests_properties(atlas_analogue_cpu PROPERTIES RUN_SERIAL TRUE LABELS cpu)
+  set_tests_properties(atlas_analogue_cpu PROPERTIES LABELS cpu)
 
   juce_add_console_app(AtlasScreamTests PRODUCT_NAME "Atlas Scream Tests")
   juce_generate_juce_header(AtlasScreamTests)
@@ -644,4 +643,18 @@ if(ATLAS_BUILD_TIMING_TESTS)
     add_test(NAME atlas_vst3_latency COMMAND AtlasVstFactoryStress
       "$<TARGET_FILE_DIR:Atlas_VST3>/../.." --latency-test)
   endif()
+
+  # Several tests measure timing/CPU or spawn their own threads, so never let
+  # ctest run them side by side, even when invoked with -j. Give every test a
+  # timeout so a hung test fails instead of holding the machine for ctest's
+  # 1500 s default. Tests that already set a TIMEOUT keep it.
+  set(ATLAS_TEST_TIMEOUT 600 CACHE STRING "Default per-test timeout in seconds")
+  get_property(atlas_tests DIRECTORY PROPERTY TESTS)
+  foreach(atlas_test IN LISTS atlas_tests)
+    set_tests_properties(${atlas_test} PROPERTIES RUN_SERIAL TRUE)
+    get_test_property(${atlas_test} TIMEOUT atlas_test_timeout)
+    if(NOT atlas_test_timeout)
+      set_tests_properties(${atlas_test} PROPERTIES TIMEOUT ${ATLAS_TEST_TIMEOUT})
+    endif()
+  endforeach()
 endif()

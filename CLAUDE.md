@@ -12,19 +12,21 @@ Dependencies are git submodules in `third_party/`. CMake refuses to configure wi
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build --config Release --parallel
+cmake --build build --config Release --parallel 4
 ```
+
+Always give `--parallel` a job count. Ninja is not installed, so CMake uses Makefiles, and a bare `--parallel` becomes `make -j` with no limit. Each job can use several GB of RAM (the editor unity file alone is about 19k lines plus JUCE), and an unlimited build will freeze a 16 GB machine. Use 4 jobs. Drop to 2 if the machine is busy.
 
 The plugins are written to `build/Atlas_artefacts/Release`. Ship the whole `Atlas.vst3` bundle: a post-build step copies `Factory/Samples/Tape/*.atape` into the bundle's `Resources/Tape` and, on macOS, re-signs the bundle ad hoc.
 
-Tests are off by default. Turn them on with `-DATLAS_BUILD_TIMING_TESTS=ON`, then run:
+Tests are off by default. Turn them on with `-DATLAS_BUILD_TIMING_TESTS=ON`. That adds about 26 console executables, and each one compiles its own copy of the JUCE modules, so **never build the whole suite** (`cmake --build build` with no `--target`). Build and run only the tests that cover the code you changed:
 
 ```sh
-ctest --test-dir build -C Release --output-on-failure --parallel 1
-ctest --test-dir build -C Release -R atlas_scream_filter --output-on-failure   # single test
+cmake --build build --config Release --parallel 4 --target AtlasScreamTests
+ctest --test-dir build -C Release -R atlas_scream --output-on-failure
 ```
 
-Run with `--parallel 1`, because several tests measure timing and CPU. There is no test framework. Each test target is a `juce_add_console_app` with a hand-written `main` that dispatches on a flag (for example `AtlasTimingTests --reverb-filter`). Many `tests/*_tests.h` headers are included into `tests/timing_stability_tests.cpp`. To add a test, add a flag branch in that test's `main` and an `add_test(...)` line in `CMakeLists.txt`. You can run a test binary directly with its flag.
+To find the right target, grep `CMakeLists.txt` for the `add_test` lines whose names match the feature. Run the full suite (`ctest --test-dir build -C Release --output-on-failure`) only when the user asks for it. CMake marks every test `RUN_SERIAL`, because several tests measure timing and CPU or start their own threads, so ctest never runs them side by side even with `-j`. Every test also gets a timeout (`ATLAS_TEST_TIMEOUT`, 600 s by default), so a hung test fails instead of blocking for ctest's 1500 s default. Tests labelled `cpu` are benchmarks. Leave them out with `-LE cpu` unless you are working on performance. There is no test framework. Each test target is a `juce_add_console_app` with a hand-written `main` that dispatches on a flag (for example `AtlasTimingTests --reverb-filter`). Many `tests/*_tests.h` headers are included into `tests/timing_stability_tests.cpp`. To add a test, add a flag branch in that test's `main` and an `add_test(...)` line in `CMakeLists.txt`. You can run a test binary directly with its flag.
 
 Reference tests compare Atlas against the original code it adapts. They are only added when the opt-in submodules are present: `third_party/aquanode-plugins` (Spectral Lock), `WDL` (EEL2 runs the original JSFX for the JSFX, Reverb filter, Trance Gate and Resonator tests) and `nih-plug` (Diopser for Defuse, which also needs `rustc` and Python 3). Fetch them with `git submodule update --init --checkout <path>` and configure again. `third_party/README.atlas.md` describes each dependency.
 
