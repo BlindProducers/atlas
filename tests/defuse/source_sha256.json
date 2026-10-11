@@ -1,0 +1,10 @@
+{
+  "revision": "f36931f7af4646065488a9845d8f8c2f95252c23",
+  "version": "diopser 0.4.0",
+  "sha256": {
+    "plugins/diopser/src/lib.rs": "1c69474efad8f12b660d92f68520c716c0a117dc5e12b697cbc22b65f43b92bc",
+    "plugins/diopser/src/filter.rs": "8389695a2fac4bb51a5537d9bbd935023944370353bf7652c766211e1c13e47a",
+    "plugins/diopser/src/params.rs": "889fa559117851b0a114dfea5c13e8399e9a079e479a42e7e75ddb43adb5302e",
+    "src/params/smoothing.rs": "183484c04bca15b086376f5743751392fba9b2940a7d2c7e5553ecba6cf67719"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "type": "Atlas FX Preset",
+  "version": 1,
+  "effect": "analoguechorus",
+  "name": "Dimension 3",
+  "parameters": {
+    "analoguechorus_model": 1,
+    "analoguechorus_dimension_mode": 2,
+    "analoguechorus_mix": 0.5
+  }
+}

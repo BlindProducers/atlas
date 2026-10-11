@@ -1,0 +1,10 @@
+{
+  "type": "Atlas FX Preset",
+  "version": 1,
+  "effect": "analoguechorus",
+  "name": "Solina Strings",
+  "parameters": {
+    "analoguechorus_model": 3,
+    "analoguechorus_mix": 0.6
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "type": "Atlas FX Preset",
+  "version": 1,
+  "effect": "analoguewah",
+  "name": "Mu-Tron Down",
+  "parameters": {
+    "analoguewah_model": 2,
+    "analoguewah_mode": 2,
+    "analoguewah_range": 1,
+    "analoguewah_peak": 0.55,
+    "analoguewah_position": 1.0,
+    "analoguewah_envelope": -0.55,
+    "analoguewah_mix": 1.0
+  }
+}

@@ -1,0 +1,139 @@
+/* Copyright 2013-2019 Matt Tytel
+ *
+ * pylon is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * pylon is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with pylon.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
+#pragma once
+
+#include "JuceHeader.h"
+
+#include "synth_base.h"
+#include "fx_automation_parameter.h"
+#include "value_bridge.h"
+
+#include <array>
+
+class ValueBridge;
+
+class SynthPlugin : public SynthBase, public AudioProcessor, public ValueBridge::Listener {
+  public:
+    static constexpr int kSetProgramWaitMilliseconds = 500;
+    static constexpr int kNumFxAutomationChains = vital::kNumBuses + 1;
+    static constexpr int kFxAutomationSlotsPerChain = 20;
+    // Oscillator slots expose their per-type parameters through assignable
+    // automation proxies too; chain kNumFxAutomationChains + N is oscillator N.
+    static constexpr int kNumOscAutomationChains = vital::kNumOscillators;
+    static constexpr int kOscAutomationSlotsPerOscillator = 8;
+    static constexpr int kNumAutomationChains = kNumFxAutomationChains + kNumOscAutomationChains;
+    static int automationSlotsForChain(int chain) {
+      return chain < kNumFxAutomationChains ? kFxAutomationSlotsPerChain : kOscAutomationSlotsPerOscillator;
+    }
+
+    SynthPlugin();
+    virtual ~SynthPlugin();
+
+    SynthGuiInterface* getGuiInterface() override;
+    void beginChangeGesture(const std::string& name) override;
+    void endChangeGesture(const std::string& name) override;
+    void setValueNotifyHost(const std::string& name, vital::mono_float value) override;
+    const CriticalSection& getCriticalSection() override;
+    void pauseProcessing(bool pause) override;
+
+    void prepareToPlay(double sample_rate, int buffer_size) override;
+    void releaseResources() override;
+    void processBlock(AudioSampleBuffer&, MidiBuffer&) override;
+
+    AudioProcessorEditor* createEditor() override;
+    bool hasEditor() const override;
+
+    const String getName() const override;
+    bool supportsMPE() const override { return true; }
+
+    const String getInputChannelName(int channel_index) const override;
+    const String getOutputChannelName(int channel_index) const override;
+    bool isInputChannelStereoPair(int index) const override;
+    bool isOutputChannelStereoPair(int index) const override;
+
+    bool acceptsMidi() const override;
+    bool producesMidi() const override;
+    bool silenceInProducesSilenceOut() const override;
+    double getTailLengthSeconds() const override;
+    double getCpuUsagePercent() const;
+    double getFxSampleRate() const { return fx_sample_rate_.load(std::memory_order_relaxed); }
+
+    int getNumPrograms() override { return 1; }
+    int getCurrentProgram() override { return 0; }
+    void setCurrentProgram(int index) override { }
+    const String getProgramName(int index) override;
+    void changeProgramName(int index, const String& new_name) override { }
+
+    void getStateInformation(MemoryBlock& destData) override;
+    void setStateInformation(const void* data, int size_in_bytes) override;
+    AudioProcessorParameter* getBypassParameter() const override { return bypass_parameter_; }
+
+    void parameterChanged(const std::string& name, vital::mono_float value) override;
+
+    int assignFxParameterToAutomationSlot(const std::string& parameterName);
+    bool removeFxParameterAutomation(const std::string& parameterName);
+    String fxAutomationSlotNameForParameter(const std::string& parameterName) const;
+    void beginFxAutomationGesture(const std::string& parameterName);
+    void endFxAutomationGesture(const std::string& parameterName);
+    void clearFxAutomationForPrefix(const std::string& parameterPrefix);
+    void swapFxAutomationPrefixes(const std::string& firstPrefix, const std::string& secondPrefix);
+    // True for parameters reachable through an automation proxy (FX slot and oscillator slot parameters).
+    bool hasAutomationProxy(const std::string& parameterName) const {
+      return automationChainForParameter(parameterName) >= 0;
+    }
+    // The slot control a legacy fixed-source parameter name (sample_*, granular_*,
+    // spectral_*, noise_*, arp destinations) maps to, or empty.
+    static std::string legacyAliasTarget(const std::string& parameterName);
+
+    // Bus 0 is the main effects chain; buses 1..kNumBuses are the routed buses.
+    void setFxBusEnabled(int bus, bool enabled);
+    void clearFxBus(int bus);
+    json fxBusPreset(int bus);
+    bool loadFxBusPreset(int bus, const json& preset, String& error);
+
+  private:
+    void updateFxSampleRate();
+    std::atomic<double> fx_sample_rate_ { 44100.0 };
+    void updateHostLatency();
+    void updateLatencyAfterControlChange(const std::string& name);
+    AudioProcessLoadMeasurer cpu_load_;
+    std::atomic<uint32> cpu_last_render_ms_ { 0 };
+    ValueBridge* bypass_parameter_;
+    double last_seconds_time_;
+    bool was_playing_;
+    bool was_bypassed_ = false;
+
+    AudioPlayHead::CurrentPositionInfo position_info_;
+
+    std::map<std::string, ValueBridge*> bridge_lookup_;
+    std::map<std::string, FxAutomationBinding> fx_automation_bindings_;
+    std::array<std::array<FxAutomationParameter*, kFxAutomationSlotsPerChain>,
+               kNumAutomationChains> fx_automation_parameters_ {};
+
+    FxAutomationParameter* fxAutomationParameterForTarget(const std::string& parameterName) const;
+    // The automation chain a proxied parameter belongs to (FX chain or oscillator slot), or -1.
+    int automationChainForParameter(const std::string& parameterName) const;
+    // Oscillator slot parameters without a direct host parameter; reachable through proxies.
+    bool isProxiedSourceParameter(const std::string& parameterName) const;
+    static bool legacySourceAliasTargetExists(const std::string& engineName);
+    bool setFxAutomationAssignment(int chain, int slot, const std::string& parameterName, bool notifyHost);
+    void clearFxAutomationAssignments(bool notifyHost);
+    json fxAutomationAssignmentsToJson() const;
+    void loadFxAutomationAssignments(const json& data);
+
+    JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SynthPlugin)
+};

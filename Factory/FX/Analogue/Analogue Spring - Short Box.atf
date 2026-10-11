@@ -1,0 +1,12 @@
+{
+  "type": "Atlas FX Preset",
+  "version": 1,
+  "effect": "analoguespring",
+  "name": "Short Box",
+  "parameters": {
+    "analoguespring_tank": 0,
+    "analoguespring_dwell": 0.5,
+    "analoguespring_tone": 0.6,
+    "analoguespring_mix": 0.3
+  }
+}

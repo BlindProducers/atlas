@@ -1,0 +1,12 @@
+{
+  "type": "Atlas FX Preset",
+  "version": 1,
+  "effect": "analoguerotary",
+  "name": "Wide Room",
+  "parameters": {
+    "analoguerotary_model": 0,
+    "analoguerotary_speed": 0,
+    "analoguerotary_spread": 1.0,
+    "analoguerotary_mix": 0.8
+  }
+}

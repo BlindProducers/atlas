@@ -1,0 +1,15 @@
+{
+  "type": "Atlas FX Preset",
+  "version": 1,
+  "effect": "analoguewah",
+  "name": "Mu-Tron Lead",
+  "parameters": {
+    "analoguewah_model": 2,
+    "analoguewah_mode": 2,
+    "analoguewah_range": 0,
+    "analoguewah_peak": 1.0,
+    "analoguewah_position": 0.0,
+    "analoguewah_envelope": 0.4,
+    "analoguewah_mix": 1.0
+  }
+}

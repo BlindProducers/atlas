@@ -1,0 +1,16 @@
+{
+  "type": "Atlas FX Bus Preset",
+  "version": 1,
+  "slots": [
+    {
+      "effect": "analoguerotary",
+      "enabled": true,
+      "parameters": {
+        "analoguerotary_model": 0,
+        "analoguerotary_speed": 0,
+        "analoguerotary_spread": 1.0,
+        "analoguerotary_mix": 0.8
+      }
+    }
+  ]
+}

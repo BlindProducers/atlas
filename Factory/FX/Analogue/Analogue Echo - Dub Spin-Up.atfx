@@ -1,0 +1,24 @@
+{
+  "type": "Atlas FX Bus Preset",
+  "version": 1,
+  "slots": [
+    {
+      "effect": "analogueecho",
+      "enabled": true,
+      "parameters": {
+        "analogueecho_medium": 0,
+        "analogueecho_sync": 0,
+        "analogueecho_frequency": 1.736966,
+        "analogueecho_head_1": 1,
+        "analogueecho_head_2": 0,
+        "analogueecho_head_3": 1,
+        "analogueecho_feedback": 0.75,
+        "analogueecho_inertia": 0.8,
+        "analogueecho_drive": 0.45,
+        "analogueecho_bass": 3.0,
+        "analogueecho_treble": -2.0,
+        "analogueecho_mix": 0.4
+      }
+    }
+  ]
+}

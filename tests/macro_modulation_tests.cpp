@@ -1,0 +1,674 @@
+#include "JuceHeader.h"
+#include "slot_test_ids.h"
+#include "synth_plugin.h"
+#include "synth_editor.h"
+#include "sound_engine.h"
+#include "modulation_connection_processor.h"
+#include "value_bridge.h"
+#include "sample_source.h"
+#include "source_types.h"
+#include "file_source.h"
+#include "phase_modifier.h"
+#include "wave_source.h"
+#include "wavetable_creator.h"
+#include "wavetable_edit_model.h"
+
+#include <array>
+#include <cmath>
+#include <iostream>
+
+#if JUCE_MAC
+bool cpuMeterNativeAccessibilityMatches(juce::AccessibilityHandler& handler);
+#endif
+
+namespace {
+  int failures = 0;
+
+  void expect(bool condition, const std::string& message) {
+    if (!condition) {
+      std::cerr << "FAIL: " << message << '\n';
+      ++failures;
+    }
+  }
+
+  void close(float actual, float expected, const std::string& message, float tolerance = 1.0e-4f) {
+    expect(std::isfinite(actual) && std::abs(actual - expected) <= tolerance,
+           message + " (actual=" + std::to_string(actual) + ", expected=" + std::to_string(expected) + ")");
+  }
+
+  ValueBridge* parameter(SynthPlugin& synth, const std::string& name) {
+    for (auto* candidate : synth.getParameters()) {
+      auto* bridge = dynamic_cast<ValueBridge*>(candidate);
+      if (bridge && bridge->getParameterId().toStdString() == name)
+        return bridge;
+    }
+    return nullptr;
+  }
+
+  Component* titled(Component& parent, const String& title) {
+    if (parent.getTitle() == title)
+      return &parent;
+    for (auto* child : parent.getChildren()) {
+      if (auto* found = titled(*child, title))
+        return found;
+    }
+    return nullptr;
+  }
+
+  void prepare(SynthPlugin& synth, int oversampling = 0) {
+    synth.setRateAndBufferSizeDetails(48000.0, 128);
+    synth.prepareToPlay(48000.0, 128);
+    auto& controls = synth.getControls();
+    controls.at("oversampling")->set(oversampling);
+    synth.checkOversampling();
+    controls.at("osc_1_random_phase")->set(0.0f);
+    controls.at("osc_1_unison_voices")->set(1.0f);
+    controls.at("env_1_attack")->set(0.001f);
+    controls.at("env_1_decay")->set(0.001f);
+    controls.at("env_1_sustain")->set(1.0f);
+  }
+
+  void render(SynthPlugin& synth, int samples, bool note = false) {
+    while (samples > 0) {
+      const int block = std::min(128, samples);
+      AudioBuffer<float> audio(2, block);
+      MidiBuffer midi;
+      if (note)
+        midi.addEvent(MidiMessage::noteOn(1, 48, 1.0f), 0);
+      synth.processBlock(audio, midi);
+      note = false;
+      samples -= block;
+    }
+  }
+
+  vital::ModulationConnection* connect(SynthPlugin& synth, const std::string& source,
+                                       const std::string& destination, float amount = 1.0f) {
+    expect(synth.connectModulation(source, destination), "create " + source + " -> " + destination);
+    const int index = synth.getConnectionIndex(source, destination);
+    auto* connection = index >= 0 ? synth.getEngine()->getModulationBank().atIndex(index) : nullptr;
+    if (connection) {
+      const auto prefix = "modulation_" + std::to_string(connection->modulation_processor->index() + 1);
+      synth.getControls().at(prefix + "_amount")->set(amount);
+      synth.getControls().at(prefix + "_bipolar")->set(0.0f);
+    }
+    render(synth, 1);
+    return connection;
+  }
+
+
+  void renderMidi(SynthPlugin& synth, MidiBuffer& midi, int block = 128) {
+    AudioBuffer<float> audio(2, block);
+    synth.processBlock(audio, midi);
+  }
+
+  // A synced LFO on pitch, notes played at unrelated times. Trigger restarts
+  // with every note; Sync follows the song with the transport running and,
+  // with it stopped, restarts on the first note played from silence.
+  struct TestPlayHead : public AudioPlayHead {
+    bool playing = false; double bpm = 120.0; double ppq = 7.25;
+    Optional<PositionInfo> getPosition() const override {
+      PositionInfo info;
+      info.setIsPlaying(playing); info.setBpm(bpm); info.setPpqPosition(ppq);
+      info.setTimeInSeconds(ppq * 60.0 / bpm);
+      return info;
+    }
+  };
+
+  std::vector<std::vector<double>> lfoPitchCurves(int sync_type, bool playing, const std::vector<double>& starts,
+                                                  double length, double* origin_after_overlap = nullptr) {
+    SynthPlugin synth;
+    TestPlayHead head;
+    head.playing = playing;
+    prepare(synth);
+    synth.setPlayHead(&head);
+    auto& controls = synth.getControls();
+    controls.at("env_1_release")->set(0.05f);
+    controls.at("lfo_1_sync")->set(1.0f);        // tempo
+    controls.at("lfo_1_tempo")->set(8.0f);       // 1/4
+    controls.at("lfo_1_sync_type")->set(float(sync_type));
+    synth.connectModulation("lfo_1", "osc_1_transpose");
+    const int connection = synth.getConnectionIndex("lfo_1", "osc_1_transpose");
+    controls.at("modulation_" + std::to_string(connection + 1) + "_amount")->set(12.0f / 96.0f);
+    controls.at("modulation_" + std::to_string(connection + 1) + "_bipolar")->set(1.0f);
+    std::vector<float> audio;
+    double end = 0.0;
+    for (double start : starts) end = std::max(end, start + length + 0.3);
+    const int total = int(end * 48000);
+    for (int rendered = 0; rendered < total; rendered += 128) {
+      MidiBuffer midi;
+      for (size_t n = 0; n < starts.size(); ++n) {
+        const int on = int(starts[n] * 48000), off = int((starts[n] + length) * 48000);
+        if (off >= rendered && off < rendered + 128) midi.addEvent(MidiMessage::noteOff(1, 60 + int(n) * 7), off - rendered);
+        if (on >= rendered && on < rendered + 128) midi.addEvent(MidiMessage::noteOn(1, 60 + int(n) * 7, 0.8f), on - rendered);
+      }
+      AudioBuffer<float> buffer(2, 128);
+      synth.processBlock(buffer, midi);
+      for (int i = 0; i < 128; ++i) audio.push_back(synth.getEngine()->output()->buffer[i][0]);
+      if (playing) head.ppq += 128.0 / 48000.0 * head.bpm / 60.0;
+      if (origin_after_overlap && starts.size() > 1 && rendered <= int(starts[1] * 48000) &&
+          int(starts[1] * 48000) < rendered + 128)
+        *origin_after_overlap = synth.getEngine()->voiceClockOrigin();
+    }
+    std::vector<std::vector<double>> curves;
+    for (size_t n = 0; n < starts.size(); ++n) {
+      std::vector<double> curve;
+      const int on = int(starts[n] * 48000);
+      const double base = 261.6256 * std::pow(2.0, int(n) * 7 / 12.0);
+      for (int ms = 0; ms < 400; ms += 25) {
+        const int from = on + ms * 48 + 48, to = from + 960;
+        int crossings = 0, first = -1, last = -1;
+        for (int i = from + 1; i < to && i < int(audio.size()); ++i)
+          if (audio[size_t(i - 1)] <= 0.0f && audio[size_t(i)] > 0.0f) { ++crossings; if (first < 0) first = i; last = i; }
+        const double hz = crossings > 1 ? 48000.0 * (crossings - 1) / std::max(1, last - first) : 0.0;
+        curve.push_back(hz > 0.0 ? 12.0 * std::log2(hz / base) : 99.0);
+      }
+      curves.push_back(curve);
+    }
+    return curves;
+  }
+
+  double curveDifference(const std::vector<double>& a, const std::vector<double>& b) {
+    double worst = 0.0;
+    for (size_t i = 0; i < a.size(); ++i) worst = std::max(worst, std::abs(a[i] - b[i]));
+    return worst;
+  }
+
+  void testSyncedLfoNotesWithTransportStoppedAndPlaying() {
+    const std::vector<double> starts { 0.37, 1.81 };
+    auto trigger_stopped = lfoPitchCurves(0, false, starts, 0.45);
+    expect(curveDifference(trigger_stopped[0], trigger_stopped[1]) < 0.3,
+           "Trigger restarts the LFO with every note while the transport is stopped");
+    expect(trigger_stopped[0].front() < -4.5, "the pitch LFO starts at the bottom of its cycle");
+    auto trigger_playing = lfoPitchCurves(0, true, starts, 0.45);
+    expect(curveDifference(trigger_playing[0], trigger_playing[1]) < 0.3,
+           "Trigger restarts the LFO with every note while the transport runs");
+    auto sync_stopped = lfoPitchCurves(1, false, starts, 0.45);
+    expect(curveDifference(sync_stopped[0], sync_stopped[1]) < 0.3,
+           "with the transport stopped, a synced LFO starts with the first note played from silence");
+    expect(curveDifference(sync_stopped[0], trigger_stopped[0]) < 0.3,
+           "that first note hears the LFO from the start of its cycle");
+    auto sync_playing = lfoPitchCurves(1, true, starts, 0.45);
+    expect(curveDifference(sync_playing[0], sync_playing[1]) > 2.0,
+           "with the transport running, a synced LFO follows the song position, not the note");
+    double origin = -1.0;
+    lfoPitchCurves(1, false, { 0.37, 0.61 }, 0.6, &origin);
+    expect(std::abs(origin - 0.37) < 0.01,
+           "a note played while another sounds joins the running clock instead of restarting it");
+  }
+
+  void testSameSampleNoteOnOffDoesNotStick() {
+    SynthPlugin synth;
+    prepare(synth);
+    MidiBuffer midi;
+    midi.addEvent(MidiMessage::noteOn(1, 60, 1.0f), 10);
+    midi.addEvent(MidiMessage::noteOff(1, 60), 10);
+    renderMidi(synth, midi);
+    MidiBuffer empty;
+    renderMidi(synth, empty);
+    expect(synth.getEngine()->getNumPressedNotes() == 0,
+           "A zero-length host note (on then off at one sample) must not stay pressed");
+  }
+
+  void testArpeggiatorEnableAndDisableReleaseNotes() {
+    SynthPlugin synth;
+    prepare(synth);
+    auto& controls = synth.getControls();
+
+    // Key pressed with the arp off, released after it is switched on.
+    MidiBuffer midi;
+    midi.addEvent(MidiMessage::noteOn(1, 60, 1.0f), 0);
+    renderMidi(synth, midi);
+    controls.at("arp_1_on")->set(1.0f);
+    MidiBuffer release;
+    release.addEvent(MidiMessage::noteOff(1, 60), 0);
+    renderMidi(synth, release);
+    MidiBuffer empty;
+    for (int i = 0; i < 4; ++i)
+      renderMidi(synth, empty);
+    expect(synth.getEngine()->getNumPressedNotes() == 0,
+           "Releasing a key held from before the arpeggiator was enabled must release its voice");
+
+    // Arp playing a held key, then switched off while its step note sounds.
+    controls.at("arp_1_free_rate")->set(20.0f);
+    controls.at("arp_1_time_mode")->set(1.0f);
+    MidiBuffer hold;
+    hold.addEvent(MidiMessage::noteOn(1, 64, 1.0f), 0);
+    renderMidi(synth, hold);
+    for (int i = 0; i < 4; ++i)
+      renderMidi(synth, empty);
+    controls.at("arp_1_on")->set(0.0f);
+    MidiBuffer off;
+    off.addEvent(MidiMessage::noteOff(1, 64), 0);
+    renderMidi(synth, off);
+    for (int i = 0; i < 4; ++i)
+      renderMidi(synth, empty);
+    expect(synth.getEngine()->getNumPressedNotes() == 0,
+           "Switching the arpeggiator off must release the step note it was playing");
+  }
+
+
+  void testGranularGridFollowsPluginClock() {
+    SynthPlugin synth;
+    prepare(synth);
+    auto& controls = synth.getControls();
+    std::vector<float> ones(48000, 0.5f);
+    synth.getSample(slot_ids::kGranularSlot)->loadSample(ones.data(), static_cast<int>(ones.size()), 48000);
+    controls.at("osc_1_on")->set(0.0f);
+    controls.at(slot_ids::id("granular_on"))->set(1.0f);
+    controls.at("beats_per_minute")->set(2.0f);  // 120 BPM
+    controls.at(slot_ids::id("granular_timing_mode"))->set(1.0f);
+    controls.at(slot_ids::id("granular_grid_rate"))->set(4.0f);  // 1/16 = 6000 samples at 48 kHz
+    controls.at(slot_ids::id("granular_grain_size"))->set(20.0f);
+
+    std::vector<float> left;
+    MidiBuffer note, empty;
+    note.addEvent(MidiMessage::noteOn(1, 60, 1.0f), 0);
+    for (int block = 0; block < 110; ++block) {
+      AudioBuffer<float> audio(2, 128);
+      synth.processBlock(audio, block == 0 ? note : empty);
+      for (int i = 0; i < 128; ++i)
+        left.push_back(synth.getEngine()->output()->buffer[i][0]);
+    }
+    const auto peak = [&](int from, int to) {
+      float value = 0.0f;
+      for (int i = from; i < to; ++i)
+        value = std::max(value, std::abs(left[static_cast<size_t>(i)]));
+      return value;
+    };
+    // Grains at the grid lines 6000 and 12000 (20 ms = 960 samples long);
+    // nothing between them.
+    const float on_grid = std::min(peak(6000, 7000), peak(12000, 13000));
+    const float between = peak(8000, 11500);
+    expect(on_grid > 0.01f && between < on_grid * 0.05f,
+           "Granular grid timing must follow the plugin's host clock (on grid=" + std::to_string(on_grid) +
+           ", between=" + std::to_string(between) + ")");
+  }
+
+  void testEditorMacrosUpdateIndependently() {
+    SynthPlugin synth;
+    prepare(synth);
+    synth.getControls().at("osc_1_level")->set(0.0f);
+    std::array<vital::ModulationConnection*, vital::kNumMacros> routes {};
+    for (int i = 0; i < vital::kNumMacros; ++i)
+      routes[i] = connect(synth, "macro_control_" + std::to_string(i + 1),
+                          "osc_1_level", 1.0f / vital::kNumMacros);
+    render(synth, 48000, true);
+    SynthEditor editor(synth);
+    for (int i = 1; i <= vital::kNumMacros; ++i) {
+      const std::string id = "macro_control_" + std::to_string(i);
+      auto* slider = dynamic_cast<Slider*>(titled(editor, synth.getMacroName(i - 1)));
+      expect(slider != nullptr, "editor exposes " + id);
+      if (!slider)
+        continue;
+      slider->keyPressed(KeyPress(KeyPress::upKey));
+      close(parameter(synth, id)->getValue(), 0.01f, "keyboard immediately updates " + id);
+      auto handler = slider->createAccessibilityHandler();
+      handler->getValueInterface()->setValue(0.4);
+      close(parameter(synth, id)->getValue(), 0.4f, "accessibility immediately updates " + id);
+      render(synth, 128);
+      close(synth.getEngine()->getModulationSource(id)->buffer[0][0], 0.4f,
+            "next audio block reads " + id);
+      auto* route = routes[i - 1];
+      if (route) {
+        expect(route->modulation_processor->output()->buffer[127][0] > 0.0f,
+               id + " starts changing oscillator level in the next block");
+        render(synth, 4800);
+        close(route->modulation_processor->output()->buffer[127][0], 0.4f / vital::kNumMacros,
+              id + " reaches its target without touching another macro");
+        for (int previous = 0; previous < i - 1; ++previous)
+          close(routes[previous]->modulation_processor->output()->buffer[127][0],
+                0.4f / vital::kNumMacros, "moving " + id + " preserves previous macros");
+      }
+    }
+  }
+
+  void testMacroLevelMatchesDirectLevel() {
+    for (int oversampling : { 0, 1, 2, 3 }) {
+      SynthPlugin direct;
+      SynthPlugin routed;
+      prepare(direct, oversampling);
+      prepare(routed, oversampling);
+      direct.getControls().at("osc_1_level")->set(0.625f);
+      routed.getControls().at("osc_1_level")->set(0.0f);
+      parameter(routed, "macro_control_1")->setValueNotifyingHost(0.625f);
+      connect(routed, "macro_control_1", "osc_1_level");
+      render(direct, 48000);
+      render(routed, 48000);
+      render(direct, 4096, true);
+      render(routed, 4096, true);
+      float difference = 0.0f;
+      for (int i = 0; i < 128; ++i)
+        difference = std::max(difference, std::abs(direct.getEngine()->output()->buffer[i][0] -
+                                                  routed.getEngine()->output()->buffer[i][0]));
+      close(difference, 0.0f, "stationary macro matches direct gain at oversampling " +
+            std::to_string(oversampling), 1.0e-5f);
+
+      // Voices have already been created and rendered. A stale per-voice
+      // routing flag used to leave all but sample zero at the old gain.
+      direct.getControls().at("osc_1_level")->set(0.25f);
+      parameter(routed, "macro_control_1")->setValueNotifyingHost(0.25f);
+      render(direct, 48000);
+      render(routed, 48000);
+      difference = 0.0f;
+      for (int i = 0; i < 128; ++i)
+        difference = std::max(difference, std::abs(direct.getEngine()->output()->buffer[i][0] -
+                                                  routed.getEngine()->output()->buffer[i][0]));
+      close(difference, 0.0f, "moving macro matches direct gain at oversampling " +
+            std::to_string(oversampling), 1.0e-5f);
+    }
+  }
+
+  void testExistingVoiceReceivesRoutingConfiguration() {
+    vital::ModulationConnectionProcessor original(0);
+    original.init();
+    vital::cr::Value source(0.625f);
+    vital::cr::Value amount(1.0f);
+    vital::cr::Value power(0.0f);
+    original.plug(&source, vital::ModulationConnectionProcessor::kModulationInput);
+    original.plug(&amount, vital::ModulationConnectionProcessor::kModulationAmount);
+    original.plug(&power, vital::ModulationConnectionProcessor::kModulationPower);
+    std::unique_ptr<vital::Processor> existing_voice(original.clone());
+
+    original.setSourceSmoothing(true);
+    original.setControlRate(false);
+    original.setDestinationScale(1.0f);
+    for (int i = 0; i < 128; ++i)
+      original.output()->buffer[i] = -9.0f;
+    existing_voice->process(128);
+    for (int i = 0; i < 128; ++i) {
+      const float value = existing_voice->output()->buffer[i][0];
+      expect(value >= 0.0f && value <= 0.6251f,
+             "an existing voice fills every audio-rate macro sample, including " + std::to_string(i));
+    }
+    close(existing_voice->output()->buffer[127][0], 0.625f, "existing voice uses new smoothing setting");
+
+    // Reusing a modulation slot for another macro with the same amount and
+    // destination range must reset each voice's smoothing history as well.
+    source.set(0.125f);
+    original.setSourceSmoothing(true);
+    existing_voice->process(128);
+    close(existing_voice->output()->buffer[127][0], 0.125f, "slot reuse resets existing voice history");
+
+    original.setControlRate(true);
+    source.set(0.75f);
+    existing_voice->process(128);
+    const float smoothed = existing_voice->output()->buffer[0][0];
+    expect(smoothed > 0.125f && smoothed < 0.75f,
+           "control-rate macro destinations also use the updated smoothing setting");
+    original.setSourceSmoothing(false);
+    existing_voice->process(128);
+    close(existing_voice->output()->buffer[0][0], 0.75f,
+          "reusing a macro slot for an unsmoothed source turns smoothing off");
+  }
+
+  void testOversamplingChangesReachPlayingVoices() {
+    SynthPlugin synth;
+    prepare(synth);
+    auto* quality = parameter(synth, "oversampling");
+    expect(quality != nullptr, "Host exposes the oversampling setting");
+    if (!quality)
+      return;
+
+    for (int sample_rate : { 44100, 48000, 96000 }) {
+      synth.setRateAndBufferSizeDetails(sample_rate, 128);
+      synth.prepareToPlay(sample_rate, 128);
+      synth.getEngine()->allSoundsOff();
+      render(synth, 128, true);
+      for (int index : { 3, 0, 2, 1 }) {
+        quality->setValueNotifyingHost(quality->convertToPluginValue(static_cast<float>(index)));
+        render(synth, 128);
+        int expected = 1 << index;
+        if (sample_rate >= 88200)
+          expected = std::max(1, expected / 2);
+        const auto* source = synth.getEngine()->getModulationSource("macro_control_1");
+        expect(source->owner->getOversampleAmount() == expected,
+               "Host quality change applies at the next block at " + std::to_string(sample_rate) + " Hz");
+        expect(synth.getEngine()->getNumPressedNotes() == 1,
+               "Changing oversampling must preserve the held note");
+        bool finite = true;
+        for (int i = 0; i < 128; ++i)
+          finite &= std::isfinite(synth.getEngine()->output()->buffer[i][0]);
+        expect(finite, "Live oversampling transitions must produce finite audio");
+      }
+    }
+
+    // The editor uses the same host parameter path; verify its real keyboard
+    // callback rather than calling the engine's checkOversampling helper.
+    SynthEditor editor(synth);
+    auto* slider = dynamic_cast<Slider*>(titled(editor, "Oversampling"));
+    expect(slider != nullptr, "Editor exposes oversampling");
+    if (slider) {
+      slider->keyPressed(KeyPress(KeyPress::homeKey));
+      render(synth, 128);
+      expect(synth.getEngine()->getOversamplingAmount() == 8,
+             "Editor quality change must reach DSP without another control being moved");
+    }
+
+    MemoryBlock state;
+    synth.getStateInformation(state);
+    SynthPlugin restored;
+    restored.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+    restored.setRateAndBufferSizeDetails(48000.0, 128);
+    restored.prepareToPlay(48000.0, 128);
+    expect(restored.getEngine()->getModulationSource("macro_control_1")->owner->getOversampleAmount() == 8,
+           "Preparing restored state must apply the saved oversampling at the new sample rate");
+  }
+
+  void testCpuMeterBelongsToItsInstance() {
+    SynthPlugin active;
+    SynthPlugin idle;
+    prepare(active);
+    prepare(idle);
+    close(active.getCpuUsagePercent(), 0.0f, "CPU meter starts at zero");
+    for (int block : { 64, 128, 512, 256 }) {
+      AudioBuffer<float> audio(2, block);
+      MidiBuffer midi;
+      midi.addEvent(MidiMessage::noteOn(1, 60, 0.8f), 0);
+      active.processBlock(audio, midi);
+      const double load = active.getCpuUsagePercent();
+      expect(std::isfinite(load) && load > 0.0 && load <= 100.0,
+             "CPU meter measures actual variable-size host blocks");
+      close(idle.getCpuUsagePercent(), 0.0f, "CPU readings are independent for each instance");
+    }
+    AudioBuffer<float> empty(2, 0);
+    MidiBuffer midi;
+    active.processBlock(empty, midi);
+    expect(std::isfinite(active.getCpuUsagePercent()), "Zero-length blocks do not corrupt the CPU meter");
+    {
+      SynthEditor editor(active);
+      auto* meter = titled(editor, "CPU Usage");
+      auto* gain = titled(editor, "Global Gain");
+      expect(meter != nullptr && gain != nullptr, "Globals exposes CPU Usage and Global Gain");
+      if (meter != nullptr && gain != nullptr) {
+        const auto& order = editor.getKeyboardFocusOrder();
+        const auto position = std::find(order.begin(), order.end(), meter);
+        expect(position != order.end() && std::next(position) != order.end() && *std::next(position) == gain,
+               "CPU meter is immediately before Global Gain in keyboard order");
+        const auto meter_bounds = editor.getLocalArea(meter, meter->getLocalBounds());
+        const auto gain_bounds = editor.getLocalArea(gain, gain->getLocalBounds());
+        expect(meter_bounds.getY() < gain_bounds.getY() && gain_bounds.getY() - meter_bounds.getBottom() < 48,
+               "CPU meter is visually above Global Gain");
+        const String snapshot_directory = SystemStats::getEnvironmentVariable("ATLAS_UI_SNAPSHOT_DIR", {});
+        if (snapshot_directory.isNotEmpty()) {
+          File directory(snapshot_directory);
+          expect(directory.createDirectory().wasOk(), "Create optional UI snapshot directory");
+          auto* group = meter->getParentComponent();
+          auto snapshot = group->createComponentSnapshot(group->getLocalBounds());
+          FileOutputStream output(directory.getChildFile("globals.png"));
+          output.setPosition(0);
+          output.truncate();
+          PNGImageFormat png;
+          expect(output.openedOk() && png.writeImageToStream(snapshot, output), "Render Globals for visual review");
+        }
+        auto handler = meter->createAccessibilityHandler();
+        auto* value = handler->getValueInterface();
+        expect(value != nullptr && value->isReadOnly() && value->getCurrentValueAsString().endsWith("%"),
+               "CPU percentage is exposed as a read-only screen-reader value");
+        if (value != nullptr) {
+          render(active, 128, true);
+          const double before = value->getCurrentValue();
+          expect(before > 0.0 && handler->getRole() == AccessibilityRole::progressBar,
+                 "CPU load remains a live indicator");
+          expect(handler->getTitle() == "CPU Usage, " + String(before, 1) + " percent",
+                 "CPU indicator's spoken name includes the current percentage");
+          expect(handler->getDescription().isEmpty(),
+                 "A generic description must not replace the CPU percentage in VoiceOver's label");
+#if JUCE_MAC
+          expect(cpuMeterNativeAccessibilityMatches(*handler),
+                 "Native macOS CPU indicator exposes its percentage and remains read-only");
+#endif
+          value->setValue(99.0);
+          value->setValueAsString("99%");
+          close(value->getCurrentValue(), before, "CPU reading cannot be edited");
+          active.releaseResources();
+          expect(handler->getTitle() == "CPU Usage, 0.0 percent",
+                 "CPU indicator's spoken name updates to zero when processing stops");
+#if JUCE_MAC
+          expect(cpuMeterNativeAccessibilityMatches(*handler),
+                 "Native macOS CPU percentage updates after processing stops");
+#endif
+          prepare(active);
+          render(active, 128, true);
+          expect(value->getCurrentValue() > 0.0 && handler->getTitle() != "CPU Usage, 0.0 percent",
+                 "CPU indicator's spoken name updates when processing resumes");
+        }
+      }
+      const auto& order = editor.getKeyboardFocusOrder();
+      int previous = -1;
+      for (const char* stage : { "Tempo Sync", "Delay", "Attack", "Attack Power", "Hold", "Decay",
+                                 "Decay Power", "Sustain", "Release", "Release Power" }) {
+        auto* control = titled(editor, String("Envelope 1 ") + stage);
+        const auto found = std::find(order.begin(), order.end(), control);
+        expect(control != nullptr && found != order.end(), std::string("Envelope exposes ") + stage);
+        if (found != order.end()) {
+          const int current = static_cast<int>(std::distance(order.begin(), found));
+          expect(current > previous, "Envelope parameters follow their stage order");
+          previous = current;
+        }
+      }
+    }
+    Thread::sleep(1100);
+    close(active.getCpuUsagePercent(), 0.0f, "CPU meter clears when the host stops calling the instance");
+    active.releaseResources();
+    close(active.getCpuUsagePercent(), 0.0f, "CPU meter resets when processing resources are released");
+    active.prepareToPlay(96000.0, 256);
+    close(active.getCpuUsagePercent(), 0.0f, "CPU meter resets when the host sample rate changes");
+  }
+
+  void testSharedSliderKeyboardNavigation() {
+    ParameterSlider slider;
+    slider.setRange(-100.0, 100.0);
+    slider.setValue(0.0, dontSendNotification);
+    slider.keyPressed(KeyPress(KeyPress::rightKey));
+    close(slider.getValue(), 2.0f, "Auxiliary sliders use one-percent arrow changes");
+    slider.keyPressed(KeyPress(KeyPress::leftKey, ModifierKeys::shiftModifier, 0));
+    close(slider.getValue(), 1.8f, "Auxiliary sliders support fine adjustment");
+    slider.keyPressed(KeyPress(KeyPress::pageDownKey));
+    close(slider.getValue(), -18.2f, "Auxiliary sliders use ten-percent page changes");
+    slider.keyPressed(KeyPress(KeyPress::homeKey));
+    close(slider.getValue(), 100.0f, "Home preserves the Delay maximum convention");
+    slider.keyPressed(KeyPress(KeyPress::endKey));
+    close(slider.getValue(), -100.0f, "End preserves the Delay minimum convention");
+    slider.setRange(0.0, 3.0, 1.0);
+    slider.setValue(0.0, dontSendNotification);
+    slider.keyPressed(KeyPress(KeyPress::rightKey, ModifierKeys::shiftModifier, 0));
+    close(slider.getValue(), 1.0f, "Indexed choices retain whole steps with Shift");
+  }
+
+  void testHostTailIncludesSustainedFeedback() {
+    SynthPlugin synth;
+    prepare(synth);
+    synth.getControls().at("delay_on")->set(1.0f);
+    synth.getControls().at("delay_feedback")->set(1.0f);
+    synth.getControls().at("delay_dry_wet")->set(1.0f);
+    expect(std::isinf(synth.getTailLengthSeconds()) && synth.getTailLengthSeconds() > 0.0,
+           "Unity feedback requires an unbounded positive host tail, not silence or a fixed timeout");
+    synth.getControls().at("env_1_release")->set(2.0f); // Sixteen-second release.
+    expect(synth.getTailLengthSeconds() >= 16.0,
+           "Host tail must also cover the amplitude envelope's release");
+  }
+}
+
+#include "editor_accessibility_tests.h"
+
+int main(int argc, char** argv) {
+  ScopedJuceInitialiser_GUI juce;
+  if (argc > 1 && String(argv[1]) == "--editor-rebuild-focus") {
+    testEditorRebuildFocus();
+    if (failures == 0)
+      std::cout << "Atlas editor rebuild focus tests passed\n";
+    return failures == 0 ? 0 : 1;
+  }
+  if (argc > 1 && String(argv[1]) == "--preset-refresh-probe") {
+    // Timing only: a refresh of the user's real library.
+    SynthPlugin synth;
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    for (int pass = 0; pass < 2; ++pass) {
+      const auto start = Time::getMillisecondCounterHiRes();
+      editor.refreshPresetLibrary();
+      while (editor.isPresetLibraryBusy() && Time::getMillisecondCounterHiRes() - start < 120000.0)
+        MessageManager::getInstance()->runDispatchLoopUntil(20);
+      std::cout << "refresh " << pass + 1 << ": " << editor.presetLibrarySize() << " presets in "
+                << int(Time::getMillisecondCounterHiRes() - start) << " ms\n";
+    }
+    return 0;
+  }
+  if (argc > 2 && String(argv[1]) == "--preset-load-probe") {
+    // Timing only: how long loading a preset and refreshing the editor take.
+    SynthPlugin synth;
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    Array<File> files;
+    File(String(argv[2])).findChildFiles(files, File::findFiles, true, "*.vital;*.atp");
+    for (int i = 0; i < jmin(8, files.size()); ++i) {
+      const File& file = files.getReference(i * jmax(1, files.size() / 8));
+      std::string error;
+      const auto start = Time::getMillisecondCounterHiRes();
+      synth.loadFromFile(file, error);
+      const auto loaded = Time::getMillisecondCounterHiRes();
+      editor.updateFullGui();
+      const auto refreshed = Time::getMillisecondCounterHiRes();
+      std::cout << file.getFileName() << " (" << file.getSize() / 1024 << " KB): load " << int(loaded - start)
+                << " ms, editor refresh " << int(refreshed - loaded) << " ms\n";
+    }
+    return 0;
+  }
+  if (argc > 1 && String(argv[1]) == "--editor-accessibility") {
+    testPresetGroupWorksWithoutKeyboardFocus();
+    testWavetableEditorReturnsFocusToItsOscillator();
+    testFilterFxModelControlsAndValues();
+    testGranularSizeModeNamesBothChoices();
+    testSlotTypeRowsFollowTheType();
+    testWavetableEditingOnASlotSwitchedToWavetable();
+    testEffectMoveKeepsFocusAcrossTimerTick();
+    testOscillatorRowGroups();
+    testWavetableEditorLayersAndInterpolation();
+    testPresetAutoloadAndRefresh();
+    testConvolutionPredelayRows();
+    testFractionalModulationAmountOnTranspose();
+    testFxBusControlsAndFocus();
+    testEffectSlotContextMenu();
+    testModulationSlotTitlesDescribeOneRoute();
+    testFullGuiRefreshRebuildsEffectRows();
+    testWavetableFilterRows();
+    testWavetableFilterLoadKeepsFocus();
+    if (failures == 0)
+      std::cout << "Atlas editor accessibility tests passed\n";
+    return failures == 0 ? 0 : 1;
+  }
+  testCpuMeterBelongsToItsInstance();
+  testSharedSliderKeyboardNavigation();
+  testExistingVoiceReceivesRoutingConfiguration();
+  testOversamplingChangesReachPlayingVoices();
+  testHostTailIncludesSustainedFeedback();
+  testEditorMacrosUpdateIndependently();
+  testMacroLevelMatchesDirectLevel();
+  testSameSampleNoteOnOffDoesNotStick();
+  testArpeggiatorEnableAndDisableReleaseNotes();
+  testGranularGridFollowsPluginClock();
+  testSyncedLfoNotesWithTransportStoppedAndPlaying();
+  if (failures == 0)
+    std::cout << "Atlas macro tests passed\n";
+  return failures == 0 ? 0 : 1;
+}

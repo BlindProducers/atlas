@@ -1,0 +1,436 @@
+desc:Corpus
+author:Quorax / OpenAI
+version:1.0.0
+tags:resonator physical modeling stereo MIDI
+// Original modal-resonator implementation. No Ableton or AAS code is used.
+// This is an approximation, not a bit-exact reproduction of Corpus.
+// Install this file in REAPER's resource directory, under Effects/Quorax.
+// Native sliders only. No graphics, mouse-only controls, or external files.
+// REAPER 6.74+ recommended. Written in EEL2, the language used by JSFX.
+
+in_pin:Input left
+in_pin:Input right
+out_pin:Output left
+out_pin:Output right
+
+slider1:0<0,6,1{Beam,Marimba,String,Membrane,Plate,Pipe,Tube}>Resonator model
+slider2:1<0,2,1{Eco (8 modes),Normal (20 modes),High (40 modes)}>Quality
+slider3:130.8128<20,5000,0.01:log>Tune (Hz, when MIDI pitch is off)
+slider4:0<0,1,1{Off,On}>MIDI pitch tracking
+slider5:0<-48,48,1>MIDI transpose (semitones)
+slider6:0<-100,100,0.1>Fine tune (cents)
+slider7:1.2<0.02,30,0.01:log>Decay (seconds to minus 60 dB)
+slider8:-20<-100,100,1>Material (soft to metallic, solid models)
+slider9:0<-100,100,1>Brightness (solid models)
+slider10:0<-100,100,1>Inharmonics (compress to stretch, solid models)
+slider11:1.3<0.25,4,0.01>Ratio (Membrane and Plate)
+slider12:35<0,100,1>Hit position (center to edge, solid models)
+slider13:25<0,100,1>Listen left (center to edge, solid models)
+slider14:35<0,100,1>Listen right (center to edge, solid models)
+slider15:0<-100,100,0.1>Spread (total stereo detune in cents)
+slider16:100<0,100,1>Stereo width (percent)
+slider17:50<0,100,1>Radius (small to large, Pipe and Tube)
+slider18:0<0,100,1>Opening (closed to open, Pipe only)
+slider19:0<0,24,0.01>LFO amount (semitones)
+slider20:0<0,6,1{Sine,Square,Triangle,Saw up,Saw down,Random stepped,Random smooth}>LFO shape
+slider21:0<0,1,1{Free Hz,Tempo sync}>LFO clock
+slider22:0.5<0.01,20,0.01:log>LFO rate (Hz)
+slider23:4<0,9,1{4 bars,2 bars,1 bar,1/2 note,1/4 note,1/8 note,1/16 note,1/32 note,1/8 triplet,1/8 dotted}>LFO sync division (4 beats per bar)
+slider24:0<0,360,1>LFO stereo phase (degrees)
+slider25:0<-100,100,1>LFO spin (percent, free clock only)
+slider26:0<0,360,1>LFO offset (degrees)
+slider27:0<0,1,1{Off,On}>Wet band-pass filter
+slider28:1500<20,18000,1:log>Filter frequency (Hz)
+slider29:3<0.1,6,0.01>Filter bandwidth (octaves)
+slider30:0<0,100,1>Bleed (percent, solid models)
+slider31:0<-24,24,0.1>Excitation gain (dB)
+slider32:0<-24,24,0.1>Wet gain (dB)
+slider33:35<0,100,1>Dry/Wet (percent, preserves tails)
+slider34:0<-24,12,0.1>Output gain (dB)
+slider35:1<0,1,1{Off,On}>Output peak limiter
+slider36:0<0,16,1{All,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16}>MIDI channel (bus 1)
+slider37:0<0,1,1{Last held note,Lowest held note}>MIDI note priority
+slider38:2<0,48,1>MIDI pitch bend range (semitones)
+slider39:0<0,100,1>MIDI off decay (percent, zero ignores note-off)
+slider40:10<0,500,1>Pitch glide (milliseconds)
+slider41:0<0,1,1{Run,Mute and clear}>Panic
+
+@init
+// Memory map, in doubles. No global/shared memory is used.
+// 0..1279: 40 mode records with a 32-cell stride.
+// 2048..3775: 576 rectangular candidates, each ratio/m/n.
+// 4096..6143: per-channel held-note timestamps.
+// 6144..8191: physical key-down counts (including repeated note-ons).
+// 8192..8207: sustain; 8224..8239: pitch bends.
+// 16384..32767: 4096 queued MIDI events, each offset/status/data1/data2.
+memset(0,0,32768);
+modes=0; candidates=2048; held=4096; keys=6144;
+sustain=8192; bends=8224; events=16384;
+max_modes=40; stride=32; control_period=32;
+twopi=2*$pi; ln2=log(2); ln1000=log(1000);
+denormal_floor=pow(10,-25);
+smooth_a=1-exp(-1/(0.005*srate));
+dc_r=exp(-twopi*8/srate);
+limit_release=exp(-1/(0.080*srate));
+lim_gain=1; last_model=-1; last_quality=-1; last_ratio=-1;
+last_channel=-1; stamp=0; active_key=-1; active_count=0;
+last_midi_note=60; note_seen=0; phase_l=0; phase_r=0;
+pitch_l=slider3; pitch_r=slider3; clock=0; first_coeff=1;
+mix_s=slider33*0.01; excite_s=10^(slider31/20);
+wet_s=10^(slider32/20); out_s=10^(slider34/20);
+width_s=slider16*0.01; bleed_s=slider30*0.01;
+filter_s=slider27; gate_s=1; panic_s=1;
+filter_g=tan($pi*min(slider28,srate*0.42)/srate);
+filter_k=2;
+input_prev_l=input_prev_r=input_dc_l=input_dc_r=0;
+wet_dc_l=wet_dc_r=wet_prev_l=wet_prev_r=0;
+bp_l.ic1=bp_l.ic2=bp_r.ic1=bp_r.ic2=0;
+panic_cleared=0;
+dirty=1; built=0; last_play=0; last_block_end=-1;
+pdc_delay=0;
+ext_midi_bus=1;
+
+function clamp(x,lo,hi) ( min(hi,max(lo,x)); );
+
+function clear_resonance() local(i,p) (
+  i=0;
+  loop(max_modes,
+    p=modes+i*stride;
+    p[15]=p[16]=p[17]=p[18]=0;
+    i+=1;
+  );
+  wet_dc_l=wet_dc_r=wet_prev_l=wet_prev_r=0;
+  bp_l.ic1=bp_l.ic2=bp_r.ic1=bp_r.ic2=0;
+);
+
+function reset_notes() (
+  memset(held,0,2048); memset(keys,0,2048);
+  memset(sustain,0,16); memset(bends,0,16);
+  active_key=-1; active_count=0; note_seen=0; stamp=0;
+);
+
+function choose_note() local(i,best,best_stamp,best_note,n) (
+  best=-1; best_stamp=-1; best_note=128; active_count=0;
+  i=0;
+  loop(2048,
+    held[i]>0 ? (
+      active_count+=1; n=i%128;
+      ((slider37==0 && held[i]>best_stamp) ||
+       (slider37==1 && (n<best_note || (n==best_note && held[i]>best_stamp)))) ? (
+        best=i; best_stamp=held[i]; best_note=n;
+      );
+    );
+    i+=1;
+  );
+  active_key=best;
+  best>=0 ? (last_midi_note=best%128; last_midi_channel=floor(best/128););
+);
+
+function handle_midi(status,d1,d2) local(kind,ch,k,i,base) (
+  kind=status&240; ch=status&15; k=ch*128+d1;
+  (kind==144 && d2>0) ? (
+    stamp+=1; held[k]=stamp; keys[k]+=1; note_seen=1;
+    choose_note();
+  ) : (kind==128 || (kind==144 && d2==0)) ? (
+    keys[k]=max(0,keys[k]-1);
+    (keys[k]==0 && sustain[ch]==0) ? held[k]=0;
+    choose_note();
+  ) : kind==224 ? (
+    bends[ch]=clamp((d1+d2*128-8192)/8192,-1,1);
+  ) : kind==176 ? (
+    d1==64 ? (
+      sustain[ch]=(d2>=64);
+      sustain[ch]==0 ? (
+        i=0; base=ch*128;
+        loop(128, keys[base+i]==0 ? held[base+i]=0; i+=1;);
+        choose_note();
+      );
+    ) : (d1==120 || d1==123) ? (
+      base=ch*128;
+      memset(keys+base,0,128);
+      (d1==120 || sustain[ch]==0) ? memset(held+base,0,128);
+      choose_note();
+      d1==120 ? clear_resonance();
+    ) : d1==121 ? (
+      sustain[ch]=0; bends[ch]=0; i=0; base=ch*128;
+      loop(128, keys[base+i]==0 ? held[base+i]=0; i+=1;);
+      choose_note();
+    );
+  );
+);
+
+function position_gain(m,n,pos) local(x,y) (
+  x=0.5-0.49*pos; y=0.5-0.47*pos;
+  n>0 ? sin($pi*m*x)*sin($pi*n*y) : sin($pi*m*x);
+);
+
+function build_modes() local(i,j,k,p,c,m,n,r,rr,best,best_r,tmp,
+                             hit,left,right,amp,d,rad,energy_l,energy_r) (
+  model=floor(clamp(slider1,0,6));
+  mode_count=slider2==0 ? 8 : slider2==1 ? 20 : 40;
+  // Pipe/Tube use a fixed 40-mode modal approximation.
+  model>=5 ? mode_count=40;
+  topology=(model!=last_model || mode_count!=last_quality ||
+            ((model==3 || model==4) && slider11!=last_ratio));
+  topology ? (
+    // Select the lowest physical modes from a rectangular 24 x 24 grid.
+    (model==3 || model==4) ? (
+      i=0; m=1; rr=slider11*slider11;
+      loop(24,
+        n=1;
+        loop(24,
+          c=candidates+3*i;
+          r=(m*m+n*n*rr)/(1+rr);
+          c[0]=model==3 ? sqrt(r) : r; c[1]=m; c[2]=n;
+          n+=1; i+=1;
+        );
+        m+=1;
+      );
+      i=0;
+      loop(mode_count,
+        best=i; best_r=candidates[3*i]; j=i+1;
+        loop(576-i-1,
+          candidates[3*j]<best_r ? (best=j; best_r=candidates[3*j];);
+          j+=1;
+        );
+        k=0;
+        loop(3,
+          tmp=candidates[3*i+k];
+          candidates[3*i+k]=candidates[3*best+k];
+          candidates[3*best+k]=tmp; k+=1;
+        );
+        i+=1;
+      );
+    );
+  );
+  energy_l=energy_r=0; i=0; rad=slider17*0.01;
+  loop(max_modes,
+    p=modes+i*stride; m=i+1; n=0;
+    i<mode_count ? (
+      model==0 ? (
+        // Free-free beam frequency roots; higher roots use their asymptote.
+        r=i==0 ? 1 : i==1 ? 2.756538 : i==2 ? 5.403917 :
+          sqr((i+1.5)*$pi/4.730040745);
+      ) : model==1 ? (
+        // Marimba-inspired undercut bar spectrum, first modes near 1:4:10.
+        r=i==0 ? 1 : i==1 ? 4 : i==2 ? 10 : sqr(i+1)*1.12;
+      ) : model==2 ? r=m : (model==3 || model==4) ? (
+        c=candidates+3*i; r=c[0]; m=c[1]; n=c[2];
+      ) : model==5 ? (
+        r=(2*i+1+slider18*0.01)/(1+slider18*0.01);
+      ) : r=m;
+      model<5 ? (
+        r=pow(r,exp(slider10*0.004));
+        hit=position_gain(m,n,slider12*0.01);
+        left=position_gain(m,n,slider13*0.01);
+        right=position_gain(m,n,slider14*0.01);
+        amp=pow(r,slider9*0.008-0.65);
+        d=slider7*pow(r,slider8*0.008);
+      ) : (
+        hit=left=right=1;
+        amp=pow(r,-0.6-0.45*(1-rad));
+        d=slider7*(0.35+1.3*rad)/(1+pow(r-1,1.15)*(0.2*(1-rad)+0.005));
+      );
+      p[0]=r; p[1]=hit*left*amp; p[2]=hit*right*amp;
+      p[19]=clamp(d,0.005,60); p[20]=m; p[21]=n;
+      energy_l+=sqr(p[1]); energy_r+=sqr(p[2]);
+    ) : (
+      p[0]=1; p[1]=p[2]=0; p[19]=0.02;
+      p[15]=p[16]=p[17]=p[18]=0;
+    );
+    i+=1;
+  );
+  // Fixed floor preserves position nulls instead of amplifying them away.
+  norm=0.65/sqrt(max(1,(energy_l+energy_r)*0.5));
+  last_model=model; last_quality=mode_count; last_ratio=slider11;
+  built=1;
+);
+
+function wave(phase,shape) local(p,cycle,a,b,t) (
+  p=phase-floor(phase);
+  shape==0 ? sin(twopi*p) :
+  shape==1 ? (p<0.5 ? 1 : -1) :
+  shape==2 ? (1-4*abs(p-0.5)) :
+  shape==3 ? (2*p-1) :
+  shape==4 ? (1-2*p) : (
+    // Deterministic random values keep tempo-synced renders repeatable.
+    cycle=floor(phase);
+    a=sin(cycle*127.1+311.7)*43758.5453; a=2*(a-floor(a))-1;
+    b=sin((cycle+1)*127.1+311.7)*43758.5453; b=2*(b-floor(b))-1;
+    t=p*p*(3-2*p);
+    shape==5 ? a : a+(b-a)*t;
+  );
+);
+
+function update_coefficients() local(i,p,base,ml,mr,pl,pr,off,
+                                     gl,gr,f,angle,r,a,b,aa,bb,ag,coeffmix,d) (
+  off=slider26/360;
+  pl=phase_l+off;
+  pr=phase_r+off+(slider20<5 ? slider24/360 : 0.371);
+  ml=wave(pl,slider20); mr=wave(pr,slider20);
+  base=(slider4 && note_seen) ?
+    440*pow(2,(last_midi_note-69+slider5+bends[last_midi_channel]*slider38)/12) : slider3;
+  base*=pow(2,slider6/1200);
+  target_l=clamp(base*pow(2,(slider15*0.005+ml*slider19)/12),15,srate*0.40);
+  target_r=clamp(base*pow(2,(-slider15*0.005+mr*slider19)/12),15,srate*0.40);
+  ag=slider40<=0 ? 1 : 1-exp(-control_period/(slider40*0.001*srate));
+  first_coeff ? (pitch_l=target_l; pitch_r=target_r;) : (
+    pitch_l+=ag*(target_l-pitch_l); pitch_r+=ag*(target_r-pitch_r);
+  );
+  coeffmix=first_coeff ? 1 : 1-exp(-control_period/(0.003*srate));
+  i=0;
+  loop(mode_count,
+    p=modes+i*stride; d=p[19];
+    (note_seen && active_count==0 && slider39>0) ?
+      d=min(d,0.003+2*pow(1-slider39*0.01,3));
+    r=exp(-ln1000/(srate*d));
+    f=pitch_l*p[0];
+    gl=clamp((srate*0.46-f)/(srate*0.04),0,1);
+    angle=twopi*min(f,srate*0.46)/srate;
+    a=r*cos(angle); b=r*sin(angle);
+    f=pitch_r*p[0];
+    gr=clamp((srate*0.46-f)/(srate*0.04),0,1);
+    angle=twopi*min(f,srate*0.46)/srate;
+    aa=r*cos(angle); bb=r*sin(angle);
+    // Complex-pole interpolation stays inside the unit disc.
+    p[7]=(a-p[3])/control_period; p[8]=(b-p[4])/control_period;
+    p[9]=(aa-p[5])/control_period; p[10]=(bb-p[6])/control_period;
+    gl*=norm*p[1]*sqrt(1-r*r); gr*=norm*p[2]*sqrt(1-r*r);
+    p[13]=(gl-p[11])*coeffmix/control_period;
+    p[14]=(gr-p[12])*coeffmix/control_period;
+    first_coeff ? (
+      p[3]=a; p[4]=b; p[5]=aa; p[6]=bb;
+      p[7]=p[8]=p[9]=p[10]=0;
+      p[11]=gl; p[12]=gr; p[13]=p[14]=0;
+    );
+    i+=1;
+  );
+  first_coeff=0;
+);
+
+function bandpass(x,g,k) instance(ic1,ic2) local(a1,v1,v2,v3) (
+  // Topology-preserving state-variable filter, unity peak band-pass.
+  a1=1/(1+g*(g+k)); v3=x-ic2;
+  v1=a1*ic1+g*a1*v3; v2=ic2+g*v1;
+  ic1=2*v1-ic1; ic2=2*v2-ic2;
+  k*v1;
+);
+
+@slider
+dirty=1;
+excite_t=10^(slider31/20); wet_t=10^(slider32/20); out_t=10^(slider34/20);
+mix_t=slider33*0.01; width_t=slider16*0.01;
+bleed_t=slider1<5 ? slider30*0.01 : 0;
+filter_gt=tan($pi*min(slider28,srate*0.42)/srate);
+filter_kt=pow(2,slider29*0.5)-pow(2,-slider29*0.5);
+beats=slider23==0 ? 16 : slider23==1 ? 8 : slider23==2 ? 4 :
+  slider23==3 ? 2 : slider23==4 ? 1 : slider23==5 ? 0.5 :
+  slider23==6 ? 0.25 : slider23==7 ? 0.125 : slider23==8 ? (1/3) : 0.75;
+ext_tail_size=ceil(65*srate);
+
+@block
+slider36!=last_channel ? (reset_notes(); last_channel=slider36;);
+dirty ? (build_modes(); choose_note(); dirty=0;);
+// Clear held keys when transport stops, without cutting the audio tail.
+(last_play&1) && !(play_state&1) ? (
+  memset(held,0,2048); memset(keys,0,2048); memset(sustain,0,16);
+  active_count=0; active_key=-1;
+);
+// A seek must not leave keys stuck after their note-offs are skipped.
+((play_state&1) && last_block_end>=0 && abs(play_position-last_block_end)>0.1) ? (
+  memset(held,0,2048); memset(keys,0,2048); memset(sustain,0,16);
+  active_count=0; active_key=-1;
+);
+last_play=play_state;
+last_block_end=play_position+samplesblock/srate;
+slider21 ? (
+  lfo_hz=max(1,tempo)/(60*beats); lfo_inc_l=lfo_inc_r=lfo_hz/srate;
+  (play_state&1) ? phase_l=phase_r=beat_position/beats;
+) : (
+  lfo_inc_l=slider22*pow(2,slider25*0.005)/srate;
+  lfo_inc_r=slider22*pow(2,-slider25*0.005)/srate;
+);
+event_count=0; event_index=0; sample_offset=0; queue_overflow=0;
+while(midirecv(moff,mstatus,md1,md2)) (
+  // Preserve all buses, channels and offsets. midirecv sets midi_bus for
+  // midisend. SysEx passes through automatically; only bus 1 controls pitch.
+  midisend(moff,mstatus,md1,md2);
+  (midi_bus==0 && (slider36==0 || (mstatus&15)==slider36-1)) ? (
+    event_count<4096 ? (
+      ep=events+event_count*4;
+      ep[0]=moff; ep[1]=mstatus; ep[2]=md1; ep[3]=md2;
+      event_count+=1;
+    ) : queue_overflow=1;
+  );
+);
+queue_overflow ? (reset_notes(); event_count=0;);
+
+@sample
+while(event_index<event_count && events[event_index*4]<=sample_offset) (
+  ep=events+event_index*4;
+  handle_midi(ep[1],ep[2],ep[3]);
+  event_index+=1;
+);
+sample_offset+=1;
+clock<=0 ? (update_coefficients(); clock=control_period;);
+clock-=1;
+phase_l+=lfo_inc_l; phase_r+=lfo_inc_r;
+
+mix_s+=smooth_a*(mix_t-mix_s);
+excite_s+=smooth_a*(excite_t-excite_s); wet_s+=smooth_a*(wet_t-wet_s);
+out_s+=smooth_a*(out_t-out_s); width_s+=smooth_a*(width_t-width_s);
+bleed_s+=smooth_a*(bleed_t-bleed_s); filter_s+=smooth_a*(slider27-filter_s);
+filter_g+=smooth_a*(filter_gt-filter_g); filter_k+=smooth_a*(filter_kt-filter_k);
+gate_t=(note_seen && active_count==0) ? 1-slider39*0.01 : 1;
+gate_s+=smooth_a*(gate_t-gate_s);
+panic_s+=smooth_a*((slider41==0)-panic_s);
+
+dry_l=spl0; dry_r=spl1;
+// Input high-pass prevents DC from driving the resonators.
+in_l=dry_l-input_prev_l+dc_r*input_dc_l;
+in_r=dry_r-input_prev_r+dc_r*input_dc_r;
+input_prev_l=dry_l; input_prev_r=dry_r; input_dc_l=in_l; input_dc_r=in_r;
+// Dry/Wet acts at the excitation input; existing tails remain audible.
+in_l*=excite_s*mix_s*gate_s*panic_s;
+in_r*=excite_s*mix_s*gate_s*panic_s;
+sum_l=sum_r=0; i=0;
+loop(mode_count,
+  p=modes+i*stride;
+  p[3]+=p[7]; p[4]+=p[8]; p[5]+=p[9]; p[6]+=p[10];
+  p[11]+=p[13]; p[12]+=p[14];
+  re_l=p[3]*p[15]-p[4]*p[16];
+  im_l=p[4]*p[15]+p[3]*p[16]+in_l*p[11];
+  re_r=p[5]*p[17]-p[6]*p[18];
+  im_r=p[6]*p[17]+p[5]*p[18]+in_r*p[12];
+  p[15]=abs(re_l)<denormal_floor ? 0 : re_l;
+  p[16]=abs(im_l)<denormal_floor ? 0 : im_l;
+  p[17]=abs(re_r)<denormal_floor ? 0 : re_r;
+  p[18]=abs(im_r)<denormal_floor ? 0 : im_r;
+  // Fade modes out near Nyquist, including their existing state.
+  sum_l+=re_l*clamp((srate*0.46-pitch_l*p[0])/(srate*0.04),0,1);
+  sum_r+=re_r*clamp((srate*0.46-pitch_r*p[0])/(srate*0.04),0,1);
+  i+=1;
+);
+// Clear once the panic fade has completed, then keep the excitation closed.
+(slider41 && panic_s<0.0001 && !panic_cleared) ? (
+  clear_resonance(); panic_s=0; panic_cleared=1;
+);
+slider41==0 ? panic_cleared=0;
+wet_mid=(sum_l+sum_r)*0.5; wet_side=(sum_l-sum_r)*0.5*width_s;
+sum_l=wet_mid+wet_side+dry_l*bleed_s*mix_s;
+sum_r=wet_mid-wet_side+dry_r*bleed_s*mix_s;
+filtered_l=bp_l.bandpass(sum_l,filter_g,filter_k);
+filtered_r=bp_r.bandpass(sum_r,filter_g,filter_k);
+sum_l+=filter_s*(filtered_l-sum_l); sum_r+=filter_s*(filtered_r-sum_r);
+wet_dc_l=sum_l-wet_prev_l+dc_r*wet_dc_l;
+wet_dc_r=sum_r-wet_prev_r+dc_r*wet_dc_r;
+wet_prev_l=sum_l; wet_prev_r=sum_r;
+out_l=((1-mix_s)*dry_l+wet_s*wet_dc_l)*out_s*panic_s;
+out_r=((1-mix_s)*dry_r+wet_s*wet_dc_r)*out_s*panic_s;
+// Stereo-linked, zero-lookahead sample-peak limiter; no true-peak claim.
+peak=max(abs(out_l),abs(out_r));
+limit_t=peak>0.98 ? 0.98/peak : 1;
+limit_t<lim_gain ? lim_gain=limit_t :
+  lim_gain=limit_t+limit_release*(lim_gain-limit_t);
+slider35 ? (out_l*=lim_gain; out_r*=lim_gain;);
+spl0=out_l; spl1=out_r;

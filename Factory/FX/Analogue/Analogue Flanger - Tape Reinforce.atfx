@@ -1,0 +1,19 @@
+{
+  "type": "Atlas FX Bus Preset",
+  "version": 1,
+  "slots": [
+    {
+      "effect": "analogueflanger",
+      "enabled": true,
+      "parameters": {
+        "analogueflanger_medium": 1,
+        "analogueflanger_sync": 0,
+        "analogueflanger_frequency": -2.736966,
+        "analogueflanger_depth": 0.5,
+        "analogueflanger_manual": 0.5,
+        "analogueflanger_feedback": 0.3,
+        "analogueflanger_mix": 1.0
+      }
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "type": "Atlas FX Preset",
+  "version": 1,
+  "effect": "analogueecho",
+  "name": "Runaway Drone",
+  "parameters": {
+    "analogueecho_medium": 0,
+    "analogueecho_sync": 0,
+    "analogueecho_frequency": 2.321928,
+    "analogueecho_head_1": 1,
+    "analogueecho_head_2": 1,
+    "analogueecho_head_3": 1,
+    "analogueecho_feedback": 1.08,
+    "analogueecho_drive": 0.5,
+    "analogueecho_treble": -4.0,
+    "analogueecho_inertia": 0.6,
+    "analogueecho_mix": 0.5
+  }
+}

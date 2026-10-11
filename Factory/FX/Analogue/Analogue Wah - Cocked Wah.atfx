@@ -1,0 +1,16 @@
+{
+  "type": "Atlas FX Bus Preset",
+  "version": 1,
+  "slots": [
+    {
+      "effect": "analoguewah",
+      "enabled": true,
+      "parameters": {
+        "analoguewah_model": 0,
+        "analoguewah_position": 0.62,
+        "analoguewah_envelope": 0.0,
+        "analoguewah_mix": 1.0
+      }
+    }
+  ]
+}

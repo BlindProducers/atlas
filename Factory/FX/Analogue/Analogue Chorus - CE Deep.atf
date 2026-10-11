@@ -1,0 +1,12 @@
+{
+  "type": "Atlas FX Preset",
+  "version": 1,
+  "effect": "analoguechorus",
+  "name": "CE Deep",
+  "parameters": {
+    "analoguechorus_model": 2,
+    "analoguechorus_rate": 1.5,
+    "analoguechorus_depth": 1.4,
+    "analoguechorus_mix": 0.5
+  }
+}

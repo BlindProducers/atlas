@@ -1,0 +1,16 @@
+{
+  "type": "Atlas FX Preset",
+  "version": 1,
+  "effect": "analoguewah",
+  "name": "Envelope Bass",
+  "parameters": {
+    "analoguewah_model": 2,
+    "analoguewah_mode": 0,
+    "analoguewah_range": 0,
+    "analoguewah_peak": 0.7,
+    "analoguewah_position": 0.0,
+    "analoguewah_envelope": 0.55,
+    "analoguewah_decay": 0.4,
+    "analoguewah_mix": 1.0
+  }
+}

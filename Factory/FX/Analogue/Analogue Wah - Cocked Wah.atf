@@ -1,0 +1,12 @@
+{
+  "type": "Atlas FX Preset",
+  "version": 1,
+  "effect": "analoguewah",
+  "name": "Cocked Wah",
+  "parameters": {
+    "analoguewah_model": 0,
+    "analoguewah_position": 0.62,
+    "analoguewah_envelope": 0.0,
+    "analoguewah_mix": 1.0
+  }
+}

@@ -1,0 +1,34 @@
+Atlas: third-party notices
+
+Atlas is based on Vital by Matt Tytel (GPL v3, https://github.com/mtytel/vital)
+and is distributed under the GNU General Public License version 3; see LICENSE.
+The name "Vital" belongs to its author and is not used for Atlas.
+
+Atlas includes or adapts the following works. Their licence texts are kept with
+their sources.
+
+- JUCE 8.0.14 (third_party/JUCE8), used under the AGPLv3.
+- BP Scream DSP (third_party/scream): MIT, Copyright 2025 Cure Audio,
+  exacoustics, Xynth Audio. Includes ADAA (BSD-3, jatinchowdhury18) and
+  Polylogarithm (MIT, Alexander Voigt).
+- Wolf Shaper by Patrick Desaulniers (GPL v3 or later): the Waveshaper effect
+  (third_party/licenses/WolfShaper.LICENSE).
+- Diopser by Robbert van der Helm (GPL v3 or later) and NIH-plug's parameter
+  smoothing (ISC): the Defuse effect (src/synthesis/modules/defuse_module.*).
+- SpectralSuite by Andrew Reeman (the Unlicense, public domain): the Spectral
+  Gate's magnitude gate (src/synthesis/modules/spectral_gate_module.*).
+- Floaty by Daniel Arena / remaincalm.org (GPL): the Floaty Delay effect
+  (src/synthesis/effects/jsfx_ports.*, tests/jsfx/fixtures/floaty_delay).
+- Spectral Lock by aquanodemusic (AGPL-3.0, https://github.com/aquanodemusic/
+  aquanode-plugins): third_party/spectral_lock and the engine extracted into
+  src/synthesis/effects/spectral_lock, with Atlas's Width and Follow additions.
+  Those files are AGPL-3.0; the AGPL permits combining them with this GPL v3
+  program (GPL v3 section 13).
+- nlohmann json (MIT), moodycamel concurrentqueue (simplified BSD) and KISS FFT
+  (BSD-3) under third_party.
+
+The Erosion, Trance gate, Resonator, Dimension Expander mode 2, Reverb filter,
+Analogue effects, Spectral Balance, Suppressor, Spectral Compressor, Filter Table ("Wavetable" filter model) and oscillator slot code are
+Atlas's own, under the GPL v3. Product and company names mentioned in the
+documentation are trademarks of their owners and are used only to describe
+what a model is inspired by.

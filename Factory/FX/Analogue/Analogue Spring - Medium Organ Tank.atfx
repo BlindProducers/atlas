@@ -1,0 +1,16 @@
+{
+  "type": "Atlas FX Bus Preset",
+  "version": 1,
+  "slots": [
+    {
+      "effect": "analoguespring",
+      "enabled": true,
+      "parameters": {
+        "analoguespring_tank": 1,
+        "analoguespring_dwell": 0.45,
+        "analoguespring_tone": 0.4,
+        "analoguespring_mix": 0.35
+      }
+    }
+  ]
+}

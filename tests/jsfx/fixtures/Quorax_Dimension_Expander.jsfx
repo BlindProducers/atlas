@@ -1,0 +1,336 @@
+desc:Quorax Dimension Expander v2.2 (wet filters)
+// Clean-room JSFX recreation of the Xfer-style Dimension effect.
+// Retuned from a 44.1 kHz impulse sweep supplied by quorax.
+// Version 2.2 adds low-cut and high-cut filtering to the wet SIDE signal only.
+// No Xfer Records source code or proprietary assets are used.
+
+author:OpenAI for quorax
+version:2.2
+
+tags:chorus stereo width delay modulation filter
+
+slider1:35<0,100,0.1>Size (%)
+slider2:35<0,100,0.1>Mix (%)
+slider3:0<-12,12,0.1>Output (dB)
+slider4:0.4<0.02,2,0.001>Motion rate (Hz, advanced)
+slider5:0<0,2000,1>Wet low cut (Hz, 0 = off)
+slider6:20000<500,20000,10>Wet high cut (Hz, 20000 = off)
+slider7:1<0,3,1{12 dB/oct,24 dB/oct,36 dB/oct,48 dB/oct}>Wet filter slope
+
+in_pin:Left input
+in_pin:Right input
+out_pin:Left output
+out_pin:Right output
+
+@init
+ext_nodenorm = 1;
+
+// The measured maximum tap is about 188.95 ms at Size 100%.
+// Extra room is included for interpolation and parameter smoothing.
+max_delay_s = 0.230;
+buf_len = ceil(srate * max_delay_s) + 64;
+buf = 0;
+write_pos = 0;
+ext_tail_size = ceil(srate * 0.200) + 64;
+
+// Twenty-four-point, 1024-phase Lanczos interpolation table.
+// It closely approximates a band-limited fractional delay while remaining
+// practical for real-time JSFX processing.
+table_taps = 24;
+table_half = 12;
+table_rows = 1025;
+table_scale = table_rows - 1;
+sinc_table = buf + buf_len + 32;
+
+// Filter coefficient and state memory. There are four biquad sections for the
+// low cut and four for the high cut. Each biquad contributes 12 dB per octave.
+filter_mem = sinc_table + table_rows * table_taps + 64;
+
+hp_b0 = filter_mem;
+hp_b1 = hp_b0 + 4;
+hp_b2 = hp_b1 + 4;
+hp_a1 = hp_b2 + 4;
+hp_a2 = hp_a1 + 4;
+
+lp_b0 = hp_a2 + 4;
+lp_b1 = lp_b0 + 4;
+lp_b2 = lp_b1 + 4;
+lp_a1 = lp_b2 + 4;
+lp_a2 = lp_a1 + 4;
+
+hp_state = lp_a2 + 4;
+lp_state = hp_state + 8;
+
+// Fractional circular-buffer read using the interpolation table below.
+function read_delay_sinc(delay_samples)
+local(delay_int delay_frac table_pos table_row0 table_row1
+      table_blend tap_idx node read_idx weight0 weight1 weight result)
+(
+  delay_int = floor(delay_samples);
+  delay_frac = delay_samples - delay_int;
+
+  table_pos = delay_frac * table_scale;
+  table_row0 = floor(table_pos);
+  table_blend = table_pos - table_row0;
+  table_row1 = table_row0 + 1;
+  table_row1 >= table_rows ? table_row1 = table_rows - 1;
+
+  result = 0;
+  tap_idx = 0;
+  while (tap_idx < table_taps) (
+    node = tap_idx - (table_half - 1);
+    read_idx = write_pos - delay_int - node;
+    read_idx < 0 ? read_idx += buf_len;
+    read_idx >= buf_len ? read_idx -= buf_len;
+
+    weight0 = sinc_table[table_row0 * table_taps + tap_idx];
+    weight1 = sinc_table[table_row1 * table_taps + tap_idx];
+    weight = weight0 + (weight1 - weight0) * table_blend;
+    result += buf[read_idx] * weight;
+
+    tap_idx += 1;
+  );
+
+  result;
+);
+
+// Generate one cascade of even-order Butterworth biquads. The order is twice
+// the section count, so one through four sections give 12, 24, 36 or 48 dB/oct.
+function set_butterworth_coeffs(freq_hz, is_highpass, section_count,
+                                b0_ptr, b1_ptr, b2_ptr, a1_ptr, a2_ptr)
+local(omega sin_omega cos_omega order section pole_angle q alpha a0
+      b0_raw b1_raw b2_raw)
+(
+  omega = 2 * $pi * freq_hz / srate;
+  sin_omega = sin(omega);
+  cos_omega = cos(omega);
+  order = section_count * 2;
+  section = 0;
+
+  while (section < 4) (
+    section < section_count ? (
+      pole_angle = (2 * section + 1) * $pi / (2 * order);
+      q = 1 / (2 * cos(pole_angle));
+      alpha = sin_omega / (2 * q);
+      a0 = 1 + alpha;
+
+      is_highpass ? (
+        b0_raw = (1 + cos_omega) * 0.5;
+        b1_raw = -(1 + cos_omega);
+        b2_raw = b0_raw;
+      ) : (
+        b0_raw = (1 - cos_omega) * 0.5;
+        b1_raw = 1 - cos_omega;
+        b2_raw = b0_raw;
+      );
+
+      b0_ptr[section] = b0_raw / a0;
+      b1_ptr[section] = b1_raw / a0;
+      b2_ptr[section] = b2_raw / a0;
+      a1_ptr[section] = (-2 * cos_omega) / a0;
+      a2_ptr[section] = (1 - alpha) / a0;
+    ) : (
+      // Identity coefficients for unused sections.
+      b0_ptr[section] = 1;
+      b1_ptr[section] = 0;
+      b2_ptr[section] = 0;
+      a1_ptr[section] = 0;
+      a2_ptr[section] = 0;
+    );
+
+    section += 1;
+  );
+);
+
+// Transposed direct-form II cascade. State memory contains z1 and z2 for each
+// section. The same routine is used for the low cut and high cut.
+function process_biquad_cascade(input_sample, section_count,
+                                b0_ptr, b1_ptr, b2_ptr, a1_ptr, a2_ptr,
+                                state_ptr)
+local(section section_state output_sample)
+(
+  section = 0;
+  while (section < section_count) (
+    section_state = state_ptr + section * 2;
+    output_sample = b0_ptr[section] * input_sample + section_state[0];
+    section_state[0] = b1_ptr[section] * input_sample
+                       - a1_ptr[section] * output_sample
+                       + section_state[1];
+    section_state[1] = b2_ptr[section] * input_sample
+                       - a2_ptr[section] * output_sample;
+    input_sample = output_sample;
+    section += 1;
+  );
+
+  input_sample;
+);
+
+// Build normalized Lanczos kernels for every fractional phase.
+row = 0;
+while (row < table_rows) (
+  frac_build = row / table_scale;
+  weight_sum = 0;
+  tap_build = 0;
+
+  while (tap_build < table_taps) (
+    // Twenty-four sample positions, from -11 through +12.
+    node_build = tap_build - (table_half - 1);
+    x_build = frac_build - node_build;
+
+    abs(x_build) < 0.000000000001 ? (
+      sinc_build = 1;
+    ) : (
+      sinc_build = sin($pi * x_build) / ($pi * x_build);
+    );
+
+    window_x = x_build / table_half;
+    abs(window_x) < 0.000000000001 ? (
+      window_build = 1;
+    ) : (
+      window_build = sin($pi * window_x) / ($pi * window_x);
+    );
+
+    abs(x_build) >= table_half ? window_build = 0;
+
+    weight_build = sinc_build * window_build;
+    sinc_table[row * table_taps + tap_build] = weight_build;
+    weight_sum += weight_build;
+    tap_build += 1;
+  );
+
+  inv_weight_sum = 1 / weight_sum;
+  tap_build = 0;
+  while (tap_build < table_taps) (
+    sinc_table[row * table_taps + tap_build] *= inv_weight_sum;
+    tap_build += 1;
+  );
+
+  row += 1;
+);
+
+twopi = 2 * $pi;
+
+// Deterministic initial state. The hidden motion free-runs from here.
+motion_phase = 0.123291835;
+
+size_target = slider1;
+mix_target = slider2 / 100;
+out_target = 10 ^ (slider3 / 20);
+motion_rate = slider4;
+motion_inc = twopi * motion_rate / srate;
+
+size_sm = size_target;
+mix_sm = mix_target;
+out_sm = out_target;
+
+// Delay changes are slower than gain changes to reduce zipper noise.
+size_coef = exp(-1 / (0.010 * srate));
+gain_coef = exp(-1 / (0.005 * srate));
+
+// Filter setup. A value of zero bypasses the low cut. The high cut is bypassed
+// at its maximum value so the default sound remains identical to version 2.1.
+filter_sections = slider7 + 1;
+lowcut_active = slider5 > 0;
+highcut_active = slider6 < 20000;
+lowcut_hz = max(5, min(slider5, srate * 0.45));
+highcut_hz = max(20, min(slider6, srate * 0.45));
+
+set_butterworth_coeffs(lowcut_hz, 1, filter_sections,
+                       hp_b0, hp_b1, hp_b2, hp_a1, hp_a2);
+set_butterworth_coeffs(highcut_hz, 0, filter_sections,
+                       lp_b0, lp_b1, lp_b2, lp_a1, lp_a2);
+
+@slider
+size_target = slider1;
+mix_target = slider2 / 100;
+out_target = 10 ^ (slider3 / 20);
+motion_rate = slider4;
+motion_inc = twopi * motion_rate / srate;
+
+filter_sections = slider7 + 1;
+lowcut_active = slider5 > 0;
+highcut_active = slider6 < 20000;
+lowcut_hz = max(5, min(slider5, srate * 0.45));
+highcut_hz = max(20, min(slider6, srate * 0.45));
+
+set_butterworth_coeffs(lowcut_hz, 1, filter_sections,
+                       hp_b0, hp_b1, hp_b2, hp_a1, hp_a2);
+set_butterworth_coeffs(highcut_hz, 0, filter_sections,
+                       lp_b0, lp_b1, lp_b2, lp_a1, lp_a2);
+
+@sample
+size_sm = size_target + size_coef * (size_sm - size_target);
+mix_sm = mix_target + gain_coef * (mix_sm - mix_target);
+out_sm = out_target + gain_coef * (out_sm - out_target);
+
+in_l = spl0;
+in_r = spl1;
+
+// The wet generator receives the mono sum. The direct stereo signal remains
+// untouched, matching the center-plus-side structure in the supplied render.
+mono_feed = (in_l + in_r) * 0.5;
+direct_l = in_l;
+direct_r = in_r;
+
+// Exact delay map measured from the supplied sweep:
+// first tap = 15 ms + Size percentage in ms;
+// every following tap = previous tap times 1.18.
+base_ms = 15 + size_sm;
+delay1 = base_ms * 0.001 * srate;
+delay2 = delay1 * 1.18;
+delay3 = delay2 * 1.18;
+delay4 = delay3 * 1.18;
+
+buf[write_pos] = mono_feed;
+
+tap1 = read_delay_sinc(delay1);
+tap2 = read_delay_sinc(delay2);
+tap3 = read_delay_sinc(delay3);
+tap4 = read_delay_sinc(delay4);
+
+// The measured tap levels follow a quadrature amplitude rotation:
+// +0.5 sine, +0.5 cosine, -0.5 sine, -0.5 cosine.
+// Delay times stay fixed, so this creates motion without chorus pitch sweep.
+motion_sin = sin(motion_phase);
+motion_cos = cos(motion_phase);
+side = 0.5 * (motion_sin * (tap1 - tap3) + motion_cos * (tap2 - tap4));
+
+// Version 2.2 filtering. Only the generated SIDE signal passes through these
+// filters. The direct left and right signals never enter either filter.
+lowcut_active ? (
+  side = process_biquad_cascade(side, filter_sections,
+                                hp_b0, hp_b1, hp_b2, hp_a1, hp_a2,
+                                hp_state);
+) : (
+  // Keep bypassed state empty, preventing stale filter memory on re-enable.
+  hp_state[0] = 0; hp_state[1] = 0;
+  hp_state[2] = 0; hp_state[3] = 0;
+  hp_state[4] = 0; hp_state[5] = 0;
+  hp_state[6] = 0; hp_state[7] = 0;
+);
+
+highcut_active ? (
+  side = process_biquad_cascade(side, filter_sections,
+                                lp_b0, lp_b1, lp_b2, lp_a1, lp_a2,
+                                lp_state);
+) : (
+  lp_state[0] = 0; lp_state[1] = 0;
+  lp_state[2] = 0; lp_state[3] = 0;
+  lp_state[4] = 0; lp_state[5] = 0;
+  lp_state[6] = 0; lp_state[7] = 0;
+);
+
+// MIX is additive in the supplied reference. At 100%, the centered direct
+// signal remains and the full polarity-opposed side signal is added.
+out_l = direct_l + side * mix_sm;
+out_r = direct_r - side * mix_sm;
+
+spl0 = out_l * out_sm;
+spl1 = out_r * out_sm;
+
+write_pos += 1;
+write_pos >= buf_len ? write_pos = 0;
+
+// The sign of rotation is selected from the tap-to-tap gain drift in the sweep.
+motion_phase -= motion_inc;
+motion_phase < 0 ? motion_phase += twopi;

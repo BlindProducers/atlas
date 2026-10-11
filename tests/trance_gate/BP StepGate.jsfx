@@ -1,0 +1,210 @@
+desc:BP StepGate
+author: Alessio - Blind Producers
+version: 1.1
+
+// --- Global Control Parameters ---
+slider1:2<0,7,1{1/1 (Whole),1/2 (Half),1/4 (Quarter),1/8,1/16,1/32,1/64,1/128}>Grid Size
+slider2:1<1,32,1>PR Start (Pattern Range Start)
+slider3:32<1,32,1>PR Stop (Pattern Range Stop)
+
+// --- Global ADSR ---
+slider4:2<0,500,1>Global Attack (ms)
+slider5:0<0,500,1>Global Decay (ms)
+slider6:1<0,1,0.01>Global Sustain (Level 0-1)
+slider7:5<0,500,1>Global Release (ms)
+
+// --- Steps 01 - 32 ---
+slider8:0<-1,1,0.01>Step 01 Value
+slider9:0<0,5,1{Long,Medium,Short,Ramp Down (-inf),Ramp Up (0dB),Ramp Up 2 (+6dB)}>Step 01 Mode
+slider10:0<-1,1,0.01>Step 01 Curve Adjust
+
+slider11:0<-1,1,0.01>Step 02 Value
+slider12:0<0,5,1{Long,Medium,Short,Ramp Down (-inf),Ramp Up (0dB),Ramp Up 2 (+6dB)}>Step 02 Mode
+slider13:0<-1,1,0.01>Step 02 Curve Adjust
+slider14:0<-1,1,0.01>Step 03 Value
+slider15:0<0,5,1{Long,Medium,Short,Ramp Down (-inf),Ramp Up (0dB),Ramp Up 2 (+6dB)}>Step 03 Mode
+slider16:0<-1,1,0.01>Step 03 Curve Adjust
+slider17:0<-1,1,0.01>Step 04 Value
+slider18:0<0,5,1{Long,Medium,Short,Ramp Down (-inf),Ramp Up (0dB),Ramp Up 2 (+6dB)}>Step 04 Mode
+slider19:0<-1,1,0.01>Step 04 Curve Adjust
+slider20:0<-1,1,0.01>Step 05 Value
+slider21:0<0,5,1{Long,Medium,Short,Ramp Down (-inf),Ramp Up (0dB),Ramp Up 2 (+6dB)}>Step 05 Mode
+slider22:0<-1,1,0.01>Step 05 Curve Adjust
+slider23:0<-1,1,0.01>Step 06 Value
+slider24:0<0,5,1{Long,Medium,Short,Ramp Down (-inf),Ramp Up (0dB),Ramp Up 2 (+6dB)}>Step 06 Mode
+slider25:0<-1,1,0.01>Step 06 Curve Adjust
+slider26:0<-1,1,0.01>Step 07 Value
+slider27:0<0,5,1{Long,Medium,Short,Ramp Down (-inf),Ramp Up (0dB),Ramp Up 2 (+6dB)}>Step 07 Mode
+slider28:0<-1,1,0.01>Step 07 Curve Adjust
+slider29:0<-1,1,0.01>Step 08 Value
+slider30:0<0,5,1{Long,Medium,Short,Ramp Down (-inf),Ramp Up (0dB),Ramp Up 2 (+6dB)}>Step 08 Mode
+slider31:0<-1,1,0.01>Step 08 Curve Adjust
+slider32:0<-1,1,0.01>Step 09 Value
+slider33:0<0,5,1{Long,Medium,Short,Ramp Down (-inf),Ramp Up (0dB),Ramp Up 2 (+6dB)}>Step 09 Mode
+slider34:0<-1,1,0.01>Step 09 Curve Adjust
+slider35:0<-1,1,0.01>Step 10 Value
+slider36:0<0,5,1{Long,Medium,Short,Ramp Down (-inf),Ramp Up (0dB),Ramp Up 2 (+6dB)}>Step 10 Mode
+slider37:0<-1,1,0.01>Step 10 Curve Adjust
+slider38:0<-1,1,0.01>Step 11 Value
+slider39:0<0,5,1{Long,Medium,Short,Ramp Down (-inf),Ramp Up (0dB),Ramp Up 2 (+6dB)}>Step 11 Mode
+slider40:0<-1,1,0.01>Step 11 Curve Adjust
+slider41:0<-1,1,0.01>Step 12 Value
+slider42:0<0,5,1{Long,Medium,Short,Ramp Down (-inf),Ramp Up (0dB),Ramp Up 2 (+6dB)}>Step 12 Mode
+slider43:0<-1,1,0.01>Step 12 Curve Adjust
+slider44:0<-1,1,0.01>Step 13 Value
+slider45:0<0,5,1{Long,Medium,Short,Ramp Down (-inf),Ramp Up (0dB),Ramp Up 2 (+6dB)}>Step 13 Mode
+slider46:0<-1,1,0.01>Step 13 Curve Adjust
+slider47:0<-1,1,0.01>Step 14 Value
+slider48:0<0,5,1{Long,Medium,Short,Ramp Down (-inf),Ramp Up (0dB),Ramp Up 2 (+6dB)}>Step 14 Mode
+slider49:0<-1,1,0.01>Step 14 Curve Adjust
+slider50:0<-1,1,0.01>Step 15 Value
+slider51:0<0,5,1{Long,Medium,Short,Ramp Down (-inf),Ramp Up (0dB),Ramp Up 2 (+6dB)}>Step 15 Mode
+slider52:0<-1,1,0.01>Step 15 Curve Adjust
+slider53:0<-1,1,0.01>Step 16 Value
+slider54:0<0,5,1{Long,Medium,Short,Ramp Down (-inf),Ramp Up (0dB),Ramp Up 2 (+6dB)}>Step 16 Mode
+slider55:0<-1,1,0.01>Step 16 Curve Adjust
+slider56:0<-1,1,0.01>Step 17 Value
+slider57:0<0,5,1{Long,Medium,Short,Ramp Down (-inf),Ramp Up (0dB),Ramp Up 2 (+6dB)}>Step 17 Mode
+slider58:0<-1,1,0.01>Step 17 Curve Adjust
+slider59:0<-1,1,0.01>Step 18 Value
+slider60:0<0,5,1{Long,Medium,Short,Ramp Down (-inf),Ramp Up (0dB),Ramp Up 2 (+6dB)}>Step 18 Mode
+slider61:0<-1,1,0.01>Step 18 Curve Adjust
+slider62:0<-1,1,0.01>Step 19 Value
+slider63:0<0,5,1{Long,Medium,Short,Ramp Down (-inf),Ramp Up (0dB),Ramp Up 2 (+6dB)}>Step 19 Mode
+slider64:0<-1,1,0.01>Step 19 Curve Adjust
+slider65:0<-1,1,0.01>Step 20 Value
+slider66:0<0,5,1{Long,Medium,Short,Ramp Down (-inf),Ramp Up (0dB),Ramp Up 2 (+6dB)}>Step 20 Mode
+slider67:0<-1,1,0.01>Step 20 Curve Adjust
+slider68:0<-1,1,0.01>Step 21 Value
+slider69:0<0,5,1{Long,Medium,Short,Ramp Down (-inf),Ramp Up (0dB),Ramp Up 2 (+6dB)}>Step 21 Mode
+slider70:0<-1,1,0.01>Step 21 Curve Adjust
+slider71:0<-1,1,0.01>Step 22 Value
+slider72:0<0,5,1{Long,Medium,Short,Ramp Down (-inf),Ramp Up (0dB),Ramp Up 2 (+6dB)}>Step 22 Mode
+slider73:0<-1,1,0.01>Step 22 Curve Adjust
+slider74:0<-1,1,0.01>Step 23 Value
+slider75:0<0,5,1{Long,Medium,Short,Ramp Down (-inf),Ramp Up (0dB),Ramp Up 2 (+6dB)}>Step 23 Mode
+slider76:0<-1,1,0.01>Step 23 Curve Adjust
+slider77:0<-1,1,0.01>Step 24 Value
+slider78:0<0,5,1{Long,Medium,Short,Ramp Down (-inf),Ramp Up (0dB),Ramp Up 2 (+6dB)}>Step 24 Mode
+slider79:0<-1,1,0.01>Step 24 Curve Adjust
+slider80:0<-1,1,0.01>Step 25 Value
+slider81:0<0,5,1{Long,Medium,Short,Ramp Down (-inf),Ramp Up (0dB),Ramp Up 2 (+6dB)}>Step 25 Mode
+slider82:0<-1,1,0.01>Step 25 Curve Adjust
+slider83:0<-1,1,0.01>Step 26 Value
+slider84:0<0,5,1{Long,Medium,Short,Ramp Down (-inf),Ramp Up (0dB),Ramp Up 2 (+6dB)}>Step 26 Mode
+slider85:0<-1,1,0.01>Step 26 Curve Adjust
+slider86:0<-1,1,0.01>Step 27 Value
+slider87:0<0,5,1{Long,Medium,Short,Ramp Down (-inf),Ramp Up (0dB),Ramp Up 2 (+6dB)}>Step 27 Mode
+slider88:0<-1,1,0.01>Step 27 Curve Adjust
+slider89:0<-1,1,0.01>Step 28 Value
+slider90:0<0,5,1{Long,Medium,Short,Ramp Down (-inf),Ramp Up (0dB),Ramp Up 2 (+6dB)}>Step 28 Mode
+slider91:0<-1,1,0.01>Step 28 Curve Adjust
+slider92:0<-1,1,0.01>Step 29 Value
+slider93:0<0,5,1{Long,Medium,Short,Ramp Down (-inf),Ramp Up (0dB),Ramp Up 2 (+6dB)}>Step 29 Mode
+slider94:0<-1,1,0.01>Step 29 Curve Adjust
+slider95:0<-1,1,0.01>Step 30 Value
+slider96:0<0,5,1{Long,Medium,Short,Ramp Down (-inf),Ramp Up (0dB),Ramp Up 2 (+6dB)}>Step 30 Mode
+slider97:0<-1,1,0.01>Step 30 Curve Adjust
+slider98:0<-1,1,0.01>Step 31 Value
+slider99:0<0,5,1{Long,Medium,Short,Ramp Down (-inf),Ramp Up (0dB),Ramp Up 2 (+6dB)}>Step 31 Mode
+slider100:0<-1,1,0.01>Step 31 Curve Adjust
+slider101:0<-1,1,0.01>Step 32 Value
+slider102:0<0,5,1{Long,Medium,Short,Ramp Down (-inf),Ramp Up (0dB),Ramp Up 2 (+6dB)}>Step 32 Mode
+slider103:0<-1,1,0.01>Step 32 Curve Adjust
+
+@init
+vals = 0; modes = 32; curves = 64;
+last_out_gain = 0;
+
+function apply_precision_curve(t, c) (
+  c == 0 ? t : (
+    c > 0 ? (
+      // Logarithmic-style (fast then slow)
+      1 - (1 - t)^(1 + c * 5);
+    ) : (
+      // Exponential-style (slow then fast)
+      t^(1 + abs(c) * 5);
+    );
+  );
+);
+
+@slider
+grid_idx = slider1;
+grid_idx == 0 ? beat_div = 4;
+grid_idx == 1 ? beat_div = 2;
+grid_idx == 2 ? beat_div = 1;
+grid_idx == 3 ? beat_div = 0.5;
+grid_idx == 4 ? beat_div = 0.25;
+grid_idx == 5 ? beat_div = 0.125;
+grid_idx == 6 ? beat_div = 0.0625;
+grid_idx == 7 ? beat_div = 0.03125;
+
+pr_start = slider2; pr_stop = slider3;
+att_s = slider4/1000; dec_s = slider5/1000; sus_v = slider6; rel_s = slider7/1000;
+
+// Map Sliders to Memory
+i=0; loop(32, 
+  vals[i] = slider(8 + i*3);
+  modes[i] = slider(9 + i*3);
+  curves[i] = slider(10 + i*3);
+  i+=1;
+);
+
+@sample
+(play_state & 1) ? (
+  t_beats = beat_position;
+  t_steps = t_beats / beat_div;
+  range = abs(pr_stop - pr_start) + 1;
+  seq_pos = floor(t_steps) % range;
+  
+  step_idx = (pr_start <= pr_stop) ? (pr_start - 1 + seq_pos) : (pr_start - 1 - seq_pos);
+  
+  t_norm = t_steps - floor(t_steps);
+  t_sec = t_norm * (beat_div * 60 / tempo);
+  
+  v_raw = vals[step_idx];
+  m = modes[step_idx];
+  curv = curves[step_idx];
+  base_g = v_raw + 1;
+  
+  // 1. SHAPE LOGIC
+  shape_g = 0;
+  gate_len = (m == 1 ? 0.5 : (m == 2 ? 0.25 : 1.001));
+  
+  (m < 3) ? (
+    t_norm < gate_len ? shape_g = base_g : shape_g = 0;
+  ) : (
+    c_norm = apply_precision_curve(t_norm, curv);
+    m == 3 ? shape_g = base_g * (1 - c_norm); // Ramp Down
+    m == 4 ? shape_g = base_g + (1.0 - base_g) * c_norm; // Ramp Up to 0dB
+    m == 5 ? shape_g = base_g + (2.0 - base_g) * c_norm; // Ramp Up to +6dB
+  );
+
+  // 2. ADSR LOGIC
+  env = 0;
+  t_sec < (gate_len * (beat_div * 60 / tempo)) ? (
+    t_sec < att_s ? (
+      env = (att_s > 0 ? t_sec / att_s : 1);
+    ) : (
+      t_dec = t_sec - att_s;
+      dec_s > 0 ? (
+        env = 1.0 - (1.0 - sus_v) * (t_dec / dec_s);
+        env < sus_v ? env = sus_v;
+      ) : env = sus_v;
+    )
+  ) : (
+    t_rel = t_sec - (gate_len * (beat_div * 60 / tempo));
+    env = (rel_s > 0 ? sus_v * (1.0 - (t_rel / rel_s)) : 0);
+    env < 0 ? env = 0;
+  );
+
+  target_g = shape_g * env;
+  
+  // 3. MICRO-SMOOTHING (Only for Clicks, 2ms window)
+  last_out_gain = last_out_gain + (target_g - last_out_gain) * (1 - exp(-1/(0.002 * srate)));
+
+  spl0 *= last_out_gain;
+  spl1 *= last_out_gain;
+) : (
+  spl0 = spl1 = last_out_gain = 0;
+);

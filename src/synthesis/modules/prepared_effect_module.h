@@ -1,0 +1,109 @@
+#pragma once
+
+#include "synth_module.h"
+#include <atomic>
+#include <condition_variable>
+#include <functional>
+#include <mutex>
+#include <thread>
+
+namespace vital {
+class PreparedEffectModule;
+class ConvolutionReverbModule;
+class ConvolutionIrWorker;
+
+// One sleeping preparation worker per synth. Construction, reconfiguration,
+// reset and disposal of effect DSP happen here, never in a realtime callback.
+class EffectPreparationWorker {
+public:
+  EffectPreparationWorker();
+  ~EffectPreparationWorker();
+  void add(PreparedEffectModule* module);
+  void remove(PreparedEffectModule* module);
+  void request();
+  void prepareSynchronously(PreparedEffectModule& module);
+private:
+  void run();
+  std::mutex mutex_;
+  std::condition_variable signal_;
+  std::vector<PreparedEffectModule*> modules_;
+  std::atomic<bool> pending_ { false };
+  bool stopping_ = false;
+  std::thread thread_;
+};
+
+// Offline engines may prepare synchronously; hosts opt into realtime behavior
+// for the duration of processBlock. This is thread-local, not a global setting.
+class RealtimeEffectScope {
+public:
+  explicit RealtimeEffectScope(bool realtime);
+  ~RealtimeEffectScope();
+  static bool active();
+private:
+  bool previous_;
+};
+
+class PreparedEffectModule : public SynthModule {
+public:
+  using Factory = std::function<std::unique_ptr<SynthModule>()>;
+  PreparedEffectModule(int type, std::string prefix, Factory factory,
+                       std::shared_ptr<EffectPreparationWorker> worker,
+                       std::shared_ptr<ConvolutionIrWorker> ir_worker = nullptr);
+  ~PreparedEffectModule() override;
+  void init() override;
+  void processWithInput(const poly_float* input, int samples) override;
+  void hardReset() override;
+  void enable(bool on) override;
+  void correctToTime(double seconds) override { time_ = seconds; }
+  int getLatencySamples() const override;
+  Processor* clone() const override { VITAL_ASSERT(false); return nullptr; }
+  void prepareForPlayback();
+  void stopPreparation() { worker_->remove(this); }
+  ConvolutionReverbModule* convolutionState() const { return convolution_state_.get(); }
+private:
+  friend class EffectPreparationWorker;
+  struct Control {
+    std::string suffix;
+    float initial;
+    bool audio_rate, smooth, modulated;
+  };
+  struct Description { std::vector<Control> controls; int outputs = 1; int latency = 0; };
+  struct Binding { Value* destination; Value* base; Output* modulation; };
+  struct Prepared {
+    uint64_t configuration = 0;
+    std::unique_ptr<SynthModule> module;
+    std::vector<Binding> bindings;
+  };
+  static Description describe(int type, const std::string& prefix, const Factory& factory);
+  uint64_t configuration() const;
+  void requestPreparation();
+  void prepareOnWorker();
+  void acceptPrepared();
+  void retireActive();
+  void renderPending(const poly_float* input, int samples);
+
+  int type_;
+  std::string prefix_;
+  Factory factory_;
+  std::shared_ptr<EffectPreparationWorker> worker_;
+  Description description_;
+  output_map raw_controls_;
+  Value* fft_size_control_ = nullptr;
+  Value* spectral_lock_mode_control_ = nullptr;
+
+  std::unique_ptr<ConvolutionReverbModule> convolution_state_;
+  std::atomic<uint64_t> requested_ { 0 };
+  std::atomic<Prepared*> ready_ { nullptr }, retired_ { nullptr };
+  Prepared* active_ = nullptr;
+  uint64_t completed_ = 0; // worker only
+  uint32_t generation_ = 1; // audio/control thread only
+  double time_ = 0;
+  int fade_remaining_ = 0, warmup_remaining_ = 0;
+  // Dry history while the effect is pending or warming up, sized for the
+  // type's longest latency. Left uninitialised: renderPending never reads a
+  // sample it has not written, so untouched pages cost no memory.
+  std::unique_ptr<float[]> pending_history_;
+  int pending_capacity_ = 0;
+  int pending_position_ = 0, pending_valid_ = 0, pending_latency_ = 0;
+};
+}

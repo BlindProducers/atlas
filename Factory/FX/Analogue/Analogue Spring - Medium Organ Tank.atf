@@ -1,0 +1,12 @@
+{
+  "type": "Atlas FX Preset",
+  "version": 1,
+  "effect": "analoguespring",
+  "name": "Medium Organ Tank",
+  "parameters": {
+    "analoguespring_tank": 1,
+    "analoguespring_dwell": 0.45,
+    "analoguespring_tone": 0.4,
+    "analoguespring_mix": 0.35
+  }
+}

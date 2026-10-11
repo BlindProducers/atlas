@@ -1,0 +1,159 @@
+desc:BP A-Erosion
+// Author: Alessio - Blind Producers
+// Replica of Ableton Erosion with added Continuous Stereo Width
+
+slider1:0<0,1,1{Noise,Sine}>Mode
+slider2:5000<20,20000,1>Frequency (Hz)
+slider3:1<0.1,5,0.01>Width (Bandwidth)
+slider4:50<0,200,1>Amount
+slider5:100<0,100,1>Stereo (%)
+
+@init
+// Hyperbolic Sine function for filter math
+function sinh(x) ( (exp(x) - exp(-x)) * 0.5 );
+
+// --- Buffer Setup ---
+buf_len = 4096; 
+buf_l = 0;
+buf_r = buf_len;
+wp = 0;
+
+// Filter state history
+xn1_l=0; xn2_l=0; yn1_l=0; yn2_l=0;
+xn1_r=0; xn2_r=0; yn1_r=0; yn2_r=0;
+
+QI = 2 * $pi;
+
+// --- Latency / Phase Alignment ---
+// Center delay allows modulation to swing negative without clipping
+center_delay = 64; 
+
+// Report latency to Reaper for Automatic Delay Compensation (PDC)
+pdc_delay = center_delay;
+pdc_bot_ch = 0;
+pdc_top_ch = 2;
+
+@slider
+mode = slider1;
+freq = slider2;
+width = slider3;
+amount_scale = slider4 * 0.15;
+stereo_amt = slider5 / 100;
+
+// --- Filter Coefficients (RBJ Bandpass) ---
+w0 = 2 * $pi * freq / srate;
+// Protection against divide by zero if w0 is tiny
+sin_w0 = sin(w0);
+sin_w0 == 0 ? sin_w0 = 0.00001;
+
+alpha = sin_w0 * sinh(log(2) / 2 * width * w0/sin_w0); 
+
+b0 = alpha; b1 = 0; b2 = -alpha;
+a0 = 1 + alpha; a1 = -2 * cos(w0); a2 = 1 - alpha;
+
+// Normalize coefficients
+ib0 = b0 / a0; ib1 = b1 / a0; ib2 = b2 / a0;
+ia1 = a1 / a0; ia2 = a2 / a0;
+
+@sample
+// --- 1. Generate Modulator Signals ---
+mod_l = 0; 
+mod_r = 0;
+
+mode == 0 ? ( // NOISE MODE
+    // Generate two independent noise streams
+    raw_l = (rand(2) - 1);
+    raw_r = (rand(2) - 1);
+    
+    // Filter Left
+    n_l = ib0*raw_l + ib1*xn1_l + ib2*xn2_l - ia1*yn1_l - ia2*yn2_l;
+    xn2_l = xn1_l; xn1_l = raw_l; yn2_l = yn1_l; yn1_l = n_l;
+    
+    // Filter Right
+    n_r = ib0*raw_r + ib1*xn1_r + ib2*xn2_r - ia1*yn1_r - ia2*yn2_r;
+    xn2_r = xn1_r; xn1_r = raw_r; yn2_r = yn1_r; yn1_r = n_r;
+
+    // Apply Stereo Width
+    // If Stereo is 0%: Right channel uses Left Noise (Mono)
+    // If Stereo is 100%: Right channel uses Right Noise (Wide)
+    mod_l = n_l;
+    mod_r = (n_r * stereo_amt) + (n_l * (1 - stereo_amt));
+
+) : ( // SINE MODE
+    phase += (freq / srate);
+    phase > 1 ? phase -= 1;
+    val = sin(phase * QI);
+    
+    // Sine is usually mono, but we can respect the width slider 
+    // to phase-invert the right channel if desired? 
+    // For now, we keep it mono to match original behavior.
+    mod_l = val; 
+    mod_r = val;
+);
+
+// --- 2. Calculate Delay Offsets ---
+// Amount scales the modulator to delay time
+offset_l = center_delay + (mod_l * amount_scale);
+offset_r = center_delay + (mod_r * amount_scale);
+
+// Clamp to prevent errors
+offset_l < 1 ? offset_l = 1; 
+offset_r < 1 ? offset_r = 1;
+
+// Write Input to Buffer
+buf_l[wp] = spl0;
+buf_r[wp] = spl1;
+
+// --- 3. Cubic Hermite Interpolation ---
+// Ensures high frequencies are preserved during modulation
+
+// -- LEFT CHANNEL --
+rp_l = wp - offset_l;
+// Wrap read pointer logic
+while (rp_l < 0) ( rp_l += buf_len; );
+while (rp_l >= buf_len) ( rp_l -= buf_len; );
+
+idx_l = floor(rp_l); frac_l = rp_l - idx_l;
+
+// Get 4 sample points for cubic math
+i0_l = (idx_l - 1); i0_l < 0 ? i0_l += buf_len;
+i1_l = idx_l; 
+i2_l = (idx_l + 1) % buf_len; 
+i3_l = (idx_l + 2) % buf_len;
+
+y0 = buf_l[i0_l]; y1 = buf_l[i1_l]; y2 = buf_l[i2_l]; y3 = buf_l[i3_l];
+
+// Hermite spline calculation
+c0 = y1; 
+c1 = 0.5 * (y2 - y0);
+c2 = y0 - 2.5 * y1 + 2.0 * y2 - 0.5 * y3;
+c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
+out_l = ((c3 * frac_l + c2) * frac_l + c1) * frac_l + c0;
+
+// -- RIGHT CHANNEL --
+rp_r = wp - offset_r;
+while (rp_r < 0) ( rp_r += buf_len; );
+while (rp_r >= buf_len) ( rp_r -= buf_len; );
+
+idx_r = floor(rp_r); frac_r = rp_r - idx_r;
+
+i0_r = (idx_r - 1); i0_r < 0 ? i0_r += buf_len;
+i1_r = idx_r; 
+i2_r = (idx_r + 1) % buf_len; 
+i3_r = (idx_r + 2) % buf_len;
+
+y0 = buf_r[i0_r]; y1 = buf_r[i1_r]; y2 = buf_r[i2_r]; y3 = buf_r[i3_r];
+
+c0 = y1; 
+c1 = 0.5 * (y2 - y0);
+c2 = y0 - 2.5 * y1 + 2.0 * y2 - 0.5 * y3;
+c3 = 0.5 * (y3 - y0) + 1.5 * (y1 - y2);
+out_r = ((c3 * frac_r + c2) * frac_r + c1) * frac_r + c0;
+
+// Output
+spl0 = out_l;
+spl1 = out_r;
+
+// Increment Write Pointer
+wp += 1;
+wp >= buf_len ? wp = 0;

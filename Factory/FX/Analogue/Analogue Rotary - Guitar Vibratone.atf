@@ -1,0 +1,12 @@
+{
+  "type": "Atlas FX Preset",
+  "version": 1,
+  "effect": "analoguerotary",
+  "name": "Guitar Vibratone",
+  "parameters": {
+    "analoguerotary_model": 1,
+    "analoguerotary_speed": 1,
+    "analoguerotary_drive": 0.2,
+    "analoguerotary_mix": 1.0
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "type": "Atlas FX Bus Preset",
+  "version": 1,
+  "slots": [
+    {
+      "effect": "analoguechorus",
+      "enabled": true,
+      "parameters": {
+        "analoguechorus_model": 3,
+        "analoguechorus_mix": 0.6
+      }
+    }
+  ]
+}

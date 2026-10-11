@@ -1,0 +1,12 @@
+{
+  "type": "Atlas FX Preset",
+  "version": 1,
+  "effect": "analoguerotary",
+  "name": "Organ Chorale",
+  "parameters": {
+    "analoguerotary_model": 0,
+    "analoguerotary_speed": 0,
+    "analoguerotary_drive": 0.3,
+    "analoguerotary_mix": 1.0
+  }
+}

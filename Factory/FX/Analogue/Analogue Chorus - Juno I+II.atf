@@ -1,0 +1,11 @@
+{
+  "type": "Atlas FX Preset",
+  "version": 1,
+  "effect": "analoguechorus",
+  "name": "Juno I+II",
+  "parameters": {
+    "analoguechorus_model": 0,
+    "analoguechorus_juno_mode": 2,
+    "analoguechorus_mix": 0.5
+  }
+}

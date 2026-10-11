@@ -1,0 +1,12 @@
+{
+  "type": "Atlas FX Preset",
+  "version": 1,
+  "effect": "analoguespring",
+  "name": "Surf Drip",
+  "parameters": {
+    "analoguespring_tank": 2,
+    "analoguespring_dwell": 0.8,
+    "analoguespring_tone": 0.8,
+    "analoguespring_mix": 0.45
+  }
+}

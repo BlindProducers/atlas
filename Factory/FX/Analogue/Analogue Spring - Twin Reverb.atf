@@ -1,0 +1,12 @@
+{
+  "type": "Atlas FX Preset",
+  "version": 1,
+  "effect": "analoguespring",
+  "name": "Twin Reverb",
+  "parameters": {
+    "analoguespring_tank": 2,
+    "analoguespring_dwell": 0.5,
+    "analoguespring_tone": 0.5,
+    "analoguespring_mix": 0.3
+  }
+}
