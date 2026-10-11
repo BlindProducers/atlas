@@ -697,11 +697,19 @@ namespace analog_oscillator_tests {
     };
     checkRows(false);
 
-    auto* type = dynamic_cast<Slider*>(findTitled(editor, "Oscillator 1 Type"));
-    expect(type != nullptr, "Type is a slider with named choices");
+    // Changing the type rebuilds the editor, so it is a menu: arrows open it
+    // rather than stepping through types, and the chosen type applies.
+    auto* type = dynamic_cast<ComboBox*>(findTitled(editor, "Oscillator 1 Type"));
+    expect(type != nullptr, "Type is a menu with named choices");
     if (type != nullptr) {
-      expect(type->keyPressed(KeyPress(KeyPress::rightKey)), "Arrow keys change the oscillator type");
-      expectClose(controls.at("osc_1_type")->value(), O::kAnalogType, 0, "Right arrow chooses Analog");
+      expect(type->getNumItems() == vital::source_types::kNumTypes && type->getText() == "Wavetable",
+             "The type menu lists every type and shows the current one");
+      expect(type->keyPressed(KeyPress(KeyPress::rightKey)), "Arrow keys open the type menu");
+      expectClose(controls.at("osc_1_type")->value(), O::kWavetableType, 0, "An arrow does not change the type by itself");
+      PopupMenu::dismissAllActiveMenus();
+      pumpEditor();
+      type->setSelectedItemIndex(O::kAnalogType, sendNotificationSync);
+      expectClose(controls.at("osc_1_type")->value(), O::kAnalogType, 0, "Choosing Analog from the menu applies it");
     }
     pumpEditor();
     checkRows(true);
@@ -760,7 +768,7 @@ namespace analog_oscillator_tests {
     shape = findTitled(editor, "Oscillator 1 Analog Shape");
     expect(shape != nullptr && shape->getDescription().contains("Pulse width"), "Shape describes pulse width on a square");
     expect(findTitled(editor, "Oscillator 1, analog square") != nullptr, "Oscillator page title names the analog waveform");
-    if (auto* restored_type = dynamic_cast<Slider*>(findTitled(editor, "Oscillator 1 Type"))) {
+    if (auto* restored_type = dynamic_cast<ComboBox*>(findTitled(editor, "Oscillator 1 Type"))) {
       expect(restored_type->keyPressed(KeyPress(KeyPress::backspaceKey)), "Backspace resets the oscillator type");
       expectClose(controls.at("osc_1_type")->value(), O::kWavetableType, 0, "Backspace restores Wavetable");
     }

@@ -93,6 +93,8 @@ class ValueBridge : public AudioProcessorParameterWithID {
         return (String(vital::suppressor::positionHz(adjusted, getSuppressorSampleRate()), 2) + " Hz").substring(0, maximumStringLength);
       if (vital::scream::parameterIs(details_.name, "cutoff"))
         return formatDisplayValue(vital::scream::cutoffToHz(adjusted)).substring(0, maximumStringLength).trim();
+      if (usesRangePercentDisplay(details_))
+        return rangePercentText(adjusted).substring(0, maximumStringLength);
       String result = "";
       if (details_.string_lookup)
         result = details_.string_lookup[std::max<int>(0, std::min(adjusted, details_.max))];
@@ -127,6 +129,8 @@ class ValueBridge : public AudioProcessorParameterWithID {
             return convertToPluginValue(details_.min + i);
         }
       }
+      if (usesRangePercentDisplay(details_))
+        return convertToPluginValue(rangePercentEngineValue(details_, trimmed));
 
       float display_value = trimmed.getFloatValue();
       if ((name_.startsWith("tape_") || name_.contains("_tape_") || name_.endsWith("defuse_frequency") ||
@@ -174,6 +178,36 @@ class ValueBridge : public AudioProcessorParameterWithID {
 
     const String& getParameterId() const { return name_; }
     const vital::ValueDetails& getDetails() const { return details_; }
+
+    // Unitless levels and amounts read as a percentage of their range: 0% to
+    // 100%, or -100% to 100% for bipolar ones such as modulation amounts. A
+    // level shows its control position, not the squared gain behind it.
+    static bool usesRangePercentDisplay(const vital::ValueDetails& details) {
+      if (details.string_lookup != nullptr || String(details.display_units).trim().isNotEmpty() ||
+          details.display_multiply != 1.0f || details.post_offset != 0.0f || details.max != 1.0f ||
+          (details.min != 0.0f && details.min != -1.0f))
+        return false;
+      if (details.value_scale != vital::ValueDetails::kLinear && details.value_scale != vital::ValueDetails::kQuadratic)
+        return false;
+      // Mixes already read as percentages. Ratios, a cycle phase and the trance
+      // gate's step shapes are not amounts.
+      const String name(details.name);
+      return !name.endsWith("_mix") && !name.endsWith("_dry_wet") && !name.contains("ratio") &&
+             !name.endsWith("phase") && !name.contains("trance_gate_step_");
+    }
+
+    static String rangePercentText(float engineValue) {
+      const float percent = engineValue * 100.0f;
+      return compactFloat(std::abs(percent) < 0.05f ? 0.0f : percent, 1) + "%";
+    }
+
+    // As for the mix controls: a % sign, or a number beyond 1, is a percentage.
+    static float rangePercentEngineValue(const vital::ValueDetails& details, const String& text) {
+      float amount = text.trim().getFloatValue();
+      if (text.contains("%") || std::abs(amount) > 1.0f)
+        amount /= 100.0f;
+      return std::clamp(amount, details.min, details.max);
+    }
 
     void setEnvelopeSyncContext(const vital::Value* sync, const vital::Value* beats_per_second) {
       envelope_sync_ = sync;

@@ -120,6 +120,12 @@ namespace oscillator_warp_tests {
       if (auto* found = sliderWithTitle(*child, title)) return found;
     return nullptr;
   }
+  ComboBox* menuWithTitle(Component& parent, const String& title) {
+    if (auto* menu = dynamic_cast<ComboBox*>(&parent); menu && parent.getTitle().equalsIgnoreCase(title)) return menu;
+    for (auto* child : parent.getChildren())
+      if (auto* found = menuWithTitle(*child, title)) return found;
+    return nullptr;
+  }
   int runControls() {
     juce::ScopedJuceInitialiser_GUI gui;
     SynthPlugin plugin;
@@ -190,7 +196,7 @@ namespace oscillator_warp_tests {
     }
     SynthEditor editor(plugin);
     for (const char* title : {"Secondary distortion mode", "Secondary Distortion Amount",
-                              "Secondary Frequency Morph Mode", "Secondary Frequency Morph Amount"}) {
+                              "Secondary Frequency Morph Amount"}) {
       auto* control = sliderWithTitle(editor, title);
       expect(control != nullptr, std::string("Accessible slider exists: ") + title);
       if (!control) continue;
@@ -199,6 +205,18 @@ namespace oscillator_warp_tests {
       expect(dynamic_cast<Slider*>(control)->createAccessibilityHandler() != nullptr, "Secondary slider exposes accessibility");
       expect(control->keyPressed(KeyPress(KeyPress::rightKey)), "Secondary slider handles arrow adjustment");
       expect(control->keyPressed(KeyPress(KeyPress::backspaceKey)), "Secondary slider handles reset");
+    }
+    // Random Amplitudes adds a seed row, so the morph mode is a menu, not a slider.
+    auto* morph = menuWithTitle(editor, "Secondary Frequency Morph Mode");
+    expect(morph != nullptr, "Secondary Frequency Morph Mode is a menu");
+    if (morph != nullptr) {
+      const auto& order = editor.getKeyboardFocusOrder();
+      expect(std::find(order.begin(), order.end(), morph) != order.end(), "Secondary morph menu is in keyboard focus order");
+      expect(morph->getNumItems() == O::kNumSpectralMorphTypes, "The morph menu lists every morph mode");
+      morph->setSelectedItemIndex(O::kRandomAmplitudes, sendNotificationSync);
+      expectClose(controls.at("osc_1_secondary_spectral_morph_type")->value(), O::kRandomAmplitudes, 0,
+                  "Choosing from the morph menu sets the secondary morph");
+      expect(morph->keyPressed(KeyPress(KeyPress::backspaceKey)), "Secondary morph menu handles reset");
     }
     expectClose(controls.at("osc_1_secondary_distortion_type")->value(), 0, 0, "Backspace disables the secondary distortion");
     expectClose(controls.at("osc_1_secondary_spectral_morph_type")->value(), 0, 0, "Backspace disables the secondary morph");

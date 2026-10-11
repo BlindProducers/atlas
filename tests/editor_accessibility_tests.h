@@ -436,7 +436,11 @@ namespace {
     synth.parameterChanged("modulation_3_bypass", 1.0f);
     SynthEditor editor(synth);
     editor.updateFullGui();
-    auto slotTitle = [&](int slot) -> String {
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    editor.toFront(true);
+    pumpEditorEvents();
+    auto slotHeader = [&](int slot) -> Component* {
       std::function<Component*(Component&)> find = [&](Component& parent) -> Component* {
         if (parent.getProperties().contains("ModulationSlot") &&
             static_cast<int>(parent.getProperties()["ModulationSlot"]) == slot)
@@ -445,16 +449,49 @@ namespace {
           if (auto* found = find(*child)) return found;
         return nullptr;
       };
-      auto* header = find(editor);
+      return find(editor);
+    };
+    auto slotTitle = [&](int slot) -> String {
+      auto* header = slotHeader(slot);
       return header ? header->getTitle() : String("<missing>");
     };
-    expect(slotTitle(1) == "Modulation one, LFO 2 to Oscillator 1 Distortion Amount, +0.30, route 1 of 2 from LFO 2",
+    auto clearButton = [&](int slot) -> Button* {
+      auto* header = slotHeader(slot);
+      return header ? dynamic_cast<Button*>(titled(*header, "Clear modulation slot")) : nullptr;
+    };
+    expect(slotTitle(1) == "Modulation one, LFO 2 to Oscillator 1 Distortion Amount, +30%, route 1 of 2 from LFO 2",
            "slot 1 names its own route, amount and position: " + slotTitle(1).toStdString());
-    expect(slotTitle(2) == "Modulation two, LFO 2 to Filter 1 Cutoff, -0.25, route 2 of 2 from LFO 2",
+    expect(slotTitle(2) == "Modulation two, LFO 2 to Filter 1 Cutoff, -25%, route 2 of 2 from LFO 2",
            "slot 2 names its own route: " + slotTitle(2).toStdString());
-    expect(slotTitle(3) == "Modulation three, Envelope 2 to Filter 2 Cutoff, 0, bypassed",
+    expect(slotTitle(3) == "Modulation three, Envelope 2 to Filter 2 Cutoff, 0%, bypassed",
            "a single route from a source has no position, and bypass is announced: " + slotTitle(3).toStdString());
     expect(slotTitle(4) == "Modulation four, empty", "unused slots read as empty: " + slotTitle(4).toStdString());
+
+    // The slot's Amount row reads -100% to 100%.
+    auto* amount = slotHeader(2) ? dynamic_cast<Slider*>(titled(*slotHeader(2), "Amount")) : nullptr;
+    expect(amount != nullptr && amount->getTextFromValue(amount->getValue()) == "-25%",
+           "a modulation amount reads as a percentage");
+
+    // Only slots with something assigned offer to clear it.
+    for (int slot = 1; slot <= 3; ++slot)
+      expect(clearButton(slot) != nullptr, "assigned slot " + std::to_string(slot) + " has a Clear modulation slot button");
+    expect(clearButton(4) == nullptr, "an empty slot has no Clear modulation slot button");
+    if (auto* clear = clearButton(2)) {
+      clear->grabKeyboardFocus();
+      clear->triggerClick();
+      pumpUntil([&] { return clearButton(2) == nullptr; });
+    }
+    expect(synth.getConnectionIndex("lfo_2", "filter_1_cutoff") < 0, "clearing slot 2 disconnects its route");
+    expect(synth.getControls().at("modulation_2_amount")->value() == 0.0f, "clearing a slot resets its amount");
+    expect(slotTitle(2) == "Modulation two, empty", "a cleared slot reads as empty: " + slotTitle(2).toStdString());
+    expect(clearButton(2) == nullptr, "a cleared slot no longer offers Clear");
+    expect(slotTitle(1) == "Modulation one, LFO 2 to Oscillator 1 Distortion Amount, +30%",
+           "the other routes stay: " + slotTitle(1).toStdString());
+    auto* focused = Component::getCurrentlyFocusedComponent();
+    expect(focused != nullptr && focused == slotHeader(2),
+           "focus lands on the cleared slot's heading: " +
+           (focused ? focused->getTitle().toStdString() : std::string("nothing")));
+    editor.removeFromDesktop();
   }
 
   // A preset load changes effect types behind an open editor; the refreshed
@@ -786,21 +823,32 @@ namespace {
 
     expect(titled(*editorSection(editor, "Oscillator 7"), "Load wavetable") == nullptr,
            "a Spectral slot has no wavetable actions");
-    auto* type = dynamic_cast<Slider*>(titled(*editorSection(editor, "Oscillator 7"), "Oscillator 7 Type"));
-    expect(type != nullptr, "Oscillator 7 exposes its Type row");
+    auto* type = dynamic_cast<ComboBox*>(titled(*editorSection(editor, "Oscillator 7"), "Oscillator 7 Type"));
+    expect(type != nullptr, "Oscillator 7 exposes its Type menu");
     if (type == nullptr) {
       editor.removeFromDesktop();
       return;
     }
-    // Spectral is the fifth type; four steps left reach Wavetable.
-    for (int i = 0; i < 4; ++i)
-      type->keyPressed(KeyPress(KeyPress::leftKey));
+    // Each type change rebuilds the editor: an arrow opens the menu instead of stepping.
+    editor.ensureComponentVisible(type);
+    type->grabKeyboardFocus();
+    expect(type->getText() == "Spectral", "the Type menu shows the slot's type");
+    type->keyPressed(KeyPress(KeyPress::leftKey));
+    expect(type->isPopupActive(), "an arrow opens the Type menu");
+    expect(synth.getControls().at("osc_7_type")->value() == float(vital::source_types::kSpectral),
+           "an arrow does not change the type by itself");
+    PopupMenu::dismissAllActiveMenus();
+    pumpEditorEvents();
+    type->setSelectedItemIndex(vital::source_types::kWavetable, sendNotificationSync);
     expect(synth.getControls().at("osc_7_type")->value() == 0.0f,  // Wavetable
-           "Home chooses the Wavetable type");
+           "choosing Wavetable from the menu applies it");
     pumpUntil([&] {
       auto* section = editorSection(editor, "Oscillator 7");
       return section != nullptr && titled(*section, "Load wavetable") != nullptr;
     });
+    auto* refocused = Component::getCurrentlyFocusedComponent();
+    expect(refocused != nullptr && refocused->getTitle() == "Oscillator 7 Type",
+           "after the rebuild, focus returns to the Type menu");
     auto* section = editorSection(editor, "Oscillator 7");
     expect(section != nullptr && titled(*section, "Load wavetable") != nullptr, "a slot switched to Wavetable shows Load wavetable");
     expect(section != nullptr && titled(*section, "Next wavetable") != nullptr, "a slot switched to Wavetable shows Next wavetable");
@@ -1211,6 +1259,67 @@ namespace {
     expect(valueText() == "Grid steps", "Granular size mode reads Grid steps when selected");
   }
 
+  // Levels and amounts read as percentages of their range, 0% to 100% or
+  // -100% to 100% for modulation amounts, and take percentages typed back.
+  void testLevelsAndAmountsReadAsPercent() {
+    SynthPlugin synth;
+    std::map<String, ValueBridge*> bridges;
+    for (auto* parameter : synth.getParameters())
+      if (auto* bridge = dynamic_cast<ValueBridge*>(parameter))
+        bridges[bridge->getParameterId()] = bridge;
+    const auto text = [&](const String& id, float engine) {
+      auto* bridge = bridges[id];
+      return bridge ? bridge->getText(bridge->convertToPluginValue(engine), 128) : String("<missing " + id + ">");
+    };
+    const auto typed = [&](const String& id, const String& entry) {
+      auto* bridge = bridges[id];
+      return bridge ? bridge->convertToEngineValue(bridge->getValueForText(entry)) : -99.0f;
+    };
+    expect(text("osc_1_level", 0.5f) == "50%", "a level reads as the percent of its control: " +
+                                                   text("osc_1_level", 0.5f).toStdString());
+    expect(text("osc_1_level", 0.70710678f) == "70.7%", "the default level reads 70.7%");
+    expect(text("env_1_sustain", 1.0f) == "100%", "envelope sustain reads as a percentage");
+    expect(text("modulation_1_amount", -1.0f) == "-100%" && text("modulation_1_amount", 0.255f) == "25.5%" &&
+               text("modulation_1_amount", 0.0f) == "0%",
+           "modulation amounts read from -100% to 100%: " + text("modulation_1_amount", 0.255f).toStdString());
+    expect(text("volume", 5473.0404f).endsWith("dB"), "Global Gain keeps its decibels");
+    expect(!text("lfo_1_phase", 0.25f).endsWith("%"), "an LFO phase is a position, not an amount");
+    close(typed("osc_1_level", "50%"), 0.5f, "typing 50% sets half the level");
+    close(typed("osc_1_level", "25"), 0.25f, "a number beyond 1 is a percentage");
+    close(typed("modulation_1_amount", "-25%"), -0.25f, "typing -25% sets a negative amount");
+    close(typed("modulation_1_amount", "0.5"), 0.5f, "a fraction up to 1 keeps its old meaning");
+    close(typed("modulation_1_amount", "250%"), 1.0f, "typed amounts stop at 100%");
+
+    // Keys move these rows one percent at a time, on both ranges.
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    std::function<Component*(Component&)> slotOne = [&](Component& parent) -> Component* {
+      if (parent.getProperties().contains("ModulationSlot") && static_cast<int>(parent.getProperties()["ModulationSlot"]) == 1)
+        return &parent;
+      for (auto* child : parent.getChildren())
+        if (auto* found = slotOne(*child)) return found;
+      return nullptr;
+    };
+    auto* slot = slotOne(editor);
+    auto* amount = slot ? dynamic_cast<ParameterSlider*>(titled(*slot, "Amount")) : nullptr;
+    expect(amount != nullptr, "modulation slot one has an Amount row");
+    if (amount != nullptr) {
+      amount->keyPressed(KeyPress(KeyPress::upKey));
+      close(synth.getControls().at("modulation_1_amount")->value(), 0.01f, "Up raises a modulation amount by 1%");
+      expect(amount->getTextFromValue(amount->getValue()) == "1%", "the Amount row reads 1%");
+      amount->keyPressed(KeyPress(KeyPress::backspaceKey));
+    }
+    auto* level = dynamic_cast<ParameterSlider*>(titled(editor, "Oscillator 1 Level"));
+    expect(level != nullptr, "Oscillator 1 has a Level row");
+    if (level != nullptr) {
+      level->keyPressed(KeyPress(KeyPress::endKey));
+      level->keyPressed(KeyPress(KeyPress::upKey));
+      close(synth.getControls().at("osc_1_level")->value(), 0.01f, "Up raises a level by 1%");
+      expect(level->getTextFromValue(level->getValue()) == "1%", "the Level row reads 1%");
+      level->keyPressed(KeyPress(KeyPress::backspaceKey));
+    }
+  }
+
   void testFilterFxModelControlsAndValues() {
     SynthPlugin synth;
     for (int chain = 0; chain <= vital::kNumBuses; ++chain) {
@@ -1236,17 +1345,23 @@ namespace {
       expect(value != nullptr, "Filter FX exposes an accessible value");
       return value ? value->getCurrentValueAsString() : String();
     };
+    // Model and style change which rows the slot shows, so they are menus.
+    const auto menu = [&](Component* group, const String& title) {
+      auto* result = group ? dynamic_cast<ComboBox*>(titled(*group, title)) : nullptr;
+      expect(result != nullptr, "Filter FX offers " + title.toStdString() + " as a menu");
+      return result;
+    };
     const auto checkStyles = [&](Component* group, const StringArray& names) {
-      auto* style = slider(group, "Filter style");
+      auto* style = menu(group, "Filter style");
       if (!style)
         return;
-      close(style->getMaximum(), (names.size() - 1) / 9.0f, "Style range contains only this model's choices");
-      style->keyPressed(KeyPress(KeyPress::endKey));
-      for (int i = 0; i < names.size(); ++i) {
-        expect(valueText(style) == names[i], "Filter FX announces style " + names[i].toStdString());
-        style->keyPressed(KeyPress(KeyPress::rightKey));
-      }
-      expect(valueText(style) == names[names.size() - 1], "Style arrows stop before invalid or empty choices");
+      StringArray items;
+      for (int i = 0; i < style->getNumItems(); ++i)
+        items.add(style->getItemText(i));
+      expect(items == names, "The style menu lists only this model's choices: " +
+                                 items.joinIntoString(", ").toStdString());
+      style->setSelectedItemIndex(names.size() - 1, sendNotificationSync);
+      expect(style->getText() == names[names.size() - 1], "Filter FX announces the chosen style");
     };
 
     for (int chain = 0; chain <= vital::kNumBuses; ++chain) {
@@ -1274,11 +1389,13 @@ namespace {
       }
 
       // This change goes through the accessible row; let the normal timer refresh it.
-      auto* model = slider(group, "Filter model");
+      auto* model = menu(group, "Filter model");
       if (!model)
         continue;
-      model->setValue(static_cast<double>(vital::constants::kComb) / (vital::constants::kNumFilterModels - 1),
-                      sendNotificationSync);
+      expect(model->getNumItems() == vital::constants::kNumFilterModels, "The model menu lists every filter model");
+      model->setSelectedItemIndex(vital::constants::kComb, sendNotificationSync);
+      expect(synth.getControls().at(filter_prefix + "model")->value() == float(vital::constants::kComb),
+             "Choosing Comb from the model menu applies it");
       pumpEditorEvents();
       group = editorSection(editor, section, 19);
       expect(group && titled(*group, "Comb Blend Offset") && !titled(*group, "Formant X") &&
@@ -1346,7 +1463,8 @@ namespace {
       auto* untouched = editorSection(editor, section, 18);
       expect(untouched && !titled(*untouched, "Comb Blend Offset") && !titled(*untouched, "Formant X"),
              "Changing one filter preserves another filter in the same chain");
-      expect(valueText(slider(untouched, "Filter style")) == "12dB",
+      auto* untouched_style = menu(untouched, "Filter style");
+      expect(untouched_style != nullptr && untouched_style->getText() == "12dB",
              "Each Filter FX slot uses its own model and style");
     }
     for (int voice_filter : {1, 2}) {

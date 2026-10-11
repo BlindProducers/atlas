@@ -120,17 +120,18 @@ int testResonatorUi(SynthPlugin& synth, SynthPlugin& restored) {
     // Plate shares Membrane's rows, so the slot is not rebuilt (focus stays).
     pump();  // settle any rebuild queued by the edits above
     slot = visibleEffectSlot(editor, section, 0);
-    auto* model = slot ? dynamic_cast<ParameterSlider*>(componentWithTitle(*slot, "Model")) : nullptr;
-    if (!model) return fail("Model control missing");
+    // The model can change the slot's rows, so it is a menu of the models.
+    auto* model = slot ? dynamic_cast<ComboBox*>(componentWithTitle(*slot, "Model")) : nullptr;
+    if (!model || model->getNumItems() != 7) return fail("Model must be a menu of the seven models");
     slot->getProperties().set("resonator_test_marker", true);
-    model->keyPressed(KeyPress(KeyPress::rightKey));
+    model->setSelectedItemIndex(model->getSelectedItemIndex() + 1, sendNotificationSync);
     pump();
     slot = visibleEffectSlot(editor, section, 0);
     if (!slot || !slot->getProperties().contains("resonator_test_marker") || !componentWithTitle(*slot, "Ratio"))
       return fail("Moving between models that share rows must not rebuild the slot");
     // Choosing Pipe replaces the solid-body rows with Pipe's own.
-    model->keyPressed(KeyPress(KeyPress::rightKey));
-    if (restored.getControls().at(prefix + "model")->value() != 5) return fail("Model arrows must step through models");
+    model->setSelectedItemIndex(model->getSelectedItemIndex() + 1, sendNotificationSync);
+    if (restored.getControls().at(prefix + "model")->value() != 5) return fail("The model menu must choose models in order");
     pump();
     slot = visibleEffectSlot(editor, section, 0);
     if (!slot || !componentWithTitle(*slot, "Radius") || !componentWithTitle(*slot, "Opening") ||

@@ -570,6 +570,8 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     bool isModulationDestinationId(const String& id) const;
     std::vector<std::pair<String, String>> modulationSourcesForDestination(const String& destinationId) const;
     void removeModulationFromParameter(const String& sourceId, const String& destinationId, Component& target);
+    // Disconnects a modulation slot (1-based) and resets its amount, options and remap.
+    void clearModulationSlot(int slot);
     void addTranceGateEditor(const String& prefix, const String& section, Component& parent,
                              int& y, int x, int width, int& focusOrder);
     void setLfoMsegControlsVisible(bool visible);

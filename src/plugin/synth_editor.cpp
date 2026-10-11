@@ -1635,6 +1635,27 @@ namespace {
     return value >= 0.5f ? 1 : 0;
   }
 
+  // Choices that change which rows the editor shows, so choosing one rebuilds
+  // it: oscillator type and analog waveform, frequency morph type (Random
+  // Amplitudes adds a seed), filter model and style, and the effect slot
+  // variants above. They are menus, not sliders that rebuild on every step.
+  bool isRowSwitchingChoice(const String& id) {
+    if (const int slot = sourceSlotForId(id); slot >= 0) {
+      const String suffix = id.substring(String("osc_" + String(slot + 1) + "_").length());
+      return suffix == "type" || suffix == "analog_waveform" || suffix.endsWith("spectral_morph_type");
+    }
+    const String filter_suffix = filterSuffixForParameter(id);
+    if (filter_suffix == "model" || filter_suffix == "style")
+      return true;
+    for (const char* variant : { "dimension_expander_mode", "resonator_model", "analoguechorus_model",
+                                 "analogueecho_medium", "analoguerotary_model", "analoguewah_model",
+                                 "convolution_reverb_predelay_sync", "spectral_lock_mode" }) {
+      if (id == variant || id.endsWith(String("_") + variant))
+        return true;
+    }
+    return false;
+  }
+
   // Convolution Reverb: free predelay in milliseconds, or a synced division.
   bool isConvolutionReverbParameterRelevant(const String& suffix, int synced) {
     if (suffix == "predelay") return synced == 0;
@@ -3855,13 +3876,18 @@ namespace {
       std::unique_ptr<AccessibilityHandler> createAccessibilityHandler() override {
         class Handler final : public AccessibilityHandler {
           public:
+            // VoiceOver's show menu opens a parameter's context menu, as on its sliders.
             explicit Handler(ComboBox& comboBoxToWrap) :
                 AccessibilityHandler(comboBoxToWrap, AccessibilityRole::comboBox,
                                      AccessibilityActions()
                                          .addAction(AccessibilityActionType::press,
                                                     [&comboBoxToWrap] { comboBoxToWrap.showPopup(); })
-                                         .addAction(AccessibilityActionType::showMenu,
-                                                    [&comboBoxToWrap] { comboBoxToWrap.showPopup(); }),
+                                         .addAction(AccessibilityActionType::showMenu, [&comboBoxToWrap] {
+                                           if (auto* menu_target = dynamic_cast<AccessibleContextMenuTarget*>(&comboBoxToWrap))
+                                             menu_target->showAccessibleContextMenu();
+                                           else
+                                             comboBoxToWrap.showPopup();
+                                         }),
                                      AccessibilityHandler::Interfaces{
                                          std::make_unique<ValueInterface>(comboBoxToWrap) }),
                 combo_box_(comboBoxToWrap) { }
@@ -3894,15 +3920,36 @@ namespace {
       }
   };
 
-  class ParameterComboBox : public OffscreenComboBox {
+  class ParameterComboBox : public OffscreenComboBox, public AccessibleContextMenuTarget {
     public:
       std::function<bool(const KeyPress&, Component&)> onAccessibleCommand;
       std::function<void()> onDefaultCommand;
+      std::function<void()> onContextMenuCommand;
+      // Arrow and Page keys open the menu instead of stepping through choices.
+      bool arrowsOpenMenu = false;
+
+      void showAccessibleContextMenu() override {
+        if (onContextMenuCommand)
+          onContextMenuCommand();
+      }
+
       bool keyPressed(const KeyPress& key) override {
         if (onAccessibleCommand && onAccessibleCommand(key, *this)) return true;
+        if (onContextMenuCommand && isContextMenuKey(key)) {
+          onContextMenuCommand();
+          return true;
+        }
         const int code = key.getKeyCode();
         if (code == KeyPress::backspaceKey || code == KeyPress::deleteKey) {
           if (onDefaultCommand) onDefaultCommand();
+          return true;
+        }
+        const bool step = code == KeyPress::upKey || code == KeyPress::downKey || code == KeyPress::leftKey ||
+                          code == KeyPress::rightKey || code == KeyPress::pageUpKey || code == KeyPress::pageDownKey;
+        // The open menu forwards Left and Right here; they must not open a second one.
+        if (code == KeyPress::spaceKey || (step && arrowsOpenMenu)) {
+          if (!isPopupActive())
+            showPopup();
           return true;
         }
         int index = getSelectedItemIndex();
@@ -4324,11 +4371,14 @@ class AccessibleParameterRow : public Component {
            bridge->getDetails().max - bridge->getDetails().min == 1.0f &&
            !is_off_on(bridge->getDetails().string_lookup));
       const bool spectral_lock_control = parameter_id.startsWith("spectral_lock_") || parameter_id.contains("_spectral_lock_");
-      use_combo_control_ = spectral_lock_control && (parameter_id.endsWith("_root") || parameter_id.endsWith("_scale"));
+      const bool row_switching_choice = isRowSwitchingChoice(parameter_id);
+      use_combo_control_ = row_switching_choice ||
+                           (spectral_lock_control && (parameter_id.endsWith("_root") || parameter_id.endsWith("_scale")));
       const bool tape_control = parameter_id.startsWith("tape_") || parameter_id.contains("_tape_");
       const bool suppressor_control = parameter_id.startsWith("suppressor_") || parameter_id.contains("_suppressor_");
       const bool defuse_control = parameter_id.startsWith("defuse_") || parameter_id.contains("_defuse_");
-      use_toggle_control_ = forceToggleControl || (parameter_.isBoolean() && !forceSliderControl && !named_binary_choice && !tape_control && !defuse_control && !parameter_id.endsWith("trance_gate_trigger"));
+      use_toggle_control_ = !use_combo_control_ &&
+                            (forceToggleControl || (parameter_.isBoolean() && !forceSliderControl && !named_binary_choice && !tape_control && !defuse_control && !parameter_id.endsWith("trance_gate_trigger")));
       const auto name = parameter_.getName(128);
       const bool random_rate = parameter_id.startsWith("random_") && parameter_id.endsWith("_frequency");
       const bool trance_control = parameter_id.startsWith("trance_gate_") || parameter_id.contains("_trance_gate_");
@@ -4349,19 +4399,34 @@ class AccessibleParameterRow : public Component {
         combo_.setTitle(accessible_name);
         combo_.setDescription(parameter_description);
         combo_.setTooltip(parameter_description);
-        combo_.setHelpText("Use arrows to choose, Enter or Space to open the menu, Backspace to reset. Home selects the last choice, End the first. Shift M opens the context menu; Shift L learns MIDI; Shift C clears MIDI learn.");
+        // Stepping through these would rebuild the editor at every choice.
+        combo_.arrowsOpenMenu = row_switching_choice;
+        combo_.setHelpText(row_switching_choice
+            ? "Press Enter, Space or an arrow key to open the list of choices, then choose one with the arrows and Enter. Escape keeps the current choice. Backspace resets to default. Home selects the last choice, End the first. Shift M opens the context menu; Shift L learns MIDI; Shift C clears MIDI learn."
+            : "Use arrows to choose, Enter or Space to open the menu, Backspace to reset. Home selects the last choice, End the first. Shift M opens the context menu; Shift L learns MIDI; Shift C clears MIDI learn.");
         combo_.setWantsKeyboardFocus(true);
+        // One item per choice in the row's range, named as the row reads it.
         const int steps = parameter_.getNumSteps();
-        for (int i = 0; i < steps; ++i)
-          combo_.addItem(parameter_.getText(float(i) / float(steps - 1), 128), i + 1);
-        combo_.onChange = [this, steps] {
-          if (updating_) return;
+        for (int i = 0; i < steps; ++i) {
+          const double value = steps > 1 ? double(i) / double(steps - 1) : 0.0;
+          if (value < min_normalized_value_ - 1.0e-6 || value > max_normalized_value_ + 1.0e-6)
+            continue;
+          const String text = text_from_value_ ? text_from_value_(value)
+                            : bridge != nullptr ? accessibleParameterText(*bridge, value)
+                                                : parameter_.getText(float(value), 128);
+          combo_values_.push_back(float(value));
+          combo_.addItem(text, static_cast<int>(combo_values_.size()));
+        }
+        combo_.onChange = [this] {
+          const int index = combo_.getSelectedItemIndex();
+          if (updating_ || !isPositiveAndBelow(index, static_cast<int>(combo_values_.size()))) return;
           beginParameterChange();
-          parameter_.setValueNotifyingHost(float(combo_.getSelectedItemIndex()) / float(steps - 1));
+          parameter_.setValueNotifyingHost(combo_values_[static_cast<size_t>(index)]);
           if (onValueChange) onValueChange();
           endParameterChange();
         };
         combo_.onDefaultCommand = [this] { resetToDefaultValue(); };
+        combo_.onContextMenuCommand = [this] { showContextMenu(combo_); };
         addAndMakeVisible(combo_);
       }
       else if (use_toggle_control_) {
@@ -4401,6 +4466,13 @@ class AccessibleParameterRow : public Component {
           slider_.toAdjustmentValue = [](double value) { return value * 16.0 - 8.0; };
           slider_.fromAdjustmentValue = [](double curve) { return (curve + 8.0) / 16.0; };
           slider_.adjustmentStep = [] { return 0.1; };
+        }
+        if (bridge != nullptr && interval == 0.0 && ValueBridge::usesRangePercentDisplay(bridge->getDetails())) {
+          // Levels and amounts shown in percent: keys move one percent, also across -100% to 100%.
+          const double minimum = bridge->getDetails().min, span = bridge->getDetails().max - minimum;
+          slider_.toAdjustmentValue = [minimum, span](double v) { return (minimum + span * v) * 100.0; };
+          slider_.fromAdjustmentValue = [minimum, span](double percent) { return (percent / 100.0 - minimum) / span; };
+          slider_.adjustmentStep = [] { return 1.0; };
         }
         if (bridge != nullptr && isSemitoneFrequencyParameter(parameter_id, bridge->getDetails())) {
           // Keep host automation in its original normalized/semitone space;
@@ -4670,8 +4742,16 @@ class AccessibleParameterRow : public Component {
 
     void refresh() {
       ScopedValueSetter<bool> guard(updating_, true);
-      if (use_combo_control_)
-        combo_.setSelectedItemIndex(roundToInt(parameter_.getValue() * (combo_.getNumItems() - 1)), dontSendNotification);
+      if (use_combo_control_) {
+        const float value = parameter_.getValue();
+        int closest = -1;
+        for (int i = 0; i < static_cast<int>(combo_values_.size()); ++i) {
+          if (closest < 0 || std::abs(combo_values_[static_cast<size_t>(i)] - value) <
+                             std::abs(combo_values_[static_cast<size_t>(closest)] - value))
+            closest = i;
+        }
+        combo_.setSelectedItemIndex(closest, dontSendNotification);
+      }
       else if (use_toggle_control_)
         toggle_.setToggleState(toggle_state_ ? toggle_state_() : parameter_.getValue() >= 0.5f, dontSendNotification);
       else {
@@ -4936,6 +5016,7 @@ class AccessibleParameterRow : public Component {
     std::function<void(const String&, bool)> fx_automation_gesture_;
     std::vector<int> indexed_value_order_;
     int indexed_value_fallback_ = -1;
+    std::vector<float> combo_values_;   // the parameter value of each menu item
     double min_normalized_value_ = 0.0;
     double max_normalized_value_ = 1.0;
     bool use_toggle_control_ = false;
@@ -8007,6 +8088,25 @@ void SynthEditor::showAllSections(bool announce) {
             slot_y += 88;
           }
 
+          // Only a slot with a source or destination has something to clear.
+          if (connection != nullptr && (!connection->source_name.empty() || !connection->destination_name.empty())) {
+            auto clear = std::make_unique<OffscreenTextButton>("Clear modulation slot");
+            auto* clear_ptr = clear.get();
+            clear_ptr->setTitle("Clear modulation slot");
+            clear_ptr->setDescription("Disconnect " + modulationSlotHeaderTitle(slot) +
+                                      " and reset its amount, options and remap");
+            clear_ptr->setHelpText("Press Enter to empty this modulation slot");
+            clear_ptr->setWantsKeyboardFocus(true);
+            clear_ptr->onClick = [this, slot] { clearModulationSlot(slot); };
+            clear_ptr->setExplicitFocusOrder(focus_order++);
+            clear_ptr->setBounds(10, slot_y, jmax(600, slot_width - 20), 38);
+            slot_ptr->addAndMakeVisible(clear_ptr);
+            slot_ptr->addAccessibleChild(clear_ptr);
+            row_focus_order_.push_back(clear_ptr);
+            section_headers_.push_back(std::move(clear));
+            slot_y += 44;
+          }
+
           slot_ptr->setBounds(flatten_section ? 16 : 10, section_y, slot_width, slot_y);
           section_y += slot_y + 8;
         }
@@ -8458,6 +8558,14 @@ void SynthEditor::showKeyboardHelp() {
       "  Right bracket ( ] ) or Shift+M - Open context menu\n"
       "  Shift+L - MIDI learn: the next MIDI control moved is mapped; Shift+L again cancels\n"
       "  Shift+C - Clear MIDI learn (Editor menu, MIDI learn mappings, lists and removes them all)\n"
+      "  Levels and modulation amounts read and accept percentages: 0% to 100%, or -100% to 100%\n"
+      "\n"
+      "Choosing from a menu (Type, Model, Style and other choices that change which controls are shown)\n"
+      "  Enter / Space / an arrow key - Open the list of choices; arrows move, Enter chooses\n"
+      "  Escape - Close the list and keep the current choice\n"
+      "  Home - Last choice; End - First choice\n"
+      "  Backspace / Delete - Reset to default\n"
+      "  Right bracket ( ] ) or Shift+M - Open context menu\n"
       "\n"
       "Virtual musical keyboard\n"
       "  Alt+K - Toggle the computer-keyboard piano on or off\n"
@@ -8902,6 +9010,40 @@ void SynthEditor::removeModulationFromParameter(const String& sourceId, const St
                                          AccessibilityHandler::AnnouncementPriority::high);
 }
 
+void SynthEditor::clearModulationSlot(int slot) {
+  auto* connection = isPositiveAndBelow(slot - 1, vital::kMaxModulationConnections)
+      ? synth_.getModulationBank().atIndex(slot - 1) : nullptr;
+  if (connection == nullptr || (connection->source_name.empty() && connection->destination_name.empty()))
+    return;
+
+  synth_.disconnectModulation(connection);
+  // A slot holding only a source or only a destination was never connected.
+  connection->resetConnection("", "");
+  // Leave the slot as a new route would find it.
+  const String prefix = "modulation_" + String(slot) + "_";
+  for (const char* suffix : { "amount", "power", "bipolar", "stereo", "bypass", "random_mode" })
+    setParameterEngineValue(prefix + suffix, 0.0f);
+  if (connection->modulation_processor != nullptr)
+    connection->modulation_processor->lineMapGenerator()->initLinear();
+
+  refreshModulationRoutes();
+  const String announcement = modulationSlotHeaderTitle(slot) + " cleared";
+  if (!show_all_sections_) {
+    postPluginAnnouncement(announcement, AccessibilityHandler::AnnouncementPriority::high);
+    return;
+  }
+  // The emptied slot loses its remap editor and the Clear button that called
+  // this, so rebuild once the click has returned and land on the slot's heading.
+  Component::SafePointer<SynthEditor> safe_this(this);
+  MessageManager::callAsync([safe_this, slot, announcement] {
+    if (safe_this == nullptr)
+      return;
+    safe_this->showAllSections(false);
+    safe_this->restoreFocusAfterRebuild({}, nullptr, safe_this->modulationSlotTitle(slot));
+    postPluginAnnouncement(announcement, AccessibilityHandler::AnnouncementPriority::high);
+  });
+}
+
 String SynthEditor::modulationSlotTitle(int slot) const {
   // One slot is one route. Announce it on its own: source, destination, amount,
   // and where it sits among the source's routes, so no counting is needed.
@@ -8921,8 +9063,8 @@ String SynthEditor::modulationSlotTitle(int slot) const {
   const String prefix = "modulation_" + String(slot) + "_";
   String amount_text;
   if (auto* amount_bridge = parameterBridge(prefix + "amount")) {
-    const float amount = amount_bridge->convertToEngineValue(amount_bridge->getValue());
-    amount_text = amount == 0.0f ? String("0") : String(amount > 0.0f ? "+" : "") + String(amount, 2);
+    const String percent = amount_bridge->getText(amount_bridge->getValue(), 128);
+    amount_text = percent.startsWith("-") || percent == "0%" ? percent : "+" + percent;
   }
   String bypass_text;
   if (auto* bypass_bridge = parameterBridge(prefix + "bypass")) {
@@ -14068,7 +14210,8 @@ void SynthEditor::promptForInitialModulationAmount(const String& sourceId, const
                                     ": the value it moves to", dontSendNotification);
   const String reach_help = "Type the value the destination moves to from where it is now, such as 12 semitones, 50%, "
                             "1000 Hz or C4. A unipolar source moves all of that distance; a bipolar source, such as "
-                            "an LFO, moves half of it each way. Type raw followed by a number for a normalized amount.";
+                            "an LFO, moves half of it each way. Type raw followed by a percentage, such as raw 25%, "
+                            "to set the amount itself, from -100% to 100%.";
   modulation_amount_prompt_.setTitle("Initial modulation amount");
   modulation_amount_prompt_.setDescription(reach_help);
   modulation_amount_editor_.setTitle("Modulation amount, as a destination value");
@@ -14292,15 +14435,16 @@ String SynthEditor::modulationAmountSummary(const String& sourceId, const String
   const bool bipolar = found != synth_.getControls().end() && found->second->value() >= 0.5f;
   auto* bridge = parameterBridge(destinationId);
   if (bridge == nullptr)
-    return "amount " + String(amount, 3);
+    return "amount " + ValueBridge::rangePercentText(amount);
   const auto& details = bridge->getDetails();
   const bool linear = details.value_scale == vital::ValueDetails::kLinear ||
                       details.value_scale == vital::ValueDetails::kIndexed;
   if (!linear || details.string_lookup != nullptr)
-    return String(bipolar ? "bipolar" : "unipolar") + ", raw amount " + String(amount, 3);
+    return String(bipolar ? "bipolar" : "unipolar") + ", amount " + ValueBridge::rangePercentText(amount);
   // Linear controls: say how far the destination moves, in its own units.
-  const float distance = amount * (details.max - details.min) * details.display_multiply;
-  const String units = String(details.display_units).trim();
+  const bool percent_destination = ValueBridge::usesRangePercentDisplay(details);
+  const float distance = amount * (details.max - details.min) * (percent_destination ? 100.0f : details.display_multiply);
+  const String units = percent_destination ? String("%") : String(details.display_units).trim();
   auto value = [&](float v) {
     String text = String(v, std::abs(v) < 10.0f ? 2 : 1);
     if (text.contains("."))
@@ -14318,9 +14462,12 @@ float SynthEditor::modulationAmountFromPeakText(const String& destinationId, con
   const String trimmed = text.trim();
   const String lower = trimmed.toLowerCase();
   if (lower.startsWith("raw ") || lower.startsWith("normalized ")) {
-    const String value = lower.startsWith("raw ") ? trimmed.fromFirstOccurrenceOf(" ", false, false)
-                                                  : trimmed.fromFirstOccurrenceOf(" ", false, false);
-    return jlimit(-1.0f, 1.0f, static_cast<float>(value.getDoubleValue()));
+    // The amount itself, -100% to 100%: "raw 25%", "raw 25" or "raw 0.25".
+    const String value = trimmed.fromFirstOccurrenceOf(" ", false, false);
+    float amount = static_cast<float>(value.getDoubleValue());
+    if (value.contains("%") || std::abs(amount) > 1.0f)
+      amount *= 0.01f;
+    return jlimit(-1.0f, 1.0f, amount);
   }
 
   auto* bridge = parameterBridge(destinationId);

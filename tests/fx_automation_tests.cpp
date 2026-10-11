@@ -497,16 +497,18 @@ int main() {
       const std::string prefix = chain == 0 ? "" : "bus_" + std::to_string(chain) + "_";
       if (std::abs(restored.getControls().at(prefix + "fx_slot_20_floaty_delay_playback_rate")->value() + 1.46f) > 1.0e-5f)
         return fail("Floaty playback keyboard edit did not reach the DSP parameter");
-      auto* mode = dynamic_cast<Slider*>(componentWithTitle(*dimension, "Mode"));
-      if (!mode || !mode->getTextFromValue(mode->getValue()).contains("Mode 2"))
-        return fail("Dimension mode must be an accessible named choice, not an On/Off toggle");
-      if (!mode->keyPressed(KeyPress(KeyPress::leftKey))) return fail("Dimension mode is not keyboard editable");
+      // The mode switches the slot's rows, so it is a menu of its two named modes.
+      auto* mode = dynamic_cast<ComboBox*>(componentWithTitle(*dimension, "Mode"));
+      if (!mode || mode->getNumItems() != 2 || !mode->getText().contains("Mode 2"))
+        return fail("Dimension mode must be a menu of named modes, not an On/Off toggle");
+      mode->setSelectedItemIndex(0, sendNotificationSync);
       editor.updateFullGui();
       dimension = effectSlotComponent(editor, section, 17);
       if (!dimension || !componentWithTitle(*dimension, "Amount") || componentWithTitle(*dimension, "Size"))
         return fail("switching to Mode 1 did not update accessible controls");
-      mode = dynamic_cast<Slider*>(componentWithTitle(*dimension, "Mode"));
-      if (!mode || !mode->keyPressed(KeyPress(KeyPress::rightKey))) return fail("cannot return to Mode 2 with keyboard");
+      mode = dynamic_cast<ComboBox*>(componentWithTitle(*dimension, "Mode"));
+      if (!mode) return fail("Dimension mode menu missing after switching to Mode 1");
+      mode->setSelectedItemIndex(1, sendNotificationSync);
       editor.updateFullGui();
     }
   }

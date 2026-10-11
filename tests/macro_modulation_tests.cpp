@@ -639,6 +639,7 @@ int main(int argc, char** argv) {
     testWavetableEditorReturnsFocusToItsOscillator();
     testFilterFxModelControlsAndValues();
     testGranularSizeModeNamesBothChoices();
+    testLevelsAndAmountsReadAsPercent();
     testSlotTypeRowsFollowTheType();
     testWavetableEditingOnASlotSwitchedToWavetable();
     testEffectMoveKeepsFocusAcrossTimerTick();

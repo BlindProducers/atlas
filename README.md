@@ -11,7 +11,10 @@ Atlas builds as a VST3 plugin on macOS and Windows, and as an Audio Unit on macO
 ## The editor
 
 The editor shows the whole synth as labelled groups of controls. Tab and the arrow
-keys move between them, Enter types a value, and Backspace resets a control.
+keys move between them, Enter types a value, and Backspace resets a control. Levels
+and modulation amounts read as percentages. Choices that change which controls are
+shown, such as an oscillator's Type or a filter's Model, are menus: Enter, Space or
+an arrow key opens the list.
 Shift M opens a control's context menu to add modulation, MIDI learn or reset it.
 Comma and period jump between sections. The Editor menu holds tuning, accessibility
 settings, the keyboard help and the list of MIDI learn mappings. The Preset menu saves,
@@ -95,9 +98,10 @@ slots of its own.
   free or tempo synced, mono or stereo.
 - **16 macros**, plus velocity, aftertouch, mod wheel, pitch bend, note and other
   MIDI sources.
-- Any source modulates any parameter. Each route has an amount (typed in the
-  destination's own units), bipolar or unipolar polarity, stereo, a curve and a
-  remap shape.
+- Any source modulates any parameter. Each route has an amount from -100% to 100%
+  (typed in the destination's own units when assigned), bipolar or unipolar
+  polarity, stereo, a curve and a remap shape. A slot in use has a Clear modulation
+  slot button.
 - **Two arpeggiators** with styles, steps, gate, repeats, velocity and hold, at
   tempo-synced or free rates, each playing the oscillators you choose.
 

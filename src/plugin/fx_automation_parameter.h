@@ -75,6 +75,8 @@ class FxAutomationParameter : public AudioProcessorParameterWithID {
             ? binding->suppressor_sample_rate->load(std::memory_order_relaxed) : 44100.0), 2) + " Hz").substring(0, maximumStringLength);
       if (vital::scream::parameterIs(details.name, "cutoff"))
         return formatDisplayValue(details, vital::scream::cutoffToHz(adjusted)).substring(0, maximumStringLength).trim();
+      if (ValueBridge::usesRangePercentDisplay(details))
+        return ValueBridge::rangePercentText(adjusted).substring(0, maximumStringLength);
       String result;
       if (details.string_lookup != nullptr) {
         const int index = jlimit(0, static_cast<int>(std::round(details.max - details.min)),
@@ -113,6 +115,8 @@ class FxAutomationParameter : public AudioProcessorParameterWithID {
             return convertToPluginValue(details, details.min + i);
         }
       }
+      if (ValueBridge::usesRangePercentDisplay(details))
+        return convertToPluginValue(details, ValueBridge::rangePercentEngineValue(details, trimmed));
 
       float display_value = trimmed.getFloatValue();
       if ((String(details.name).endsWith("defuse_frequency") || String(details.name).contains("resonator_")) &&
