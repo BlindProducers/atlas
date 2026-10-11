@@ -18,7 +18,7 @@
 
 #include "JuceHeader.h"
 #include "common.h"
-#include "json/json.h"
+#include "nlohmann/json.hpp"
 
 #include <array>
 #include <atomic>

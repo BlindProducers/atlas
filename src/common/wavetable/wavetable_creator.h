@@ -20,7 +20,7 @@
 #include "wave_frame.h"
 #include "wavetable_group.h"
 #include "file_source.h"
-#include "json/json.h"
+#include "nlohmann/json.hpp"
 #include "wavetable.h"
 
 using json = nlohmann::json;

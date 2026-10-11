@@ -17,7 +17,7 @@
 #pragma once
 
 #include "processor.h"
-#include "json/json.h"
+#include "nlohmann/json.hpp"
 #include "utils.h"
 
 #include <functional>

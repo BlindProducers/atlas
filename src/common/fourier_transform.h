@@ -120,7 +120,7 @@ namespace vital {
 
   #else
 
-  #include "kissfft/kissfft.h"
+  #include "kissfft/kissfft.hh"
 
   class FourierTransform {
     public:

@@ -107,9 +107,17 @@ slots of its own.
 
 ## Building
 
-Every dependency, including JUCE 8, is in `third_party`; nothing else needs to be
-downloaded. You need CMake 3.22 or newer and a C++17 compiler: Xcode command line
-tools on macOS, or Visual Studio 2022 with Desktop development with C++ on Windows.
+JUCE 8 and the other libraries Atlas builds against are git submodules in
+`third_party`, each pinned to the exact version Atlas is tested with. Clone with
+them:
+
+```sh
+git clone --recurse-submodules https://github.com/BlindProducers/atlas.git
+```
+
+In a clone made without them, run `git submodule update --init`. You need CMake
+3.22 or newer and a C++17 compiler: Xcode command line tools on macOS, or Visual
+Studio 2022 with Desktop development with C++ on Windows.
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -130,6 +138,19 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DATLAS_BUILD_TIMING_TESTS=ON
 cmake --build build --config Release --parallel
 ctest --test-dir build -C Release --output-on-failure --parallel 1
 ```
+
+Some tests compare Atlas against the original code it adapts. Those sources are
+opt-in submodules that a normal clone skips; fetch them and configure again to
+add their tests:
+
+```sh
+git submodule update --init --checkout third_party/aquanode-plugins third_party/WDL third_party/nih-plug
+```
+
+`aquanode-plugins` (about 130 MB) holds the original Spectral Lock, `WDL` runs the
+original JSFX effects with EEL2, and `nih-plug` holds Diopser for the Defuse
+reference, which also needs `rustc` and Python 3. `third_party/README.atlas.md`
+describes each dependency.
 
 ## Licence
 

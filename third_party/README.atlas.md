@@ -1,24 +1,49 @@
-# Atlas's release dependencies
+# Atlas's dependencies
 
-Everything Atlas builds against is in this folder, so no separate framework
-or library checkout is needed. Each directory keeps its upstream licence and
-copyright files; `NOTICE` at the repository root lists them all.
+Most of what Atlas builds against is a git submodule, pinned to the exact
+upstream commit that Atlas was validated with. Fetch them with
+`git clone --recurse-submodules`, or `git submodule update --init` in an
+existing clone. `NOTICE` at the repository root lists every licence.
 
-- `JUCE8/`: JUCE 8.0.14 with its CMake helpers and modules, used under the
-  AGPLv3 (see `JUCE8/LICENSE.md`). Atlas is GPLv3, which the AGPL allows.
+Fetched by default, needed to build Atlas:
+
+- `JUCE8/`: JUCE 8.0.14 (https://github.com/juce-framework/JUCE), used under
+  the AGPLv3 (see `JUCE8/LICENSE.md`). Atlas is GPLv3, which the AGPL allows.
+- `nlohmann_json/`: nlohmann json 3.1.2 (MIT), from the release-tracking
+  repository https://github.com/ArthurSonzogni/nlohmann_json_cmake_fetchcontent,
+  which carries only the released header (`include/nlohmann/json.hpp`, the
+  same file as the official release's single include).
+- `concurrentqueue/`: moodycamel concurrent queue (simplified BSD),
+  https://github.com/cameron314/concurrentqueue at 0bc97ad (June 2016).
+- `kissfft/`: KISS FFT (BSD-3), https://github.com/mborgerding/kissfft at
+  760cb7e (October 2018). Atlas uses its header-only C++ class, `kissfft.hh`.
+
+Opt-in, only for reference tests. `git submodule update --init` skips these;
+fetch one with `git submodule update --init --checkout <path>`, and CMake uses
+it when `ATLAS_BUILD_TIMING_TESTS` is on:
+
+- `aquanode-plugins/`: Spectral Lock by aquanodemusic (AGPL-3.0),
+  https://github.com/aquanodemusic/aquanode-plugins. Its original processor in
+  `spectral/spectrallock/src` is the oracle for the Spectral Lock tests; see
+  `src/synthesis/effects/spectral_lock/README.atlas.md`.
+- `WDL/`: Cockos WDL (zlib licence), https://github.com/justinfrankel/WDL. Its
+  EEL2 runs the original JSFX for the JSFX, Reverb filter, Trance gate and
+  Resonator reference tests.
+- `nih-plug/`: NIH-plug (ISC) with Diopser (GPL v3 or later),
+  https://github.com/robbert-vdh/nih-plug at the revision recorded in
+  `tests/defuse/source_sha256.json`. The Defuse reference test compiles Diopser
+  with `rustc` and Python.
+
+Kept in this repository:
+
 - `scream/Source`: the BP Scream DSP (MIT, Cure Audio / exacoustics / Xynth
   Audio) with the ADAA (BSD-3) and Polylogarithm (MIT) notices in
-  `scream/LICENSE`. Only the DSP and what the regression test needs are kept.
-- `json/`: nlohmann json (MIT).
-- `concurrentqueue/`: moodycamel concurrent queue (simplified BSD).
-- `kissfft/`: KISS FFT (BSD-3).
+  `scream/LICENSE`. This JUCE version of the DSP is not published upstream (the
+  released Scream at https://github.com/Cure-Audio/Scream is a separate C
+  codebase), so it stays here. Only the DSP and what the regression test needs
+  are kept.
 - `licenses/WolfShaper.LICENSE`: Atlas's Waveshaper adapts Wolf Shaper by
   Patrick Desaulniers (GPL v3 or later).
-- `spectral_lock/`: Spectral Lock by aquanodemusic (AGPL-3.0,
-  https://github.com/aquanodemusic/aquanode-plugins), kept for the regression
-  oracle; the engine Atlas runs is extracted into
-  `src/synthesis/effects/spectral_lock`. See `spectral_lock/README.atlas.md`.
 
 The Suppressor and Spectral Compressor effects are Atlas's own code under
-`src/synthesis/effects`. The optional JSFX oracle inputs are in
-`tests/jsfx/fixtures`; the EEL2 interpreter they need is not vendored.
+`src/synthesis/effects`. The JSFX oracle inputs are in `tests/jsfx/fixtures`.

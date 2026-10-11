@@ -19,7 +19,7 @@
 #include "synth_constants.h"
 #include "synth_module.h"
 
-#include "json/json.h"
+#include "nlohmann/json.hpp"
 
 #include <atomic>
 #include <condition_variable>

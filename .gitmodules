@@ -1,0 +1,31 @@
+[submodule "third_party/JUCE8"]
+	path = third_party/JUCE8
+	url = https://github.com/juce-framework/JUCE.git
+	shallow = true
+[submodule "third_party/concurrentqueue"]
+	path = third_party/concurrentqueue
+	url = https://github.com/cameron314/concurrentqueue.git
+	shallow = true
+[submodule "third_party/kissfft"]
+	path = third_party/kissfft
+	url = https://github.com/mborgerding/kissfft.git
+	shallow = true
+[submodule "third_party/nlohmann_json"]
+	path = third_party/nlohmann_json
+	url = https://github.com/ArthurSonzogni/nlohmann_json_cmake_fetchcontent.git
+	shallow = true
+[submodule "third_party/aquanode-plugins"]
+	path = third_party/aquanode-plugins
+	url = https://github.com/aquanodemusic/aquanode-plugins.git
+	shallow = true
+	update = none
+[submodule "third_party/WDL"]
+	path = third_party/WDL
+	url = https://github.com/justinfrankel/WDL.git
+	shallow = true
+	update = none
+[submodule "third_party/nih-plug"]
+	path = third_party/nih-plug
+	url = https://github.com/robbert-vdh/nih-plug.git
+	shallow = true
+	update = none

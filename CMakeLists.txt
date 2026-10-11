@@ -23,12 +23,20 @@ endif()
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# The release source contains the exact JUCE version used for validation.
+# JUCE, nlohmann json, concurrentqueue and KISS FFT are git submodules pinned
+# to the exact versions used for validation.
 set(ATLAS_JUCE_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/third_party/JUCE8" CACHE PATH "JUCE source directory")
-if(NOT EXISTS "${ATLAS_JUCE_SOURCE}/CMakeLists.txt")
-  message(FATAL_ERROR "Missing vendored JUCE8. Extract the complete Atlas source package.")
-endif()
+foreach(dependency "${ATLAS_JUCE_SOURCE}/CMakeLists.txt"
+                   "${CMAKE_CURRENT_SOURCE_DIR}/third_party/nlohmann_json/include/nlohmann/json.hpp"
+                   "${CMAKE_CURRENT_SOURCE_DIR}/third_party/concurrentqueue/concurrentqueue.h"
+                   "${CMAKE_CURRENT_SOURCE_DIR}/third_party/kissfft/kissfft.hh")
+  if(NOT EXISTS "${dependency}")
+    message(FATAL_ERROR "Missing ${dependency}. Fetch the submodules with: git submodule update --init")
+  endif()
+endforeach()
 add_subdirectory("${ATLAS_JUCE_SOURCE}" JUCE)
+# Every Atlas target includes nlohmann json as "nlohmann/json.hpp".
+include_directories(third_party/nlohmann_json/include)
 
 juce_add_plugin(Atlas
   COMPANY_NAME "Blind Producers"
@@ -110,8 +118,7 @@ target_include_directories(Atlas PRIVATE
   src/synthesis/producers
   src/synthesis/utilities
   third_party
-  third_party/concurrentqueue
-  third_party/json)
+  third_party/concurrentqueue)
 
 target_compile_definitions(Atlas PRIVATE
   VITAL_ACCESSIBLE_UI=1
@@ -365,8 +372,12 @@ if(ATLAS_BUILD_TIMING_TESTS)
            --compare "${CMAKE_CURRENT_BINARY_DIR}/slot-reference")
 
   # Optional independent oracle: production builds do not require Rust or
-  # the external Diopser checkout. Point this at nih-plug/plugins/diopser.
+  # the external Diopser checkout. Point this at nih-plug/plugins/diopser, or
+  # fetch the opt-in third_party/nih-plug submodule, which is used by default.
   set(ATLAS_DIOPSER_SOURCE "" CACHE PATH "Diopser source directory for exact DSP reference tests")
+  if(NOT ATLAS_DIOPSER_SOURCE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/nih-plug/plugins/diopser/src/lib.rs")
+    set(ATLAS_DIOPSER_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/third_party/nih-plug/plugins/diopser")
+  endif()
   if(ATLAS_DIOPSER_SOURCE)
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
     find_program(ATLAS_DIOPSER_RUSTC rustc REQUIRED)
@@ -405,17 +416,25 @@ if(ATLAS_BUILD_TIMING_TESTS)
     Atlas juce::juce_audio_utils juce::juce_dsp juce::juce_recommended_config_flags)
   add_test(NAME atlas_suppressor COMMAND AtlasSuppressorTests)
 
-  juce_add_console_app(AtlasSpectralLockTests PRODUCT_NAME "Atlas Spectral Lock Tests")
-  juce_generate_juce_header(AtlasSpectralLockTests)
-  target_sources(AtlasSpectralLockTests PRIVATE tests/spectral_lock_tests.cpp
-    tests/spectral_lock_reference_processor.cpp third_party/spectral_lock/PluginEditor.cpp)
-  target_include_directories(AtlasSpectralLockTests PRIVATE
-    src/common src/common/wavetable src/synthesis/framework src/synthesis/modules src/synthesis/effects third_party)
-  target_compile_definitions(AtlasSpectralLockTests PRIVATE
-    VITAL_ACCESSIBLE_UI=1 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_DSP_USE_SHARED_FFTW=0)
-  target_link_libraries(AtlasSpectralLockTests PRIVATE
-    Atlas juce::juce_audio_utils juce::juce_dsp juce::juce_recommended_config_flags)
-  add_test(NAME atlas_spectral_lock COMMAND AtlasSpectralLockTests)
+  # The original Spectral Lock processor is the oracle for these tests. It
+  # comes from the opt-in third_party/aquanode-plugins submodule.
+  set(ATLAS_SPECTRAL_LOCK_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/third_party/aquanode-plugins/spectral/spectrallock/src")
+  if(EXISTS "${ATLAS_SPECTRAL_LOCK_SOURCE}/PluginProcessor.cpp")
+    juce_add_console_app(AtlasSpectralLockTests PRODUCT_NAME "Atlas Spectral Lock Tests")
+    juce_generate_juce_header(AtlasSpectralLockTests)
+    target_sources(AtlasSpectralLockTests PRIVATE tests/spectral_lock_tests.cpp
+      tests/spectral_lock_reference_processor.cpp "${ATLAS_SPECTRAL_LOCK_SOURCE}/PluginEditor.cpp")
+    target_include_directories(AtlasSpectralLockTests PRIVATE
+      src/common src/common/wavetable src/synthesis/framework src/synthesis/modules src/synthesis/effects third_party)
+    target_compile_definitions(AtlasSpectralLockTests PRIVATE
+      VITAL_ACCESSIBLE_UI=1 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_DSP_USE_SHARED_FFTW=0)
+    target_link_libraries(AtlasSpectralLockTests PRIVATE
+      Atlas juce::juce_audio_utils juce::juce_dsp juce::juce_recommended_config_flags)
+    add_test(NAME atlas_spectral_lock COMMAND AtlasSpectralLockTests)
+  else()
+    message(STATUS "Spectral Lock reference tests skipped: "
+                   "git submodule update --init --checkout third_party/aquanode-plugins")
+  endif()
 
   juce_add_console_app(AtlasSpectralCompressorTests PRODUCT_NAME "Atlas Spectral Compressor Tests")
   juce_generate_juce_header(AtlasSpectralCompressorTests)
@@ -553,8 +572,12 @@ if(ATLAS_BUILD_TIMING_TESTS)
   add_test(NAME atlas_jsfx_modules COMMAND AtlasJsfxTests)
 
   # Optional oracle: compile and execute the unmodified supplied JSFX with WDL
-  # EEL2. This external test dependency is never linked into the plug-in.
+  # EEL2. This external test dependency is never linked into the plug-in. The
+  # opt-in third_party/WDL submodule is used by default once fetched.
   set(ATLAS_EEL2_DIR "" CACHE PATH "Optional path to WDL/eel2 for JSFX reference tests")
+  if(NOT ATLAS_EEL2_DIR AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/WDL/WDL/eel2/ns-eel.h")
+    set(ATLAS_EEL2_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/WDL/WDL/eel2")
+  endif()
   if(EXISTS "${ATLAS_EEL2_DIR}/ns-eel.h")
     add_library(AtlasEelReference STATIC
       ${ATLAS_EEL2_DIR}/nseel-caltab.c ${ATLAS_EEL2_DIR}/nseel-compiler.c

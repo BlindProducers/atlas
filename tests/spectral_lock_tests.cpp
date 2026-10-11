@@ -4,7 +4,7 @@
 #include "spectral_lock/spectral_retune_engine.h"
 #include "prepared_effect_module.h"
 #include "reorderable_effect_chain.h"
-#include "../third_party/spectral_lock/PluginProcessor.h"
+#include "../third_party/aquanode-plugins/spectral/spectrallock/src/PluginProcessor.h"
 #include <chrono>
 #include <cstdlib>
 #include <iostream>

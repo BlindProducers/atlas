@@ -3,7 +3,7 @@
 // AGPL-3.0), audio algorithm extracted from the SpectralLock 1.0.0 processor.
 // Atlas additions: Width is a control (the source held it at 1) and Follow
 // ties the tonal output to the dry signal's envelope to tame tail ringing.
-// See third_party/spectral_lock/README.atlas.md for the adapter-only changes.
+// See README.atlas.md in this folder for the adapter-only changes.
 #pragma once
 #include <juce_dsp/juce_dsp.h>
 #include <array>

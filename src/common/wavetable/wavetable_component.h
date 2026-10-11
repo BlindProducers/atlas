@@ -19,7 +19,7 @@
 #include "JuceHeader.h"
 #include "wavetable_keyframe.h"
 #include "wavetable_component_factory.h"
-#include "json/json.h"
+#include "nlohmann/json.hpp"
 
 using json = nlohmann::json;
 

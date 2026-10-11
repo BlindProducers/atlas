@@ -7,7 +7,7 @@ The name "Vital" belongs to its author and is not used for Atlas.
 Atlas includes or adapts the following works. Their licence texts are kept with
 their sources.
 
-- JUCE 8.0.14 (third_party/JUCE8), used under the AGPLv3.
+- JUCE 8.0.14 (the third_party/JUCE8 submodule), used under the AGPLv3.
 - BP Scream DSP (third_party/scream): MIT, Copyright 2025 Cure Audio,
   exacoustics, Xynth Audio. Includes ADAA (BSD-3, jatinchowdhury18) and
   Polylogarithm (MIT, Alexander Voigt).
@@ -20,12 +20,15 @@ their sources.
 - Floaty by Daniel Arena / remaincalm.org (GPL): the Floaty Delay effect
   (src/synthesis/effects/jsfx_ports.*, tests/jsfx/fixtures/floaty_delay).
 - Spectral Lock by aquanodemusic (AGPL-3.0, https://github.com/aquanodemusic/
-  aquanode-plugins): third_party/spectral_lock and the engine extracted into
+  aquanode-plugins): the engine extracted into
   src/synthesis/effects/spectral_lock, with Atlas's Width and Follow additions.
   Those files are AGPL-3.0; the AGPL permits combining them with this GPL v3
-  program (GPL v3 section 13).
+  program (GPL v3 section 13). The original source is the opt-in
+  third_party/aquanode-plugins submodule, used only by the tests.
 - nlohmann json (MIT), moodycamel concurrentqueue (simplified BSD) and KISS FFT
-  (BSD-3) under third_party.
+  (BSD-3), as submodules under third_party.
+- Test-only submodules, never built into Atlas: WDL's EEL2 (zlib licence) and
+  NIH-plug (ISC) with Diopser (GPL v3 or later) under third_party.
 
 The Erosion, Trance gate, Resonator, Dimension Expander mode 2, Reverb filter,
 Analogue effects, Spectral Balance, Suppressor, Spectral Compressor, Filter Table ("Wavetable" filter model) and oscillator slot code are

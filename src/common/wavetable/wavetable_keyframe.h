@@ -17,7 +17,7 @@
 #pragma once
 
 #include "JuceHeader.h"
-#include "json/json.h"
+#include "nlohmann/json.hpp"
 #include "synth_constants.h"
 
 using json = nlohmann::json;
