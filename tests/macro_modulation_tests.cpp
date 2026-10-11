@@ -645,7 +645,7 @@ int main(int argc, char** argv) {
     testWavetableEditingOnASlotSwitchedToWavetable();
     testEffectMoveKeepsFocusAcrossTimerTick();
     testOscillatorRowGroups();
-    testOscillatorRowsOmitTheOscillatorName();
+    testOscillatorRowsNameTheirOscillatorNumber();
     testArpeggiatorDestinationsAreAGroup();
     testWavetableEditorLayersAndInterpolation();
     testPresetAutoloadAndRefresh();

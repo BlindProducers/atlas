@@ -594,7 +594,7 @@ int main() {
     };
     const auto oscillatorRow = [&](int oscillator, const String& title) -> Component* {
       auto* section = sectionNamed(editor, "Oscillator " + String(oscillator));
-      return section != nullptr ? componentWithTitle(*section, title) : nullptr;
+      return section != nullptr ? componentWithTitle(*section, String(oscillator) + " " + title) : nullptr;
     };
     for (const auto& [oscillator, title] : std::initializer_list<std::pair<int, const char*>> {
              { 5, "Sample Low Cutoff" }, { 5, "Sample High Cutoff" }, { 8, "Noise Low Cutoff" }, { 8, "Noise High Cutoff" } })

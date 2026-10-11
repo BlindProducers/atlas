@@ -185,7 +185,7 @@ namespace random_amplitude_seed_tests {
     plugin.parameterChanged("osc_1_secondary_spectral_morph_type", O::kRandomAmplitudes);
     SynthEditor editor(plugin);
     for (int slot = 0; slot < 2; ++slot) {
-      const String title = slot ? "Secondary Random Amplitudes Seed" : "Random Amplitudes Seed";
+      const String title = slot ? "1 Secondary Random Amplitudes Seed" : "1 Random Amplitudes Seed";
       auto* slider = dynamic_cast<Slider*>(findControl(editor, title));
       expect(slider != nullptr, "Seed slider is visible for each random amplitudes slot");
       if (!slider) continue;
@@ -220,16 +220,16 @@ namespace random_amplitude_seed_tests {
       Thread::sleep(40);
       Timer::callPendingTimersSynchronously();
     }
-    expect(findControl(editor, "Random Amplitudes Seed") == nullptr,
+    expect(findControl(editor, "1 Random Amplitudes Seed") == nullptr,
            "Changing away from Random Amplitudes hides its seed control");
-    expect(findControl(editor, "Secondary Random Amplitudes Seed") != nullptr,
+    expect(findControl(editor, "1 Secondary Random Amplitudes Seed") != nullptr,
            "Changing the primary mode leaves the secondary seed visible");
     plugin.parameterChanged("osc_1_spectral_morph_type", O::kRandomAmplitudes);
     for (int i = 0; i < 4; ++i) {
       Thread::sleep(40);
       Timer::callPendingTimersSynchronously();
     }
-    expect(findControl(editor, "Random Amplitudes Seed") != nullptr,
+    expect(findControl(editor, "1 Random Amplitudes Seed") != nullptr,
            "Selecting Random Amplitudes reveals the seed control without reopening");
     std::cout << "Random amplitude seed control tests: " << failures << " failures\n";
     return failures ? 1 : 0;

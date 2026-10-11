@@ -7297,14 +7297,16 @@ void SynthEditor::addOscillatorSectionContent(int oscillator, const String& sect
   // One row (and its Randomize seed button) inside `row_parent`; `group` is the
   // accessibility group that lists it, null at the section's own level in the
   // single-section view.
-  // The section already names the oscillator, so its rows drop it:
-  // "Oscillator 1 Sample Loop" reads as "Sample Loop".
-  const String row_title_prefix = "Oscillator " + String(oscillator + 1) + " ";
+  // The section names the oscillator, so its rows keep only its number:
+  // "Oscillator 1 Sample Loop" reads "1 Sample Loop", "Destination" "1 Destination".
+  const String row_number = String(oscillator + 1) + " ";
+  const String row_title_prefix = "Oscillator " + row_number;
   auto place_row = [&](AudioProcessorParameter& parameter, Component& row_parent, AccessibleSectionHeader* group,
                        int& row_y, int row_x, int row_width) {
     auto row = createConfiguredSectionRow(parameter, section_name);
-    if (const String title = row->focusableControl()->getTitle(); title.startsWith(row_title_prefix))
-      row->setAccessibleName(title.substring(row_title_prefix.length()));
+    const String name = row->focusableControl()->getTitle();
+    row->setAccessibleName(row_number + (name.startsWith(row_title_prefix) ? name.substring(row_title_prefix.length())
+                                                                           : name));
     row->setExplicitFocusOrder(focus_order++);
     row->setControlFocusOrder(focus_order++);
     row->setBounds(row_x, row_y, row_width, 48);
