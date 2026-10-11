@@ -6945,7 +6945,7 @@ std::unique_ptr<AccessibleParameterRow> SynthEditor::createAccessibleParameterRo
         last_oscillator_modes_[prefix] = oscillatorModeKey(oscillator);
         return std::make_unique<AccessibleParameterRow>(
             parameter, String(), std::function<String(double)>(), 1.0, 0.0, String(), String(),
-            "Choose this oscillator's type: Wavetable, Analog, Sample, Granular, Spectral, Noise or Multi-sample. "
+            "Choose this oscillator's type: Wavetable, Analog, Sample, Granular, Spectral, Noise, Multi-sample or Braids. "
             "Each type keeps its own settings, wavetable and sample for when you switch back.", true);
       }
       if (suffix == "analog_waveform")
