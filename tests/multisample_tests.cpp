@@ -290,6 +290,20 @@ namespace {
     return font;
   }
 
+  // Another SoundFont with other presets: "Strings", "Kit" and "Bass" in bank 0.
+  Sf2Builder otherFont() {
+    Sf2Builder font = testFont();
+    font.presets[0].name = "Strings";
+    font.presets[1] = { "Kit", 1, 0, font.presets[1].zones };
+    font.presets.push_back({ "Bass", 2, 0, font.presets[0].zones });
+    return font;
+  }
+
+  void writeFont(const Sf2Builder& font, const juce::File& file) {
+    auto block = font.build();
+    file.replaceWithData(block.getData(), block.getSize());
+  }
+
   // ---- SFZ parser -------------------------------------------------------------
 
   int sfzParser() {
@@ -1271,6 +1285,21 @@ namespace {
       expect(second && second->sf2_pool == first->sf2_pool, "switching presets shares the sample pool");
       expect(manager(plugin).spec(0).sf2_bank == 128 && manager(plugin).spec(0).sf2_name == "Hats",
              "the spec records the chosen preset");
+
+      // Choosing a preset of the playing file while another file loads keeps
+      // the playing file, and the spec names it rather than the other file.
+      const juce::File other = temp.folder.getChildFile("other.sf2");
+      writeFont(otherFont(), other);
+      manager(plugin).loadFromUser(0, other);
+      manager(plugin).selectSf2Preset(0, 0);
+      settle(plugin);
+      auto kept = manager(plugin).result(0);
+      const auto kept_spec = manager(plugin).spec(0);
+      expect(kept && kept->hash == first->hash && kept->instrument->preset_index == 0,
+             "a preset chosen during a load keeps the playing SoundFont");
+      expect(kept_spec.path == file.getFullPathName().toStdString() && kept_spec.hash == first->hash &&
+             kept_spec.sf2_name == "Piano", "the spec names the playing SoundFont and preset");
+      manager(plugin).selectSf2Preset(0, 1);
       plugin.getStateInformation(state);
     }
     {
@@ -1353,6 +1382,13 @@ namespace {
     expect(titledExactly(*section(), "Instrument") != nullptr, "an Instrument group");
     expectAccessibleButton(titledExactly(*section(), "Load instrument"), "Load instrument");
     expectAccessibleButton(titledExactly(*section(), "No instrument loaded"), "status");
+    expectAccessibleButton(titledExactly(*section(), "Clear instrument"), "Clear instrument");
+    if (auto* clear = dynamic_cast<Button*>(titledExactly(*section(), "Clear instrument"))) {
+      clear->triggerClick();
+      pumpUntil([] { return false; }, 200);
+      expect(synth.getMultiSampleManager()->result(0) == nullptr && section() != nullptr &&
+             titledExactly(*section(), "No instrument loaded") != nullptr, "Clear instrument with nothing loaded");
+    }
     expect(titledExactly(*section(), "Open in text editor") == nullptr, "no SFZ buttons before an SFZ loads");
     expect(findTitled(*section(), [](const String& t) { return t.containsIgnoreCase("distortion"); }) == nullptr,
            "a Multi-sample slot shows no FM or RM rows");
@@ -1398,6 +1434,68 @@ namespace {
       previous->triggerClick();
       pumpUntil([&] { return preset() == 1; }, 1000);
       expect(preset() == 1, "Previous preset wraps from the first preset to the last");
+    }
+
+    // Another SoundFont with several presets keeps the same rows, but the
+    // menu must list its presets rather than the first file's.
+    auto* multisample = synth.getMultiSampleManager();
+    auto preset_menu = [&] {
+      return section() ? dynamic_cast<ComboBox*>(titledExactly(*section(), "1 Instrument preset")) : nullptr;
+    };
+    const juce::File other_sf2 = temp.folder.getChildFile("other.sf2");
+    writeFont(otherFont(), other_sf2);
+    multisample->loadFromUser(0, other_sf2);
+    multisample->waitForPendingLoads(5000);
+    multisample->processPendingResults();
+    // The old menu is still up until the editor's timer runs: it must not
+    // send one of the first file's presets to the new one.
+    auto loaded_other = multisample->result(0);
+    const int other_default = loaded_other && loaded_other->instrument ? loaded_other->instrument->preset_index : -1;
+    if (auto* stale = preset_menu()) {
+      stale->setSelectedId(stale->getSelectedId() == 1 ? 2 : 1, juce::sendNotificationSync);
+      auto after = multisample->result(0);
+      expect(after == loaded_other, "a menu built for the previous SoundFont changes nothing");
+    }
+    pumpUntil([&] { auto* menu = preset_menu(); return menu != nullptr && menu->getNumItems() == 3; });
+    combo = preset_menu();
+    expect(combo != nullptr && combo->getNumItems() == 3 && combo->getItemText(0) == "Strings, bank 0 program 0" &&
+           combo->getItemText(1) == "Kit, bank 0 program 1" && combo->getItemText(2) == "Bass, bank 0 program 2",
+           "loading another SoundFont rebuilds the preset menu with its presets");
+    if (combo != nullptr && loaded_other != nullptr && loaded_other->instrument != nullptr) {
+      const auto& names = loaded_other->instrument->preset_names;
+      int selected = 0;
+      for (size_t i = 0; i < names.size(); ++i) {
+        if (names[i].index == other_default)
+          selected = static_cast<int>(i) + 1;
+      }
+      expect(selected > 0 && combo->getSelectedId() == selected, "the rebuilt menu selects the playing preset");
+      combo->setSelectedId(3, juce::sendNotificationSync);
+      auto chosen = multisample->result(0);
+      expect(chosen && chosen->instrument && chosen->hash == loaded_other->hash &&
+             chosen->instrument->preset_index == names[2].index, "the rebuilt menu chooses the new file's presets");
+
+      // A preset chosen elsewhere (host state, another control) moves the menu.
+      auto* kept = combo;
+      multisample->selectSf2Preset(0, names[1].index);
+      pumpUntil([&] { return preset_menu() != kept || kept->getSelectedId() == 2; }, 1000);
+      expect(preset_menu() == kept && kept->getSelectedId() == 2,
+             "the menu follows a preset chosen elsewhere without a rebuild");
+    }
+
+    // Clear instrument empties the slot and drops the preset menu.
+    auto* clear = section() ? dynamic_cast<Button*>(titledExactly(*section(), "Clear instrument")) : nullptr;
+    expectAccessibleButton(clear, "Clear instrument");
+    if (clear != nullptr) {
+      clear->triggerClick();
+      pumpUntil([&] { return section() != nullptr && preset_menu() == nullptr; });
+      expect(multisample->result(0) == nullptr && multisample->spec(0).empty(), "Clear instrument empties the slot");
+      expect(multisample->status(0).state == vital::multisample::SlotStatus::kEmpty, "the slot status is empty");
+      expect(section() != nullptr && preset_menu() == nullptr && titledExactly(*section(), "Next preset") == nullptr,
+             "the preset menu goes away with the instrument");
+      expect(section() != nullptr && titledExactly(*section(), "No instrument loaded") != nullptr,
+             "the status reads no instrument loaded");
+      expectAccessibleButton(section() ? titledExactly(*section(), "Clear instrument") : nullptr,
+                             "Clear instrument after clearing");
     }
 
     // A large SoundFont's menu is grouped so every submenu fits on screen.
