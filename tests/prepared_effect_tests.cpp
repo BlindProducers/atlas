@@ -52,6 +52,7 @@
 #include <unistd.h>
 #endif
 #include <atomic>
+#include <functional>
 #include <map>
 #include <chrono>
 #include <iostream>
@@ -633,12 +634,79 @@ void controlsReservedOnSelection() {
   expect(difference > .01, "the effect runs once its controls are reserved");
 }
 
-// Renders fixed patches (spectral morphs, every filter model and style, the
-// factory oscillator slot presets, each quality) to raw float files, so two
-// builds can be compared sample for sample after a memory or graph change.
+// Stable across builds and platforms, unlike std::hash.
+uint32_t stableHash(const std::string& text) {
+  uint32_t hash = 2166136261u;
+  for (unsigned char c : text) { hash ^= c; hash *= 16777619u; }
+  return hash;
+}
+
+// Sets every parameter of a slot's effect to a fixed value away from its
+// default, through valueChanged as the editor does. The value depends on the
+// parameter's name without the slot, so main and bus slots get the same.
+void setEffectParameters(SynthPlugin& plugin, const std::string& slot_prefix, int type, uint32_t seed = 0) {
+  const std::string prefix = slot_prefix + strings::kEffectOrder[type] + "_";
+  std::vector<std::pair<std::string, float>> changes;
+  for (const auto& control : plugin.getControls()) {
+    if (control.first.rfind(prefix, 0) != 0 || !vital::Parameters::isParameter(control.first))
+      continue;
+    const auto& details = vital::Parameters::getDetails(control.first);
+    const float fraction = .25f + .5f * float((stableHash(control.first.substr(slot_prefix.size())) + seed) % 1000) / 1000.0f;
+    float value = details.min + (details.max - details.min) * fraction;
+    if (details.value_scale == vital::ValueDetails::kIndexed)
+      value = std::round(value);
+    changes.emplace_back(control.first, value);
+  }
+  for (const auto& [name, value] : changes)
+    plugin.valueChanged(name, value);
+}
+
+// Routes `source` into the first modulatable parameter of a slot's effect
+// (which must be selected) and returns its name.
+std::string routeIntoEffect(SynthPlugin& plugin, const std::string& slot_prefix, int type,
+                            const std::string& source, float amount) {
+  const std::string prefix = slot_prefix + strings::kEffectOrder[type] + "_";
+  std::vector<std::string> names;
+  for (const auto& control : plugin.getControls())
+    if (control.first.rfind(prefix, 0) == 0) names.push_back(control.first);
+  for (const auto& name : names) {
+    if (plugin.getEngine()->getMonoModulationDestination(name) == nullptr)
+      continue;
+    plugin.connectModulation(source, name);
+    const int index = plugin.getConnectionIndex(source, name);
+    if (index >= 0)
+      plugin.valueChanged("modulation_" + std::to_string(index + 1) + "_amount", amount);
+    return name;
+  }
+  return {};
+}
+
+void selectEffect(SynthPlugin& plugin, const std::string& slot_prefix, int type) {
+  plugin.valueChanged(slot_prefix + "type", float(type + 1));
+  plugin.valueChanged(slot_prefix + "enabled", 1.0f);
+}
+
+juce::AudioProcessorParameter* hostParameter(SynthPlugin& plugin, const String& id) {
+  for (auto* parameter : plugin.getParameters())
+    if (auto* with_id = dynamic_cast<juce::AudioProcessorParameterWithID*>(parameter))
+      if (with_id->getParameterID() == id) return parameter;
+  return nullptr;
+}
+
+// Renders fixed patches to raw float files, so two builds can be compared
+// sample for sample after a memory or graph change: spectral morphs, every
+// filter model and style, each quality, every effect in a main and a bus slot
+// (non-default settings and an LFO route into it), effects switched during
+// playback, FX proxy automation, a bus preset and the factory presets.
 void renderScenarios(const std::string& directory, const std::string& factory, const std::string& only = {}) {
   using namespace vital;
-  struct Scenario { std::string name; std::vector<std::pair<std::string, float>> values; juce::File preset; };
+  struct Scenario {
+    std::string name;
+    std::vector<std::pair<std::string, float>> values;
+    juce::File preset;
+    std::function<void(SynthPlugin&)> setup;
+    std::function<void(SynthPlugin&, int block)> during;
+  };
   std::vector<Scenario> scenarios;
   scenarios.push_back({ "default", {}, {} });
   for (int morph = 0; morph < SynthOscillator::kNumSpectralMorphTypes; ++morph) {
@@ -664,12 +732,77 @@ void renderScenarios(const std::string& directory, const std::string& factory, c
   for (const auto& file : juce::File(factory).findChildFiles(juce::File::findFiles, true, "*.atp"))
     scenarios.push_back({ "preset_" + file.getFileNameWithoutExtension().replaceCharacter(' ', '_').toStdString(), {}, file });
 
+  for (int type = 0; type < constants::kNumEffects; ++type) {
+    const std::string effect = strings::kEffectOrder[type];
+    scenarios.push_back({ "fx_main_" + effect, {}, {}, [type](SynthPlugin& plugin) {
+      selectEffect(plugin, "fx_slot_1_", type);
+      setEffectParameters(plugin, "fx_slot_1_", type);
+      routeIntoEffect(plugin, "fx_slot_1_", type, "lfo_1", .35f);
+    } });
+    scenarios.push_back({ "fx_bus_" + effect, { { "osc_1_destination", constants::kBus1 } }, {}, [type](SynthPlugin& plugin) {
+      selectEffect(plugin, "bus_1_fx_slot_3_", type);
+      setEffectParameters(plugin, "bus_1_fx_slot_3_", type, 17);
+      routeIntoEffect(plugin, "bus_1_fx_slot_3_", type, "lfo_2", -.25f);
+    } });
+  }
+
+  // Effects switched during playback keep the settings and routes of the one
+  // a slot leaves, and a slot running several effects in a row.
+  const std::pair<int, int> switches[] = {
+    { constants::kDelay, constants::kReverb }, { constants::kFilterFx, constants::kGlitchDelay },
+    { constants::kChorus, constants::kSpectralGate }, { constants::kCompressor, constants::kTranceGate } };
+  for (const auto& [first, second] : switches) {
+    const std::string name = std::string("fx_switch_") + strings::kEffectOrder[first] + "_" + strings::kEffectOrder[second];
+    scenarios.push_back({ name, {}, {}, [first = first, second = second](SynthPlugin& plugin) {
+      selectEffect(plugin, "fx_slot_2_", first);
+      setEffectParameters(plugin, "fx_slot_2_", first);
+      routeIntoEffect(plugin, "fx_slot_2_", first, "lfo_1", .3f);
+      selectEffect(plugin, "fx_slot_2_", second);
+      setEffectParameters(plugin, "fx_slot_2_", second, 5);
+      routeIntoEffect(plugin, "fx_slot_2_", second, "env_2", .4f);
+      selectEffect(plugin, "fx_slot_4_", constants::kDistortion);
+      setEffectParameters(plugin, "fx_slot_4_", constants::kDistortion);
+    }, [first = first, second = second](SynthPlugin& plugin, int block) {
+      if (block == 90) plugin.valueChanged("fx_slot_2_type", float(first + 1));
+      if (block == 180) plugin.valueChanged("fx_slot_2_type", float(second + 1));
+      if (block == 260) plugin.valueChanged("fx_slot_2_enabled", 0.0f);
+      if (block == 300) plugin.valueChanged("fx_slot_2_enabled", 1.0f);
+      if (block == 320) plugin.valueChanged("fx_slot_2_type", float(first + 1));
+    } });
+  }
+
+  // A host automating an FX proxy that drives an effect parameter.
+  scenarios.push_back({ "fx_proxy_automation", {}, {}, [](SynthPlugin& plugin) {
+    selectEffect(plugin, "fx_slot_1_", constants::kFilterFx);
+    setEffectParameters(plugin, "fx_slot_1_", constants::kFilterFx);
+    plugin.valueChanged("fx_slot_1_filter_fx_model", constants::kAnalog);
+    const int slot = plugin.assignFxParameterToAutomationSlot("fx_slot_1_filter_fx_cutoff");
+    expect(slot >= 0, "an FX proxy takes the Filter FX cutoff");
+  }, [](SynthPlugin& plugin, int block) {
+    if (block % 10 != 0) return;
+    if (auto* proxy = hostParameter(plugin, "fx_automation_main_param_1"))
+      proxy->setValue(float(block % 200) / 200.0f);
+  } });
+
+  // A factory bus preset loaded into bus 1.
+  const juce::File bus_preset = juce::File(factory).getParentDirectory()
+                                    .getChildFile("FX/Analogue/Analogue Echo - Worn Tape.atfx");
+  scenarios.push_back({ "fx_bus_preset", { { "osc_1_destination", constants::kBus1 } }, {}, [bus_preset](SynthPlugin& plugin) {
+    String error;
+    const bool loaded = bus_preset.existsAsFile() &&
+        plugin.loadFxBusPreset(1, json::parse(bus_preset.loadFileAsString().toStdString()), error);
+    expect(loaded, "the factory bus preset loads");
+  } });
+
   if (!only.empty())
     scenarios.erase(std::remove_if(scenarios.begin(), scenarios.end(),
         [&](const Scenario& s) { return s.name.find(only) == std::string::npos; }), scenarios.end());
   constexpr int kBlock = 512;
   for (const auto& scenario : scenarios) {
     SynthPlugin plugin;
+    // Offline, as a host renders: effects prepare within the block that
+    // selects them, so the output does not depend on the worker's timing.
+    plugin.setNonRealtime(true);
     plugin.setPlayConfigDetails(0, 2, 48000, kBlock);
     plugin.prepareToPlay(48000, kBlock);
     if (scenario.preset.existsAsFile()) {
@@ -678,7 +811,12 @@ void renderScenarios(const std::string& directory, const std::string& factory, c
     }
     for (const auto& [name, value] : scenario.values)
       plugin.valueChanged(name, value);
+    if (scenario.setup)
+      scenario.setup(plugin);
     plugin.getEngine()->prepareSelectedEffects();
+    // Impulse responses and tape noise build on background threads, offline
+    // too; give them time so the render starts from the finished state.
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(250);
 
     juce::FileOutputStream out(juce::File(directory).getChildFile(scenario.name + ".raw"));
     out.truncate();
@@ -691,6 +829,8 @@ void renderScenarios(const std::string& directory, const std::string& factory, c
         for (int note : chord) midi.addEvent(juce::MidiMessage::noteOn(1, note + (block == 200 ? 1 : 0), .8f), 17);
       if (block == 150 || block == 330)
         for (int note : chord) midi.addEvent(juce::MidiMessage::noteOff(1, note + (block == 330 ? 1 : 0)), 211);
+      if (scenario.during)
+        scenario.during(plugin, block);
       audio.clear();
       plugin.processBlock(audio, midi);
       for (int channel = 0; channel < 2; ++channel)
@@ -698,6 +838,111 @@ void renderScenarios(const std::string& directory, const std::string& factory, c
     }
   }
   std::cout << "rendered scenarios=" << scenarios.size() << '\n';
+}
+
+// Compares two --render directories sample for sample. Scenarios whose
+// output depends on background loading (impulse responses and tape noise
+// build on worker threads, even offline) are reported but never fail.
+int compareRenders(const std::string& baseline_directory, const std::string& candidate_directory) {
+  static const char* kTimingDependent[] = { "convolution_reverb", "fx_bus_tape" };
+  int failed = 0, compared = 0;
+  for (const auto& baseline : juce::File(baseline_directory).findChildFiles(juce::File::findFiles, false, "*.raw")) {
+    const auto candidate = juce::File(candidate_directory).getChildFile(baseline.getFileName());
+    const std::string name = baseline.getFileNameWithoutExtension().toStdString();
+    bool timing_dependent = false;
+    for (const char* pattern : kTimingDependent) timing_dependent |= name.find(pattern) != std::string::npos;
+    juce::MemoryBlock a, b;
+    if (!candidate.existsAsFile() || !baseline.loadFileAsData(a) || !candidate.loadFileAsData(b) || a.getSize() != b.getSize()) {
+      std::cout << "MISSING " << name << '\n';
+      ++failed;
+      continue;
+    }
+    ++compared;
+    if (a == b) continue;
+    const auto* x = static_cast<const float*>(a.getData());
+    const auto* y = static_cast<const float*>(b.getData());
+    const size_t count = a.getSize() / sizeof(float);
+    size_t first = count;
+    double largest = 0.0;
+    for (size_t i = 0; i < count; ++i) {
+      const double difference = std::abs(double(x[i]) - double(y[i]));
+      if (difference > 0.0 && first == count) first = i;
+      largest = std::max(largest, difference);
+    }
+    std::cout << (timing_dependent ? "timing-dependent " : "DIFFERS ") << name << " first_sample=" << first
+              << " max_difference=" << largest << '\n';
+    failed += timing_dependent ? 0 : 1;
+  }
+  std::cout << "compared=" << compared << " differing=" << failed << '\n';
+  return failed == 0 ? 0 : 1;
+}
+
+// Saving, loading into a fresh instance and saving again gives identical state,
+// including settings of effects a slot no longer selects, routes into them,
+// and FX automation assignments to them.
+void stateRoundTrip() {
+  using namespace vital;
+  json first;
+  {
+    SynthPlugin plugin;
+    plugin.setPlayConfigDetails(0, 2, 48000, 512);
+    plugin.prepareToPlay(48000, 512);
+    selectEffect(plugin, "fx_slot_1_", constants::kDelay);
+    setEffectParameters(plugin, "fx_slot_1_", constants::kDelay);
+    const std::string delay_route = routeIntoEffect(plugin, "fx_slot_1_", constants::kDelay, "lfo_1", .3f);
+    expect(!delay_route.empty(), "a route reaches the Delay");
+    expect(plugin.assignFxParameterToAutomationSlot("fx_slot_1_delay_feedback") >= 0, "an FX proxy takes the Delay feedback");
+    selectEffect(plugin, "fx_slot_1_", constants::kReverb);
+    setEffectParameters(plugin, "fx_slot_1_", constants::kReverb, 3);
+    routeIntoEffect(plugin, "fx_slot_1_", constants::kReverb, "env_2", .5f);
+    selectEffect(plugin, "bus_2_fx_slot_5_", constants::kGlitchDelay);
+    setEffectParameters(plugin, "bus_2_fx_slot_5_", constants::kGlitchDelay, 11);
+    routeIntoEffect(plugin, "bus_2_fx_slot_5_", constants::kGlitchDelay, "lfo_3", -.2f);
+    selectEffect(plugin, "bus_2_fx_slot_5_", constants::kTranceGate);
+    setEffectParameters(plugin, "bus_2_fx_slot_5_", constants::kTranceGate, 7);
+    juce::MemoryBlock state;
+    plugin.getStateInformation(state);
+    first = json::parse(state.toString().toStdString());
+    expect(first["settings"].value("fx_slot_1_delay_feedback", -1.0f) != Parameters::getDetails("fx_slot_1_delay_feedback").default_value,
+           "the unselected Delay keeps its settings");
+  }
+  juce::MemoryBlock state;
+  {
+    juce::MemoryBlock saved;
+    SynthPlugin plugin;
+    plugin.setPlayConfigDetails(0, 2, 48000, 512);
+    plugin.prepareToPlay(48000, 512);
+    const std::string text = first.dump();
+    plugin.setStateInformation(text.data(), int(text.size()));
+    plugin.getStateInformation(state);
+  }
+  const json second = json::parse(state.toString().toStdString());
+  auto effect_routes = [](const json& data) {
+    int routes = 0;
+    for (const auto& modulation : data["settings"]["modulations"])
+      routes += modulation["destination"].get<std::string>().find("fx_slot_") != std::string::npos;
+    return routes;
+  };
+  expect(effect_routes(first) == 3, "three routes reach effects, two of them no longer selected");
+  expect(effect_routes(second) == 3, "routes into effects survive a reload");
+  expect(first.count("fx_automation_slots") && first["fx_automation_slots"].dump().find("fx_slot_1_delay_feedback") != std::string::npos,
+         "the FX proxy assignment to the unselected Delay is saved");
+  int differences = 0;
+  for (auto it = first.begin(); it != first.end(); ++it) {
+    if (!second.count(it.key()) || second[it.key()] != it.value()) {
+      if (it.value().is_object() && second.count(it.key()) && second[it.key()].is_object()) {
+        for (auto inner = it.value().begin(); inner != it.value().end(); ++inner)
+          if (!second[it.key()].count(inner.key()) || second[it.key()][inner.key()] != inner.value())
+            if (++differences <= 10) std::cout << "differs: " << it.key() << "/" << inner.key() << '\n';
+      }
+      else if (++differences <= 10)
+        std::cout << "differs: " << it.key() << '\n';
+    }
+  }
+  for (auto it = second.begin(); it != second.end(); ++it)
+    if (!first.count(it.key()) && ++differences <= 10) std::cout << "only after reload: " << it.key() << '\n';
+  std::cout << "state round trip differences=" << differences << '\n';
+  expect(differences == 0, "saving, loading and saving again gives the same state");
 }
 
 // Footprint of one instance as a host sees it: construction, playback, then
@@ -809,6 +1054,12 @@ int main(int argc, char** argv) {
     editorMemory();
     return failures ? 1 : 0;
   }
+  if (argc > 1 && String(argv[1]) == "--state-round-trip") {
+    stateRoundTrip();
+    return failures ? 1 : 0;
+  }
+  if (argc > 3 && String(argv[1]) == "--compare")
+    return compareRenders(argv[2], argv[3]);
   if (argc > 3 && String(argv[1]) == "--render") {
     renderScenarios(argv[2], argv[3], argc > 4 ? argv[4] : "");
     return failures ? 1 : 0;
