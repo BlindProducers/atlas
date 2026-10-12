@@ -94,6 +94,16 @@ target_sources(Atlas PRIVATE
   src/synthesis/filters/table_filter.cpp
   src/synthesis/modules/spectral_balance_module.cpp
   src/synthesis/modules/suppressor_module.cpp
+  # Glitch Delay (adapted from Astralay, MIT): long glides in double precision
+  # and non-finite checks by bit pattern, kept outside fast-math.
+  src/synthesis/effects/glitch_delay/formant_shifter.cpp
+  src/synthesis/effects/glitch_delay/glitch_chain.cpp
+  src/synthesis/effects/glitch_delay/glitch_delay_engine.cpp
+  src/synthesis/effects/glitch_delay/note_values.cpp
+  src/synthesis/effects/glitch_delay/real_fft.cpp
+  src/synthesis/effects/glitch_delay/smear.cpp
+  src/synthesis/effects/glitch_delay/tap.cpp
+  src/synthesis/modules/glitch_delay_module.cpp
   # Mutable Instruments Braids (MIT): fixed-point firmware code built on its
   # own so stmlib's macros stay out of the unity builds.
   src/synthesis/effects/braids/braids_engine.cpp
@@ -504,6 +514,34 @@ if(ATLAS_BUILD_TIMING_TESTS)
   target_link_libraries(AtlasSpectralCompressorTests PRIVATE
     Atlas juce::juce_audio_utils juce::juce_dsp juce::juce_recommended_config_flags)
   add_test(NAME atlas_spectral_compressor COMMAND AtlasSpectralCompressorTests)
+
+  juce_add_console_app(AtlasGlitchDelayTests PRODUCT_NAME "Atlas Glitch Delay Tests")
+  juce_generate_juce_header(AtlasGlitchDelayTests)
+  # The engine suites come from Astralay with its DSP (MIT); they register
+  # themselves as juce::UnitTests and run under --dsp.
+  target_sources(AtlasGlitchDelayTests PRIVATE
+    tests/glitch_delay_tests.cpp
+    tests/glitch_delay/dsp_tests.cpp
+    tests/glitch_delay/formant_scheduling_tests.cpp
+    tests/glitch_delay/formant_tests.cpp
+    tests/glitch_delay/freeze_sustain_tests.cpp
+    tests/glitch_delay/glitch_tests.cpp
+    tests/glitch_delay/reset_tests.cpp
+    tests/glitch_delay/smear_tests.cpp
+    tests/glitch_delay/tape_stop_tests.cpp)
+  target_include_directories(AtlasGlitchDelayTests PRIVATE
+    src/common src/common/multisample src/common/wavetable src/plugin src/interface/look_and_feel
+    src/synthesis/framework src/synthesis/modules src/synthesis/effects
+    src/synthesis/filters src/synthesis/producers src/synthesis/synth_engine
+    src/synthesis/lookups src/synthesis/modulators src/synthesis/utilities third_party)
+  target_compile_definitions(AtlasGlitchDelayTests PRIVATE
+    VITAL_ACCESSIBLE_UI=1 HEADLESS=0 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_DSP_USE_SHARED_FFTW=0
+    JUCE_MODAL_LOOPS_PERMITTED=1)
+  target_link_libraries(AtlasGlitchDelayTests PRIVATE
+    Atlas juce::juce_audio_utils juce::juce_dsp juce::juce_gui_extra juce::juce_recommended_config_flags)
+  foreach(glitch_delay_test dsp parameters module reproducible chain state editor)
+    add_test(NAME atlas_glitch_delay_${glitch_delay_test} COMMAND AtlasGlitchDelayTests --${glitch_delay_test})
+  endforeach()
 
   juce_add_console_app(AtlasSpectralBalanceTests PRODUCT_NAME "Atlas Spectral Balance Tests")
   juce_generate_juce_header(AtlasSpectralBalanceTests)

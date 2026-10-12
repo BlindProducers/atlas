@@ -18,6 +18,7 @@
 #include "analogue_spring_module.h"
 #include "analogue_wah_module.h"
 #include "spectral_balance_module.h"
+#include "glitch_delay_module.h"
 #include "synth_plugin.h"
 #include "sound_engine.h"
 #include "value_switch.h"
@@ -79,6 +80,7 @@ std::unique_ptr<vital::SynthModule> create(int type, vital::Output* bpm) {
     case constants::kAnalogueSpring: return std::make_unique<AnalogueSpringModule>();
     case constants::kAnalogueWah: return std::make_unique<AnalogueWahModule>();
     case constants::kSpectralBalance: return std::make_unique<SpectralBalanceModule>();
+    case constants::kGlitchDelay: return std::make_unique<GlitchDelayModule>(bpm, nullptr);
   }
   return {};
 }
@@ -91,7 +93,7 @@ void compareEffects() {
        constants::kSpectralLock, constants::kSpectralCompressor, constants::kSuppressor, constants::kTape,
        constants::kAnalogueChorus, constants::kAnalogueFlanger, constants::kAnalogueEcho,
        constants::kAnalogueRotary, constants::kAnalogueSpring, constants::kAnalogueWah,
-       constants::kSpectralBalance }) {
+       constants::kSpectralBalance, constants::kGlitchDelay }) {
     for (int factor : { 1, 2, 4, 8 }) {
       auto original = create(type, bpm.output());
       PreparedEffectModule prepared(type, "", [&] { return create(type, bpm.output()); }, worker);
@@ -124,6 +126,11 @@ void compareEffects() {
         if (block == 32) {
           for (const auto& control : before) {
             if (!original->getMonoModulationDestination(control.first)) continue;
+            // Glitch Delay's glitches follow an unseeded random sequence, so
+            // they stay off; tests/glitch_delay_tests.cpp covers them.
+            if (type == constants::kGlitchDelay && control.first.size() > 5 &&
+                control.first.compare(control.first.size() - 5, 5, "_prob") == 0)
+              continue;
             const auto& details = Parameters::getDetails(control.first);
             const float value = details.min + .37f * (details.max - details.min);
             control.second->set(value); after.at(control.first)->set(value);

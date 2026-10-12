@@ -580,7 +580,8 @@ namespace strings {
     "analoguerotary",
     "analoguespring",
     "analoguewah",
-    "spectral_balance"
+    "spectral_balance",
+    "glitch_delay"
   };
 
   const std::string kEffectSlotTypeNames[] = {
@@ -620,7 +621,8 @@ namespace strings {
     "Analogue Rotary",
     "Analogue Spring",
     "Analogue Wah",
-    "Spectral Balance"
+    "Spectral Balance",
+    "Glitch Delay"
   };
 
   // Both tables are indexed by effect; a missing entry would read out of bounds.
@@ -679,6 +681,21 @@ namespace strings {
   const std::string kSpectralBalanceTargetNames[] = {
     "Perceptual", "Flat", "-1.5 dB/oct", "-3 dB/oct", "-4.5 dB/oct", "-6 dB/oct"
   };
+  // Glitch Delay's note values, shortest first (as in 4/4), and Stutter's subset of them up to
+  // a quarter note. Must match atlas::glitch_delay::NoteValues::labels().
+  const std::string kGlitchDelayNoteNames[] = {
+    "1/64 triplet", "1/64", "1/32 triplet", "1/64 dotted", "1/32", "1/16 triplet", "1/32 dotted",
+    "1/16", "1/8 triplet", "1/16 dotted", "1/8", "1/4 triplet", "1/8 dotted", "1/4", "1/2 triplet",
+    "1/4 dotted", "1/2", "1 bar triplet", "1/2 dotted", "1 bar", "2 bars triplet", "1 bar dotted",
+    "2 bars", "4 bars triplet", "2 bars dotted", "4 bars"
+  };
+  const std::string kGlitchDelayStutterNoteNames[] = {
+    "1/64 triplet", "1/64", "1/32 triplet", "1/64 dotted", "1/32", "1/16 triplet", "1/32 dotted",
+    "1/16", "1/8 triplet", "1/16 dotted", "1/8", "1/4 triplet", "1/8 dotted", "1/4"
+  };
+  const std::string kGlitchDelayTapNames[] = { "Tap 1", "Tap 2", "Tap 3", "Tap 4" };
+  const std::string kGlitchDelayPlacementNames[] = { "Feedback path", "Output and feedback" };
+  const std::string kGlitchDelayPitchModeNames[] = { "Sweep", "Varispeed" };
   const std::string kSpectralGateFftSizeNames[] = { "256", "512", "1024", "2048", "4096", "8192" };
 
   const std::string kDimensionModeNames[] = { "Mode 1", "Mode 2" };
@@ -926,6 +943,7 @@ namespace strings {
     "ANALOGUE SPRING",
     "ANALOGUE WAH",
     "SPECTRAL BALANCE",
+    "GLITCH DELAY",
   };
 
   const std::string kDestinationMenuNames[vital::constants::kNumDestinations] = {
@@ -973,6 +991,7 @@ namespace strings {
     "Analogue Spring",
     "Analogue Wah",
     "Spectral Balance",
+    "Glitch Delay",
   };
 
   const std::string kBusDestinationNames[vital::constants::kNumBusDestinations] = {

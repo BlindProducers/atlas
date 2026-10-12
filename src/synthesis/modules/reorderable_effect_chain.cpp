@@ -25,6 +25,7 @@
 #include "analogue_wah_module.h"
 #include "filter_fx_module.h"
 #include "spectral_balance_module.h"
+#include "glitch_delay_module.h"
 #include "chorus_module.h"
 #include "compressor_module.h"
 #include "convolution_reverb_module.h"
@@ -117,7 +118,8 @@ namespace vital {
       case constants::kFloatyDelay: case constants::kAnalogueChorus:
       case constants::kAnalogueFlanger: case constants::kAnalogueEcho:
       case constants::kAnalogueRotary: case constants::kAnalogueSpring:
-      case constants::kAnalogueWah: case constants::kSpectralBalance: break;
+      case constants::kAnalogueWah: case constants::kSpectralBalance:
+      case constants::kGlitchDelay: break;
       default: return createEffectDsp(index, module_prefix);
     }
 #if !VITAL_ACCESSIBLE_UI
@@ -211,6 +213,8 @@ namespace vital {
         return new AnalogueWahModule(module_prefix);
       case constants::kSpectralBalance:
         return new SpectralBalanceModule(module_prefix);
+      case constants::kGlitchDelay:
+        return new GlitchDelayModule(beats_per_second_, trance_gate_clock_, module_prefix);
       default:
         return nullptr;
     }

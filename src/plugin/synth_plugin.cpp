@@ -58,7 +58,7 @@ namespace {
       "mid_side_eq_", "phase_shift_", "phaser_", "reverb_", "utility_", "waveshaper_", "spectral_gate_",
       "erosion_", "floaty_delay_", "spectral_compressor_", "scream_", "tremolo_pan_", "tape_", "defuse_", "suppressor_", "trance_gate_", "spectral_lock_", "resonator_",
       "analoguechorus_", "analogueflanger_", "analogueecho_",
-      "analoguerotary_", "analoguespring_", "analoguewah_", "spectral_balance_"
+      "analoguerotary_", "analoguespring_", "analoguewah_", "spectral_balance_", "glitch_delay_"
     };
     for (const auto& prefix : prefixes) {
       if (name.rfind(prefix, 0) == 0)

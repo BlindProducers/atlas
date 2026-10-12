@@ -535,6 +535,8 @@ namespace vital {
     { "effect_chain_slot_36", 0x020117, 0.0, constants::kNumEffects - 1, constants::kSpectralBalance, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Effect Chain Slot 36", nullptr },
 
+#include "glitch_delay_parameters.inc"
+
     { "spectral_compressor_on", 0x020104, 0.0, 1.0, 0.0, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Spectral Compressor Switch", strings::kOffOnNames },
     { "spectral_compressor_compression", 0x020104, 0.0, 100.0, 0.0, 0.0, 1.0,
@@ -1849,7 +1851,7 @@ namespace vital {
         "dimension_expander_", "waveshaper_", "convolution_reverb_", "mid_side_eq_", "spectral_gate_",
         "erosion_", "floaty_delay_", "spectral_compressor_", "scream_", "tremolo_pan_", "tape_", "defuse_", "suppressor_", "trance_gate_", "spectral_lock_", "resonator_",
         "analoguechorus_", "analogueflanger_", "analogueecho_",
-        "analoguerotary_", "analoguespring_", "analoguewah_", "spectral_balance_"
+        "analoguerotary_", "analoguespring_", "analoguewah_", "spectral_balance_", "glitch_delay_"
       };
       for (const auto& prefix : effect_prefixes) {
         if (name.rfind(prefix, 0) == 0)

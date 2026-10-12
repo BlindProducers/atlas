@@ -1379,7 +1379,8 @@ namespace {
         "Spectral Compressor",
         "Scream",
         "Erosion",
-        "Floaty Delay"
+        "Floaty Delay",
+        "Glitch Delay"
       };
       for (int envelope = 1; envelope <= vital::kNumEnvelopes; ++envelope)
         result.push_back("Envelope " + String(envelope));
@@ -1453,7 +1454,7 @@ namespace {
         section == "Resonator" || section == "Analogue Chorus" ||
         section == "Analogue Flanger" || section == "Analogue Echo" ||
         section == "Analogue Rotary" || section == "Analogue Spring" ||
-        section == "Analogue Wah" || section == "Spectral Balance")
+        section == "Analogue Wah" || section == "Spectral Balance" || section == "Glitch Delay")
       return "Effects";
     if (section == "Modulation routing")
       return "Modulation";
@@ -1505,6 +1506,33 @@ namespace {
     for (int i = 0; i < static_cast<int>(order.size()); ++i) {
       if (suffix == order[i])
         return i;
+    }
+    return 900;
+  }
+
+  // Glitch Delay: the global controls, then Show Tap and the shown tap's rows.
+  int glitchDelayParameterRank(const String& suffix) {
+    static const StringArray global { "sync", "glide", "freeze", "freeze_sustain", "stop_tape", "stop_time",
+                                      "start_time", "placement", "buffer_size", "buffer_sync", "max_glitches",
+                                      "length_min", "length_max", "reproducible", "seed", "smear_amount",
+                                      "smear_size", "mix", "output_gain", "tap_view" };
+    static const StringArray tap { "enabled", "time", "time_sync", "volume", "pan", "feedback", "low_cut",
+                                   "high_cut", "reverse_prob", "stutter_prob", "stutter_min", "stutter_max",
+                                   "stutter_sync_min", "stutter_sync_max", "grain_prob", "grain_size_min",
+                                   "grain_size_max", "grain_density_min", "grain_density_max", "pitch_prob",
+                                   "pitch_mode", "pitch_min", "pitch_max", "pitch_speed_min", "pitch_speed_max",
+                                   "lpc_prob", "lpc_min", "lpc_max", "ceps_prob", "ceps_min", "ceps_max",
+                                   "ring_prob", "ring_min", "ring_max", "fm_prob", "fm_ratio_min", "fm_ratio_max",
+                                   "fm_index_min", "fm_index_max", "crush_prob", "crush_bits_min",
+                                   "crush_bits_max", "crush_rate_min", "crush_rate_max" };
+    if (global.contains(suffix))
+      return global.indexOf(suffix);
+    if (suffix.startsWith("tap_")) {
+      const String rest = suffix.substring(4);
+      const int tap_number = rest.upToFirstOccurrenceOf("_", false, false).getIntValue();
+      const int index = tap.indexOf(rest.fromFirstOccurrenceOf("_", false, false));
+      if (tap_number > 0 && index >= 0)
+        return 100 * tap_number + index;
     }
     return 900;
   }
@@ -1592,6 +1620,8 @@ namespace {
       return rank({ "tank", "dwell", "tone", "mono", "pan", "noise", "mix" });
     if (effect_id == "analoguewah")
       return rank({ "model", "position", "envelope", "decay", "mode", "range", "peak", "mix" });
+    if (effect_id == "glitch_delay")
+      return glitchDelayParameterRank(suffix);
     if (effect_id == "spectral_balance")
       return rank({ "amount", "target", "bias", "speed", "range_low", "range_high", "tame_recover", "mix" });
     if (effect_id == "spectral_compressor")
@@ -1638,7 +1668,8 @@ namespace {
       if (model == atlas::resonator::kTube) return 3;
       return 0;
     }
-    if (control_id.endsWith("analoguechorus_model") || control_id.endsWith("analoguerotary_model"))
+    if (control_id.endsWith("analoguechorus_model") || control_id.endsWith("analoguerotary_model") ||
+        control_id.endsWith("glitch_delay_tap_view"))
       return roundToInt(value);
     // The two pedals share their rows; the Mu-Tron III adds its own.
     if (control_id.endsWith("analoguewah_model"))
@@ -1662,7 +1693,8 @@ namespace {
       return true;
     for (const char* variant : { "dimension_expander_mode", "resonator_model", "analoguechorus_model",
                                  "analogueecho_medium", "analoguerotary_model", "analoguewah_model",
-                                 "convolution_reverb_predelay_sync", "spectral_lock_mode" }) {
+                                 "convolution_reverb_predelay_sync", "spectral_lock_mode",
+                                 "glitch_delay_tap_view" }) {
       if (id == variant || id.endsWith(String("_") + variant))
         return true;
     }
@@ -1673,6 +1705,22 @@ namespace {
   bool isConvolutionReverbParameterRelevant(const String& suffix, int synced) {
     if (suffix == "predelay") return synced == 0;
     if (suffix == "predelay_tempo") return synced == 1;
+    return true;
+  }
+
+  // Glitch Delay shows only the tap chosen by Show Tap, and with Host Sync on,
+  // the note values in place of the times they stand in for.
+  bool isGlitchDelayParameterRelevant(const String& suffix, int shown_tap, bool synced) {
+    if (suffix == "buffer_size") return !synced;
+    if (suffix == "buffer_sync") return synced;
+    if (suffix == "tap_view" || !suffix.startsWith("tap_"))
+      return true;
+    const String rest = suffix.substring(4);
+    if (rest.upToFirstOccurrenceOf("_", false, false).getIntValue() != shown_tap + 1)
+      return false;
+    const String control = rest.fromFirstOccurrenceOf("_", false, false);
+    if (control == "time" || control == "stutter_min" || control == "stutter_max") return !synced;
+    if (control == "time_sync" || control == "stutter_sync_min" || control == "stutter_sync_max") return synced;
     return true;
   }
 
@@ -2208,7 +2256,7 @@ namespace {
         { "Analogue", { kAnalogueChorus, kAnalogueFlanger, kAnalogueEcho, kAnalogueRotary, kAnalogueSpring, kAnalogueWah,
                         kTape } },
         { "Dynamics", { kCompressor, kLimiter, kSuppressor } },
-        { "Space", { kReverb, kConvolutionReverb, kDelay, kFloatyDelay } },
+        { "Space", { kReverb, kConvolutionReverb, kDelay, kFloatyDelay, kGlitchDelay } },
         { "Modulation", { kChorus, kFlanger, kPhaser, kTremoloPan, kDimensionExpander, kPhaseShift,
                           kFrequencyShifter, kTranceGate } },
         { "Distortion and character", { kDistortion, kWaveShaper, kErosion, kResonator } },
@@ -2296,6 +2344,7 @@ namespace {
     if (rest.startsWith("analoguespring_")) return "Analogue Spring";
     if (rest.startsWith("analoguewah_")) return "Analogue Wah";
     if (rest.startsWith("spectral_balance_")) return "Spectral Balance";
+    if (rest.startsWith("glitch_delay_")) return "Glitch Delay";
     if (rest.startsWith("spectral_compressor_")) return "Spectral Compressor";
     if (rest.startsWith("spectral_gate_")) return "Spectral Gate";
     if (rest.startsWith("erosion_")) return "Erosion";
@@ -2439,6 +2488,7 @@ namespace {
     if (id.startsWith("analoguespring_")) return "Analogue Spring";
     if (id.startsWith("analoguewah_")) return "Analogue Wah";
     if (id.startsWith("spectral_balance_")) return "Spectral Balance";
+    if (id.startsWith("glitch_delay_")) return "Glitch Delay";
     if (id.startsWith("spectral_compressor_")) return "Spectral Compressor";
     if (id.startsWith("spectral_gate_")) return "Spectral Gate";
     if (id.startsWith("arp_1_")) return "Arpeggiator 1";
@@ -2671,6 +2721,80 @@ namespace {
       return "Choose whether pitch quantize uses this source's scale or the global scale.";
     if (suffix == "transpose_quantize")
       return "Snap pitch modulation to the selected key and scale.";
+    return {};
+  }
+
+  String glitchDelayHelpText(const String& suffix) {
+    if (suffix == "on") return "Enable or bypass this effect.";
+    if (suffix == "tap_view") return "Choose which tap's controls are shown. Every tap keeps playing whichever one is shown.";
+    if (suffix == "sync") return "Follow the host tempo: tap times, the glitch buffer and Stutter slices become note values, and glitch chunks line up with the beat while the host plays. Bars are counted in 4/4.";
+    if (suffix == "glide") return "Set how long a tap takes to move to a new time, up to 2 seconds. The move bends the pitch of the repeats, as changing a tape's speed would.";
+    if (suffix == "freeze") return "Hold the repeats: new input fades out, every tap's feedback rises to 100 percent and the feedback filters are bypassed.";
+    if (suffix == "freeze_sustain") return "While frozen, keep the loops audible when glitches wear them down: each tap saves a copy of its loop and blends some of it back as the processed audio loses level.";
+    if (suffix == "placement") return "Choose where glitches act. Feedback path changes only what goes round again, so nothing is heard at zero feedback. Output and feedback also changes what you hear.";
+    if (suffix == "buffer_size") return "Set the glitch chunk length, from 10 ms to 2 seconds. Glitches start on chunk boundaries and last a whole number of chunks.";
+    if (suffix == "buffer_sync") return "Set the glitch chunk length as a note value while Host Sync is on.";
+    if (suffix == "max_glitches") return "Set how many glitch types may run at once in each tap, from 1 to 4.";
+    if (suffix == "length_min") return "Set the shortest glitch, in chunks. Each glitch lasts between the minimum and maximum.";
+    if (suffix == "length_max") return "Set the longest glitch, in chunks. Each glitch lasts between the minimum and maximum.";
+    if (suffix == "reproducible") return "Repeat the same glitches each time host playback starts or jumps, following the Seed. Off, every run is different.";
+    if (suffix == "seed") return "Choose the pattern Reproducible Randomness repeats, from 0 to 9999.";
+    if (suffix == "smear_amount") return "Blend in a diffused copy of the repeats. Zero percent leaves them untouched.";
+    if (suffix == "smear_size") return "Set how far the smear spreads the repeats, from 10 to 500 milliseconds.";
+    if (suffix == "stop_tape") return "Slow the repeats to a halt, dropping in pitch like a tape machine switched off. Turning it off brings them back up to speed. The dry signal is not affected, so raise Mix for the full effect.";
+    if (suffix == "stop_time") return "Set how long the tape takes to slow from full speed to a stop, from 50 ms to 2 seconds.";
+    if (suffix == "start_time") return "Set how long the tape takes to get back to full speed, from 50 ms to 2 seconds.";
+    if (suffix == "mix") return "Blend dry audio with the repeats. Zero percent is dry.";
+    if (suffix == "output_gain") return "Set the output level of dry and delayed audio, from minus 24 to plus 12 dB.";
+    if (!suffix.startsWith("tap_"))
+      return {};
+
+    const String control = suffix.substring(4).fromFirstOccurrenceOf("_", false, false);
+    const auto chance = [](const char* what) {
+      return "Set the chance, at each chunk, that this tap " + String(what) + " Zero percent never does.";
+    };
+    if (control == "enabled") return "Switch this tap on or off. A tap switched off fades out and clears its delay line.";
+    if (control == "time") return "Set this tap's delay, from 1 ms to 5 seconds. With Host Sync on, Synced Time takes its place.";
+    if (control == "time_sync") return "Set this tap's delay as a note value while Host Sync is on, up to 4 bars.";
+    if (control == "volume") return "Set this tap's level, from minus 60 dB, which is silent, to plus 6 dB.";
+    if (control == "pan") return "Place this tap's repeats from left to right.";
+    if (control == "feedback") return "Set how much of each repeat goes round the tap again.";
+    if (control == "low_cut") return "Remove lows from the feedback path at 12 dB per octave, so each repeat is thinner than the last.";
+    if (control == "high_cut") return "Remove highs from the feedback path at 12 dB per octave, so each repeat is darker than the last.";
+    if (control == "reverse_prob") return chance("plays its audio backwards, a chunk at a time.");
+    if (control == "stutter_prob") return chance("repeats a short slice of its audio.");
+    if (control == "stutter_min") return "Set the shortest slice Stutter repeats, from 5 to 250 ms.";
+    if (control == "stutter_max") return "Set the longest slice Stutter repeats, from 5 to 250 ms.";
+    if (control == "stutter_sync_min") return "Set the shortest Stutter slice as a note value while Host Sync is on.";
+    if (control == "stutter_sync_max") return "Set the longest Stutter slice as a note value while Host Sync is on.";
+    if (control == "grain_prob") return chance("breaks its audio into overlapping grains from the last second.");
+    if (control == "grain_size_min") return "Set the smallest grain, from 5 to 200 ms.";
+    if (control == "grain_size_max") return "Set the largest grain, from 5 to 200 ms.";
+    if (control == "grain_density_min") return "Set the fewest grains a second, from 1 to 100.";
+    if (control == "grain_density_max") return "Set the most grains a second, from 1 to 100.";
+    if (control == "pitch_prob") return chance("shifts its pitch. Pitch Mode chooses how.");
+    if (control == "pitch_mode") return "Choose Sweep, which shifts the audio on every pass and turns back at the ends of the pitch range, or Varispeed, which changes the tap's speed like a tape machine. Varispeed suits frozen loops: it wears them down less and doesn't jump.";
+    if (control == "pitch_min") return "Set the low end of the pitch range, from minus 24 to plus 24 semitones. A sweep turns back there; Varispeed picks its speed change from the range.";
+    if (control == "pitch_max") return "Set the high end of the pitch range, from minus 24 to plus 24 semitones. A sweep turns back there; Varispeed picks its speed change from the range.";
+    if (control == "pitch_speed_min") return "Set the slowest sweep, in semitones each pass through the tap. Varispeed ignores it.";
+    if (control == "pitch_speed_max") return "Set the fastest sweep, in semitones each pass through the tap. Varispeed ignores it.";
+    if (control == "lpc_prob") return chance("moves its formants with linear prediction, a coarse, vocoder-like sound. The pitch stays.");
+    if (control == "lpc_min" || control == "ceps_min") return "Set the lowest place the formants are moved to, up to 12 semitones either way.";
+    if (control == "lpc_max" || control == "ceps_max") return "Set the highest place the formants are moved to, up to 12 semitones either way.";
+    if (control == "ceps_prob") return chance("moves its formants with a cepstral envelope, closer to the original timbre. The pitch stays.");
+    if (control == "ring_prob") return chance("ring modulates its audio.");
+    if (control == "ring_min") return "Set the lowest ring modulation frequency, from 1 Hz to 5 kHz.";
+    if (control == "ring_max") return "Set the highest ring modulation frequency, from 1 Hz to 5 kHz.";
+    if (control == "fm_prob") return chance("frequency modulates its audio, adding sidebands around the pitch it detects.");
+    if (control == "fm_ratio_min") return "Set the lowest modulator frequency, as a ratio of the detected pitch from 0.25 to 16.";
+    if (control == "fm_ratio_max") return "Set the highest modulator frequency, as a ratio of the detected pitch from 0.25 to 16.";
+    if (control == "fm_index_min") return "Set the least frequency modulation depth, from 0 to 10.";
+    if (control == "fm_index_max") return "Set the most frequency modulation depth, from 0 to 10.";
+    if (control == "crush_prob") return chance("reduces its bit depth and sample rate.");
+    if (control == "crush_bits_min") return "Set the lowest bit depth, from 1 to 16 bits.";
+    if (control == "crush_bits_max") return "Set the highest bit depth, from 1 to 16 bits.";
+    if (control == "crush_rate_min") return "Set the least sample rate reduction, from 1 to 64 times.";
+    if (control == "crush_rate_max") return "Set the most sample rate reduction, from 1 to 64 times.";
     return {};
   }
 
@@ -2929,6 +3053,12 @@ namespace {
         return id.fromFirstOccurrenceOf("_" + prefix, false, false);
       return {};
     };
+    // Before Delay's: Glitch Delay's ids contain "_delay_" too.
+    if (const String glitch_delay_suffix = effectSuffix("glitch_delay_"); glitch_delay_suffix.isNotEmpty()) {
+      const String help = glitchDelayHelpText(glitch_delay_suffix);
+      if (help.isNotEmpty())
+        return help;
+    }
     if (effectSuffix("delay_") == "style")
       return "Choose the delay style. Ping Pong L-R starts echoes on the left; Ping Pong R-L starts on the right.";
     const String suppressor_suffix = effectSuffix("suppressor_");
@@ -3195,7 +3325,7 @@ namespace {
       return "Blend the aligned dry and gated signals. Both include the spectral processing delay of 2048 samples.";
     String effect_suffix;
     const String effect_prefixes[] {
-      "chorus_", "compressor_", "convolution_reverb_", "delay_", "dimension_expander_", "distortion_",
+      "glitch_delay_", "chorus_", "compressor_", "convolution_reverb_", "delay_", "dimension_expander_", "distortion_",
       "eq_", "flanger_", "frequency_shifter_", "limiter_", "mid_side_eq_", "phase_shift_", "phaser_",
       "reverb_", "utility_", "waveshaper_", "spectral_gate_", "erosion_", "floaty_delay_", "spectral_compressor_", "scream_", "tremolo_pan_", "tape_", "defuse_", "suppressor_", "trance_gate_", "spectral_lock_", "resonator_",
       "analoguechorus_", "analogueflanger_", "analogueecho_", "analoguerotary_", "analoguespring_", "analoguewah_",
@@ -4420,6 +4550,7 @@ class AccessibleParameterRow : public Component {
       const bool trance_control = parameter_id.startsWith("trance_gate_") || parameter_id.contains("_trance_gate_");
       const bool tremolo_control = parameter_id.startsWith("tremolo_pan_") || parameter_id.contains("_tremolo_pan_");
       const bool resonator_control = parameter_id.startsWith("resonator_") || parameter_id.contains("_resonator_");
+      const bool glitch_delay_control = parameter_id.startsWith("glitch_delay_") || parameter_id.contains("_glitch_delay_");
       // Analogue Chorus, Flanger and Echo share one prefix family.
       const bool analogue_control = parameter_id.startsWith("analogue") || parameter_id.contains("_analogue");
       const auto accessible_name = accessibleName.isNotEmpty() ? accessibleName : (random_rate ? String("Rate") : name);
@@ -4630,6 +4761,48 @@ class AccessibleParameterRow : public Component {
             }
           }
         }
+        if (bridge != nullptr && glitch_delay_control && interval == 0.0) {
+          // Keys move in display units: milliseconds, Hz, semitones, dB or
+          // percent, whichever curve the value is stored on.
+          const auto& details = bridge->getDetails();
+          const double minimum = details.min, span = details.max - minimum;
+          const auto scale = details.value_scale;
+          const double factor = String(details.display_units).trim() == "secs" ? 1.0 : details.display_multiply;
+          slider_.toAdjustmentValue = [minimum, span, scale, factor](double v) {
+            const double stored = minimum + span * v;
+            switch (scale) {
+              case vital::ValueDetails::kQuadratic: return stored * stored * factor;
+              case vital::ValueDetails::kCubic: return stored * stored * stored * factor;
+              case vital::ValueDetails::kExponential: return std::exp2(stored) * factor;
+              default: return stored * factor;
+            }
+          };
+          slider_.fromAdjustmentValue = [minimum, span, scale, factor](double display) {
+            const double value = display / factor;
+            double stored = value;
+            switch (scale) {
+              case vital::ValueDetails::kQuadratic: stored = std::sqrt(jmax(0.0, value)); break;
+              case vital::ValueDetails::kCubic: stored = std::cbrt(value); break;
+              case vital::ValueDetails::kExponential: stored = std::log2(jmax(1.0e-6, value)); break;
+              default: break;
+            }
+            return (stored - minimum) / span;
+          };
+          const String suffix = parameter_id.fromFirstOccurrenceOf("glitch_delay_", false, false);
+          const auto ends = [&suffix](const char* end) { return suffix.endsWith(end); };
+          const double step = ends("_time") || suffix == "glide" || ends("stop_time") || ends("start_time") ? 10.0
+                            : suffix == "buffer_size" || suffix == "smear_size" ? 5.0
+                            : ends("high_cut") ? 100.0
+                            : ends("low_cut") || ends("ring_min") || ends("ring_max") ? 10.0
+                            : ends("fm_ratio_min") || ends("fm_ratio_max") ? 0.05
+                            : ends("fm_index_min") || ends("fm_index_max") || ends("crush_rate_min") ||
+                              ends("crush_rate_max") || ends("speed_min") || ends("speed_max") ||
+                              ends("lpc_min") || ends("lpc_max") || ends("ceps_min") || ends("ceps_max") ||
+                              suffix == "output_gain" ? 0.1
+                            : ends("_volume") ? 0.5
+                            : 1.0;
+          slider_.adjustmentStep = [step] { return step; };
+        }
         slider_.setTitle(accessible_name);
         slider_.setDescription(parameter_description);
         slider_.setTooltip(parameter_description);
@@ -4637,6 +4810,7 @@ class AccessibleParameterRow : public Component {
                                         : suppressor_control ? "Arrows change percentages by one percent, Release by 0.05, Curve Frequency by 10 Hz, and Curve Width by 10. Shift arrows use one tenth of the step; Page keys use ten times the step. Enter types a value, Backspace restores its default, Home selects maximum and End minimum."
                                         : defuse_control ? "Use arrows to adjust, Shift arrows for finer changes, and Page keys for ten times the increment. Stages change by one, Frequency by 10 Hz, Resonance by 0.01, Spread by 0.1 octave, and Automation Precision by one percent. Enter types a value; Backspace restores the default. Home selects maximum and End minimum. Shift M opens the context menu."
                                         : tape_control ? "Use arrows to adjust, Shift arrows for finer changes, and Page keys for larger changes. Wow Rate uses 0.01 Hz, Flutter Rate 0.1 Hz, cutoffs 10 Hz, levels 0.1, Drive and percentages one percent. Enter types a value; Backspace restores the default. Home selects maximum and End minimum. Shift M opens the context menu."
+                                        : glitch_delay_control ? "Use arrows for changes, Shift arrows for a tenth of the step, and Page keys for ten times the step. Tap times, Glide and tape times move 10 ms; Buffer and Smear Size 5 ms; slice and grain sizes 1 ms; High Cut 100 Hz; Low Cut and ring frequencies 10 Hz; pitch ranges one semitone; sweep speeds and formant shifts 0.1 semitone; FM ratios 0.05; FM index and rate reduction 0.1; densities one grain a second; Volume 0.5 dB and Output Gain 0.1 dB; percentages one percent. Home for maximum, End for minimum, Enter to type a value, Backspace to reset to default. Press Shift M for the context menu, Shift L for MIDI learn, and Shift C to clear MIDI learn."
                                         : resonator_control ? "Use arrows for changes, Shift arrows for finer changes, and Page keys for ten times the step. Tune moves one semitone; Decay, rates and Filter Frequency move in even ratio steps; percentages, degrees, cents and Glide milliseconds move by one; decibels, LFO Amount and Filter Bandwidth by 0.1; Ratio by 0.01. Named choices move one item at a time. Home for maximum, End for minimum, Enter to type a value, Backspace to reset to default. Press Shift M for the context menu, Shift L for MIDI learn, and Shift C to clear MIDI learn."
                                         : tremolo_control ? "Use arrows for changes, Shift arrows for finer changes, and Page keys for larger changes. Free Rate uses 0.1 Hz steps, Stereo Phase and Offset use one degree, Depth and Mix use one percent, and Smoothing uses 0.1 ms. Named choices move one item at a time. Home for maximum, End for minimum, Enter to type a value, Backspace to reset to default. Press Shift M for the context menu, Shift L for MIDI learn, and Shift C to clear MIDI learn."
                                         : "Use arrows for changes, hold Shift with the arrows for finer changes, Page Up and Page Down for larger changes. For frequencies displayed in Hz, arrows change 10 Hz, Shift arrows 1 Hz, and Page keys 100 Hz. Home for maximum, End for minimum, Enter to type a value, Backspace to reset to default. Press Shift M, the right bracket key, or VoiceOver Shift M for the context menu. Press Shift L for MIDI learn, and Shift C to clear MIDI learn.");
@@ -13803,6 +13977,16 @@ void SynthEditor::addEffectSlotGroups(const String& sectionName, Component& pare
       if (found != synth_.getControls().end()) spectral_lock_mode = found->second->value() >= 0.5f ? 1 : 0;
       effect_slot_modes_[effect_prefix + "mode"] = spectral_lock_mode;
     }
+    int glitch_delay_tap = 0;
+    bool glitch_delay_synced = false;
+    if (effect_id == "glitch_delay") {
+      const auto tap = synth_.getControls().find((effect_prefix + "tap_view").toStdString());
+      if (tap != synth_.getControls().end()) glitch_delay_tap = jlimit(0, 3, roundToInt(tap->second->value()));
+      effect_slot_modes_[effect_prefix + "tap_view"] = effectSlotRowVariant(effect_prefix + "tap_view", float(glitch_delay_tap));
+      const auto sync = synth_.getControls().find((effect_prefix + "sync").toStdString());
+      glitch_delay_synced = sync != synth_.getControls().end() && sync->second->value() >= 0.5f;
+      effect_slot_modes_[effect_prefix + "sync"] = glitch_delay_synced ? 1 : 0;
+    }
     int analogue_chorus_model = 0;
     if (effect_id == "analoguechorus") {
       const auto found = synth_.getControls().find((effect_prefix + "model").toStdString());
@@ -13847,6 +14031,8 @@ void SynthEditor::addEffectSlotGroups(const String& sectionName, Component& pare
       if (effect_id == "spectral_lock" && !isSpectralLockParameterRelevant(suffix, spectral_lock_mode))
         continue;
       if (effect_id == "convolution_reverb" && !isConvolutionReverbParameterRelevant(suffix, convolution_predelay_synced))
+        continue;
+      if (effect_id == "glitch_delay" && !isGlitchDelayParameterRelevant(suffix, glitch_delay_tap, glitch_delay_synced))
         continue;
       if (shouldExposeEffectSlotParameter(effect_id, suffix) &&
           shouldShowParameterInSection(sectionName, parameter))
@@ -14026,7 +14212,97 @@ void SynthEditor::addEffectSlotGroups(const String& sectionName, Component& pare
       slot_y = group_y;
     }
 
+    // Glitch Delay nests its rows as Astralay groups them: Global (timing, tape
+    // stop, glitch engine, output), then the shown tap's delay controls and its
+    // glitches, one group per glitch type.
+    if (effect_id == "glitch_delay") {
+      std::map<String, AudioProcessorParameter*> by_suffix;
+      for (const auto& entry : effect_parameters)
+        by_suffix[entry.suffix] = entry.parameter;
+
+      struct RowGroup {
+        String title, description;
+        StringArray suffixes;
+        std::vector<RowGroup> children;
+      };
+      const String tap = "tap_" + String(glitch_delay_tap + 1) + "_";
+      const auto tap_rows = [&tap](std::initializer_list<const char*> controls) {
+        StringArray result;
+        for (const auto* control : controls)
+          result.add(tap + control);
+        return result;
+      };
+      const RowGroup global { "Global", "Timing, tape stop, glitch engine and output, shared by every tap", {}, {
+        { "Timing", "Host sync, glide and freeze", { "sync", "glide", "freeze", "freeze_sustain" }, {} },
+        { "Tape stop", "Slowing the repeats to a halt and back", { "stop_tape", "stop_time", "start_time" }, {} },
+        { "Glitch engine", "Where glitches act, the chunk grid they start on, how long they last and their randomness",
+          { "placement", "buffer_size", "buffer_sync", "max_glitches", "length_min", "length_max", "reproducible", "seed" }, {} },
+        { "Output", "Smear, mix and output level", { "smear_amount", "smear_size", "mix", "output_gain" }, {} } } };
+      const RowGroup tap_group { "Tap " + String(glitch_delay_tap + 1),
+                                 "Delay and glitch controls for tap " + String(glitch_delay_tap + 1), {}, {
+        { "Delay", "On, time, level, pan, feedback and the feedback filters",
+          tap_rows({ "enabled", "time", "time_sync", "volume", "pan", "feedback", "low_cut", "high_cut" }), {} },
+        { "Glitches", "Nine glitch types, each with its own probability and ranges", {}, {
+          { "Reverse", "Plays the audio backwards", tap_rows({ "reverse_prob" }), {} },
+          { "Stutter", "Repeats a short slice",
+            tap_rows({ "stutter_prob", "stutter_min", "stutter_max", "stutter_sync_min", "stutter_sync_max" }), {} },
+          { "Granularize", "Overlapping grains",
+            tap_rows({ "grain_prob", "grain_size_min", "grain_size_max", "grain_density_min", "grain_density_max" }), {} },
+          { "Pitch", "Pitch sweeps or varispeed",
+            tap_rows({ "pitch_prob", "pitch_mode", "pitch_min", "pitch_max", "pitch_speed_min", "pitch_speed_max" }), {} },
+          { "LPC formant", "Formants moved with linear prediction", tap_rows({ "lpc_prob", "lpc_min", "lpc_max" }), {} },
+          { "Cepstral formant", "Formants moved with a cepstral envelope", tap_rows({ "ceps_prob", "ceps_min", "ceps_max" }), {} },
+          { "Ring modulation", "Ring modulation", tap_rows({ "ring_prob", "ring_min", "ring_max" }), {} },
+          { "Frequency modulation", "Frequency modulation around the detected pitch",
+            tap_rows({ "fm_prob", "fm_ratio_min", "fm_ratio_max", "fm_index_min", "fm_index_max" }), {} },
+          { "Bit crusher", "Bit depth and sample rate reduction",
+            tap_rows({ "crush_prob", "crush_bits_min", "crush_bits_max", "crush_rate_min", "crush_rate_max" }), {} } } } } };
+
+      const String group_key = sectionName + " slot " + String(slot + 1) + " glitch delay ";
+      const auto has_rows = [&by_suffix](const RowGroup& group, const auto& self) -> bool {
+        for (const auto& suffix : group.suffixes)
+          if (by_suffix.count(suffix)) return true;
+        for (const auto& child : group.children)
+          if (self(child, self)) return true;
+        return false;
+      };
+      const auto place_group = [&](const RowGroup& group, AccessibleSectionHeader& parent, int& parent_y,
+                                   int group_width, const String& key, const auto& self) -> void {
+        if (!has_rows(group, has_rows))
+          return;
+        const String group_id = key + group.title.toLowerCase();
+        auto header = std::make_unique<AccessibleSectionHeader>(group.title, groupRank(sectionName), false, group_id);
+        auto* header_ptr = header.get();
+        header_ptr->setDescription(group.description);
+        header_ptr->setExplicitFocusOrder(focusOrder++);
+        header_ptr->setBounds(10, parent_y, group_width, header_ptr->headerHeight());
+        parent.addAndMakeVisible(header_ptr);
+        parent.addAccessibleChild(header_ptr);
+        row_focus_order_.push_back(header_ptr);
+        section_headers_.push_back(std::move(header));
+
+        int inner_y = header_ptr->headerHeight() + 8;
+        for (const auto& suffix : group.suffixes) {
+          const auto found = by_suffix.find(suffix);
+          if (found != by_suffix.end())
+            add_parameter_row(*found->second, *header_ptr, *header_ptr, inner_y, group_width);
+        }
+        for (const auto& child : group.children)
+          self(child, *header_ptr, inner_y, jmax(600, group_width - 20), group_id + " ", self);
+        header_ptr->setBounds(10, parent_y, group_width, inner_y + 2);
+        parent_y += inner_y + 10;
+      };
+
+      const int group_width = jmax(600, width - 20);
+      place_group(global, *slot_ptr, slot_y, group_width, group_key, place_group);
+      if (const auto view = by_suffix.find("tap_view"); view != by_suffix.end())
+        add_parameter_row(*view->second, *slot_ptr, *slot_ptr, slot_y, width);
+      place_group(tap_group, *slot_ptr, slot_y, group_width, group_key, place_group);
+    }
+
     for (const auto& entry : effect_parameters) {
+      if (effect_id == "glitch_delay")
+        break;
       if (type - 1 == vital::constants::kConvolutionReverb &&
           (entry.suffix.startsWith("ir_") || entry.suffix.startsWith("fade_")))
         continue;

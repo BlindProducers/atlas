@@ -28,6 +28,9 @@ their sources.
 - Mutable Instruments Braids and stmlib by Emilie Gillet (MIT,
   https://github.com/pichenettes/eurorack): the Braids oscillator type
   (src/synthesis/effects/braids, licence in each file and LICENSE.stmlib).
+- Astralay by Iron Labs (MIT, https://github.com/ironcross32/astralay): the
+  Glitch Delay effect's engine (src/synthesis/effects/glitch_delay, licence in
+  LICENSE.astralay) and its engine tests (tests/glitch_delay).
 - nlohmann json (MIT), moodycamel concurrentqueue (simplified BSD) and KISS FFT
   (BSD-3), as submodules under third_party.
 - Test-only submodules, never built into Atlas: WDL's EEL2 (zlib licence) and
