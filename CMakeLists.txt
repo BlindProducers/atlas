@@ -290,6 +290,10 @@ if(ATLAS_BUILD_TIMING_TESTS)
   set_tests_properties(atlas_convolution_threading PROPERTIES TIMEOUT 60)
   add_test(NAME atlas_ir_switching COMMAND AtlasPreparedEffectTests --ir-switching)
   set_tests_properties(atlas_ir_switching PROPERTIES TIMEOUT 60)
+  # Reports plugin and effect chain construction time and memory, and the
+  # cost of processing with light effects; `--construction chain` measures one chain.
+  add_test(NAME atlas_effect_construction COMMAND AtlasPreparedEffectTests --construction)
+  set_tests_properties(atlas_effect_construction PROPERTIES LABELS cpu)
 
   juce_add_console_app(AtlasLatencyTests PRODUCT_NAME "Atlas Latency Tests")
   juce_generate_juce_header(AtlasLatencyTests)

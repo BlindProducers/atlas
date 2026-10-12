@@ -89,10 +89,18 @@ namespace vital {
   Output* SynthModule::createBaseModControl(std::string name, bool audio_rate,
                                             bool smooth_value, Output* internal_modulation) {
     if (prepared_effect_inputs) {
-      VITAL_ASSERT(internal_modulation == nullptr);
       Value* value = createBaseControl(name, audio_rate, false);
       (*prepared_effect_inputs)[name] = { value, true };
-      return value->output();
+      if (internal_modulation == nullptr)
+        return value->output();
+      // The bound value carries the base and the host's routed modulation
+      // (summed by the permanent control); the module adds its own here.
+      Processor* total = audio_rate ? static_cast<Processor*>(new ModulationSum()) : new cr::VariableAdd();
+      total->plugNext(value);
+      addMonoProcessor(total, false);
+      total->plugNext(internal_modulation);
+      (*prepared_effect_inputs)[name].internal_total = total->output();
+      return total->output();
     }
     Processor* base_val = createBaseControl(name, audio_rate, smooth_value);
 

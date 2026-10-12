@@ -10,6 +10,7 @@
 namespace vital {
 class PreparedEffectModule;
 class ConvolutionReverbModule;
+class Wavetable;
 class ConvolutionIrWorker;
 
 // One sleeping preparation worker per synth. Construction, reconfiguration,
@@ -60,6 +61,11 @@ public:
   void prepareForPlayback();
   void stopPreparation() { worker_->remove(this); }
   ConvolutionReverbModule* convolutionState() const { return convolution_state_.get(); }
+  // Filter FX: the table its Filter Table model reads, and a request for that
+  // model's buffers. Both are safe from the message thread: the DSP picks the
+  // table up on its next block, and the buffers are allocated on the worker.
+  void setFilterTable(Wavetable* table) { filter_table_.store(table, std::memory_order_release); }
+  void prepareFilterTable() { filter_table_requested_.store(true, std::memory_order_release); }
 private:
   friend class EffectPreparationWorker;
   struct Control {
@@ -68,7 +74,9 @@ private:
     bool audio_rate, smooth, modulated;
   };
   struct Description { std::vector<Control> controls; int outputs = 1; int latency = 0; };
-  struct Binding { Value* destination; Value* base; Output* modulation; };
+  // `total` is the module's own total for a control it also modulates
+  // internally (Filter FX keytracking); it is copied to the control's readout.
+  struct Binding { Value* destination; Value* base; Output* modulation; Output* total; Output* readout; };
   struct Prepared {
     uint64_t configuration = 0;
     std::unique_ptr<SynthModule> module;
@@ -76,11 +84,13 @@ private:
   };
   static Description describe(int type, const std::string& prefix, const Factory& factory);
   uint64_t configuration() const;
+  void updateFilterTableNeed();
   void requestPreparation();
   void prepareOnWorker();
   void acceptPrepared();
   void retireActive();
   void renderPending(const poly_float* input, int samples);
+  void restart();
 
   int type_;
   std::string prefix_;
@@ -90,6 +100,14 @@ private:
   output_map raw_controls_;
   Value* fft_size_control_ = nullptr;
   Value* spectral_lock_mode_control_ = nullptr;
+  Value* filter_model_control_ = nullptr;
+  Value* filter_style_control_ = nullptr;
+  std::atomic<Wavetable*> filter_table_ { nullptr };
+  std::atomic<bool> filter_table_requested_ { false };
+  // Once a Filter FX has used its table model it keeps the buffers, as the
+  // filter did before effects were prepared on demand. Audio/control thread only.
+  bool filter_table_needed_ = false;
+  const bool reset_in_place_;
 
   std::unique_ptr<ConvolutionReverbModule> convolution_state_;
   std::atomic<uint64_t> requested_ { 0 };

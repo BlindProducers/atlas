@@ -99,6 +99,7 @@ int main(int argc, char** argv) {
       controls.at(sp + "type")->set(vital::constants::kDefuse + 1);
       set(chain, { float(slot), float(slot * 700), .5f, .4f, 0, 1 }, sp + "defuse_");
     }
+    chain.prepareSelectedEffects(); // As the plugin does before playback.
     vital::DefuseModule first, last;
     first.init(); last.init(); first.setSampleRate(48000); last.setSampleRate(48000);
     set(first, { 1, 700, .5f, .4f, 0, 1 }); set(last, { 20, 14000, .5f, .4f, 0, 1 });

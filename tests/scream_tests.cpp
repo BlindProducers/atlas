@@ -144,6 +144,7 @@ int main() {
     const std::string prefix = "bus_3_fx_slot_20_";
     chain.getControls().at(prefix + "type")->set(vital::constants::kScream + 1);
     chain.getControls().at(prefix + "enabled")->set(1.0f);
+    chain.prepareSelectedEffects(); // As the plugin does before playback.
     expect(compare(chain, note, 48000, 1, 128, defaults, true, prefix), "last bus slot routing and keytracking parity");
   }
   if (failures) return 1;

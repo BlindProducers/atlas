@@ -156,6 +156,9 @@ namespace vital {
   }
 
   void EqualizerModule::setSampleRate(int sample_rate) {
+    // The base call also gives the smoothed controls the real rate, as in
+    // every other module (a slot's controls get it from their prepared shell).
+    SynthModule::setSampleRate(sample_rate);
     high_pass_->setSampleRate(sample_rate);
     low_shelf_->setSampleRate(sample_rate);
     for (int i = 0; i < static_cast<int>(band_shelves_.size()); ++i) {

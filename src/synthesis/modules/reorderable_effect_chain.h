@@ -27,7 +27,7 @@
 
 namespace vital {
   class Wavetable;
-  class FilterFxModule;
+  class PreparedEffectModule;
 
   class TranceGateClock;
   class NoteMonitor;
@@ -70,7 +70,7 @@ namespace vital {
       // the model is first used).
       void setFilterTable(int slot, Wavetable* table);
       void prepareFilterTable(int slot);
-      FilterFxModule* filterFx(int slot);
+      PreparedEffectModule* filterFx(int slot);
       const StereoMemory* getEqualizerMemory() { return equalizer_memory_; }
 
       void collectConvolutionModules(std::vector<std::pair<std::string, ConvolutionReverbModule*>>& modules);
@@ -101,6 +101,8 @@ namespace vital {
       SynthModule* slot_effects_[constants::kMaxEffectSlots][constants::kNumEffects];
       Value* slot_types_[constants::kMaxEffectSlots];
       Value* slot_enabled_[constants::kMaxEffectSlots];
+      std::array<std::shared_ptr<Output>, constants::kMaxEffectSlots> slot_outputs_;
+      std::shared_ptr<Output> unused_output_;
       // -2 requires a full reconciliation (initial use or recursive enable).
       std::array<int, constants::kMaxEffectSlots> selected_effects_;
       std::array<std::array<int, constants::kNumEffects>, constants::kMaxEffectSlots> slot_rates_ {}, slot_oversamples_ {};

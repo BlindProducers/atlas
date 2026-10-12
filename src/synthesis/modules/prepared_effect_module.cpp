@@ -1,16 +1,48 @@
 #include "prepared_effect_module.h"
 #include "convolution_reverb_module.h"
+#include "filter_fx_module.h"
+#include "filter_table/filter_table_kernel.h"
+#include "table_filter.h"
 #include "spectral_lock_module.h"
 #include "smooth_value.h"
 #include "value_switch.h"
 #include "synth_constants.h"
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <chrono>
 #include <stdexcept>
 
 namespace vital {
-namespace { thread_local bool realtime_effect_processing = false; }
+namespace {
+thread_local bool realtime_effect_processing = false;
+// A configuration's low word: oversampling (4 bits), the processing rate, then
+// whether a Filter FX must allocate its Filter Table buffers.
+constexpr uint64_t kFilterTableBit = uint64_t(1) << 31;
+// Effects that were always fully built before every slot prepared its effect
+// on demand. Their resets are cheap and always ran on the audio thread, so
+// "all sounds off" or a preset load resets their DSP in place; rebuilding it
+// would leave the next note dry for a few milliseconds.
+bool resetsInPlace(int type) {
+  switch (type) {
+    case constants::kChorus: case constants::kDelay: case constants::kReverb:
+    case constants::kPhaseShift: case constants::kDimensionExpander:
+    case constants::kSpectralGate: case constants::kSpectralCompressor:
+    case constants::kSuppressor: case constants::kConvolutionReverb:
+    case constants::kTape: case constants::kSpectralLock:
+    case constants::kFloatyDelay: case constants::kAnalogueChorus:
+    case constants::kAnalogueFlanger: case constants::kAnalogueEcho:
+    case constants::kAnalogueRotary: case constants::kAnalogueSpring:
+    case constants::kAnalogueWah: case constants::kSpectralBalance:
+    case constants::kGlitchDelay: return false;
+    default: return true;
+  }
+}
+int filterFxLatency(int style) {
+  return atlas::filter_table::KernelBuilder::latencyForMode(TableFilter::modeForStyle(style, true),
+                                                            1 << TableFilter::kFxOrder);
+}
+}
 RealtimeEffectScope::RealtimeEffectScope(bool realtime) : previous_(realtime_effect_processing) {
   realtime_effect_processing = realtime;
 }
@@ -81,10 +113,11 @@ PreparedEffectModule::PreparedEffectModule(int type, std::string prefix, Factory
     std::shared_ptr<EffectPreparationWorker> worker,
     std::shared_ptr<ConvolutionIrWorker> ir_worker) : SynthModule(0, 1), type_(type),
     prefix_(std::move(prefix)), factory_(std::move(factory)), worker_(std::move(worker)),
-    description_(describe(type_, prefix_, factory_)) {
+    description_(describe(type_, prefix_, factory_)), reset_in_place_(resetsInPlace(type_)) {
   while (numOutputs() < description_.outputs) addOutput();
   pending_capacity_ = type_ == constants::kSpectralGate ? 8192 :
                       type_ == constants::kSpectralLock ? SpectralLockModule::kMaxSpectralLatencySamples :
+                      type_ == constants::kFilterFx ? filterFxLatency(atlas::filter_table::kLinear) :
                       description_.latency;
   if (pending_capacity_ > 0)
     pending_history_.reset(new float[size_t(pending_capacity_) * poly_float::kSize]);
@@ -110,12 +143,21 @@ void PreparedEffectModule::init() {
     fft_size_control_ = data_->controls.at(prefix_ + "spectral_gate_fft_size");
   if (type_ == constants::kSpectralLock)
     spectral_lock_mode_control_ = data_->controls.at(prefix_ + "spectral_lock_mode");
+  if (type_ == constants::kFilterFx) {
+    filter_model_control_ = data_->controls.at(prefix_ + "filter_fx_model");
+    filter_style_control_ = data_->controls.at(prefix_ + "filter_fx_style");
+  }
   SynthModule::init();
   worker_->add(this);
 }
 uint64_t PreparedEffectModule::configuration() const {
-  return (uint64_t(generation_) << 32) | (uint64_t(getSampleRate()) << 4) |
-         uint64_t(getOversampleAmount());
+  return (uint64_t(generation_) << 32) | (filter_table_needed_ ? kFilterTableBit : 0) |
+         (uint64_t(getSampleRate()) << 4) | uint64_t(getOversampleAmount());
+}
+void PreparedEffectModule::updateFilterTableNeed() {
+  if (type_ != constants::kFilterFx || filter_table_needed_) return;
+  filter_table_needed_ = filter_table_requested_.load(std::memory_order_acquire) ||
+      static_cast<int>(std::round(filter_model_control_->value())) == constants::kFilterTable;
 }
 void PreparedEffectModule::requestPreparation() {
   const auto next = configuration();
@@ -142,15 +184,23 @@ void PreparedEffectModule::prepareOnWorker() {
     prepared->module->init();
   }
   const int oversample = int(requested & 15);
-  const int rate = int((requested & 0xffffffffu) >> 4);
+  const int rate = int((requested & (kFilterTableBit - 1)) >> 4);
   prepared->module->setSampleRate(rate / oversample);
   prepared->module->setOversampleAmount(oversample);
+  if (type_ == constants::kFilterFx) {
+    auto* filter_fx = static_cast<FilterFxModule*>(prepared->module.get());
+    filter_fx->setTableWavetable(filter_table_.load(std::memory_order_acquire));
+    if (requested & kFilterTableBit) filter_fx->prepareTable();
+  }
   if (convolution_state_)
     static_cast<ConvolutionReverbModule*>(prepared->module.get())->shareIrSourceFrom(*convolution_state_);
   for (const auto& entry : inputs) {
     const auto raw = raw_controls_.find(entry.first);
+    const auto readout = data_->mono_modulation_readout.find(entry.first);
     prepared->bindings.push_back({ entry.second.value, data_->controls.at(entry.first),
-        entry.second.modulated && raw != raw_controls_.end() ? raw->second : nullptr });
+        entry.second.modulated && raw != raw_controls_.end() ? raw->second : nullptr,
+        entry.second.internal_total,
+        readout == data_->mono_modulation_readout.end() ? nullptr : readout->second });
   }
   if (requested_.load(std::memory_order_acquire) == requested) {
     completed_ = requested;
@@ -181,6 +231,7 @@ void PreparedEffectModule::acceptPrepared() {
   }
 }
 void PreparedEffectModule::prepareForPlayback() {
+  updateFilterTableNeed();
   requestPreparation();
   // Called with processing suspended, or by an explicitly offline renderer.
   // Drain outdated publications before preparing the latest requested state.
@@ -215,6 +266,7 @@ void PreparedEffectModule::renderPending(const poly_float* input, int samples) {
 }
 void PreparedEffectModule::processWithInput(const poly_float* input, int samples) {
   if (samples <= 0) return;
+  updateFilterTableNeed();
   requestPreparation();
   if (!RealtimeEffectScope::active()) prepareForPlayback();
   acceptPrepared();
@@ -224,16 +276,27 @@ void PreparedEffectModule::processWithInput(const poly_float* input, int samples
     return;
   }
   SynthModule::process(samples);
+  // An audio-rate modulated control reads the permanent control's samples in
+  // place (as ValueSwitch does); its source can change when routes do. An
+  // audio-rate Value's set() fills its whole buffer, so it runs on changes only.
   for (const auto& binding : active_->bindings) {
-    if (binding.modulation) {
-      binding.destination->set(binding.modulation->buffer[0]);
-      if (!binding.destination->isControlRate())
-        utils::copyBuffer(binding.destination->output()->buffer, binding.modulation->buffer, samples);
-    }
-    else binding.destination->set(binding.base->value());
+    Value* destination = binding.destination;
+    if (destination->isControlRate())
+      destination->set(binding.modulation ? binding.modulation->buffer[0] : poly_float(binding.base->value()));
+    else if (binding.modulation)
+      destination->output()->buffer = binding.modulation->buffer;
+    else if (destination->value() != binding.base->value())
+      destination->set(binding.base->value());
   }
+  if (type_ == constants::kFilterFx)
+    static_cast<FilterFxModule*>(active_->module.get())->setTableWavetable(filter_table_.load(std::memory_order_acquire));
   active_->module->correctToTime(time_);
   active_->module->processWithInput(input, samples);
+  for (const auto& binding : active_->bindings) {
+    if (binding.total == nullptr || binding.readout == nullptr) continue;
+    utils::copyBuffer(binding.readout->buffer, binding.total->buffer, binding.total->isControlRate() ? 1 : samples);
+    binding.readout->trigger_value = binding.total->buffer[0];
+  }
   const auto* wet = active_->module->output()->buffer;
   if (fade_remaining_ > 0 || warmup_remaining_ > 0) {
     renderPending(input, samples);
@@ -252,6 +315,13 @@ void PreparedEffectModule::processWithInput(const poly_float* input, int samples
   }
 }
 void PreparedEffectModule::hardReset() {
+  if (reset_in_place_ && active_ && active_->configuration == configuration()) {
+    active_->module->hardReset();
+    return;
+  }
+  restart();
+}
+void PreparedEffectModule::restart() {
   ++generation_;
   pending_position_ = pending_valid_ = 0;
   const bool had_request = requested_.exchange(0, std::memory_order_acq_rel) != 0;
@@ -260,7 +330,8 @@ void PreparedEffectModule::hardReset() {
 }
 void PreparedEffectModule::enable(bool on) {
   if (enabled() != on) {
-    hardReset();
+    // Bypassing or replacing an effect releases its DSP.
+    restart();
     SynthModule::enable(on);
   }
 }
@@ -274,6 +345,11 @@ int PreparedEffectModule::getLatencySamples() const {
   if (type_ == constants::kSpectralLock)
     return spectral_lock_mode_control_ != nullptr && spectral_lock_mode_control_->value() >= 0.5f ?
         SpectralLockModule::spectralLatencyForRate(getSampleRate()) : 0;
+  // Filter FX has latency only in its Filter Table model, set by the table's style.
+  if (type_ == constants::kFilterFx)
+    return filter_model_control_ != nullptr &&
+           static_cast<int>(std::round(filter_model_control_->value())) == constants::kFilterTable ?
+        filterFxLatency(static_cast<int>(filter_style_control_->value() + 0.5f)) : 0;
   return description_.latency;
 }
 }

@@ -258,6 +258,14 @@ namespace vital {
       router_->reorder(processor);
   }
 
+  void ProcessorRouter::shareDependencyScratch(const ProcessorRouter& other) {
+    dependencies_ = other.dependencies_;
+    dependencies_visited_ = other.dependencies_visited_;
+    dependency_inputs_ = other.dependency_inputs_;
+    dependencies_set_ = other.dependencies_set_;
+    dependencies_visited_set_ = other.dependencies_visited_set_;
+  }
+
   bool ProcessorRouter::isDownstream(const Processor* first, const Processor* second) const {
     getDependencies(second);
     return isDependency(first);

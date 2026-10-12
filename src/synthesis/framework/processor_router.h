@@ -159,6 +159,12 @@ namespace vital {
         return found == processors_.end() ? nullptr : found->second.second.get();
       }
 
+      // Uses _other_'s dependency scratch instead of this router's own (about
+      // 20 KB). Graph walks clear the scratch first and finish with it before
+      // calling into a parent router, so routers may share one as long as
+      // their graphs are never changed from two threads at once.
+      void shareDependencyScratch(const ProcessorRouter& other);
+
     protected:
       // When we create a cycle into the ProcessorRouter graph, we must insert
       // a Feedback node and add it here.

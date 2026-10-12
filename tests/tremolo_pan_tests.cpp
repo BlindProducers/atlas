@@ -201,6 +201,7 @@ int main() {
       controls.at(id + "tremolo_pan_offset")->set(slot == 1 ? 0.25f : 0.5f);
       controls.at(id + "tremolo_pan_depth")->set(0.5f);
     }
+    chain.prepareSelectedEffects(); // As the plugin does before playback.
     auto both = render(chain, 128, 128);
     expect(std::abs(both[0][0] - 0.2f * 0.75f * 0.5f) < 1.0e-6, "two slots must maintain independent parameters and DSP state");
     controls.at(prefix + "fx_slot_1_enabled")->set(0);

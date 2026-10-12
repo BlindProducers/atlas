@@ -19,14 +19,37 @@
 #include "analogue_wah_module.h"
 #include "spectral_balance_module.h"
 #include "glitch_delay_module.h"
+#include "compressor_module.h"
+#include "distortion_module.h"
+#include "equalizer_module.h"
+#include "filter_fx_module.h"
+#include "flanger_module.h"
+#include "phaser_module.h"
+#include "utility_module.h"
+#include "frequency_shifter_module.h"
+#include "limiter_module.h"
+#include "waveshaper_module.h"
+#include "mid_side_eq_module.h"
+#include "jsfx_effect_modules.h"
+#include "scream_module.h"
+#include "tremolo_pan_module.h"
+#include "defuse_module.h"
+#include "trance_gate_module.h"
+#include "resonator_module.h"
+#include "note_monitor.h"
+#include "table_filter.h"
+#include "reorderable_effect_chain.h"
 #include "synth_plugin.h"
+#include "synth_strings.h"
 #include "sound_engine.h"
 #include "value_switch.h"
 #include <cstdlib>
 #include <new>
 #if JUCE_MAC
 #include <execinfo.h>
+#include <mach/mach.h>
 #endif
+#include <atomic>
 #include <chrono>
 #include <iostream>
 #include <thread>
@@ -34,6 +57,10 @@
 namespace {
 thread_local bool track_allocations = false;
 thread_local size_t audio_allocations = 0;
+// Construction measurements count every thread's allocations, including the
+// effect preparation worker's.
+std::atomic<bool> count_all_allocations { false };
+std::atomic<size_t> counted_allocations { 0 }, counted_bytes { 0 };
 #if JUCE_MAC
 void* allocation_stacks[12][20] {};
 int allocation_depths[12] {};
@@ -45,6 +72,10 @@ void* operator new(std::size_t size) {
     if (audio_allocations < 12) allocation_depths[audio_allocations] = backtrace(allocation_stacks[audio_allocations], 20);
 #endif
     ++audio_allocations;
+  }
+  if (count_all_allocations.load(std::memory_order_relaxed)) {
+    counted_allocations.fetch_add(1, std::memory_order_relaxed);
+    counted_bytes.fetch_add(size, std::memory_order_relaxed);
   }
   if (void* memory = std::malloc(std::max(size, size_t(1)))) return memory;
   throw std::bad_alloc();
@@ -60,9 +91,31 @@ int failures = 0;
 void expect(bool ok, const std::string& message) {
   if (!ok) { ++failures; std::cerr << "FAIL: " << message << '\n'; }
 }
+// Inputs the light effects read: Filter FX keytracking (offset from middle C,
+// so the cutoff moves), Scream's MIDI note and the Resonator's held notes.
+vital::cr::Value keytrack_input(7.0f), scream_note_input(52.0f);
+vital::NoteMonitor note_monitor;
 std::unique_ptr<vital::SynthModule> create(int type, vital::Output* bpm) {
   using namespace vital;
   switch (type) {
+    case constants::kCompressor: return std::make_unique<CompressorModule>("");
+    case constants::kDistortion: return std::make_unique<DistortionModule>("");
+    case constants::kEq: return std::make_unique<EqualizerModule>("", false);
+    case constants::kFilterFx: return std::make_unique<FilterFxModule>(keytrack_input.output(), "");
+    case constants::kFlanger: return std::make_unique<FlangerModule>(bpm, "");
+    case constants::kPhaser: return std::make_unique<PhaserModule>(bpm, "");
+    case constants::kUtility: return std::make_unique<UtilityModule>("");
+    case constants::kFrequencyShifter: return std::make_unique<FrequencyShifterModule>("");
+    case constants::kLimiter: return std::make_unique<LimiterModule>("");
+    case constants::kWaveShaper: return std::make_unique<WaveShaperModule>("");
+    case constants::kMidSideEq: return std::make_unique<MidSideEqModule>("");
+    case constants::kErosion: return std::make_unique<ErosionModule>("");
+    case constants::kFloatyDelay: return std::make_unique<FloatyDelayModule>(bpm, "");
+    case constants::kScream: return std::make_unique<ScreamModule>("", scream_note_input.output());
+    case constants::kTremoloPan: return std::make_unique<TremoloPanModule>(bpm, "");
+    case constants::kDefuse: return std::make_unique<DefuseModule>("");
+    case constants::kTranceGate: return std::make_unique<TranceGateModule>(bpm, nullptr, "");
+    case constants::kResonator: return std::make_unique<ResonatorModule>(bpm, &note_monitor, "");
     case constants::kChorus: return std::make_unique<ChorusModule>(bpm);
     case constants::kDelay: return std::make_unique<DelayModule>(bpm);
     case constants::kReverb: return std::make_unique<ReverbModule>();
@@ -88,12 +141,12 @@ void compareEffects() {
   using namespace vital;
   cr::Value bpm(2);
   auto worker = std::make_shared<EffectPreparationWorker>();
-  for (int type : { constants::kChorus, constants::kDelay, constants::kReverb,
-       constants::kPhaseShift, constants::kDimensionExpander, constants::kSpectralGate,
-       constants::kSpectralLock, constants::kSpectralCompressor, constants::kSuppressor, constants::kTape,
-       constants::kAnalogueChorus, constants::kAnalogueFlanger, constants::kAnalogueEcho,
-       constants::kAnalogueRotary, constants::kAnalogueSpring, constants::kAnalogueWah,
-       constants::kSpectralBalance, constants::kGlitchDelay }) {
+  note_monitor.noteOn(57, 0);
+  // Every effect a slot can hold is prepared on demand (Convolution Reverb has
+  // its own IR tests in --ir-switching).
+  for (int type = 0; type < constants::kNumEffects; ++type) {
+    if (type == constants::kConvolutionReverb) continue;
+    if (!create(type, bpm.output())) { expect(false, "test factory covers effect " + std::to_string(type)); continue; }
     for (int factor : { 1, 2, 4, 8 }) {
       auto original = create(type, bpm.output());
       PreparedEffectModule prepared(type, "", [&] { return create(type, bpm.output()); }, worker);
@@ -120,7 +173,12 @@ void compareEffects() {
         }
       }
       prepared.prepareForPlayback();
-      double error = 0, peak = 0;
+      // In the original Filter FX graph, the filters read resonance, drive and
+      // blend before those controls are summed, so a change reaches them one
+      // block late. Prepared, the shell sums every control before the filter
+      // runs. The two must agree again once the filter has settled.
+      const int settled_block = type == constants::kFilterFx ? 96 : 32;
+      double error = 0, transient_error = 0, peak = 0;
       std::vector<poly_float> input(113 * factor);
       for (int block = 0; block < 128; ++block) {
         if (block == 32) {
@@ -147,10 +205,15 @@ void compareEffects() {
           for (int lane = 0; lane < poly_float::kSize; ++lane) {
             const float a = original->output()->buffer[i][lane], b = prepared.output()->buffer[i][lane];
             expect(std::isfinite(b), "finite prepared output");
-            error = std::max(error, double(std::abs(a - b))); peak = std::max(peak, double(std::abs(a)));
+            if (block < 32 || block >= settled_block)
+              error = std::max(error, double(std::abs(a - b)));
+            else
+              transient_error = std::max(transient_error, double(std::abs(a - b)));
+            peak = std::max(peak, double(std::abs(a)));
           }
       }
-      std::cout << "effect=" << type << " factor=" << factor << " error=" << error << " peak=" << peak << '\n';
+      std::cout << "effect=" << type << " factor=" << factor << " error=" << error
+                << " transient_error=" << transient_error << " peak=" << peak << '\n';
       expect(error < 2e-5, "unchanged effect audio, type=" + std::to_string(type));
       prepared.enable(false); prepared.enable(true); prepared.prepareForPlayback();
       original->enable(false); original->enable(true);
@@ -160,6 +223,37 @@ void compareEffects() {
     }
   }
 }
+// A slot's Filter FX in the Filter Table model reports the table's latency and
+// filters, rather than passing audio through without its buffers.
+void slotFilterTable() {
+  using namespace vital;
+  cr::Value bpm(2), keytrack(0);
+  ReorderableEffectChain chain(bpm.output(), keytrack.output(), "bus_2_");
+  chain.init(); chain.setSampleRate(48000); chain.setOversampleAmount(1);
+  const auto controls = chain.getControls();
+  const std::string prefix = "bus_2_fx_slot_3_";
+  controls.at(prefix + "type")->set(constants::kFilterFx + 1);
+  controls.at(prefix + "enabled")->set(1);
+  controls.at(prefix + "filter_fx_style")->set(atlas::filter_table::kLinear);
+  expect(chain.getLatencySamples() == 0, "Filter FX has no latency outside the Filter Table model");
+  controls.at(prefix + "filter_fx_model")->set(constants::kFilterTable);
+  expect(chain.getLatencySamples() == (1 << TableFilter::kFxOrder) / 2,
+         "Filter FX reports the linear-phase table latency");
+  chain.prepareFilterTable(2);
+  chain.prepareSelectedEffects();
+  std::array<poly_float, 128> input {};
+  double difference = 0;
+  for (int block = 0; block < 64; ++block) {
+    for (int i = 0; i < 128; ++i) input[i] = .3f * std::sin((block * 128 + i) * .9f);
+    chain.processWithInput(input.data(), 128);
+    for (int i = 0; i < 128; ++i) {
+      expect(std::isfinite(chain.output()->buffer[i][0]), "finite Filter Table output");
+      difference = std::max(difference, double(std::abs(chain.output()->buffer[i][0] - input[i][0])));
+    }
+  }
+  expect(difference > .01, "the slot's Filter Table filters once prepared");
+}
+
 void cancelledPreparationIsReleased() {
   using namespace vital;
   struct CountedDelay : DelayModule {
@@ -308,8 +402,9 @@ void realtimeTransitions() {
   for (int block = 0; block < 600; ++block) {
     if (block % 25 == 0) {
       const int effects[] = { constants::kSuppressor, constants::kReverb,
-          constants::kSpectralGate, constants::kDelay, constants::kConvolutionReverb, constants::kSpectralLock };
-      type2->set(effects[(block / 25) % 6] + 1);
+          constants::kSpectralGate, constants::kDelay, constants::kConvolutionReverb, constants::kSpectralLock,
+          constants::kFilterFx, constants::kEq, constants::kCompressor, constants::kMidSideEq };
+      type2->set(effects[(block / 25) % 10] + 1);
       enabled->set(1);
     }
     if (block % 25 == 20) enabled->set(0);
@@ -338,6 +433,124 @@ void realtimeTransitions() {
   plugin.processBlock(audio, midi);
 }
 
+// Memory the process actually touched, as Activity Monitor reports it.
+double footprintMiB() {
+#if JUCE_MAC
+  task_vm_info_data_t info {};
+  mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+  if (task_info(mach_task_self(), TASK_VM_INFO, reinterpret_cast<task_info_t>(&info), &count) == KERN_SUCCESS)
+    return info.phys_footprint / 1048576.0;
+#endif
+  return 0;
+}
+struct Measurement { double ms; size_t allocations, bytes; double footprint; };
+template<class Function> Measurement measureConstruction(Function function) {
+  counted_allocations = 0; counted_bytes = 0;
+  const double footprint = footprintMiB();
+  count_all_allocations = true;
+  const auto start = std::chrono::steady_clock::now();
+  function();
+  const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+  count_all_allocations = false;
+  return { ms, counted_allocations.load(), counted_bytes.load(), footprintMiB() - footprint };
+}
+
+struct EffectFactoryProbe : vital::ReorderableEffectChain {
+  using ReorderableEffectChain::ReorderableEffectChain;
+  using ReorderableEffectChain::createEffectDsp;
+  using ReorderableEffectChain::createEffectModule;
+};
+
+// Reports what one plug-in instance costs to build, and what each effect type
+// costs per slot, so effect instantiation changes can be compared.
+void constructionCost(bool chain_only, int shell_type = -1) {
+  using namespace vital;
+  cr::Value bpm(2), keytrack(0);
+  if (shell_type >= 0) {
+    EffectFactoryProbe probe(bpm.output(), keytrack.output());
+    std::vector<std::unique_ptr<SynthModule>> modules;
+    constexpr int count = 200;
+    const auto built = measureConstruction([&] {
+      for (int i = 0; i < count; ++i) {
+        modules.emplace_back(probe.createEffectModule(shell_type, "fx_slot_1_"));
+        modules.back()->init();
+        modules.back()->setSampleRate(48000);
+        modules.back()->setOversampleAmount(2);
+      }
+    });
+    std::cout << "effect=" << strings::kEffectOrder[shell_type] << " footprint_KiB_each=" << built.footprint * 1024.0 / count
+              << " allocations_each=" << built.allocations / count << '\n';
+    return;
+  }
+  if (chain_only) {
+    std::unique_ptr<EffectFactoryProbe> chain;
+    const auto built = measureConstruction([&] {
+      chain = std::make_unique<EffectFactoryProbe>(bpm.output(), keytrack.output());
+      chain->init();
+      chain->setSampleRate(48000);
+      chain->setOversampleAmount(2);
+    });
+    std::cout << "one effect chain ms=" << built.ms << " allocations=" << built.allocations
+              << " requested_MiB=" << built.bytes / 1048576.0 << " footprint_MiB=" << built.footprint << '\n';
+    return;
+  }
+  std::unique_ptr<SynthPlugin> plugin;
+  const auto whole = measureConstruction([&] { plugin = std::make_unique<SynthPlugin>(); });
+  std::cout << "plugin construction ms=" << whole.ms << " allocations=" << whole.allocations
+            << " requested_MiB=" << whole.bytes / 1048576.0 << " footprint_MiB=" << whole.footprint << '\n';
+  const auto prepared = measureConstruction([&] {
+    plugin->setPlayConfigDetails(0, 2, 48000, 512);
+    plugin->prepareToPlay(48000, 512);
+  });
+  std::cout << "plugin prepareToPlay ms=" << prepared.ms << " allocations=" << prepared.allocations
+            << " requested_MiB=" << prepared.bytes / 1048576.0 << " footprint_MiB=" << prepared.footprint << '\n';
+  {
+    juce::AudioBuffer<float> audio(2, 512);
+    juce::MidiBuffer midi;
+    midi.addEvent(juce::MidiMessage::noteOn(1, 60, .5f), 0);
+    plugin->processBlock(audio, midi);
+    midi.clear();
+    const auto blocks = measureConstruction([&] {
+      for (int block = 0; block < 1000; ++block) plugin->processBlock(audio, midi);
+    });
+    std::cout << "plugin processBlock us_per_block=" << blocks.ms << '\n';
+    // The same with four light effects running in the first slots.
+    const auto controls = plugin->getControls();
+    const int light[] = { constants::kFilterFx, constants::kEq, constants::kCompressor, constants::kDistortion };
+    for (int slot = 0; slot < 4; ++slot) {
+      const std::string prefix = "fx_slot_" + std::to_string(slot + 1) + "_";
+      controls.at(prefix + "type")->set(light[slot] + 1);
+      controls.at(prefix + "enabled")->set(1);
+    }
+    plugin->getEngine()->prepareSelectedEffects();
+    for (int block = 0; block < 100; ++block) plugin->processBlock(audio, midi);
+    const auto effects = measureConstruction([&] {
+      for (int block = 0; block < 1000; ++block) plugin->processBlock(audio, midi);
+    });
+    std::cout << "plugin processBlock with four light effects us_per_block=" << effects.ms << '\n';
+    juce::MemoryBlock state;
+    plugin->getStateInformation(state);
+    const auto restore = measureConstruction([&] {
+      plugin->setStateInformation(state.getData(), int(state.getSize()));
+    });
+    std::cout << "plugin setStateInformation ms=" << restore.ms << '\n';
+  }
+  const auto destroyed = measureConstruction([&] { plugin.reset(); });
+  std::cout << "plugin destruction ms=" << destroyed.ms << '\n';
+
+  EffectFactoryProbe probe(bpm.output(), keytrack.output());
+  for (int type = 0; type < constants::kNumEffects; ++type) {
+    std::unique_ptr<SynthModule> module;
+    const auto slot = measureConstruction([&] {
+      module.reset(probe.createEffectModule(type, "fx_slot_1_"));
+      module->init();
+    });
+    std::cout << "slot effect=" << type << " " << strings::kEffectOrder[type] << " ms=" << slot.ms
+              << " allocations=" << slot.allocations << " requested_KiB=" << slot.bytes / 1024.0
+              << " footprint_KiB=" << slot.footprint * 1024.0 << '\n';
+  }
+}
+
 }
 #include "ir_switching_tests.h"
 
@@ -349,6 +562,11 @@ int main(int argc, char** argv) {
     irTrimAtEndIsSafe();
     return failures ? 1 : 0;
   }
+  if (argc > 1 && String(argv[1]) == "--construction") {
+    constructionCost(argc > 2 && String(argv[2]) == "chain",
+                     argc > 3 && String(argv[2]) == "type" ? String(argv[3]).getIntValue() : -1);
+    return failures ? 1 : 0;
+  }
   if (argc > 1 && String(argv[1]) == "--convolution-threading") {
     concurrentConvolutionLifecycle();
     return failures ? 1 : 0;
@@ -357,5 +575,6 @@ int main(int argc, char** argv) {
   realtimeTransitions();
   convolutionStateRoundTrip();
   cancelledPreparationIsReleased();
+  slotFilterTable();
   return failures ? 1 : 0;
 }

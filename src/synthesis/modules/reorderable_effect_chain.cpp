@@ -73,12 +73,14 @@ namespace vital {
       convolution_worker_(convolution_worker ? std::move(convolution_worker) :
                                               std::make_shared<ConvolutionIrWorker>()),
       preparation_worker_(preparation_worker ? std::move(preparation_worker) : std::make_shared<EffectPreparationWorker>()),
-      post_effect_order_(nullptr), last_order_(0.0f) {
+      unused_output_(std::make_shared<Output>()), post_effect_order_(nullptr), last_order_(0.0f) {
+    unused_output_->owner = this;
     selected_effects_.fill(-2);
     for (int i = 0; i < constants::kNumEffects; ++i) {
       SynthModule* effect_module = createEffectModule(i, prefix_);
       VITAL_ASSERT(effect_module);
 
+      effect_module->shareDependencyScratch(*this);
       addSubmodule(effect_module);
       addProcessor(effect_module);
       effects_on_[i] = createBaseControl(prefix_ + strings::kEffectOrder[i] + "_on");
@@ -91,11 +93,19 @@ namespace vital {
       const std::string slot_prefix = prefix_ + "fx_slot_" + std::to_string(slot + 1) + "_";
       slot_types_[slot] = createBaseControl(slot_prefix + "type");
       slot_enabled_[slot] = createBaseControl(slot_prefix + "enabled");
+      slot_outputs_[slot] = std::make_shared<Output>();
+      slot_outputs_[slot]->owner = this;
 
       for (int effect = 0; effect < constants::kNumEffects; ++effect) {
         SynthModule* effect_module = createEffectModule(effect, slot_prefix);
         VITAL_ASSERT(effect_module);
 
+        // A slot processes only its selected effect, so all of its effects
+        // write one audio buffer. Their other outputs are never read.
+        effect_module->useOutput(slot_outputs_[slot].get(), 0);
+        for (int output = 1; output < effect_module->numOutputs(); ++output)
+          effect_module->useOutput(unused_output_.get(), output);
+        effect_module->shareDependencyScratch(*this);
         addSubmodule(effect_module);
         addProcessor(effect_module);
         slot_effects_[slot][effect] = effect_module;
@@ -107,21 +117,9 @@ namespace vital {
   }
 
   SynthModule* ReorderableEffectChain::createEffectModule(int index, const std::string& module_prefix) {
-    // Only defer effects with substantial delay/FFT/engine storage. Small
-    // processors keep their original allocation-free first-use behavior.
-    switch (index) {
-      case constants::kChorus: case constants::kDelay: case constants::kReverb:
-      case constants::kPhaseShift: case constants::kDimensionExpander:
-      case constants::kSpectralGate: case constants::kSpectralCompressor:
-      case constants::kSuppressor: case constants::kConvolutionReverb:
-      case constants::kTape: case constants::kSpectralLock:
-      case constants::kFloatyDelay: case constants::kAnalogueChorus:
-      case constants::kAnalogueFlanger: case constants::kAnalogueEcho:
-      case constants::kAnalogueRotary: case constants::kAnalogueSpring:
-      case constants::kAnalogueWah: case constants::kSpectralBalance:
-      case constants::kGlitchDelay: break;
-      default: return createEffectDsp(index, module_prefix);
-    }
+    // Every slot can hold any effect, so building each one's DSP up front
+    // cost hundreds of megabytes per instance. Each slot and effect keeps only
+    // its parameters; the selected effect's DSP is built on the worker.
 #if !VITAL_ACCESSIBLE_UI
     if (index == constants::kEq && module_prefix == prefix_)
       return createEffectDsp(index, module_prefix);
@@ -285,19 +283,17 @@ namespace vital {
     }
   }
 
-  FilterFxModule* ReorderableEffectChain::filterFx(int slot) {
+  PreparedEffectModule* ReorderableEffectChain::filterFx(int slot) {
     SynthModule* module = slot < 0 ? effects_[constants::kFilterFx] : slot_effects_[slot][constants::kFilterFx];
-    return dynamic_cast<FilterFxModule*>(module);
+    return static_cast<PreparedEffectModule*>(module);
   }
 
   void ReorderableEffectChain::setFilterTable(int slot, Wavetable* table) {
-    if (FilterFxModule* filter_fx = filterFx(slot))
-      filter_fx->setTableWavetable(table);
+    filterFx(slot)->setFilterTable(table);
   }
 
   void ReorderableEffectChain::prepareFilterTable(int slot) {
-    if (FilterFxModule* filter_fx = filterFx(slot))
-      filter_fx->prepareTable();
+    filterFx(slot)->prepareFilterTable();
   }
 
   int ReorderableEffectChain::getLatencySamples() const {

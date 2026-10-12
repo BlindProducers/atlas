@@ -32,6 +32,8 @@ namespace vital {
   struct EffectControlInput {
     Value* value = nullptr;
     bool modulated = false;
+    // The control's total including the module's own modulation, if it has any.
+    Output* internal_total = nullptr;
   };
   using effect_control_inputs = std::map<std::string, EffectControlInput>;
 
