@@ -1383,7 +1383,8 @@ namespace {
         "Scream",
         "Erosion",
         "Floaty Delay",
-        "Glitch Delay"
+        "Glitch Delay",
+        "OpenWurli Amp"
       };
       for (int envelope = 1; envelope <= vital::kNumEnvelopes; ++envelope)
         result.push_back("Envelope " + String(envelope));
@@ -1457,7 +1458,8 @@ namespace {
         section == "Resonator" || section == "Analogue Chorus" ||
         section == "Analogue Flanger" || section == "Analogue Echo" ||
         section == "Analogue Rotary" || section == "Analogue Spring" ||
-        section == "Analogue Wah" || section == "Spectral Balance" || section == "Glitch Delay")
+        section == "Analogue Wah" || section == "Spectral Balance" || section == "Glitch Delay" ||
+        section == "OpenWurli Amp")
       return "Effects";
     if (section == "Modulation routing")
       return "Modulation";
@@ -1623,6 +1625,8 @@ namespace {
       return rank({ "tank", "dwell", "tone", "mono", "pan", "noise", "mix" });
     if (effect_id == "analoguewah")
       return rank({ "model", "position", "envelope", "decay", "mode", "range", "peak", "mix" });
+    if (effect_id == "openwurli_amp")
+      return rank({ "volume", "tremolo_depth", "speaker" });
     if (effect_id == "glitch_delay")
       return glitchDelayParameterRank(suffix);
     if (effect_id == "spectral_balance")
@@ -2122,6 +2126,18 @@ namespace {
       }
     }
 
+    if (id.startsWith("wurli_")) {
+      const String suffix = id.fromFirstOccurrenceOf("wurli_", false, false);
+      static const std::array<const char*, 10> wurli_order = {{
+        "amp_env", "bark", "damping", "condition", "treble_voicing", "register_balance", "pickup_low_cut", "mlp",
+        "transpose", "tune"
+      }};
+      for (int i = 0; i < static_cast<int>(wurli_order.size()); ++i) {
+        if (suffix == wurli_order[i])
+          return 5720 + i;
+      }
+    }
+
     for (int random = 1; random <= vital::kNumRandomLfos; ++random) {
       const String prefix = "random_" + String(random) + "_";
       if (!id.startsWith(prefix))
@@ -2268,7 +2284,7 @@ namespace {
     static const std::vector<EffectCategory> categories = [] {
       std::vector<EffectCategory> result {
         { "Analogue", { kAnalogueChorus, kAnalogueFlanger, kAnalogueEcho, kAnalogueRotary, kAnalogueSpring, kAnalogueWah,
-                        kTape } },
+                        kTape, kOpenWurliAmp } },
         { "Dynamics", { kCompressor, kLimiter, kSuppressor } },
         { "Space", { kReverb, kConvolutionReverb, kDelay, kFloatyDelay, kGlitchDelay } },
         { "Modulation", { kChorus, kFlanger, kPhaser, kTremoloPan, kDimensionExpander, kPhaseShift,
@@ -2359,6 +2375,7 @@ namespace {
     if (rest.startsWith("analoguewah_")) return "Analogue Wah";
     if (rest.startsWith("spectral_balance_")) return "Spectral Balance";
     if (rest.startsWith("glitch_delay_")) return "Glitch Delay";
+    if (rest.startsWith("openwurli_amp_")) return "OpenWurli Amp";
     if (rest.startsWith("spectral_compressor_")) return "Spectral Compressor";
     if (rest.startsWith("spectral_gate_")) return "Spectral Gate";
     if (rest.startsWith("erosion_")) return "Erosion";
@@ -2503,6 +2520,7 @@ namespace {
     if (id.startsWith("analoguewah_")) return "Analogue Wah";
     if (id.startsWith("spectral_balance_")) return "Spectral Balance";
     if (id.startsWith("glitch_delay_")) return "Glitch Delay";
+    if (id.startsWith("openwurli_amp_")) return "OpenWurli Amp";
     if (id.startsWith("spectral_compressor_")) return "Spectral Compressor";
     if (id.startsWith("spectral_gate_")) return "Spectral Gate";
     if (id.startsWith("arp_1_")) return "Arpeggiator 1";
@@ -2973,6 +2991,41 @@ namespace {
                "0% starts every note the same way.";
     }
 
+    if (legacy_id.startsWith("wurli_")) {
+      const String suffix = legacy_id.fromFirstOccurrenceOf("wurli_", false, false);
+      if (suffix == "amp_env")
+        return "Choose what shapes each note. Reed lets the reed ring and decay as on the instrument, with the "
+               "damper stopping it when the note is released, and keeps the voice open while it sounds. "
+               "Envelope 1 shapes the reed with Envelope 1 instead.";
+      if (suffix == "mlp")
+        return "Apply OpenWurli's per-note corrections, learned from recordings of a real 200A, to the reed's "
+               "upper partials. Off plays the physical model alone, as OpenWurli does by default.";
+      if (suffix == "bark")
+        return "Set how far the reeds swing into the pickup when struck. A deeper swing gives more of the 200A's "
+               "bark, its growling upper harmonics, and is a few decibels louder, as a harder strike would be. "
+               "50% is OpenWurli's calibration; 0% halves the swing and 100% doubles it, up to the pickup's limit "
+               "in the bass.";
+      if (suffix == "damping")
+        return "Set the air drag on each reed, which makes a loud note lose energy faster just after the strike. "
+               "100% is OpenWurli's estimate, 45% to 224% the physically plausible range, and 0% none.";
+      if (suffix == "condition")
+        return "Set how well the instrument is in tune. At 0% each reed is within 3 cents of pitch, as from the "
+               "factory; at 100% within 14 cents, as on an unserviced vintage 200A. Each key keeps its own offset.";
+      if (suffix == "treble_voicing")
+        return "Raise or lower the keys above middle C, as a technician voices the reeds. The change grows from "
+               "nothing at middle C to this many decibels at the top key, C7. 0 dB is OpenWurli's voicing.";
+      if (suffix == "register_balance")
+        return "Apply OpenWurli's level balance between registers, measured against recordings of a real 200A. "
+               "Off plays the physical model's own levels.";
+      if (suffix == "pickup_low_cut")
+        return "Choose the pickup's low cut. The schematic leaves where capacitor C-2 returns unclear: to ground, "
+               "as OpenWurli assumes, the cut is at 880 hertz; to the first transistor's emitter, it is at 1436 "
+               "hertz, for a thinner, brighter tone.";
+      if (suffix == "transpose")
+        return "Transpose the reed in semitones. The nearest of the 64 keys, from A1 to C7, gives the timbre.";
+      if (suffix == "tune") return "Fine tune the reed in cents.";
+    }
+
     if (id.startsWith("filter_") || id.startsWith("filter_fx_") || id.contains("_filter_fx_")) {
       String suffix = id;
       if (id.startsWith("filter_1_")) suffix = suffixAfter("filter_1_");
@@ -3259,6 +3312,19 @@ namespace {
       if (analogue_rotary_suffix == "spread") return "Set the angle between the two microphones. Zero is mono; 100 percent places them on opposite sides of the cabinet.";
       if (analogue_rotary_suffix == "mix") return "Blend dry audio with the cabinet. 100 percent is the cabinet alone, as when an organ plays through it.";
     }
+    const String wurli_amp_suffix = effectSuffix("openwurli_amp_");
+    if (wurli_amp_suffix.isNotEmpty()) {
+      if (wurli_amp_suffix == "volume")
+        return "Set the 200A's volume pot, between the preamp and the power amplifier. As on the instrument, "
+               "full volume with loud chords drives the amplifier into clipping. The oscillator's level sets "
+               "how hard the reeds drive the preamp; its default level matches the real pickup.";
+      if (wurli_amp_suffix == "tremolo_depth")
+        return "Set the depth of the built-in tremolo. Its oscillator runs at about 5.6 hertz, and it works "
+               "inside the preamp's feedback loop, so it changes the tone as well as the level. Zero is off.";
+      if (wurli_amp_suffix == "speaker")
+        return "Blend in the response of the 200A's small speakers and cabinet. Zero is flat, as a direct "
+               "output; 100 percent is the full cabinet.";
+    }
     const String analogue_spring_suffix = effectSuffix("analoguespring_");
     if (analogue_spring_suffix.isNotEmpty()) {
       if (analogue_spring_suffix == "tank") return "Choose a Short, Medium or Long spring tank. Longer tanks ring longer.";
@@ -3346,7 +3412,7 @@ namespace {
       "eq_", "flanger_", "frequency_shifter_", "limiter_", "mid_side_eq_", "phase_shift_", "phaser_",
       "reverb_", "utility_", "waveshaper_", "spectral_gate_", "erosion_", "floaty_delay_", "spectral_compressor_", "scream_", "tremolo_pan_", "tape_", "defuse_", "suppressor_", "trance_gate_", "spectral_lock_", "resonator_",
       "analoguechorus_", "analogueflanger_", "analogueecho_", "analoguerotary_", "analoguespring_", "analoguewah_",
-      "spectral_balance_"
+      "spectral_balance_", "openwurli_amp_"
     };
     for (const auto& prefix : effect_prefixes) {
       effect_suffix = effectSuffix(prefix);
@@ -7136,7 +7202,8 @@ std::unique_ptr<AccessibleParameterRow> SynthEditor::createAccessibleParameterRo
         last_oscillator_modes_[prefix] = oscillatorModeKey(oscillator);
         return std::make_unique<AccessibleParameterRow>(
             parameter, String(), std::function<String(double)>(), 1.0, 0.0, String(), String(),
-            "Choose this oscillator's type: Wavetable, Analog, Sample, Granular, Spectral, Noise, Multi-sample or Braids. "
+            "Choose this oscillator's type: Wavetable, Analog, Sample, Granular, Spectral, Noise, Multi-sample, Braids "
+            "or OpenWurli. "
             "Each type keeps its own settings, wavetable and sample for when you switch back.", true);
       }
       if (suffix == "analog_waveform")

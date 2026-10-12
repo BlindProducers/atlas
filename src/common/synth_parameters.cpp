@@ -537,6 +537,19 @@ namespace vital {
 
 #include "glitch_delay_parameters.inc"
 
+    // OpenWurli Amp: the Wurlitzer 200A's shared amplifier from OpenWurli, for
+    // the reeds of the OpenWurli oscillator type.
+    { "openwurli_amp_on", 0x02011c, 0.0, 1.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "OpenWurli Amp Switch", strings::kOffOnNames },
+    { "openwurli_amp_volume", 0x02011c, 0.0, 1.0, 0.8, 0.0, 100.0,
+      ValueDetails::kLinear, false, "%", "OpenWurli Amp Volume", nullptr },
+    { "openwurli_amp_tremolo_depth", 0x02011c, 0.0, 1.0, 0.5, 0.0, 100.0,
+      ValueDetails::kLinear, false, "%", "OpenWurli Amp Tremolo Depth", nullptr },
+    { "openwurli_amp_speaker", 0x02011c, 0.0, 1.0, 0.0, 0.0, 100.0,
+      ValueDetails::kLinear, false, "%", "OpenWurli Amp Speaker Character", nullptr },
+    { "effect_chain_slot_38", 0x02011c, 0.0, constants::kNumEffects - 1, constants::kOpenWurliAmp, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Effect Chain Slot 38", nullptr },
+
     { "spectral_compressor_on", 0x020104, 0.0, 1.0, 0.0, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Spectral Compressor Switch", strings::kOffOnNames },
     { "spectral_compressor_compression", 0x020104, 0.0, 100.0, 0.0, 0.0, 1.0,
@@ -1776,6 +1789,39 @@ namespace vital {
       ValueDetails::kLinear, false, "%", "Braids Phase Randomization", nullptr },
   };
 
+  // OpenWurli oscillator type (the Wurlitzer 200A reed model of OpenWurli):
+  // registered once per slot as osc_N_wurli_*. The amplifier half of the
+  // instrument is the OpenWurli Amp effect.
+  const ValueDetails ValueDetailsLookup::wurli_slot_parameter_list[] = {
+    // Reed: the reed's own decay and damper shape each note and hold the voice open.
+    { "wurli_amp_env", 0x000000, 0.0, 1.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "OpenWurli Amplitude Envelope", strings::kOpenWurliAmpEnvNames },
+    // Off by default, as in OpenWurli.
+    { "wurli_mlp", 0x000000, 0.0, 1.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "OpenWurli MLP Corrections", strings::kOffOnNames },
+    // Voicing, read when a key is struck. Every default is OpenWurli's calibration.
+    // Bark scales the reeds' swing at the pickup by 2^(2 x bark - 1), half to double.
+    { "wurli_bark", 0x000000, 0.0, 1.0, 0.5, 0.0, 100.0,
+      ValueDetails::kLinear, false, "%", "OpenWurli Bark", nullptr },
+    // Air drag on the reed: 45% to 224% is its plausible band, 0% none.
+    { "wurli_damping", 0x000000, 0.0, 2.5, 1.0, 0.0, 100.0,
+      ValueDetails::kLinear, false, "%", "OpenWurli Air Damping", nullptr },
+    // Per-reed tuning spread, +-3 cents at 0% to +-14 cents at 100%.
+    { "wurli_condition", 0x000000, 0.0, 1.0, 0.0, 0.0, 100.0,
+      ValueDetails::kLinear, false, "%", "OpenWurli Condition", nullptr },
+    // Level change at the top key (C7), tapering to none at middle C.
+    { "wurli_treble_voicing", 0x000000, -12.0, 12.0, 0.0, 0.0, 1.0,
+      ValueDetails::kLinear, false, " dB", "OpenWurli Treble Voicing", nullptr },
+    { "wurli_register_balance", 0x000000, 0.0, 1.0, 1.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "OpenWurli Register Balance", strings::kOffOnNames },
+    { "wurli_pickup_low_cut", 0x000000, 0.0, 1.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "OpenWurli Pickup Low Cut", strings::kOpenWurliPickupLowCutNames },
+    { "wurli_transpose", 0x000000, -48.0, 48.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "OpenWurli Transpose", nullptr },
+    { "wurli_tune", 0x000000, -1.0, 1.0, 0.0, 0.0, 100.0,
+      ValueDetails::kLinear, false, "", "OpenWurli Tune", nullptr },
+  };
+
   const ValueDetails ValueDetailsLookup::mod_parameter_list[] = {
     { "amount", 0x000000, -1.0, 1.0, 0.0, 0.0, 1.0,
       ValueDetails::kLinear, false, "", "Amount", nullptr },
@@ -1854,7 +1900,8 @@ namespace vital {
         "dimension_expander_", "waveshaper_", "convolution_reverb_", "mid_side_eq_", "spectral_gate_",
         "erosion_", "floaty_delay_", "spectral_compressor_", "scream_", "tremolo_pan_", "tape_", "defuse_", "suppressor_", "trance_gate_", "spectral_lock_", "resonator_",
         "analoguechorus_", "analogueflanger_", "analogueecho_",
-        "analoguerotary_", "analoguespring_", "analoguewah_", "spectral_balance_", "glitch_delay_"
+        "analoguerotary_", "analoguespring_", "analoguewah_", "spectral_balance_", "glitch_delay_",
+        "openwurli_amp_"
       };
       for (const auto& prefix : effect_prefixes) {
         if (name.rfind(prefix, 0) == 0)
@@ -1991,6 +2038,12 @@ namespace vital {
     for (int osc = 0; osc < kNumOscillators; ++osc) {
       addParameterGroup(braids_slot_parameter_list, num_braids_parameters, osc, kOscIdPrefix,
                         kOscNamePrefix, kBraidsVersion);
+    }
+    static constexpr int kOpenWurliVersion = 0x02011c;
+    const int num_wurli_parameters = sizeof(wurli_slot_parameter_list) / sizeof(ValueDetails);
+    for (int osc = 0; osc < kNumOscillators; ++osc) {
+      addParameterGroup(wurli_slot_parameter_list, num_wurli_parameters, osc, kOscIdPrefix,
+                        kOscNamePrefix, kOpenWurliVersion);
     }
 
     int num_filter_parameters = sizeof(filter_parameter_list) / sizeof(ValueDetails);

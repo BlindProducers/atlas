@@ -26,6 +26,7 @@
 #include "filter_fx_module.h"
 #include "spectral_balance_module.h"
 #include "glitch_delay_module.h"
+#include "openwurli_amp_module.h"
 #include "chorus_module.h"
 #include "compressor_module.h"
 #include "convolution_reverb_module.h"
@@ -214,6 +215,8 @@ namespace vital {
         return new SpectralBalanceModule(module_prefix);
       case constants::kGlitchDelay:
         return new GlitchDelayModule(beats_per_second_, trance_gate_clock_, module_prefix);
+      case constants::kOpenWurliAmp:
+        return new OpenWurliAmpModule(module_prefix);
       default:
         return nullptr;
     }

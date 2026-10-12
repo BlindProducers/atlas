@@ -229,11 +229,23 @@ namespace strings {
     "Noise",
     "Multi-sample",
     "Braids",
+    "OpenWurli",
   };
 
   const std::string kMultiSampleAmpEnvNames[] = {
     "Instrument",
     "Envelope 1",
+  };
+
+  const std::string kOpenWurliAmpEnvNames[] = {
+    "Reed",
+    "Envelope 1",
+  };
+
+  // Where C-2 returns, which sets the pickup's corner (OpenWurli's pickup.rs fork).
+  const std::string kOpenWurliPickupLowCutNames[] = {
+    "880 Hz",
+    "1436 Hz",
   };
 
   // Braids synthesis modes, in firmware order (braids/settings.h).
@@ -581,7 +593,8 @@ namespace strings {
     "analoguespring",
     "analoguewah",
     "spectral_balance",
-    "glitch_delay"
+    "glitch_delay",
+    "openwurli_amp"
   };
 
   const std::string kEffectSlotTypeNames[] = {
@@ -622,7 +635,8 @@ namespace strings {
     "Analogue Spring",
     "Analogue Wah",
     "Spectral Balance",
-    "Glitch Delay"
+    "Glitch Delay",
+    "OpenWurli Amp"
   };
 
   // Both tables are indexed by effect; a missing entry would read out of bounds.
@@ -944,6 +958,7 @@ namespace strings {
     "ANALOGUE WAH",
     "SPECTRAL BALANCE",
     "GLITCH DELAY",
+    "OPENWURLI AMP",
   };
 
   const std::string kDestinationMenuNames[vital::constants::kNumDestinations] = {
@@ -992,6 +1007,7 @@ namespace strings {
     "Analogue Wah",
     "Spectral Balance",
     "Glitch Delay",
+    "OpenWurli Amp",
   };
 
   const std::string kBusDestinationNames[vital::constants::kNumBusDestinations] = {

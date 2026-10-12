@@ -21,6 +21,7 @@
 #include "multisample_module.h"
 #include "multisample_slot.h"
 #include "noise_module.h"
+#include "openwurli_module.h"
 #include "oscillator_module.h"
 #include "sample_module.h"
 #include "sample_source.h"
@@ -99,6 +100,8 @@ namespace vital {
                                   source_types::slotPrefix(slot));
       case source_types::kBraids:
         return new BraidsModule(source_types::groupPrefix(slot, type), source_types::slotPrefix(slot));
+      case source_types::kOpenWurli:
+        return new OpenWurliModule(source_types::groupPrefix(slot, type), source_types::slotPrefix(slot));
       case source_types::kNoise:
         return new NoiseModule(source_types::groupPrefix(slot, type), source_types::slotPrefix(slot));
       case source_types::kWavetable:
@@ -124,6 +127,7 @@ namespace vital {
     distortion_type_ = find_control("distortion_type");
     secondary_distortion_type_ = find_control("secondary_distortion_type");
     multisample_amp_env_ = find_control("multisample_amp_env");
+    wurli_amp_env_ = find_control("wurli_amp_env");
     SynthModule::init();
   }
 
@@ -245,6 +249,18 @@ namespace vital {
         state_->modulation_target = braids;
         break;
       }
+      case source_types::kOpenWurli: {
+        auto* wurli = static_cast<OpenWurliModule*>(module);
+        wurli->useInput(input(kReset), OpenWurliModule::kReset);
+        wurli->useInput(input(kVoiceEvent), OpenWurliModule::kVoiceEvent);
+        wurli->useInput(input(kMidi), OpenWurliModule::kMidi);
+        wurli->useInput(input(kVelocity), OpenWurliModule::kVelocity);
+        wurli->useOutput(output(kRaw), OpenWurliModule::kRaw);
+        wurli->useOutput(output(kLevelled), OpenWurliModule::kLevelled);
+        wurli->useOutput(output(kHold), OpenWurliModule::kHold);
+        state_->modulation_target = wurli;
+        break;
+      }
       case source_types::kNoise: {
         auto* noise = static_cast<NoiseModule*>(module);
         noise->useInput(input(kReset), NoiseModule::kReset);
@@ -334,8 +350,13 @@ namespace vital {
   }
 
   bool SourceSlotModule::holdsVoiceOpen() const {
-    return state_->module != nullptr && state_->active_type == source_types::kMultiSample &&
-           multisample_amp_env_ != nullptr && multisample_amp_env_->value() < 0.5f;
+    if (state_->module == nullptr)
+      return false;
+    if (state_->active_type == source_types::kMultiSample)
+      return multisample_amp_env_ != nullptr && multisample_amp_env_->value() < 0.5f;
+    if (state_->active_type == source_types::kOpenWurli)
+      return wurli_amp_env_ != nullptr && wurli_amp_env_->value() < 0.5f;
+    return false;
   }
 
   void SourceSlotModule::setModulatorOutput(int position, Output* output) {
@@ -383,8 +404,8 @@ namespace vital {
       output(kHold)->clearBuffer();
       playhead_->output()->buffer[0] = 0.0f;
     }
-    // Only a sounding Multi-sample type holds the voice open.
-    if (!on || state.active_type != source_types::kMultiSample) {
+    // Only a sounding Multi-sample or OpenWurli type holds the voice open.
+    if (!on || (state.active_type != source_types::kMultiSample && state.active_type != source_types::kOpenWurli)) {
       Output* hold = output(kHold);
       if (poly_float::notEqual(hold->buffer[0], 0.0f).anyMask())
         hold->clearBuffer();
