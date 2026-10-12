@@ -40,6 +40,11 @@ it when `ATLAS_BUILD_TIMING_TESTS` is on:
   compile the original `openwurli-dsp` with `rustc` and Python
   (`tests/openwurli/build_reference.py`); see
   `src/synthesis/effects/openwurli/README.atlas.md`.
+- `OpenB3/`: OpenB3 by Michele Perrone (AGPL v3 or later),
+  https://github.com/michele-perrone/OpenB3 at 03ac6a8, with setBfree's Beatrix
+  engine (GPL v2 or later) in `BeatrixCPP/Source`. The OpenB3 reference tests
+  build its tonegen, vibrato and whirl C files with `tests/openb3/reference.c`;
+  see `src/synthesis/effects/openb3/README.atlas.md`.
 
 Kept in this repository:
 

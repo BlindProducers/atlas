@@ -16,6 +16,7 @@
 #include "analogue/linear_circuit.h"
 #include "analogue/wah_engine.h"
 #include "analogue_wah_module.h"
+#include "scanner_vibrato_module.h"
 #include "reorderable_effect_chain.h"
 #include "reverb_module.h"
 #include "synth_parameters.h"
@@ -850,6 +851,29 @@ namespace {
     }
   };
 
+  // The Scanner Vibrato sits in the Analogue menu with these effects; its own
+  // tests are AtlasOpenB3Tests --scanner.
+  struct ScannerFixture {
+    vital::ScannerVibratoModule module;
+    vital::control_map controls;
+    explicit ScannerFixture(int rate = 48000) {
+      module.init(); module.setSampleRate(rate); module.setOversampleAmount(1);
+      controls = module.getControls();
+    }
+    Signal render(const Signal& input) {
+      Signal out(input.size());
+      allocation_count = 0; track = true;
+      for (size_t i = 0; i < input.size(); i += vital::kMaxBufferSize) {
+        const int size = static_cast<int>(std::min<size_t>(vital::kMaxBufferSize, input.size() - i));
+        module.processWithInput(input.data() + i, size);
+        std::copy_n(module.output()->buffer, size, out.data() + i);
+      }
+      track = false;
+      expect(allocation_count == 0, "Scanner Vibrato processing does not allocate");
+      return out;
+    }
+  };
+
   void testRotaryDry() {
     RotaryFixture f;
     f.set("mix", 0.0f);
@@ -872,6 +896,9 @@ namespace {
         engine.process(silence.data(), silence.data(), left.data(), right.data(), 128);
     };
     for (int model = 0; model < kNumModels; ++model) {
+      // OpenB3 Whirl keeps setBfree's own speeds; AtlasOpenB3Tests --whirl covers it.
+      if (model == kWhirl)
+        continue;
       Engine engine;
       engine.prepare(48000.0);
       Parameters p;
@@ -1495,7 +1522,8 @@ namespace {
            "Flanger medium labels match the engine");
     expect(label("analogueecho_medium", echo::kTape) == "Tape" && label("analogueecho_medium", echo::kBbd) == "BBD",
            "Echo medium labels match the engine");
-    expect(label("analoguerotary_model", rotary::kOrgan) == "Organ 122" && label("analoguerotary_model", rotary::kGuitar) == "Guitar 16",
+    expect(label("analoguerotary_model", rotary::kOrgan) == "Organ 122" && label("analoguerotary_model", rotary::kGuitar) == "Guitar 16" &&
+           label("analoguerotary_model", rotary::kWhirl) == "OpenB3 Whirl",
            "Rotary model labels match the engine");
     expect(label("analoguerotary_speed", rotary::kSlow) == "Slow" && label("analoguerotary_speed", rotary::kFast) == "Fast" &&
            label("analoguerotary_speed", rotary::kStop) == "Stop", "Rotary speed labels match the engine");
@@ -1569,6 +1597,7 @@ namespace {
       else if (effect == "analoguerotary") { RotaryFixture f; apply(f.controls); out = f.render(input); }
       else if (effect == "analoguespring") { SpringFixture f; apply(f.controls); out = f.render(input); }
       else if (effect == "analoguewah") { WahFixture f; apply(f.controls); out = f.render(input); }
+      else if (effect == "scanner_vibrato") { ScannerFixture f; apply(f.controls); out = f.render(input); }
       else { EchoFixture f; apply(f.controls); out = f.render(input); }
       bool finite = true;
       double peak = 0.0;

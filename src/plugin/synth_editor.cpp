@@ -1384,7 +1384,8 @@ namespace {
         "Erosion",
         "Floaty Delay",
         "Glitch Delay",
-        "OpenWurli Amp"
+        "OpenWurli Amp",
+        "Scanner Vibrato"
       };
       for (int envelope = 1; envelope <= vital::kNumEnvelopes; ++envelope)
         result.push_back("Envelope " + String(envelope));
@@ -1459,7 +1460,7 @@ namespace {
         section == "Analogue Flanger" || section == "Analogue Echo" ||
         section == "Analogue Rotary" || section == "Analogue Spring" ||
         section == "Analogue Wah" || section == "Spectral Balance" || section == "Glitch Delay" ||
-        section == "OpenWurli Amp")
+        section == "OpenWurli Amp" || section == "Scanner Vibrato")
       return "Effects";
     if (section == "Modulation routing")
       return "Modulation";
@@ -1627,6 +1628,8 @@ namespace {
       return rank({ "model", "position", "envelope", "decay", "mode", "range", "peak", "mix" });
     if (effect_id == "openwurli_amp")
       return rank({ "volume", "tremolo_depth", "speaker" });
+    if (effect_id == "scanner_vibrato")
+      return rank({ "mode", "rate" });
     if (effect_id == "glitch_delay")
       return glitchDelayParameterRank(suffix);
     if (effect_id == "spectral_balance")
@@ -1775,9 +1778,14 @@ namespace {
     return true;
   }
 
-  // Only the Organ 122 has a horn and a drum to balance.
+  // The Organ 122 and the OpenB3 Whirl have a horn and a drum to balance;
+  // the Whirl has no amplifier to drive.
   bool isAnalogueRotaryParameterRelevant(const String& suffix, int model) {
-    return suffix != "balance" || model == atlas::analogue::rotary::kOrgan;
+    if (suffix == "balance")
+      return model == atlas::analogue::rotary::kOrgan || model == atlas::analogue::rotary::kWhirl;
+    if (suffix == "drive")
+      return model != atlas::analogue::rotary::kWhirl;
+    return true;
   }
 
   // Mode, Range and Peak are the Mu-Tron III's; the pedals have none.
@@ -2138,6 +2146,21 @@ namespace {
       }
     }
 
+    // OpenB3: the drawbars left to right, as on the organ, then percussion's
+    // four switches in the organ's order, the key click and the pitch rows.
+    if (id.startsWith("b3_")) {
+      const String suffix = id.fromFirstOccurrenceOf("b3_", false, false);
+      static const std::array<const char*, 18> b3_order = {{
+        "amp_env", "drawbar_16", "drawbar_5_1_3", "drawbar_8", "drawbar_4", "drawbar_2_2_3", "drawbar_2",
+        "drawbar_1_3_5", "drawbar_1_1_3", "drawbar_1", "percussion", "percussion_volume", "percussion_decay",
+        "percussion_harmonic", "key_click", "temperament", "transpose", "tune"
+      }};
+      for (int i = 0; i < static_cast<int>(b3_order.size()); ++i) {
+        if (suffix == b3_order[i])
+          return 5740 + i;
+      }
+    }
+
     for (int random = 1; random <= vital::kNumRandomLfos; ++random) {
       const String prefix = "random_" + String(random) + "_";
       if (!id.startsWith(prefix))
@@ -2284,7 +2307,7 @@ namespace {
     static const std::vector<EffectCategory> categories = [] {
       std::vector<EffectCategory> result {
         { "Analogue", { kAnalogueChorus, kAnalogueFlanger, kAnalogueEcho, kAnalogueRotary, kAnalogueSpring, kAnalogueWah,
-                        kTape, kOpenWurliAmp } },
+                        kTape, kOpenWurliAmp, kScannerVibrato } },
         { "Dynamics", { kCompressor, kLimiter, kSuppressor } },
         { "Space", { kReverb, kConvolutionReverb, kDelay, kFloatyDelay, kGlitchDelay } },
         { "Modulation", { kChorus, kFlanger, kPhaser, kTremoloPan, kDimensionExpander, kPhaseShift,
@@ -2376,6 +2399,7 @@ namespace {
     if (rest.startsWith("spectral_balance_")) return "Spectral Balance";
     if (rest.startsWith("glitch_delay_")) return "Glitch Delay";
     if (rest.startsWith("openwurli_amp_")) return "OpenWurli Amp";
+    if (rest.startsWith("scanner_vibrato_")) return "Scanner Vibrato";
     if (rest.startsWith("spectral_compressor_")) return "Spectral Compressor";
     if (rest.startsWith("spectral_gate_")) return "Spectral Gate";
     if (rest.startsWith("erosion_")) return "Erosion";
@@ -2521,6 +2545,7 @@ namespace {
     if (id.startsWith("spectral_balance_")) return "Spectral Balance";
     if (id.startsWith("glitch_delay_")) return "Glitch Delay";
     if (id.startsWith("openwurli_amp_")) return "OpenWurli Amp";
+    if (id.startsWith("scanner_vibrato_")) return "Scanner Vibrato";
     if (id.startsWith("spectral_compressor_")) return "Spectral Compressor";
     if (id.startsWith("spectral_gate_")) return "Spectral Gate";
     if (id.startsWith("arp_1_")) return "Arpeggiator 1";
@@ -2991,6 +3016,50 @@ namespace {
                "0% starts every note the same way.";
     }
 
+    if (legacy_id.startsWith("b3_")) {
+      const String suffix = legacy_id.fromFirstOccurrenceOf("b3_", false, false);
+      if (suffix == "amp_env")
+        return "Choose what shapes each note. Organ sounds while the key is down, with the key click as it closes "
+               "and a quick fade as it opens, and keeps the voice open while it sounds. Envelope 1 lets Envelope 1 "
+               "shape the organ instead, sounding on through its release.";
+      if (suffix.startsWith("drawbar_")) {
+        const String footage = suffix.fromFirstOccurrenceOf("drawbar_", false, false);
+        String harmonic;
+        if (footage == "16") harmonic = "an octave below the note, the sub-octave";
+        else if (footage == "5_1_3") harmonic = "a fifth above the note, the sub-third harmonic";
+        else if (footage == "8") harmonic = "the note itself, the fundamental";
+        else if (footage == "4") harmonic = "an octave above the note";
+        else if (footage == "2_2_3") harmonic = "an octave and a fifth above the note, the third harmonic";
+        else if (footage == "2") harmonic = "two octaves above the note";
+        else if (footage == "1_3_5") harmonic = "two octaves and a major third above the note, the fifth harmonic";
+        else if (footage == "1_1_3") harmonic = "two octaves and a fifth above the note, the sixth harmonic";
+        else harmonic = "three octaves above the note";
+        return "Pull out this drawbar to add the tonewheels " + harmonic + ". 0 is in, silent; 8 is fully out. "
+               "Each step adds an eighth of the full level. With percussion on, the 1 foot drawbar is silent: its "
+               "contact triggers the percussion, as on the organ.";
+      }
+      if (suffix == "percussion")
+        return "Add the percussion, a decaying second or third harmonic on the attack. It is single-trigger: it "
+               "sounds only on a key played with no other key held, so legato playing does not repeat it. With "
+               "Normal volume the drawbars play a little quieter, as on the organ.";
+      if (suffix == "percussion_volume")
+        return "Choose Normal or Soft percussion. Soft is quieter and leaves the drawbars at full level.";
+      if (suffix == "percussion_decay") return "Choose Fast or Slow percussion decay.";
+      if (suffix == "percussion_harmonic")
+        return "Choose which harmonic percussion sounds: Second, an octave above the note, or Third, an octave "
+               "and a fifth above.";
+      if (suffix == "key_click")
+        return "Set the noise of the key contacts as they close. A higher setting sounds like a worn instrument. "
+               "Even at 0% the contacts close at slightly different moments and click a little. 50% is OpenB3's.";
+      if (suffix == "temperament")
+        return "Choose the tonewheels' tuning. Gear 60 Hz uses the gear ratios of an organ built for 60 hertz "
+               "mains, as OpenB3 does; Gear 50 Hz estimates those of a 50 hertz organ; Equal is equal "
+               "temperament.";
+      if (suffix == "transpose")
+        return "Transpose the organ in semitones. The nearest of the 61 keys, from C2 to C7, gives the wiring.";
+      if (suffix == "tune") return "Fine tune the organ in cents.";
+    }
+
     if (legacy_id.startsWith("wurli_")) {
       const String suffix = legacy_id.fromFirstOccurrenceOf("wurli_", false, false);
       if (suffix == "amp_env")
@@ -3304,12 +3373,12 @@ namespace {
     }
     const String analogue_rotary_suffix = effectSuffix("analoguerotary_");
     if (analogue_rotary_suffix.isNotEmpty()) {
-      if (analogue_rotary_suffix == "model") return "Choose Organ 122, a spinning treble horn and bass drum behind a tube amplifier, or Guitar 16, one speaker in a spinning drum.";
+      if (analogue_rotary_suffix == "model") return "Choose Organ 122, a spinning treble horn and bass drum behind a tube amplifier; Guitar 16, one speaker in a spinning drum; or OpenB3 Whirl, the rotary speaker of the OpenB3 organ, a horn and drum heard along a direct path and two reflections. The Whirl is at its original sound with Spread at 100 percent.";
       if (analogue_rotary_suffix == "speed") return "Choose Slow, Fast or Stop, like the half-moon switch. The rotors speed up and slow down with their own weight: the horn quickly, the drum slowly. Modulation can switch it, for example from the mod wheel.";
       if (analogue_rotary_suffix == "inertia") return "Scale how long the rotors take to change speed. 50 percent matches the original cabinet; zero changes speed at once.";
       if (analogue_rotary_suffix == "drive") return "Drive the cabinet's tube amplifier harder for growl. Quiet passages keep their level.";
       if (analogue_rotary_suffix == "balance") return "Balance the treble horn against the bass drum. Zero is the original balance.";
-      if (analogue_rotary_suffix == "spread") return "Set the angle between the two microphones. Zero is mono; 100 percent places them on opposite sides of the cabinet.";
+      if (analogue_rotary_suffix == "spread") return "Set the angle between the two microphones. Zero is mono; 100 percent places them on opposite sides of the cabinet, where OpenB3 Whirl has them.";
       if (analogue_rotary_suffix == "mix") return "Blend dry audio with the cabinet. 100 percent is the cabinet alone, as when an organ plays through it.";
     }
     const String wurli_amp_suffix = effectSuffix("openwurli_amp_");
@@ -3324,6 +3393,15 @@ namespace {
       if (wurli_amp_suffix == "speaker")
         return "Blend in the response of the 200A's small speakers and cabinet. Zero is flat, as a direct "
                "output; 100 percent is the full cabinet.";
+    }
+    const String scanner_suffix = effectSuffix("scanner_vibrato_");
+    if (scanner_suffix.isNotEmpty()) {
+      if (scanner_suffix == "mode")
+        return "Choose the tonewheel organ's vibrato and chorus knob. V1, V2 and V3 bend the pitch a little, more "
+               "and most; C1, C2 and C3 mix that vibrato with the dry sound for the organ's chorus. C3 is the "
+               "classic setting. Modulation can switch it.";
+      if (scanner_suffix == "rate")
+        return "Set how fast the scanner turns. 7.25 hertz is OpenB3's; a real organ's motor runs near 7.";
     }
     const String analogue_spring_suffix = effectSuffix("analoguespring_");
     if (analogue_spring_suffix.isNotEmpty()) {
@@ -3412,7 +3490,7 @@ namespace {
       "eq_", "flanger_", "frequency_shifter_", "limiter_", "mid_side_eq_", "phase_shift_", "phaser_",
       "reverb_", "utility_", "waveshaper_", "spectral_gate_", "erosion_", "floaty_delay_", "spectral_compressor_", "scream_", "tremolo_pan_", "tape_", "defuse_", "suppressor_", "trance_gate_", "spectral_lock_", "resonator_",
       "analoguechorus_", "analogueflanger_", "analogueecho_", "analoguerotary_", "analoguespring_", "analoguewah_",
-      "spectral_balance_", "openwurli_amp_"
+      "spectral_balance_", "openwurli_amp_", "scanner_vibrato_"
     };
     for (const auto& prefix : effect_prefixes) {
       effect_suffix = effectSuffix(prefix);
@@ -7202,8 +7280,8 @@ std::unique_ptr<AccessibleParameterRow> SynthEditor::createAccessibleParameterRo
         last_oscillator_modes_[prefix] = oscillatorModeKey(oscillator);
         return std::make_unique<AccessibleParameterRow>(
             parameter, String(), std::function<String(double)>(), 1.0, 0.0, String(), String(),
-            "Choose this oscillator's type: Wavetable, Analog, Sample, Granular, Spectral, Noise, Multi-sample, Braids "
-            "or OpenWurli. "
+            "Choose this oscillator's type: Wavetable, Analog, Sample, Granular, Spectral, Noise, Multi-sample, Braids, "
+            "OpenWurli or OpenB3. "
             "Each type keeps its own settings, wavetable and sample for when you switch back.", true);
       }
       if (suffix == "analog_waveform")

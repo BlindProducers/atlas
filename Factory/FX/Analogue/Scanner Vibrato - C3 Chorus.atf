@@ -1,0 +1,10 @@
+{
+  "type": "Atlas FX Preset",
+  "version": 1,
+  "effect": "scanner_vibrato",
+  "name": "C3 Chorus",
+  "parameters": {
+    "scanner_vibrato_mode": 5,
+    "scanner_vibrato_rate": 7.25
+  }
+}

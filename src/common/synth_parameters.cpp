@@ -550,6 +550,17 @@ namespace vital {
     { "effect_chain_slot_38", 0x02011c, 0.0, constants::kNumEffects - 1, constants::kOpenWurliAmp, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Effect Chain Slot 38", nullptr },
 
+    // Scanner Vibrato: OpenB3's tonewheel organ vibrato and chorus. C3 is the
+    // setting most organists leave it on; 7.25 Hz is setBfree's scanner.hz.
+    { "scanner_vibrato_on", 0x02011d, 0.0, 1.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Scanner Vibrato Switch", strings::kOffOnNames },
+    { "scanner_vibrato_mode", 0x02011d, 0.0, 5.0, 5.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Scanner Vibrato Mode", strings::kScannerVibratoModeNames },
+    { "scanner_vibrato_rate", 0x02011d, 4.0, 22.0, 7.25, 0.0, 1.0,
+      ValueDetails::kLinear, false, " Hz", "Scanner Vibrato Rate", nullptr },
+    { "effect_chain_slot_39", 0x02011d, 0.0, constants::kNumEffects - 1, constants::kScannerVibrato, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Effect Chain Slot 39", nullptr },
+
     { "spectral_compressor_on", 0x020104, 0.0, 1.0, 0.0, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Spectral Compressor Switch", strings::kOffOnNames },
     { "spectral_compressor_compression", 0x020104, 0.0, 100.0, 0.0, 0.0, 1.0,
@@ -1822,6 +1833,53 @@ namespace vital {
       ValueDetails::kLinear, false, "", "OpenWurli Tune", nullptr },
   };
 
+  // OpenB3 oscillator type (OpenB3's tonewheel organ, setBfree's tonegen.c):
+  // registered once per slot as osc_N_b3_*. The scanner vibrato and the
+  // rotary speaker are the Scanner Vibrato effect and Analogue Rotary's
+  // OpenB3 Whirl model. Every default is OpenB3's.
+  const ValueDetails ValueDetailsLookup::b3_slot_parameter_list[] = {
+    // Organ: the key contacts shape each note and hold the voice open.
+    { "b3_amp_env", 0x000000, 0.0, 1.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "OpenB3 Amplitude Envelope", strings::kOpenB3AmpEnvNames },
+    // The upper manual's drawbars, OpenB3's 88 6000 000.
+    { "b3_drawbar_16", 0x000000, 0.0, 8.0, 8.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "OpenB3 Drawbar 16 Foot", nullptr },
+    { "b3_drawbar_5_1_3", 0x000000, 0.0, 8.0, 8.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "OpenB3 Drawbar 5 1/3 Foot", nullptr },
+    { "b3_drawbar_8", 0x000000, 0.0, 8.0, 6.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "OpenB3 Drawbar 8 Foot", nullptr },
+    { "b3_drawbar_4", 0x000000, 0.0, 8.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "OpenB3 Drawbar 4 Foot", nullptr },
+    { "b3_drawbar_2_2_3", 0x000000, 0.0, 8.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "OpenB3 Drawbar 2 2/3 Foot", nullptr },
+    { "b3_drawbar_2", 0x000000, 0.0, 8.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "OpenB3 Drawbar 2 Foot", nullptr },
+    { "b3_drawbar_1_3_5", 0x000000, 0.0, 8.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "OpenB3 Drawbar 1 3/5 Foot", nullptr },
+    { "b3_drawbar_1_1_3", 0x000000, 0.0, 8.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "OpenB3 Drawbar 1 1/3 Foot", nullptr },
+    { "b3_drawbar_1", 0x000000, 0.0, 8.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "OpenB3 Drawbar 1 Foot", nullptr },
+    // Percussion: off, Normal, Fast, Third, as setBfree starts.
+    { "b3_percussion", 0x000000, 0.0, 1.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "OpenB3 Percussion", strings::kOffOnNames },
+    { "b3_percussion_volume", 0x000000, 0.0, 1.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "OpenB3 Percussion Volume", strings::kOpenB3PercussionVolumeNames },
+    { "b3_percussion_decay", 0x000000, 0.0, 1.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "OpenB3 Percussion Decay", strings::kOpenB3PercussionDecayNames },
+    { "b3_percussion_harmonic", 0x000000, 0.0, 1.0, 1.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "OpenB3 Percussion Harmonic", strings::kOpenB3PercussionHarmonicNames },
+    // osc.attack.click.level: the contact noise when a key closes.
+    { "b3_key_click", 0x000000, 0.0, 1.0, 0.5, 0.0, 100.0,
+      ValueDetails::kLinear, false, "%", "OpenB3 Key Click", nullptr },
+    { "b3_temperament", 0x000000, 0.0, 2.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "OpenB3 Tuning", strings::kOpenB3TemperamentNames },
+    { "b3_transpose", 0x000000, -48.0, 48.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "OpenB3 Transpose", nullptr },
+    { "b3_tune", 0x000000, -1.0, 1.0, 0.0, 0.0, 100.0,
+      ValueDetails::kLinear, false, "", "OpenB3 Tune", nullptr },
+  };
+
   const ValueDetails ValueDetailsLookup::mod_parameter_list[] = {
     { "amount", 0x000000, -1.0, 1.0, 0.0, 0.0, 1.0,
       ValueDetails::kLinear, false, "", "Amount", nullptr },
@@ -1901,7 +1959,7 @@ namespace vital {
         "erosion_", "floaty_delay_", "spectral_compressor_", "scream_", "tremolo_pan_", "tape_", "defuse_", "suppressor_", "trance_gate_", "spectral_lock_", "resonator_",
         "analoguechorus_", "analogueflanger_", "analogueecho_",
         "analoguerotary_", "analoguespring_", "analoguewah_", "spectral_balance_", "glitch_delay_",
-        "openwurli_amp_"
+        "openwurli_amp_", "scanner_vibrato_"
       };
       for (const auto& prefix : effect_prefixes) {
         if (name.rfind(prefix, 0) == 0)
@@ -2044,6 +2102,12 @@ namespace vital {
     for (int osc = 0; osc < kNumOscillators; ++osc) {
       addParameterGroup(wurli_slot_parameter_list, num_wurli_parameters, osc, kOscIdPrefix,
                         kOscNamePrefix, kOpenWurliVersion);
+    }
+    static constexpr int kOpenB3Version = 0x02011d;
+    const int num_b3_parameters = sizeof(b3_slot_parameter_list) / sizeof(ValueDetails);
+    for (int osc = 0; osc < kNumOscillators; ++osc) {
+      addParameterGroup(b3_slot_parameter_list, num_b3_parameters, osc, kOscIdPrefix,
+                        kOscNamePrefix, kOpenB3Version);
     }
 
     int num_filter_parameters = sizeof(filter_parameter_list) / sizeof(ValueDetails);

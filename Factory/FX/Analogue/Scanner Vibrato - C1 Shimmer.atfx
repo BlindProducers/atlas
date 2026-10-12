@@ -1,0 +1,14 @@
+{
+  "type": "Atlas FX Bus Preset",
+  "version": 1,
+  "slots": [
+    {
+      "effect": "scanner_vibrato",
+      "enabled": true,
+      "parameters": {
+        "scanner_vibrato_mode": 3,
+        "scanner_vibrato_rate": 7.25
+      }
+    }
+  ]
+}

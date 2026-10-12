@@ -179,6 +179,7 @@ namespace vital {
       kSpectralBalance,
       kGlitchDelay,
       kOpenWurliAmp,
+      kScannerVibrato,
       kNumEffects
     };
 

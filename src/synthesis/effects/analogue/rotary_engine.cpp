@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "rotary_engine.h"
 
+#include "openb3/whirl.h"
+
 #include <algorithm>
 #include <cmath>
 
@@ -53,10 +55,23 @@ namespace atlas::analogue::rotary {
   const RotorSpec& hornSpec() { return kHornSpec; }
   const RotorSpec& drumSpec(int model) { return model == kGuitar ? kGuitarDrumSpec : kOrganDrumSpec; }
 
-  Engine::Engine() { prepare(sample_rate_); }
+  Engine::Engine() : whirl_(std::make_unique<openb3::Whirl>()) { prepare(sample_rate_); }
+
+  Engine::~Engine() = default;
+
+  double Engine::hornHz() const {
+    return parameters_.model == kWhirl ? whirl_->hornHz() : rotors_[kHorn].hz;
+  }
+
+  double Engine::drumHz() const {
+    if (parameters_.model == kWhirl)
+      return whirl_->drumHz();
+    return rotors_[parameters_.model == kGuitar ? kGuitarDrum : kOrganDrum].hz;
+  }
 
   void Engine::prepare(double sample_rate) {
     sample_rate_ = sample_rate;
+    whirl_->prepare(sample_rate);
     smoothing_ = coefficientFor(kSmoothingSeconds, sample_rate);
     fade_length_ = std::max(1, static_cast<int>(kFadeSeconds * sample_rate));
     // Longest delay: the full rotation diameter plus the reflection.
@@ -98,6 +113,9 @@ namespace atlas::analogue::rotary {
     for (auto& filter : lowpass_) filter.z1 = filter.z2 = 0.0;
     for (auto& filter : highpass_) filter.z1 = filter.z2 = 0.0;
     horn_voice_.z1 = horn_voice_.z2 = 0.0;
+    whirl_->setSpeed(p.speed);
+    whirl_->setInertia(p.inertia / 0.5);
+    whirl_->reset(true);
     drive_ = p.drive; balance_ = p.balance; spread_ = p.spread; mix_ = p.mix;
     current_model_ = p.model;
     fading_model_ = -1;
@@ -196,6 +214,22 @@ namespace atlas::analogue::rotary {
   }
 
   void Engine::renderModel(int model, const float* mono, float* left, float* right, int count) {
+    if (model == kWhirl) {
+      // OpenB3's output is horn plus drum at each microphone.
+      float horn_left[128], horn_right[128], drum_left[128], drum_right[128];
+      whirl_->setMicAngle(180.0 * spread_);
+      const double horn_gain = std::min(1.0, 1.0 + balance_), drum_gain = std::min(1.0, 1.0 - balance_);
+      for (int offset = 0; offset < count; offset += 128) {
+        const int block = std::min(128, count - offset);
+        whirl_->process(mono + offset, horn_left, horn_right, drum_left, drum_right, block);
+        for (int n = 0; n < block; ++n) {
+          left[offset + n] = static_cast<float>(horn_gain * horn_left[n] + drum_gain * drum_left[n]);
+          right[offset + n] = static_cast<float>(horn_gain * horn_right[n] + drum_gain * drum_right[n]);
+        }
+      }
+      return;
+    }
+
     // Microphones at +/- the spread angle from the front of the cabinet.
     const double mic_angle = 0.5 * kPi * spread_;
     const double mic_cosine = std::cos(mic_angle), mic_sine = std::sin(mic_angle);
@@ -256,6 +290,8 @@ namespace atlas::analogue::rotary {
       balance_ += (parameters_.balance - balance_) * block_smoothing;
       spread_ += (parameters_.spread - spread_) * block_smoothing;
       updateSpeeds(block);
+      whirl_->setSpeed(parameters_.speed);
+      whirl_->setInertia(parameters_.inertia / 0.5);
 
       renderModel(current_model_, mono, wet_left, wet_right, block);
       if (fading_model_ >= 0) {
