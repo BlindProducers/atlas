@@ -282,7 +282,8 @@ if(ATLAS_BUILD_TIMING_TESTS)
     src/synthesis/filters src/synthesis/producers src/synthesis/synth_engine
     src/synthesis/lookups src/synthesis/modulators src/synthesis/utilities third_party)
   target_compile_definitions(AtlasPreparedEffectTests PRIVATE
-    VITAL_ACCESSIBLE_UI=1 HEADLESS=0 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_DSP_USE_SHARED_FFTW=0)
+    VITAL_ACCESSIBLE_UI=1 HEADLESS=0 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_DSP_USE_SHARED_FFTW=0
+    JUCE_MODAL_LOOPS_PERMITTED=1)
   target_link_libraries(AtlasPreparedEffectTests PRIVATE
     Atlas juce::juce_audio_utils juce::juce_dsp juce::juce_recommended_config_flags)
   add_test(NAME atlas_prepared_effects COMMAND AtlasPreparedEffectTests)

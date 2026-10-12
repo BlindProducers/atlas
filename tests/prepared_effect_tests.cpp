@@ -43,13 +43,16 @@
 #include "synth_strings.h"
 #include "sound_engine.h"
 #include "value_switch.h"
+#include "synth_oscillator.h"
 #include <cstdlib>
 #include <new>
 #if JUCE_MAC
 #include <execinfo.h>
 #include <mach/mach.h>
+#include <unistd.h>
 #endif
 #include <atomic>
+#include <map>
 #include <chrono>
 #include <iostream>
 #include <thread>
@@ -523,6 +526,11 @@ void constructionCost(bool chain_only, int shell_type = -1) {
   });
   std::cout << "plugin prepareToPlay ms=" << prepared.ms << " allocations=" << prepared.allocations
             << " requested_MiB=" << prepared.bytes / 1048576.0 << " footprint_MiB=" << prepared.footprint << '\n';
+  // Keeps the prepared instance alive so heap tools (heap, malloc_history) can attribute its memory.
+  if (const char* hold = std::getenv("ATLAS_CONSTRUCTION_HOLD_SECONDS")) {
+    std::cout << "holding pid=" << getpid() << " total_footprint_MiB=" << footprintMiB() << std::endl;
+    std::this_thread::sleep_for(std::chrono::seconds(std::atoi(hold)));
+  }
   {
     juce::AudioBuffer<float> audio(2, 512);
     juce::MidiBuffer midi;
@@ -625,10 +633,186 @@ void controlsReservedOnSelection() {
   expect(difference > .01, "the effect runs once its controls are reserved");
 }
 
+// Renders fixed patches (spectral morphs, every filter model and style, the
+// factory oscillator slot presets, each quality) to raw float files, so two
+// builds can be compared sample for sample after a memory or graph change.
+void renderScenarios(const std::string& directory, const std::string& factory, const std::string& only = {}) {
+  using namespace vital;
+  struct Scenario { std::string name; std::vector<std::pair<std::string, float>> values; juce::File preset; };
+  std::vector<Scenario> scenarios;
+  scenarios.push_back({ "default", {}, {} });
+  for (int morph = 0; morph < SynthOscillator::kNumSpectralMorphTypes; ++morph) {
+    scenarios.push_back({ "morph_" + std::to_string(morph),
+        { { "osc_1_spectral_morph_type", morph }, { "osc_1_spectral_morph_amount", .6f } }, {} });
+    scenarios.push_back({ "secondary_morph_" + std::to_string(morph),
+        { { "osc_1_spectral_morph_type", (morph + 3) % SynthOscillator::kNumSpectralMorphTypes },
+          { "osc_1_spectral_morph_amount", .4f },
+          { "osc_1_secondary_spectral_morph_type", morph }, { "osc_1_secondary_spectral_morph_amount", .6f } }, {} });
+  }
+  for (int model = 0; model < constants::kNumFilterModels; ++model) {
+    for (int style = 0; style < 4; ++style) {
+      scenarios.push_back({ "filter_" + std::to_string(model) + "_" + std::to_string(style),
+          { { "filter_1_on", 1 }, { "filter_1_model", model }, { "filter_1_style", style },
+            { "filter_1_resonance", .7f }, { "filter_1_cutoff", 70 } }, {} });
+    }
+  }
+  for (int quality = 0; quality < 4; ++quality) {
+    scenarios.push_back({ "quality_" + std::to_string(quality),
+        { { "oversampling", quality }, { "osc_1_spectral_morph_type", 2 }, { "osc_1_spectral_morph_amount", .5f },
+          { "filter_1_on", 1 }, { "filter_1_model", constants::kComb }, { "filter_1_resonance", .8f } }, {} });
+  }
+  for (const auto& file : juce::File(factory).findChildFiles(juce::File::findFiles, true, "*.atp"))
+    scenarios.push_back({ "preset_" + file.getFileNameWithoutExtension().replaceCharacter(' ', '_').toStdString(), {}, file });
+
+  if (!only.empty())
+    scenarios.erase(std::remove_if(scenarios.begin(), scenarios.end(),
+        [&](const Scenario& s) { return s.name.find(only) == std::string::npos; }), scenarios.end());
+  constexpr int kBlock = 512;
+  for (const auto& scenario : scenarios) {
+    SynthPlugin plugin;
+    plugin.setPlayConfigDetails(0, 2, 48000, kBlock);
+    plugin.prepareToPlay(48000, kBlock);
+    if (scenario.preset.existsAsFile()) {
+      std::string error;
+      expect(plugin.loadFromFile(scenario.preset, error), "factory preset loads");
+    }
+    for (const auto& [name, value] : scenario.values)
+      plugin.valueChanged(name, value);
+    plugin.getEngine()->prepareSelectedEffects();
+
+    juce::FileOutputStream out(juce::File(directory).getChildFile(scenario.name + ".raw"));
+    out.truncate();
+    juce::AudioBuffer<float> audio(2, kBlock);
+    juce::MidiBuffer midi;
+    const int chord[] = { 36, 48, 55, 60, 64, 67, 71, 74, 79, 84, 88 };
+    for (int block = 0; block < 400; ++block) {
+      midi.clear();
+      if (block == 2 || block == 200)
+        for (int note : chord) midi.addEvent(juce::MidiMessage::noteOn(1, note + (block == 200 ? 1 : 0), .8f), 17);
+      if (block == 150 || block == 330)
+        for (int note : chord) midi.addEvent(juce::MidiMessage::noteOff(1, note + (block == 330 ? 1 : 0)), 211);
+      audio.clear();
+      plugin.processBlock(audio, midi);
+      for (int channel = 0; channel < 2; ++channel)
+        out.write(audio.getReadPointer(channel), kBlock * sizeof(float));
+    }
+  }
+  std::cout << "rendered scenarios=" << scenarios.size() << '\n';
+}
+
+// Footprint of one instance as a host sees it: construction, playback, then
+// the editor opened in a window, closed and opened again.
+void editorMemory() {
+  auto pump = [](int ms) {
+    const auto end = juce::Time::getMillisecondCounter() + uint32(ms);
+    while (juce::Time::getMillisecondCounter() < end)
+      juce::MessageManager::getInstance()->runDispatchLoopUntil(10);
+  };
+  double last = footprintMiB();
+  const double start = last;
+  auto report = [&](const char* stage) {
+    const double now = footprintMiB();
+    std::cout << stage << " total_MiB=" << now << " step_MiB=" << now - last << " since_start_MiB=" << now - start << std::endl;
+    last = now;
+  };
+  report("process start");
+  auto plugin = std::make_unique<SynthPlugin>();
+  report("constructed");
+  plugin->setPlayConfigDetails(0, 2, 48000, 512);
+  plugin->prepareToPlay(48000, 512);
+  report("prepared");
+  juce::AudioBuffer<float> audio(2, 512);
+  juce::MidiBuffer midi;
+  for (int block = 0; block < 200; ++block) {
+    midi.clear();
+    if (block == 0) for (int note : { 48, 55, 60, 64 }) midi.addEvent(juce::MidiMessage::noteOn(1, note, .8f), 0);
+    audio.clear();
+    plugin->processBlock(audio, midi);
+  }
+  report("played");
+  // A host restoring a project hands the instance its saved state.
+  for (int restore = 0; restore < 2; ++restore) {
+    juce::MemoryBlock state;
+    plugin->getStateInformation(state);
+    std::cout << "saved state KiB=" << state.getSize() / 1024.0 << std::endl;
+    plugin->setStateInformation(state.getData(), int(state.getSize()));
+    for (int block = 0; block < 200; ++block) {
+      midi.clear();
+      if (block == 0) for (int note : { 48, 55, 60, 64 }) midi.addEvent(juce::MidiMessage::noteOn(1, note, .8f), 0);
+      audio.clear();
+      plugin->processBlock(audio, midi);
+    }
+    pump(300);
+    report(restore == 0 ? "state restored and played" : "state restored again and played");
+  }
+  std::unique_ptr<juce::AudioProcessorEditor> editor(plugin->createEditorIfNeeded());
+  report("editor created");
+  editor->addToDesktop(juce::ComponentPeer::windowHasTitleBar);
+  editor->setVisible(true);
+  pump(2000);
+  report("editor shown");
+  if (const char* hold = std::getenv("ATLAS_CONSTRUCTION_HOLD_SECONDS")) {
+    std::cout << "holding pid=" << getpid() << std::endl;
+    pump(1000 * std::atoi(hold));
+  }
+  plugin->editorBeingDeleted(editor.get());
+  editor.reset();
+  pump(500);
+  report("editor closed");
+  editor.reset(plugin->createEditorIfNeeded());
+  editor->addToDesktop(juce::ComponentPeer::windowHasTitleBar);
+  editor->setVisible(true);
+  pump(2000);
+  report("editor reopened");
+  plugin->editorBeingDeleted(editor.get());
+  editor.reset();
+  plugin.reset();
+  pump(500);
+  report("destroyed");
+}
+
+// Counts the host parameters by group (the first words of their names, or
+// the automation proxies); with `list`, prints every ID and name too.
+void hostParameterSummary(bool list) {
+  SynthPlugin plugin;
+  std::map<std::string, int> groups;
+  for (auto* parameter : plugin.getParameters()) {
+    const String name = parameter->getName(200);
+    String group;
+    if (name.contains(" Param ") && (name.startsWith("Osc ") || name.startsWith("FX ")))
+      group = name.upToFirstOccurrenceOf(" ", false, false) + " automation proxies";
+    else {
+      const int words = name.startsWith("Oscillator ") ? 3 : 1;
+      juce::StringArray tokens = juce::StringArray::fromTokens(name, " ", "");
+      tokens.removeRange(words, tokens.size());
+      group = tokens.joinIntoString(" ");
+    }
+    groups[group.toStdString()]++;
+    if (list) {
+      auto* with_id = dynamic_cast<juce::AudioProcessorParameterWithID*>(parameter);
+      std::cout << (with_id ? with_id->getParameterID() : String()) << " | " << name << '\n';
+    }
+  }
+  std::cout << "host parameters=" << plugin.getParameters().size() << '\n';
+  for (const auto& [group, count] : groups) std::cout << count << "  " << group << '\n';
+}
+
 #include "ir_switching_tests.h"
 
 int main(int argc, char** argv) {
   juce::ScopedJuceInitialiser_GUI gui;
+  if (argc > 1 && String(argv[1]) == "--host-parameters") {
+    hostParameterSummary(argc > 2 && String(argv[2]) == "list");
+    return 0;
+  }
+  if (argc > 1 && String(argv[1]) == "--editor-memory") {
+    editorMemory();
+    return failures ? 1 : 0;
+  }
+  if (argc > 3 && String(argv[1]) == "--render") {
+    renderScenarios(argv[2], argv[3], argc > 4 ? argv[4] : "");
+    return failures ? 1 : 0;
+  }
   if (argc > 1 && String(argv[1]) == "--ir-switching") {
     irSwitchingKeepsLiveEngine();
     asyncIrLoadingIsLatestWins();
