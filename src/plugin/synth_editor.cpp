@@ -523,6 +523,9 @@ namespace {
         return OscillatorRowGroup::kScaleLock;
       if (rest == "transpose" || rest == "tune" || rest == "keytrack" || rest == "root_key")
         return OscillatorRowGroup::kPitch;
+      // Braids random phase sits with pitch, as the Wavetable's does.
+      if (suffix == "braids_random_phase")
+        return OscillatorRowGroup::kPitch;
       if (suffix == "braids_timbre" || suffix == "braids_color")
         return OscillatorRowGroup::kTypeMode;
       return suffix.startsWith("sample_") ? OscillatorRowGroup::kSample : OscillatorRowGroup::kType;
@@ -2060,6 +2063,17 @@ namespace {
       return 5690;
     }
 
+    // Braids pitch rows: random phase follows Transpose and Tune, as on the
+    // Wavetable. The other Braids rows keep their source order.
+    if (id.startsWith("braids_")) {
+      const String suffix = id.fromFirstOccurrenceOf("braids_", false, false);
+      static const std::array<const char*, 3> braids_pitch_order = {{ "transpose", "tune", "random_phase" }};
+      for (int i = 0; i < static_cast<int>(braids_pitch_order.size()); ++i) {
+        if (suffix == braids_pitch_order[i])
+          return 5700 + i;
+      }
+    }
+
     for (int random = 1; random <= vital::kNumRandomLfos; ++random) {
       const String prefix = "random_" + String(random) + "_";
       if (!id.startsWith(prefix))
@@ -2830,6 +2844,9 @@ namespace {
       if (suffix == "sample_rate") return "Hold samples to reduce the sample rate, as Braids' RATE setting does. 96 kHz is the clean signal.";
       if (suffix == "transpose") return "Transpose the Braids oscillator in semitones.";
       if (suffix == "tune") return "Fine tune the Braids oscillator in cents.";
+      if (suffix == "random_phase")
+        return "Randomize where the oscillator starts its cycle on each note that starts from silence. "
+               "0% starts every note the same way.";
     }
 
     if (id.startsWith("filter_") || id.startsWith("filter_fx_") || id.contains("_filter_fx_")) {

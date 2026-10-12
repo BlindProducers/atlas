@@ -1,6 +1,6 @@
 // Braids oscillator tests: every synthesis mode through the plugin, pitch at
-// several sample rates, strikes on note-on, slot FM, host state and the
-// editor's mode menu and mode parameter group.
+// several sample rates, strikes on note-on, random phase, slot FM, host state
+// and the editor's mode menu and mode parameter group.
 
 #include "JuceHeader.h"
 #include "synth_plugin.h"
@@ -204,6 +204,98 @@ namespace {
     return finish("strike");
   }
 
+  // Phase Randomization: off, every note from silence starts the same way; on,
+  // notes start at different points of the cycle, in analog and digital modes,
+  // and still play in tune.
+  int randomPhase() {
+    // Morph with Timbre and Color at 0 is a plain triangle, so its pitch can be
+    // read from zero crossings.
+    struct Mode { int model; const char* name; bool triangle; };
+    for (const Mode mode : { Mode { 1, "Morph", true }, Mode { 0, "CS-80 sawtooth", false },
+                             Mode { 2, "Saw/square", false }, Mode { 25, "FM", false },
+                             Mode { 37, "Wavetables", false } }) {
+      // Notes from silence, one at a time. The engine can give each one another
+      // voice lane, and it renders idle lanes too, so notes play on fresh lanes
+      // and on lanes that have run before. The first note only warms up the
+      // plugin's parameter smoothing and is not compared.
+      constexpr int kNotes = 6;
+      auto notes = [&](float amount) {
+        SynthPlugin plugin;
+        preparePlayback(plugin, kRate, mode.model);
+        setControl(plugin, "polyphony", 1.0f);
+        setControl(plugin, "osc_1_braids_random_phase", amount);
+        if (mode.triangle) {
+          setControl(plugin, "osc_1_braids_timbre", 0.0f);
+          setControl(plugin, "osc_1_braids_color", 0.0f);
+        }
+        const int spacing = 128 * 100;
+        const int length = 128 * 40;
+        std::vector<MidiEvent> events;
+        for (int note = 0; note < kNotes; ++note) {
+          events.push_back({ note * spacing, juce::MidiMessage::noteOn(1, 57, 1.0f) });
+          events.push_back({ note * spacing + length, juce::MidiMessage::noteOff(1, 57) });
+        }
+        const auto audio = render(plugin, kNotes * spacing, events);
+        expect(finite(audio), std::string(mode.name) + " renders finite audio");
+        std::vector<std::vector<float>> result;
+        for (int note = 1; note < kNotes; ++note) {
+          const auto start = audio.begin() + note * spacing;
+          result.emplace_back(start, start + length);
+          expect(rms(audio, (note - 1) * spacing + length + kRate / 20, note * spacing) < 1.0e-4,
+                 std::string(mode.name) + " is silent before note " + std::to_string(note + 1));
+        }
+        return result;
+      };
+      // Mean absolute difference, relative to the first note's mean level.
+      auto difference = [](const std::vector<float>& a, const std::vector<float>& b) {
+        double sum = 0.0;
+        double level = 0.0;
+        for (size_t i = 0; i < a.size(); ++i) {
+          sum += std::abs(double(a[i]) - b[i]);
+          level += std::abs(double(a[i]));
+        }
+        return level > 0.0 ? sum / level : 0.0;
+      };
+
+      const auto fixed = notes(0.0f);
+      for (size_t note = 1; note < fixed.size(); ++note) {
+        const double same = difference(fixed[0], fixed[note]);
+        expect(same < 1.0e-6, std::string(mode.name) + ": at 0% every note starts the same way (difference " +
+                                  std::to_string(same) + ")");
+      }
+      // Two random phases can fall close together, or half a cycle apart in a
+      // mode whose wave repeats every half cycle, so look across several notes.
+      const auto random = notes(1.0f);
+      double changed = 0.0;
+      for (size_t note = 1; note < random.size(); ++note)
+        changed = std::max(changed, difference(random[0], random[note]));
+      expect(changed > 0.1, std::string(mode.name) + ": at 100% notes start at different phases (difference " +
+                                std::to_string(changed) + ")");
+      if (mode.triangle) {
+        for (const auto& note : random) {
+          close(frequency(note, kRate / 20, static_cast<int>(note.size()), kRate), 220.0,
+                std::string(mode.name) + ": a random start keeps the pitch", 220.0 * 0.01);
+        }
+      }
+    }
+
+    // Every mode at the lowest pitch, on fresh voices: a start past an analog
+    // edge must not divide by a zero phase increment.
+    for (int model = 0; model < vital::braids_engine::kNumModels; ++model) {
+      SynthPlugin plugin;
+      preparePlayback(plugin, kRate, model);
+      setControl(plugin, "osc_1_braids_random_phase", 1.0f);
+      setControl(plugin, "osc_1_braids_transpose", -48.0f);
+      std::vector<MidiEvent> events;
+      for (int note = 0; note < 8; ++note)
+        events.push_back({ 0, juce::MidiMessage::noteOn(1, note, 1.0f) });
+      const auto audio = render(plugin, kRate / 8, events);
+      expect(finite(audio), std::to_string(model) + " " + strings::kBraidsModelNames[model] +
+                                " renders finite audio at the lowest pitch with random phase");
+    }
+    return finish("random phase");
+  }
+
   // Ring and frequency modulation from another slot reach the Braids type.
   int slotModulation() {
     auto render_with = [](int distortion_type, float amount) {
@@ -266,17 +358,20 @@ namespace {
       preparePlayback(plugin, kRate, 0);
       for (int slot = 1; slot <= vital::kNumOscillators; ++slot) {
         const std::string prefix = "osc_" + std::to_string(slot) + "_braids_";
-        for (const char* suffix : { "model", "timbre", "color", "resolution", "sample_rate", "transpose", "tune" })
+        for (const char* suffix : { "model", "timbre", "color", "resolution", "sample_rate", "transpose", "tune",
+                                    "random_phase" })
           expect(plugin.getControls().count(prefix + suffix) == 1, "control exists: " + prefix + suffix);
       }
       expect(control(plugin, "osc_2_braids_resolution") == vital::braids_engine::kFullResolution &&
              control(plugin, "osc_2_braids_sample_rate") == vital::braids_engine::kFullSampleRate &&
              control(plugin, "osc_2_braids_timbre") == 0.5f, "defaults are clean 16 bit, 96 kHz, centred");
+      expect(control(plugin, "osc_2_braids_random_phase") == 0.0f, "random phase is off by default");
       setControl(plugin, "osc_1_braids_model", 36.0f);
       setControl(plugin, "osc_1_braids_timbre", 0.25f);
       setControl(plugin, "osc_1_braids_color", 0.75f);
       setControl(plugin, "osc_1_braids_resolution", 3.0f);
       setControl(plugin, "osc_1_braids_sample_rate", 2.0f);
+      setControl(plugin, "osc_1_braids_random_phase", 0.6f);
       plugin.getStateInformation(state);
     }
     {
@@ -291,6 +386,7 @@ namespace {
              "Timbre and Color are restored");
       expect(control(plugin, "osc_1_braids_resolution") == 3.0f &&
              control(plugin, "osc_1_braids_sample_rate") == 2.0f, "bit depth and sample rate are restored");
+      close(control(plugin, "osc_1_braids_random_phase"), 0.6, "random phase is restored", 1.0e-6);
       const auto audio = render(plugin, kRate / 4, { { 0, juce::MidiMessage::noteOn(1, 60, 1.0f) } });
       expect(finite(audio) && rms(audio, 0, kRate / 4) > 1.0e-3, "the restored snare plays");
     }
@@ -366,6 +462,24 @@ namespace {
            "other types' rows are hidden");
     expect(findTitled(*section(), [](const String& t) { return t.startsWith("1 Braids Transpose"); }) != nullptr,
            "transpose sits with pitch");
+    if (auto* pitch = titledExactly(*section(), "Pitch and unison")) {
+      auto* tune = titledExactly(*pitch, "1 Braids Tune");
+      auto* random_phase = titledExactly(*pitch, "1 Braids Phase Randomization");
+      expect(random_phase != nullptr, "random phase sits with pitch");
+      if (random_phase != nullptr) {
+        expect(random_phase->getWantsKeyboardFocus() && random_phase->getDescription().contains("starts its cycle"),
+               "random phase is accessible and described");
+        if (auto* handler = random_phase->getAccessibilityHandler()) {
+          if (auto* value = handler->getValueInterface())
+            expect(value->getCurrentValueAsString() == "0%", "random phase reads as a percentage (" +
+                                                                 value->getCurrentValueAsString().toStdString() + ")");
+        }
+      }
+      if (tune != nullptr && random_phase != nullptr)
+        expect(random_phase->getScreenY() > tune->getScreenY(), "random phase follows Tune");
+    } else {
+      expect(false, "a Pitch and unison group");
+    }
     expect(findTitled(*section(), [](const String& t) { return t.startsWith("Oscillator 1") &&
                                                                t.contains("braids"); }) != nullptr,
            "the section title names the type");
@@ -414,6 +528,8 @@ int main(int argc, char** argv) {
     return pitch();
   if (flag == "--strike")
     return strike();
+  if (flag == "--random-phase")
+    return randomPhase();
   if (flag == "--slot-modulation")
     return slotModulation();
   if (flag == "--resampler")
@@ -424,7 +540,7 @@ int main(int argc, char** argv) {
     return editorTest();
   if (flag == "--cpu")
     return cpu();
-  std::cerr << "usage: AtlasBraidsTests --models | --pitch | --strike | --slot-modulation | --resampler | "
+  std::cerr << "usage: AtlasBraidsTests --models | --pitch | --strike | --random-phase | --slot-modulation | --resampler | "
                "--parameters | --editor\n";
   return 2;
 }

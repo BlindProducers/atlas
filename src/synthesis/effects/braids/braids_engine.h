@@ -22,6 +22,8 @@ namespace braids_engine {
   constexpr int kNumSampleRates = 7;
   constexpr int kFullResolution = kNumResolutions - 1;
   constexpr int kFullSampleRate = kNumSampleRates - 1;
+  // Oscillators in a voice that keep a phase: three analog, one digital.
+  constexpr int kNumPhases = 4;
 
   // One Braids voice: a MacroOscillator plus the firmware's bit and sample
   // rate reduction. Copying gives a fresh, silent voice with the same settings
@@ -33,8 +35,10 @@ namespace braids_engine {
       Voice& operator=(const Voice&) = delete;
       ~Voice();
 
-      // Back to the power-on state: phases, filters and resonators cleared.
-      void reset();
+      // Back to the power-on state, with every oscillator at its start phase
+      // (a full cycle is 2^32). Without `start_phases` every cycle starts at 0,
+      // as at power-on.
+      void reset(const uint32_t* start_phases = nullptr);
       // A trigger: plucks, strikes and blows the physical and percussion models.
       void strike();
       void setModel(int model);

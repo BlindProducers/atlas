@@ -21,14 +21,20 @@ namespace braids_engine {
     };
     constexpr int kDecimationFactors[kNumSampleRates] = { 24, 12, 6, 4, 3, 2, 1 };
 
-    // The oscillator's constructors leave its members uninitialised; start
-    // from zeroed memory so a voice is deterministic before Init runs.
-    braids::MacroOscillator* createOscillator() {
-      void* memory = ::operator new(sizeof(braids::MacroOscillator));
+    constexpr uint32_t kZeroPhases[kNumPhases] = {};
+
+    // The oscillator's constructors leave its members uninitialised: zeroed
+    // memory, then Init, is its power-on state.
+    braids::MacroOscillator* powerOn(void* memory, const uint32_t* start_phases) {
       std::memset(memory, 0, sizeof(braids::MacroOscillator));
       auto* oscillator = new (memory) braids::MacroOscillator();
+      oscillator->set_start_phases(start_phases);
       oscillator->Init();
       return oscillator;
+    }
+
+    braids::MacroOscillator* createOscillator() {
+      return powerOn(::operator new(sizeof(braids::MacroOscillator)), kZeroPhases);
     }
 
     int16_t toParameter(float value) {
@@ -50,8 +56,16 @@ namespace braids_engine {
 
   Voice::~Voice() = default;
 
-  void Voice::reset() {
-    oscillator_->Init();
+  void Voice::reset(const uint32_t* start_phases) {
+    // Init alone keeps the previous pitch increment (the first block ramps
+    // from it), the digital models' parameter smoothing and the delay lines.
+    // Those come from this lane's last note or from the idle lane's renders,
+    // so power on again instead: every note from silence then starts alike.
+    // The oscillators keep their start phase, because Init runs again when
+    // their shape changes.
+    braids::MacroOscillator* memory = oscillator_.get();
+    memory->~MacroOscillator();
+    powerOn(memory, start_phases != nullptr ? start_phases : kZeroPhases);
     oscillator_->set_shape(static_cast<braids::MacroOscillatorShape>(model_));
   }
 

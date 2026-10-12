@@ -62,8 +62,17 @@ namespace vital {
 
   BraidsSource::BraidsSource() : Processor(kNumInputs, kNumOutputs) { }
 
-  void BraidsSource::resetVoice(VoiceState& state) {
-    state.voice.reset();
+  void BraidsSource::resetVoice(VoiceState& state, float random_phase) {
+    // As the Wavetable type does: up to half a cycle either side of zero, so
+    // 100% is anywhere in the cycle. Each oscillator of the voice draws its own.
+    uint32_t phases[braids_engine::kNumPhases] = {};
+    if (random_phase > 0.0f) {
+      for (uint32_t& phase : phases) {
+        const double offset = static_cast<double>(random_generator_.next()) * random_phase * 2147483647.0;
+        phase = static_cast<uint32_t>(static_cast<int32_t>(offset));
+      }
+    }
+    state.voice.reset(phases);
     state.history.fill(0.0f);
     state.written = 0;
     state.position = 0.0;
@@ -111,6 +120,7 @@ namespace vital {
     const poly_float note_input = input(kMidi)->at(0) + input(kTranspose)->at(0) + input(kTune)->at(0);
     const poly_float timbre_input = utils::clamp(input(kTimbre)->at(0), 0.0f, 1.0f);
     const poly_float color_input = utils::clamp(input(kColor)->at(0), 0.0f, 1.0f);
+    const poly_float random_phase_input = utils::clamp(input(kRandomPhase)->at(0), 0.0f, 1.0f);
 
     // A voice starting from silence drops whatever its lane played before.
     const poly_mask reset_mask = getResetMask(kReset);
@@ -132,7 +142,7 @@ namespace vital {
       const float timbre = timbre_input[lane];
       const float color = color_input[lane];
       if (reset_mask[lane]) {
-        resetVoice(state);
+        resetVoice(state, random_phase_input[lane]);
         state.note = note;
         state.timbre = timbre;
         state.color = color;

@@ -15,6 +15,7 @@ namespace vital {
     Value* sample_rate = createBaseControl(prefix_ + "sample_rate");
     Output* transpose = createPolyModControl(prefix_ + "transpose");
     Output* tune = createPolyModControl(prefix_ + "tune");
+    Output* random_phase = createPolyModControl(prefix_ + "random_phase");
     const std::string mix_prefix = slot_prefix_.empty() ? prefix_ : slot_prefix_;
     Output* level = createPolyModControl(mix_prefix + "level", true, true);
     Output* pan = createPolyModControl(mix_prefix + "pan");
@@ -29,6 +30,7 @@ namespace vital {
     source_->plug(sample_rate, BraidsSource::kSampleRate);
     source_->plug(transpose, BraidsSource::kTranspose);
     source_->plug(tune, BraidsSource::kTune);
+    source_->plug(random_phase, BraidsSource::kRandomPhase);
     source_->plug(level, BraidsSource::kLevel);
     source_->plug(pan, BraidsSource::kPan);
     if (!slot_prefix_.empty()) {

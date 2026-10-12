@@ -80,7 +80,16 @@ class MacroOscillator {
   inline void Strike() {
     digital_oscillator_.Strike();
   }
-  
+
+  // Atlas: where each oscillator starts its cycle when Init runs, for random
+  // phase: three analog phases, then the digital one. Zeros are the original.
+  inline void set_start_phases(const uint32_t* phases) {
+    analog_oscillator_[0].set_start_phase(phases[0]);
+    analog_oscillator_[1].set_start_phase(phases[1]);
+    analog_oscillator_[2].set_start_phase(phases[2]);
+    digital_oscillator_.set_start_phase(phases[3]);
+  }
+
   void Render(const uint8_t* sync_buffer, int16_t* buffer, size_t size);
   
  private:

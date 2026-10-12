@@ -11,11 +11,21 @@ the commit that tree pins, e3bd7c9cc00e4364166f9905c0509b6ffd0535ec:
 
 - `braids/`: `macro_oscillator`, `analog_oscillator`, `digital_oscillator`,
   `resources`, `excitation.h`, `parameter_interpolation.h`, `settings.h` and
-  `svf.h`. These are byte-identical to the originals.
+  `svf.h`. These are byte-identical to the originals, except the three headers
+  named below.
 - `stmlib/`: `stmlib.h` (identical), `utils/dsp.h` and `utils/random.{h,cc}`.
 
 Changes:
 
+- `braids/analog_oscillator.h`, `braids/digital_oscillator.h` and
+  `braids/macro_oscillator.h` (marked `Atlas:`): for random phase, each
+  oscillator has a start phase that `Init` sets the cycle to instead of 0, and
+  `MacroOscillator::set_start_phases` sets the three analog ones and the
+  digital one. With every start phase 0 the code behaves as the original. A
+  start phase past an analog oscillator's edge puts an edge on the first
+  sample, whose timing divides by the phase increment >> 16. A fresh oscillator
+  ramps its increment up from 0, so when the start phase is not 0, `Init` starts
+  that ramp at 2^16, which is below the lowest note's increment.
 - `stmlib/utils/random.{h,cc}`: the shared random state is `thread_local`,
   because several Atlas instances can render on different threads at once.
 - `stmlib/utils/dsp.h`: on MSVC, `__attribute__` expands to nothing (the
@@ -44,7 +54,18 @@ built from `CMakeLists.txt` directly, with stmlib's host switch `TEST` and
   updated for every 24-sample Braids block.
 - Every note-on strikes the voice (the hardware's TRIG input), so the plucked,
   bowed, blown, struck and drum modes sound on each note. A voice that starts
-  from silence is reset first.
+  from silence is reset first. Its oscillator goes back to the power-on state
+  (zeroed memory, then `Init`), not only through `Init`. Otherwise the first
+  block would ramp from the previous pitch increment, and the delay lines and
+  parameter smoothing would carry over from the lane's last note or from the
+  renders the engine makes on idle lanes. So every note from silence starts
+  alike.
+- Phase Randomization (`osc_N_braids_random_phase`, 0% by default) works as the
+  Wavetable type's does. When a voice starts from silence, each of its
+  oscillators starts its cycle up to half a cycle either side of zero, so 100%
+  can start anywhere. On the hardware the oscillators run freely, so a note
+  starts wherever the cycle is. In the noise, percussion and physical models
+  the start phase changes little or nothing.
 - Slot FM from another oscillator changes the rate at which the 96 kHz stream
   is read (as the Sample type does). Slot RM multiplies the output.
 
@@ -52,7 +73,8 @@ The "????" mode (`MACRO_OSC_SHAPE_QUESTION_MARK`), hidden on the hardware, is
 listed last as "Question mark".
 
 `tests/braids_tests.cpp` (`AtlasBraidsTests`) renders every mode through the
-plugin, checks pitch at 44.1, 48 and 96 kHz and with oversampling, strikes,
-slot FM and RM, the resampler kernel, host state and the editor. There is no
-oracle test: the oscillator code is unmodified, so the wrapper and resampler
-are what the tests cover. `--cpu` prints render times for eight-voice chords.
+plugin and checks pitch at 44.1, 48 and 96 kHz and with oversampling. It also
+covers strikes, random phase, slot FM and RM, the resampler kernel, host state
+and the editor. There is no oracle test. The oscillator code is unchanged
+apart from the start phase, so the tests cover the wrapper, the resampler and
+the start phase. `--cpu` prints render times for eight-voice chords.
