@@ -20,6 +20,7 @@
 #include "poly_utils.h"
 
 #include <cstring>
+#include <new>
 #include <vector>
 
 namespace vital {
@@ -28,13 +29,27 @@ namespace vital {
   class ProcessorRouter;
 
   struct Output {
+    // Output storage is left uninitialised: clearBuffer zeroes the samples in
+    // use, so capacity reserved for higher quality settings costs no memory
+    // until it is used.
+    struct BufferDeleter {
+      void operator()(poly_float* buffer) const {
+        ::operator delete[](buffer, std::align_val_t(alignof(poly_float)));
+      }
+    };
+    using BufferPointer = std::unique_ptr<poly_float[], BufferDeleter>;
+    static BufferPointer allocateBuffer(int size) {
+      return BufferPointer(static_cast<poly_float*>(
+          ::operator new[](size_t(size) * sizeof(poly_float), std::align_val_t(alignof(poly_float)))));
+    }
+
     Output(int size = kMaxBufferSize, int max_oversample = 1) {
       VITAL_ASSERT(size > 0);
 
       owner = nullptr;
       buffer_size = size * max_oversample;
       buffer_capacity = buffer_size;
-      owned_buffer = std::make_unique<poly_float[]>(buffer_size);
+      owned_buffer = allocateBuffer(buffer_size);
       buffer = owned_buffer.get();
       clearBuffer();
       clearTrigger();
@@ -71,7 +86,7 @@ namespace vital {
         // increasing the logical length processed by control values.
         buffer_capacity = std::max(buffer_size, kMaxBufferSize * 8);
         bool buffer_is_original = buffer == owned_buffer.get();
-        owned_buffer = std::make_unique<poly_float[]>(buffer_capacity);
+        owned_buffer = allocateBuffer(buffer_capacity);
         if (buffer_is_original)
           buffer = owned_buffer.get();
       }
@@ -79,7 +94,7 @@ namespace vital {
     }
 
     poly_float* buffer;
-    std::unique_ptr<poly_float[]> owned_buffer;
+    BufferPointer owned_buffer;
     Processor* owner;
 
     int buffer_size;
@@ -122,11 +137,7 @@ namespace vital {
 
   namespace cr {
     struct Output : public ::vital::Output {
-      Output() {
-        owner = nullptr;
-        buffer_size = 1;
-        buffer_capacity = 1;
-        owned_buffer = std::make_unique<poly_float[]>(1);
+      Output() : ::vital::Output(1) {
         buffer = &trigger_value;
         clearBuffer();
         clearTrigger();
