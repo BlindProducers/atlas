@@ -265,6 +265,9 @@ namespace vital {
       // Use an existing output as our output.
       void useOutput(Output* output);
       void useOutput(Output* output, int index);
+      // Frees owned outputs that useOutput replaced. Only for outputs nothing
+      // else has been plugged into yet.
+      void releaseReplacedOutputs();
 
       // Count how many inputs are connected to processors
       int connectedInputs();

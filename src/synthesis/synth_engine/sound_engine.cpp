@@ -130,6 +130,15 @@ namespace vital {
     effect_chain_->prepareSelectedEffects();
   }
 
+  bool SoundEngine::takeEffectControlReservationRequest() {
+    return preparation_worker_->takeControlReservationRequest();
+  }
+
+  void SoundEngine::reserveSelectedEffectControls() {
+    for (auto* chain : bus_effect_chains_) chain->reserveSelectedControls();
+    effect_chain_->reserveSelectedControls();
+  }
+
   void SoundEngine::init() {
     createBaseControl("bypass");
     createBaseControl("mpe_enabled");

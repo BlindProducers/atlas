@@ -129,6 +129,8 @@ namespace vital {
 
       void checkOversampling();
       void prepareSelectedEffects();
+      void reserveSelectedEffectControls();
+      bool takeEffectControlReservationRequest();
       void updateEffectLatency();
       // Host-rate samples, after parallel routing has been compensated.
       int getLatencySamples() const override { return effect_latency_samples_; }

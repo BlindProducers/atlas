@@ -498,6 +498,10 @@ void SynthPlugin::processBlock(AudioSampleBuffer& buffer, MidiBuffer& midi_messa
   }
   // MIDI-learned changes may have updated a slot inside the host block.
   setLatencySamples(engine_->getLatencySamples());
+  // A slot selected without SynthBase::valueChanged (or before its
+  // reservation ran) passes audio through until its controls are reserved.
+  if (engine_->takeEffectControlReservationRequest())
+    scheduleEffectControlReservation();
 }
 
 bool SynthPlugin::hasEditor() const {

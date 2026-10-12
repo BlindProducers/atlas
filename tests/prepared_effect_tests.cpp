@@ -66,7 +66,8 @@ void* allocation_stacks[12][20] {};
 int allocation_depths[12] {};
 #endif
 }
-void* operator new(std::size_t size) {
+namespace {
+void countAllocation(std::size_t size) {
   if (track_allocations) {
 #if JUCE_MAC
     if (audio_allocations < 12) allocation_depths[audio_allocations] = backtrace(allocation_stacks[audio_allocations], 20);
@@ -77,14 +78,31 @@ void* operator new(std::size_t size) {
     counted_allocations.fetch_add(1, std::memory_order_relaxed);
     counted_bytes.fetch_add(size, std::memory_order_relaxed);
   }
+}
+}
+void* operator new(std::size_t size) {
+  countAllocation(size);
   if (void* memory = std::malloc(std::max(size, size_t(1)))) return memory;
   throw std::bad_alloc();
 }
 void* operator new[](std::size_t size) { return ::operator new(size); }
+// Processor output buffers use the aligned forms.
+void* operator new(std::size_t size, std::align_val_t alignment) {
+  countAllocation(size);
+  void* memory = nullptr;
+  if (posix_memalign(&memory, std::max(std::size_t(alignment), sizeof(void*)), std::max(size, size_t(1))) == 0)
+    return memory;
+  throw std::bad_alloc();
+}
+void* operator new[](std::size_t size, std::align_val_t alignment) { return ::operator new(size, alignment); }
 void operator delete(void* memory) noexcept { std::free(memory); }
 void operator delete[](void* memory) noexcept { std::free(memory); }
 void operator delete(void* memory, std::size_t) noexcept { std::free(memory); }
 void operator delete[](void* memory, std::size_t) noexcept { std::free(memory); }
+void operator delete(void* memory, std::align_val_t) noexcept { std::free(memory); }
+void operator delete[](void* memory, std::align_val_t) noexcept { std::free(memory); }
+void operator delete(void* memory, std::size_t, std::align_val_t) noexcept { std::free(memory); }
+void operator delete[](void* memory, std::size_t, std::align_val_t) noexcept { std::free(memory); }
 
 namespace {
 int failures = 0;
@@ -404,7 +422,8 @@ void realtimeTransitions() {
       const int effects[] = { constants::kSuppressor, constants::kReverb,
           constants::kSpectralGate, constants::kDelay, constants::kConvolutionReverb, constants::kSpectralLock,
           constants::kFilterFx, constants::kEq, constants::kCompressor, constants::kMidSideEq };
-      type2->set(effects[(block / 25) % 10] + 1);
+      // As the editor and host automation do; this reserves the new effect's controls.
+      plugin.valueChanged("fx_slot_2_type", effects[(block / 25) % 10] + 1);
       enabled->set(1);
     }
     if (block % 25 == 20) enabled->set(0);
@@ -552,6 +571,60 @@ void constructionCost(bool chain_only, int shell_type = -1) {
 }
 
 }
+// A slot's effect reserves its controls' buffers only once selected, on the
+// message thread; until then the slot passes audio through without allocating.
+void controlsReservedOnSelection() {
+  using namespace vital;
+  expect(SynthBase::isEffectSlotTypeControl("fx_slot_3_type"), "main chain slot type is recognised");
+  expect(SynthBase::isEffectSlotTypeControl("bus_2_fx_slot_20_type"), "bus slot type is recognised");
+  expect(!SynthBase::isEffectSlotTypeControl("fx_slot_3_distortion_type"), "effect parameters are not slot types");
+  expect(!SynthBase::isEffectSlotTypeControl("osc_1_type"), "oscillator types are not slot types");
+
+  cr::Value bpm(2), keytrack(0);
+  ReorderableEffectChain chain(bpm.output(), keytrack.output(), "bus_2_");
+  chain.init(); chain.setSampleRate(48000); chain.setOversampleAmount(2);
+  const auto controls = chain.getControls();
+  const std::string prefix = "bus_2_fx_slot_3_";
+  auto* shell = chain.filterFx(2);
+  expect(!shell->controlsReserved(), "an effect's controls are not reserved before a slot selects it");
+  controls.at(prefix + "type")->set(constants::kFilterFx + 1);
+  controls.at(prefix + "enabled")->set(1);
+
+  std::array<poly_float, 256> input {};
+  auto fill = [&](int block) {
+    for (int i = 0; i < 256; ++i) input[i] = .3f * std::sin((block * 256 + i) * .9f);
+  };
+  {
+    RealtimeEffectScope realtime(true);
+    bool dry = true;
+    audio_allocations = 0;
+    for (int block = 0; block < 8; ++block) {
+      fill(block);
+      track_allocations = true;
+      chain.processWithInput(input.data(), 256);
+      track_allocations = false;
+      for (int i = 0; i < 256; ++i) dry &= chain.output()->buffer[i][0] == input[i][0];
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    expect(audio_allocations == 0, "an unreserved selected effect allocates nothing on the audio thread");
+    expect(dry, "an unreserved selected effect passes audio through");
+    expect(!shell->controlsReserved(), "realtime processing never reserves an effect's controls");
+  }
+
+  chain.reserveSelectedControls();
+  expect(shell->controlsReserved(), "selecting an effect reserves its controls");
+  RealtimeEffectScope realtime(true);
+  double difference = 0;
+  for (int block = 8; block < 1000 && difference < .01; ++block) {
+    fill(block);
+    chain.processWithInput(input.data(), 256);
+    for (int i = 0; i < 256; ++i)
+      difference = std::max(difference, double(std::abs(chain.output()->buffer[i][0] - input[i][0])));
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+  expect(difference > .01, "the effect runs once its controls are reserved");
+}
+
 #include "ir_switching_tests.h"
 
 int main(int argc, char** argv) {
@@ -576,5 +649,6 @@ int main(int argc, char** argv) {
   convolutionStateRoundTrip();
   cancelledPreparationIsReleased();
   slotFilterTable();
+  controlsReservedOnSelection();
   return failures ? 1 : 0;
 }

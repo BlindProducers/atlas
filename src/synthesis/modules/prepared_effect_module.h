@@ -23,12 +23,17 @@ public:
   void remove(PreparedEffectModule* module);
   void request();
   void prepareSynchronously(PreparedEffectModule& module);
+  // The audio thread met a selected effect whose controls are not reserved;
+  // the plug-in reserves them on the message thread after the block.
+  void requestControlReservation() { reservation_requested_.store(true, std::memory_order_release); }
+  bool takeControlReservationRequest() { return reservation_requested_.exchange(false, std::memory_order_acq_rel); }
 private:
   void run();
   std::mutex mutex_;
   std::condition_variable signal_;
   std::vector<PreparedEffectModule*> modules_;
   std::atomic<bool> pending_ { false };
+  std::atomic<bool> reservation_requested_ { false };
   bool stopping_ = false;
   std::thread thread_;
 };
@@ -58,6 +63,14 @@ public:
   void correctToTime(double seconds) override { time_ = seconds; }
   int getLatencySamples() const override;
   Processor* clone() const override { VITAL_ASSERT(false); return nullptr; }
+  // Until a slot first selects this effect, its parameter controls keep
+  // 1x buffers and only the shell's own state follows the oversampling.
+  void setOversampleAmount(int amount) override;
+  // Grows the parameter controls' buffers, with room for every quality
+  // setting. It allocates and writes buffers the message thread also writes,
+  // so it runs with processing stopped (or the callback lock held) or offline.
+  void reserveControls();
+  bool controlsReserved() const { return controls_reserved_.load(std::memory_order_acquire); }
   void prepareForPlayback();
   void stopPreparation() { worker_->remove(this); }
   ConvolutionReverbModule* convolutionState() const { return convolution_state_.get(); }
@@ -108,6 +121,7 @@ private:
   // filter did before effects were prepared on demand. Audio/control thread only.
   bool filter_table_needed_ = false;
   const bool reset_in_place_;
+  std::atomic<bool> controls_reserved_ { false };
 
   std::unique_ptr<ConvolutionReverbModule> convolution_state_;
   std::atomic<uint64_t> requested_ { 0 };

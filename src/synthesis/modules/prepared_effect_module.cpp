@@ -230,7 +230,24 @@ void PreparedEffectModule::acceptPrepared() {
     }
   }
 }
+void PreparedEffectModule::setOversampleAmount(int amount) {
+  if (controlsReserved())
+    SynthModule::setOversampleAmount(amount); // Within the reserved capacity: no allocation.
+  else
+    Processor::setOversampleAmount(amount);
+}
+void PreparedEffectModule::reserveControls() {
+  if (controlsReserved()) return;
+  // An output reserves capacity for every quality the first time it grows
+  // past 1x. Grow through 2x even at 1x so later quality changes, which run
+  // on the audio thread, never allocate.
+  const int amount = getOversampleAmount();
+  SynthModule::setOversampleAmount(std::max(amount, 2));
+  if (amount < 2) SynthModule::setOversampleAmount(amount);
+  controls_reserved_.store(true, std::memory_order_release);
+}
 void PreparedEffectModule::prepareForPlayback() {
+  reserveControls();
   updateFilterTableNeed();
   requestPreparation();
   // Called with processing suspended, or by an explicitly offline renderer.
@@ -270,7 +287,8 @@ void PreparedEffectModule::processWithInput(const poly_float* input, int samples
   requestPreparation();
   if (!RealtimeEffectScope::active()) prepareForPlayback();
   acceptPrepared();
-  if (!active_ || active_->configuration != configuration()) {
+  if (!controlsReserved()) worker_->requestControlReservation();
+  if (!controlsReserved() || !active_ || active_->configuration != configuration()) {
     // Keep audio moving, with the announced latency, until the effect is ready.
     renderPending(input, samples);
     return;

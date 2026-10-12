@@ -105,6 +105,7 @@ namespace vital {
         effect_module->useOutput(slot_outputs_[slot].get(), 0);
         for (int output = 1; output < effect_module->numOutputs(); ++output)
           effect_module->useOutput(unused_output_.get(), output);
+        effect_module->releaseReplacedOutputs();
         effect_module->shareDependencyScratch(*this);
         addSubmodule(effect_module);
         addProcessor(effect_module);
@@ -250,8 +251,12 @@ namespace vital {
 
   void ReorderableEffectChain::setOversampleAmount(int amount) {
     if (!buffers_prepared_) {
-      // Reserve the small control/audio buffers once during graph setup.
+      // Reserve the chain's and slots' audio buffers once during graph setup.
+      // Each effect's parameter controls reserve theirs when a slot first
+      // selects it (reserveSelectedControls).
       SynthModule::setOversampleAmount(amount);
+      for (auto& output : slot_outputs_) output->ensureBufferSize(kMaxBufferSize * amount);
+      unused_output_->ensureBufferSize(kMaxBufferSize * amount);
       for (auto& slot : slot_oversamples_) slot.fill(amount);
       for (auto& slot : slot_rates_) slot.fill(getSampleRate() / amount);
       buffers_prepared_ = true;
@@ -373,7 +378,18 @@ namespace vital {
 
   ReorderableEffectChain::~ReorderableEffectChain() { stopPreparation(); }
 
+  void ReorderableEffectChain::reserveSelectedControls() {
+    for (int slot = 0; slot < constants::kMaxEffectSlots; ++slot) {
+      const int index = utils::iclamp(static_cast<int>(slot_types_[slot]->value() + 0.5f) - 1,
+                                      -1, constants::kNumEffects - 1);
+      if (index < 0) continue;
+      if (auto* prepared = dynamic_cast<PreparedEffectModule*>(slot_effects_[slot][index]))
+        prepared->reserveControls();
+    }
+  }
+
   void ReorderableEffectChain::prepareSelectedEffects() {
+    reserveSelectedControls();
     for (int slot = 0; slot < constants::kMaxEffectSlots; ++slot) {
       const int index = utils::iclamp(static_cast<int>(slot_types_[slot]->value() + 0.5f) - 1,
                                       -1, constants::kNumEffects - 1);

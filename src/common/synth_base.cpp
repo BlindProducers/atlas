@@ -32,6 +32,7 @@
 #include "utils.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 
 namespace {
@@ -268,6 +269,45 @@ bool SynthBase::isSourceTypeControl(const std::string& name) {
   return false;
 }
 
+bool SynthBase::isEffectSlotTypeControl(const std::string& name) {
+  size_t position = 0;
+  if (name.rfind("bus_", 0) == 0) {
+    position = name.find('_', 4);
+    if (position == std::string::npos) return false;
+    ++position;
+  }
+  static const std::string slot = "fx_slot_", type = "_type";
+  if (name.compare(position, slot.size(), slot) != 0) return false;
+  position += slot.size();
+  const size_t digits = position;
+  while (position < name.size() && std::isdigit(static_cast<unsigned char>(name[position]))) ++position;
+  return position > digits && name.compare(position, std::string::npos, type) == 0;
+}
+
+void SynthBase::scheduleEffectControlReservation() {
+  // An effect's parameter controls grow their buffers when a slot first
+  // selects it. That allocates and must not race the controls' writers, so it
+  // runs on the message thread holding the callback lock. Until then the slot
+  // passes audio through, as while its effect is being built.
+  auto reserve = [this] {
+    const ScopedLock lock(getCriticalSection());
+    engine_->reserveSelectedEffectControls();
+  };
+  if (MessageManager::getInstance()->isThisTheMessageThread()) {
+    reserve();
+    return;
+  }
+  if (effect_reservation_queued_.exchange(true))
+    return;
+  std::shared_ptr<std::atomic<bool>> alive = alive_;
+  MessageManager::callAsync([this, alive, reserve] {
+    if (!alive->load())
+      return;
+    effect_reservation_queued_ = false;
+    reserve();
+  });
+}
+
 void SynthBase::scheduleSourcePreparation() {
   // Building a type's engine allocates, so it never happens on the audio thread.
   if (MessageManager::getInstance()->isThisTheMessageThread()) {
@@ -295,6 +335,8 @@ void SynthBase::valueChanged(const std::string& name, vital::mono_float value) {
   controls_[name]->set(value);
   if (changed && isSourceTypeControl(name))
     scheduleSourcePreparation();
+  if (changed && isEffectSlotTypeControl(name))
+    scheduleEffectControlReservation();
   // Filter Table allocates its convolution buffers when a filter first selects it.
   if (static_cast<int>(value + 0.5f) == vital::constants::kFilterTable) {
     const std::string filter_prefix = filterPrefixForModelControl(name);

@@ -111,6 +111,8 @@ class SynthBase : public MidiManager::Listener {
     // callers pause processing around it.
     void prepareSelectedSources();
     static bool isSourceTypeControl(const std::string& name);
+    // An effect slot's type ("fx_slot_3_type", "bus_1_fx_slot_3_type").
+    static bool isEffectSlotTypeControl(const std::string& name);
     LineGenerator* getLfoSource(int index);
     std::vector<std::pair<std::string, vital::ConvolutionReverbModule*>> getConvolutionReverbModules();
 
@@ -272,6 +274,8 @@ class SynthBase : public MidiManager::Listener {
     std::shared_ptr<std::atomic<bool>> alive_ = std::make_shared<std::atomic<bool>>(true);
     bool source_preparation_queued_ = false;
     void scheduleSourcePreparation();
+    std::atomic<bool> effect_reservation_queued_ { false };
+    void scheduleEffectControlReservation();
 
     File active_file_;
     vital::poly_float oscilloscope_memory_[2 * vital::kOscilloscopeMemoryResolution];

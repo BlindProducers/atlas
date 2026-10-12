@@ -78,6 +78,9 @@ namespace vital {
       ~ReorderableEffectChain() override;
       void stopPreparation();
       void prepareSelectedEffects();
+      // Reserves the parameter controls of every slot's selected effect, enabled
+      // or not. Allocates: processing stopped or the callback lock held.
+      void reserveSelectedControls();
       void setSampleRate(int rate) override;
       void setOversampleAmount(int amount) override;
 

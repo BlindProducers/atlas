@@ -19,6 +19,8 @@
 #include "feedback.h"
 #include "processor_router.h"
 
+#include <algorithm>
+
 namespace vital {
 
   const Output Processor::null_source_(kMaxBufferSize, kMaxOversample);
@@ -145,6 +147,13 @@ namespace vital {
     VITAL_ASSERT(output);
 
     outputs_->at(index) = output;
+  }
+
+  void Processor::releaseReplacedOutputs() {
+    owned_outputs_.erase(std::remove_if(owned_outputs_.begin(), owned_outputs_.end(),
+        [this](const std::shared_ptr<Output>& owned) {
+          return std::find(outputs_->begin(), outputs_->end(), owned.get()) == outputs_->end();
+        }), owned_outputs_.end());
   }
 
   int Processor::connectedInputs() {
