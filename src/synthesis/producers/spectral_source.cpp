@@ -235,7 +235,7 @@ namespace vital {
   SpectralSource::SpectralSource(std::shared_ptr<Sample> sample) :
       Processor(kNumInputs, kNumOutputs), sample_(sample ? std::move(sample) : std::make_shared<Sample>()),
       analysis_cache_(std::make_shared<SharedAnalysisCache>()),
-      fft_(SpectralAnalysis::kFftOrder) {
+      fft_(atlas::sharedFft(SpectralAnalysis::kFftOrder)) {
     for (int i = 0; i < SpectralAnalysis::kFftSize; ++i) {
       window_[static_cast<size_t>(i)] = 0.5f - 0.5f * std::cos(juce::MathConstants<float>::twoPi *
                                                                i / SpectralAnalysis::kFftSize);
@@ -262,7 +262,7 @@ namespace vital {
 
   SpectralSource::SpectralSource(const SpectralSource& other) :
       Processor(other), sample_(other.sample_), analysis_cache_(other.analysis_cache_),
-      window_(other.window_), fft_(SpectralAnalysis::kFftOrder) {
+      window_(other.window_), fft_(atlas::sharedFft(SpectralAnalysis::kFftOrder)) {
     for (int lane = 0; lane < poly_float::kSize; ++lane) {
       lanes_[lane].analysis_valid = false;
       resetLane(lane);
@@ -732,7 +732,7 @@ namespace vital {
       lane.work[2 * (output_bin + 1) + 1] += imag * fraction;
     }
     lane.work[1] = 0.0f;
-    fft_.performRealOnlyInverseTransform(lane.work.data());
+    fft_->performRealOnlyInverseTransform(lane.work.data());
     for (int i = 0; i < size; ++i) {
       const int index = (lane.write_pos + i) % size;
       const float sample_value = lane.work[(i + size / 2) % size] * window_[i];

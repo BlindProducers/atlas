@@ -42,11 +42,15 @@ namespace vital {
       global_feedback_order_(original.global_feedback_order_),
       global_changes_(original.global_changes_),
       local_changes_(original.local_changes_),
-      dependencies_(new CircularQueue<const Processor*>(kMaxModulationConnections)),
-      dependencies_visited_(new CircularQueue<const Processor*>(kMaxModulationConnections)),
-      dependency_inputs_(new CircularQueue<const Processor*>(kMaxModulationConnections)),
-      dependencies_set_(new FixedProcessorSet()),
-      dependencies_visited_set_(new FixedProcessorSet()) {
+      // A clone (a voice) shares the original's dependency scratch, as it
+      // shares its order: graph changes are serialised by the processing lock
+      // and work on one router at a time. Every voice used to allocate about
+      // 17 KiB of scratch per router, for some 125 routers per voice.
+      dependencies_(original.dependencies_),
+      dependencies_visited_(original.dependencies_visited_),
+      dependency_inputs_(original.dependency_inputs_),
+      dependencies_set_(original.dependencies_set_),
+      dependencies_visited_set_(original.dependencies_visited_set_) {
     local_order_.reserve(global_order_->capacity());
     local_order_.assign(global_order_->size(), 0);
     local_feedback_order_.assign(global_feedback_order_->size(), nullptr);

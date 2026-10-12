@@ -23,12 +23,12 @@
 
 namespace vital {
 
-  SpectralAnalysis::SpectralAnalysis() : fft_(kFftOrder) { }
+  SpectralAnalysis::SpectralAnalysis() : fft_(atlas::sharedFft(kFftOrder)) { }
 
   SpectralAnalysis::SpectralAnalysis(const SpectralAnalysis& other) :
       frames_(other.frames_), source_samples_(other.source_samples_),
       source_sample_rate_(other.source_sample_rate_), global_max_(other.global_max_),
-      fft_(kFftOrder) { }
+      fft_(atlas::sharedFft(kFftOrder)) { }
 
   void SpectralAnalysis::clear() noexcept {
     frames_.clear();
@@ -74,7 +74,7 @@ namespace vital {
         work[static_cast<size_t>((i + kFftSize / 2) % kFftSize)] =
             source[start + i] * window[static_cast<size_t>(i)];
 
-      fft_.performRealOnlyForwardTransform(work.data());
+      fft_->performRealOnlyForwardTransform(work.data());
 
       Frame frame;
       frame.magnitude.resize(static_cast<size_t>(kNumBins));

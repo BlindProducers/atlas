@@ -100,7 +100,7 @@ namespace vital {
       int size_ = 0, partitions_ = 0, spectrum_floats_ = 0;
       std::shared_ptr<Source> source_;
       std::unique_ptr<atlas::filter_table::KernelBuilder> builder_;
-      std::unique_ptr<juce::dsp::FFT> fft_;
+      std::shared_ptr<const juce::dsp::FFT> fft_;
       atlas::filter_table::Frame frame_a_, frame_b_, frame_;
       Voice voices_[kNumVoices];
 
