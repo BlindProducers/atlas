@@ -471,6 +471,8 @@ void LoadSave::loadModulations(SynthBase* synth, const json& modulations) {
     vital::ModulationConnection* connection = modulation_bank.atIndex(index);
     index++;
 
+    if (!destination.empty())
+      synth->prepareModulationDestination(destination);
     if (synth->getEngine()->getModulationSource(source) == nullptr ||
         synth->getEngine()->getMonoModulationDestination(destination) == nullptr) {
       continue;

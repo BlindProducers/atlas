@@ -34,15 +34,22 @@ The Design 2 figure is an upper bound: the experiment removed non-selected contr
 
 Before any change, the tests must be able to prove that sound, saved state and routing come out identical. Both stages are judged against these.
 
-- [ ] **Golden renders.** Extend `AtlasPreparedEffectTests --render` to cover every effect type in main and bus slots with non-default settings and a modulation route into an effect parameter; switching effects during playback; FX proxy automation; bus preset loading; the factory presets. Outputs must match the current build sample for sample.
-- [ ] **Save/load round trip.** Saving, loading and saving again gives identical state, including settings of non-selected effects, modulation routes into them, FX automation assignments to them, and MIDI learn targets.
+- [x] **Golden renders.** Extend `AtlasPreparedEffectTests --render` to cover every effect type in main and bus slots with non-default settings and a modulation route into an effect parameter; switching effects during playback; FX proxy automation; bus preset loading; the factory presets. Outputs must match the current build sample for sample. Done: `--render <dir> <presets> [filter]` (166 scenarios, rendered offline) and `--compare <baseline> <candidate>`.
+- [x] **Save/load round trip.** Saving, loading and saving again gives identical state, including settings of non-selected effects, modulation routes into them, FX automation assignments to them, and MIDI learn targets. Done: `--state-round-trip` (MIDI learn mappings are global configuration, not state, so they are not part of it).
 - [ ] **Slot operations.** Swap, move, clear, copy/paste and bus presets keep every type's remembered settings, routes and automation, as today.
-- [ ] **Existing suites:** prepared effects, FX automation, FX bus presets, editor accessibility, Glitch Delay, Trance Gate, latency, timing stability.
+- [x] **Existing suites:** prepared effects, FX automation, FX bus presets, editor accessibility, Glitch Delay, Trance Gate, latency, timing stability.
 - [ ] **Memory thresholds** on `--construction` and `--editor-memory`, so a regression fails a test.
 
-One caveat: the Eight Ways factory preset already renders differently from run to run on the old code too (5 different outputs in 28 runs), probably a background analysis thread. Either fix that first or leave it out of the bit-exact comparison.
+Caveats found while building it:
+
+- Effects switched during playback only render repeatably offline; in realtime mode their DSP is prepared on a worker thread. The renders therefore run offline, as a host's render does.
+- Convolution Reverb and the bus Tape scenario still vary from run to run, offline too: impulse responses and tape noise build on background threads. `--compare` reports them but does not fail on them.
+- The Eight Ways factory preset varied as well (5 different outputs in 28 runs) until the renders waited a moment for background loading before starting.
+- `atlas_glitch_delay_dsp` failed once on the unchanged code ("Turning sustain off didn't release recovery") and passed on three reruns: an existing flaky check.
 
 ## Stage 1: parked parameters (about 100 MB less)
+
+**Status: implemented** on `effect-parameter-redesign`. One instance with the editor open went from 363 MB to 262 MB, construction from 260 MiB to 174 MiB (about 280 ms to 195 ms, 4.0 M to 2.2 M allocations); CPU per block is unchanged. All deterministic golden renders match the previous build sample for sample, the round trip matches, and switching effects and quality settings during playback allocates nothing on the audio thread.
 
 A shell keeps its parameter values whether or not it is selected, but only the selected effect gets modulation wiring. The value objects never move, so nothing that reads parameters by name or by pointer has to change.
 
@@ -52,11 +59,11 @@ A shell keeps its parameter values whether or not it is selected, but only the s
     - Leaving: disconnect the old effect's routes, apply that with processing paused (`processModulationChanges`), remove the shell from the preparation worker, then tear the wiring down.
     - This is the order oscillator slots already use for type changes (`SynthBase::prepareSelectedSources`).
 3. **Effect changed from the audio thread** (FX proxy automation or MIDI learn on a slot's type): the slot passes audio through, latency-aligned, and raises the existing reservation request; the main thread makes it live. Unprepared effects already behave this way.
-4. **Dormant modulation routes.** A route aimed at an effect that isn't selected stays in the modulation bank and in saved state, unplugged, and plugs in when that effect goes live. Today a route to a missing destination is silently dropped, and the disconnect paths dereference the destination without a null check; both need fixing.
+4. **Routes into parked effects.** As built, a parameter a route reaches keeps its wiring while its effect is parked, so routes never have to be unplugged and plugged again. A route made to a parked effect's parameter (from the editor, a preset, a paste or a bus preset) builds that one parameter's wiring first (`SynthBase::prepareModulationDestination`). Parking removes only the wiring no route uses, after queued route changes have been applied.
 5. **Destination cache fix.** `getMonoModulationDestinations()` and its siblings copy every child's entries into the caller's own maps and never remove them, so lookups would return wiring that has been destroyed. Make them build a fresh map.
 6. **Preset loading order.** After `loadControls`, the selected effects go live before `loadModulations` runs, or dormant routes connect as they go live.
-7. **Modulation matrix** lists only live destinations, and slot parameters get their own group.
-8. **Legacy fixed-order sets** are never selected, so they stay parked and become cheap automatically. Remove the dead meters (compressor, chorus, phaser, flanger status outputs) that point at them. Keep their values: host parameter IDs are numbered from them.
+7. **Modulation matrix** lists only live destinations (and parameters routes already reach). Not done yet: giving slot parameters their own group in that list.
+8. **Legacy fixed-order sets** are never selected, so they stay parked and become cheap automatically. Keep their values: host parameter IDs are numbered from them. Not done yet: removing the dead meters (compressor, chorus, phaser, flanger status outputs) that point at them; they are harmless.
 
 ## Stage 2: parameter table (about 70 MB more)
 

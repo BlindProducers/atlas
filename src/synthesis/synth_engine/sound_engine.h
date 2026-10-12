@@ -130,6 +130,11 @@ namespace vital {
       void checkOversampling();
       void prepareSelectedEffects();
       void reserveSelectedEffectControls();
+      // See ReorderableEffectChain: parks the effects no slot selects, and
+      // wires a parked effect's parameter for a route. Message thread, with
+      // processing stopped or the callback lock held.
+      void parkUnselectedEffects();
+      bool wireModulationDestination(const std::string& name);
       bool takeEffectControlReservationRequest();
       void updateEffectLatency();
       // Host-rate samples, after parallel routing has been compensated.

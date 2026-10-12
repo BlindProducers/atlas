@@ -281,7 +281,7 @@ const CriticalSection& SynthPlugin::getCriticalSection() {
 void SynthPlugin::pauseProcessing(bool pause) {
   if (!pause) {
     const ScopedLock lock(getCallbackLock());
-    engine_->prepareSelectedEffects();
+    prepareSelectedEffects();
   }
   suspendProcessing(pause);
 }
@@ -347,7 +347,7 @@ void SynthPlugin::prepareToPlay(double sample_rate, int buffer_size) {
   engine_->setSampleRate(sample_rate);
   engine_->checkOversampling();
   engine_->updateAllModulationSwitches();
-  engine_->prepareSelectedEffects();
+  prepareSelectedEffects();
   midi_manager_->setSampleRate(sample_rate);
   updateHostLatency();
 }
@@ -981,7 +981,7 @@ void SynthPlugin::setStateInformation(const void* data, int size_in_bytes) {
   {
     const ScopedLock lock(getCallbackLock());
     engine_->checkOversampling();
-    engine_->prepareSelectedEffects();
+    prepareSelectedEffects();
     engine_->updateEffectLatency();
     updateFxSampleRate();
   }

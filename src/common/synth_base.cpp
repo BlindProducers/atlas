@@ -291,7 +291,7 @@ void SynthBase::scheduleEffectControlReservation() {
   // passes audio through, as while its effect is being built.
   auto reserve = [this] {
     const ScopedLock lock(getCriticalSection());
-    engine_->reserveSelectedEffectControls();
+    updateEffectShells();
   };
   if (MessageManager::getInstance()->isThisTheMessageThread()) {
     reserve();
@@ -306,6 +306,17 @@ void SynthBase::scheduleEffectControlReservation() {
     effect_reservation_queued_ = false;
     reserve();
   });
+}
+
+void SynthBase::updateEffectShells() {
+  processModulationChanges();
+  engine_->parkUnselectedEffects();
+  engine_->reserveSelectedEffectControls();
+}
+
+void SynthBase::prepareSelectedEffects() {
+  updateEffectShells();
+  engine_->prepareSelectedEffects();
 }
 
 void SynthBase::scheduleSourcePreparation() {
@@ -487,7 +498,16 @@ bool SynthBase::acceptsOscillatorModulation(int slot, const std::string& destina
   return poly_destination != nullptr && !poly_destination->isControlRate();
 }
 
+void SynthBase::prepareModulationDestination(const std::string& destination) {
+  // A parked effect has no modulation wiring; build the destination's (it
+  // stays while a route reaches it). This changes the graph, so the audio
+  // thread must be out of it.
+  const ScopedLock lock(getCriticalSection());
+  engine_->wireModulationDestination(destination);
+}
+
 void SynthBase::connectModulation(vital::ModulationConnection* connection) {
+  prepareModulationDestination(connection->destination_name);
   vital::modulation_change change = createModulationChange(connection);
   // An oscillator's audio reaches only the audio-rate controls of the other
   // oscillators and the voice filters.

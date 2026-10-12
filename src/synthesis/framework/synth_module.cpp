@@ -484,40 +484,40 @@ namespace vital {
     return all_sources;
   }
 
-  input_map& SynthModule::getMonoModulationDestinations() {
-    input_map& all_destinations = data_->mono_mod_destinations;
+  input_map SynthModule::getMonoModulationDestinations() {
+    input_map all_destinations = data_->mono_mod_destinations;
     for (SynthModule* sub_module : data_->sub_modules) {
-      input_map& sub_destinations = sub_module->getMonoModulationDestinations();
+      input_map sub_destinations = sub_module->getMonoModulationDestinations();
       all_destinations.insert(sub_destinations.begin(), sub_destinations.end());
     }
 
     return all_destinations;
   }
 
-  input_map& SynthModule::getPolyModulationDestinations() {
-    input_map& all_destinations = data_->poly_mod_destinations;
+  input_map SynthModule::getPolyModulationDestinations() {
+    input_map all_destinations = data_->poly_mod_destinations;
     for (SynthModule* sub_module : data_->sub_modules) {
-      input_map& sub_destinations = sub_module->getPolyModulationDestinations();
+      input_map sub_destinations = sub_module->getPolyModulationDestinations();
       all_destinations.insert(sub_destinations.begin(), sub_destinations.end());
     }
 
     return all_destinations;
   }
 
-  output_map& SynthModule::getMonoModulations() {
-    output_map& all_readouts = data_->mono_modulation_readout;
+  output_map SynthModule::getMonoModulations() {
+    output_map all_readouts = data_->mono_modulation_readout;
     for (SynthModule* sub_module : data_->sub_modules) {
-      output_map& sub_readouts = sub_module->getMonoModulations();
+      output_map sub_readouts = sub_module->getMonoModulations();
       all_readouts.insert(sub_readouts.begin(), sub_readouts.end());
     }
 
     return all_readouts;
   }
 
-  output_map& SynthModule::getPolyModulations() {
-    output_map& all_readouts = data_->poly_modulation_readout;
+  output_map SynthModule::getPolyModulations() {
+    output_map all_readouts = data_->poly_modulation_readout;
     for (SynthModule* sub_module : data_->sub_modules) {
-      output_map& sub_readouts = sub_module->getPolyModulations();
+      output_map sub_readouts = sub_module->getPolyModulations();
       all_readouts.insert(sub_readouts.begin(), sub_readouts.end());
     }
 
@@ -549,6 +549,22 @@ namespace vital {
   void SynthModule::addIdleMonoProcessor(Processor* processor) {
     getMonoRouter()->addIdleProcessor(processor);
     data_->idle_mono_processors.push_back(processor);
+  }
+
+  void SynthModule::removeMonoProcessor(Processor* processor) {
+    auto& added = data_->mono_router_processors;
+    added.erase(std::remove(added.begin(), added.end(), processor), added.end());
+    auto& owned = data_->owned_mono_processors;
+    owned.erase(std::remove(owned.begin(), owned.end(), processor), owned.end());
+    // removeProcessor hands ownership back to the caller.
+    getMonoRouter()->removeProcessor(processor);
+    delete processor;
+  }
+
+  void SynthModule::removeIdleMonoProcessor(Processor* processor) {
+    auto& idle = data_->idle_mono_processors;
+    idle.erase(std::remove(idle.begin(), idle.end(), processor), idle.end());
+    getMonoRouter()->removeIdleProcessor(processor);
   }
 
   void SynthModule::detachMonoProcessors() {

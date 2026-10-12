@@ -139,6 +139,17 @@ namespace vital {
     effect_chain_->reserveSelectedControls();
   }
 
+  void SoundEngine::parkUnselectedEffects() {
+    for (auto* chain : bus_effect_chains_) chain->parkUnselectedEffects();
+    effect_chain_->parkUnselectedEffects();
+  }
+
+  bool SoundEngine::wireModulationDestination(const std::string& name) {
+    for (auto* chain : bus_effect_chains_)
+      if (chain->wireModulationDestination(name)) return true;
+    return effect_chain_->wireModulationDestination(name);
+  }
+
   void SoundEngine::init() {
     createBaseControl("bypass");
     createBaseControl("mpe_enabled");

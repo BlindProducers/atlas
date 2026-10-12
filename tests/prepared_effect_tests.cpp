@@ -175,6 +175,8 @@ void compareEffects() {
       for (auto* module : { original.get(), static_cast<SynthModule*>(&prepared) }) {
         module->init(); module->setSampleRate(48000); module->setOversampleAmount(factor);
       }
+      // A slot selecting the effect makes it live: its modulation wiring.
+      prepared.reserveControls();
       auto before = original->getControls(), after = prepared.getControls();
       expect(before.size() == after.size(), "all saved controls retained");
       // Exercise non-default, modulated and smoothed controls, as well as the
@@ -292,6 +294,7 @@ void cancelledPreparationIsReleased() {
     return std::make_unique<CountedDelay>(bpm.output(), live);
   }, worker);
   module.init(); module.setSampleRate(48000); module.setOversampleAmount(2);
+  module.reserveControls(); // Selected: only a live effect prepares its DSP.
   allow = false;
   std::array<poly_float, 128> input {};
   {
@@ -580,6 +583,65 @@ void constructionCost(bool chain_only, int shell_type = -1) {
 }
 
 }
+// An effect a slot does not select keeps its parameter values but none of
+// their modulation wiring, except where a route reaches it. Selecting it
+// wires it; leaving it tears down the wiring no route uses.
+void parkedEffectWiring() {
+  using namespace vital;
+  cr::Value bpm(2), keytrack(0);
+  ReorderableEffectChain chain(bpm.output(), keytrack.output(), "bus_1_");
+  chain.init(); chain.setSampleRate(48000); chain.setOversampleAmount(2);
+  const auto controls = chain.getControls();
+  const std::string slot = "bus_1_fx_slot_4_";
+  const std::string feedback = slot + "delay_feedback", dry_wet = slot + "delay_dry_wet";
+  expect(controls.count(feedback) == 1, "a parked effect keeps its parameter values");
+  expect(chain.getMonoModulationDestination(feedback) == nullptr, "a parked effect has no modulation wiring");
+  expect(chain.getMonoModulationDestinations().empty(), "nothing is wired before a slot selects an effect");
+
+  controls.at(slot + "type")->set(constants::kDelay + 1);
+  chain.reserveSelectedControls();
+  expect(chain.getMonoModulationDestination(feedback) != nullptr, "selecting an effect wires its parameters");
+  expect(chain.getMonoModulationDestination(dry_wet) != nullptr, "every modulated parameter is wired");
+  controls.at(feedback)->set(.61f);
+
+  // A route keeps its parameter wired after the slot moves on.
+  cr::Value modulation(.2f);
+  chain.getMonoModulationDestination(feedback)->plugNext(modulation.output());
+  controls.at(slot + "type")->set(constants::kReverb + 1);
+  chain.parkUnselectedEffects();
+  chain.reserveSelectedControls();
+  expect(chain.getMonoModulationDestination(feedback) != nullptr, "a routed parameter stays wired when parked");
+  expect(chain.getMonoModulationDestination(dry_wet) == nullptr, "unrouted parameters lose their wiring when parked");
+  expect(chain.getMonoModulationDestination(slot + "reverb_decay_time") != nullptr, "the newly selected effect is live");
+  expect(controls.at(feedback)->value() == .61f, "a parked effect keeps its settings");
+
+  // A route can be made to a parked effect's parameter, and only to modulated ones.
+  expect(chain.wireModulationDestination(slot + "chorus_frequency"), "a parked parameter can be wired for a route");
+  expect(chain.getMonoModulationDestination(slot + "chorus_frequency") != nullptr, "the wired parameter is a target");
+  expect(!chain.wireModulationDestination(slot + "type"), "a slot's type is not a modulation target");
+  expect(!chain.wireModulationDestination("fx_slot_4_delay_feedback"), "another chain's parameter is not wired here");
+
+  // Once its route goes, the parameter's wiring goes at the next park.
+  chain.getMonoModulationDestination(feedback)->unplug(modulation.output());
+  chain.parkUnselectedEffects();
+  expect(chain.getMonoModulationDestination(feedback) == nullptr, "an unrouted parked parameter is unwired");
+  expect(chain.getMonoModulationDestination(slot + "chorus_frequency") == nullptr, "so is one wired for a route that never came");
+
+  // Returning to an effect wires it again and it runs, offline.
+  controls.at(slot + "type")->set(constants::kDelay + 1);
+  controls.at(slot + "enabled")->set(1);
+  std::array<poly_float, 256> input {};
+  for (int i = 0; i < 256; ++i) input[i] = .3f * std::sin(i * .9f);
+  double difference = 0;
+  for (int block = 0; block < 40; ++block) {
+    chain.processWithInput(input.data(), 256);
+    for (int i = 0; i < 256; ++i)
+      difference = std::max(difference, double(std::abs(chain.output()->buffer[i][0] - input[i][0])));
+  }
+  expect(chain.getMonoModulationDestination(feedback) != nullptr, "a reselected effect is live again");
+  expect(difference > .01, "a reselected effect runs");
+}
+
 // A slot's effect reserves its controls' buffers only once selected, on the
 // message thread; until then the slot passes audio through without allocating.
 void controlsReservedOnSelection() {
@@ -1085,5 +1147,6 @@ int main(int argc, char** argv) {
   cancelledPreparationIsReleased();
   slotFilterTable();
   controlsReservedOnSelection();
+  parkedEffectWiring();
   return failures ? 1 : 0;
 }

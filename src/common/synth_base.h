@@ -70,6 +70,9 @@ class SynthBase : public MidiManager::Listener {
     void valueChangedExternal(const std::string& name, vital::mono_float value);
     void valueChangedInternal(const std::string& name, vital::mono_float value);
     bool connectModulation(const std::string& source, const std::string& destination);
+    // Builds the modulation wiring of a parked effect's parameter so a route
+    // can reach it. Takes the callback lock (the graph changes).
+    void prepareModulationDestination(const std::string& destination);
     // Whether oscillator `slot`'s audio (osc_N_output) can modulate `destination`:
     // a per-voice, audio-rate control of another oscillator or of a voice filter.
     bool acceptsOscillatorModulation(int slot, const std::string& destination);
@@ -110,6 +113,10 @@ class SynthBase : public MidiManager::Listener {
     // modulation routes into parameters of the types it left. Message thread;
     // callers pause processing around it.
     void prepareSelectedSources();
+    // Makes each effect slot's selected effect live and parks the others, then
+    // prepares the enabled effects' DSP. Processing stopped or the callback
+    // lock held.
+    void prepareSelectedEffects();
     static bool isSourceTypeControl(const std::string& name);
     // An effect slot's type ("fx_slot_3_type", "bus_1_fx_slot_3_type").
     static bool isEffectSlotTypeControl(const std::string& name);
@@ -276,6 +283,10 @@ class SynthBase : public MidiManager::Listener {
     void scheduleSourcePreparation();
     std::atomic<bool> effect_reservation_queued_ { false };
     void scheduleEffectControlReservation();
+    // Live and parked effects as the slots select them. Queued route changes
+    // point at wiring that parking may remove, so they are applied first.
+    // Processing stopped or the callback lock held.
+    void updateEffectShells();
 
     File active_file_;
     vital::poly_float oscilloscope_memory_[2 * vital::kOscilloscopeMemoryResolution];

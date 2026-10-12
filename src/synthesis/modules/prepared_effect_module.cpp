@@ -6,6 +6,7 @@
 #include "spectral_lock_module.h"
 #include "smooth_value.h"
 #include "value_switch.h"
+#include "operators.h"
 #include "synth_constants.h"
 #include <algorithm>
 #include <cmath>
@@ -131,12 +132,11 @@ PreparedEffectModule::~PreparedEffectModule() {
   delete retired_.load();
 }
 void PreparedEffectModule::init() {
+  // Every parameter's value, as createBaseModControl would make it; the
+  // modulation wiring around it waits until the effect is selected or routed.
   for (const auto& control : description_.controls) {
     const auto name = prefix_ + control.suffix;
-    if (control.modulated)
-      raw_controls_[name] = createBaseModControl(name, control.audio_rate, control.smooth);
-    else
-      createBaseControl(name, control.audio_rate, control.smooth);
+    createBaseControl(name, control.audio_rate, control.smooth);
     data_->controls.at(name)->set(control.initial);
   }
   if (type_ == constants::kSpectralGate)
@@ -194,13 +194,16 @@ void PreparedEffectModule::prepareOnWorker() {
   }
   if (convolution_state_)
     static_cast<ConvolutionReverbModule*>(prepared->module.get())->shareIrSourceFrom(*convolution_state_);
-  for (const auto& entry : inputs) {
-    const auto raw = raw_controls_.find(entry.first);
-    const auto readout = data_->mono_modulation_readout.find(entry.first);
-    prepared->bindings.push_back({ entry.second.value, data_->controls.at(entry.first),
-        entry.second.modulated && raw != raw_controls_.end() ? raw->second : nullptr,
-        entry.second.internal_total,
-        readout == data_->mono_modulation_readout.end() ? nullptr : readout->second });
+  {
+    std::lock_guard<std::mutex> lock(wiring_mutex_);
+    for (const auto& entry : inputs) {
+      const auto raw = raw_controls_.find(entry.first);
+      const auto readout = data_->mono_modulation_readout.find(entry.first);
+      prepared->bindings.push_back({ entry.second.value, data_->controls.at(entry.first),
+          entry.second.modulated && raw != raw_controls_.end() ? raw->second : nullptr,
+          entry.second.internal_total,
+          readout == data_->mono_modulation_readout.end() ? nullptr : readout->second });
+    }
   }
   if (requested_.load(std::memory_order_acquire) == requested) {
     completed_ = requested;
@@ -231,20 +234,101 @@ void PreparedEffectModule::acceptPrepared() {
   }
 }
 void PreparedEffectModule::setOversampleAmount(int amount) {
-  if (controlsReserved())
+  if (buffers_reserved_.load(std::memory_order_acquire))
     SynthModule::setOversampleAmount(amount); // Within the reserved capacity: no allocation.
   else
     Processor::setOversampleAmount(amount);
 }
+void PreparedEffectModule::wireControl(const Control& control) {
+  // createBaseModControl's wiring, around the parameter's existing value.
+  const std::string name = prefix_ + control.suffix;
+  Value* base = data_->controls.at(name);
+  Processor* mono_total = control.audio_rate ? static_cast<Processor*>(new ModulationSum()) : new cr::VariableAdd();
+  mono_total->plugNext(base);
+  addMonoProcessor(mono_total, false);
+  data_->mono_mod_destinations[name] = mono_total;
+  data_->mono_modulation_readout[name] = mono_total->output();
+
+  ValueSwitch* control_switch = new ValueSwitch(0.0f);
+  control_switch->plugNext(base);
+  control_switch->plugNext(mono_total);
+  control_switch->addProcessor(mono_total);
+  addIdleMonoProcessor(control_switch);
+  control_switch->set(control.smooth ? 1.0f : 0.0f);
+  data_->mono_modulation_switches[name] = control_switch;
+  raw_controls_[name] = control_switch->output(ValueSwitch::kSwitch);
+
+  mono_total->setSampleRate(getSampleRate());
+  control_switch->setSampleRate(getSampleRate());
+  // Wiring can be built while the parameter already runs at a higher quality,
+  // so reserve it here rather than relying on its first growth.
+  reserveProcessor(mono_total);
+  reserveProcessor(control_switch);
+}
+void PreparedEffectModule::unwireControl(const std::string& name) {
+  Processor* mono_total = data_->mono_mod_destinations.at(name);
+  ValueSwitch* control_switch = data_->mono_modulation_switches.at(name);
+  data_->mono_mod_destinations.erase(name);
+  data_->mono_modulation_readout.erase(name);
+  data_->mono_modulation_switches.erase(name);
+  raw_controls_.erase(name);
+  removeIdleMonoProcessor(control_switch);
+  removeMonoProcessor(mono_total);
+}
+void PreparedEffectModule::reserveProcessor(Processor* processor) {
+  const int amount = getOversampleAmount();
+  processor->setOversampleAmount(std::max(amount, 2));
+  if (amount < 2) processor->setOversampleAmount(amount);
+  for (int i = 0; i < processor->numOwnedOutputs(); ++i)
+    processor->ownedOutput(i)->reserveAllQualities();
+}
+bool PreparedEffectModule::wireModulationDestination(const std::string& name) {
+  if (name.compare(0, prefix_.size(), prefix_) != 0)
+    return false;
+  for (const auto& control : description_.controls) {
+    if (!control.modulated || name.compare(prefix_.size(), std::string::npos, control.suffix) != 0)
+      continue;
+    std::lock_guard<std::mutex> lock(wiring_mutex_);
+    if (data_->mono_mod_destinations.count(name) == 0)
+      wireControl(control);
+    return true;
+  }
+  return false;
+}
 void PreparedEffectModule::reserveControls() {
   if (controlsReserved()) return;
-  // An output reserves capacity for every quality the first time it grows
-  // past 1x. Grow through 2x even at 1x so later quality changes, which run
-  // on the audio thread, never allocate.
+  {
+    std::lock_guard<std::mutex> lock(wiring_mutex_);
+    for (const auto& control : description_.controls)
+      if (control.modulated && data_->mono_mod_destinations.count(prefix_ + control.suffix) == 0)
+        wireControl(control);
+  }
   const int amount = getOversampleAmount();
-  SynthModule::setOversampleAmount(std::max(amount, 2));
-  if (amount < 2) SynthModule::setOversampleAmount(amount);
+  if (!buffers_reserved_.load(std::memory_order_acquire)) {
+    // An output reserves capacity for every quality the first time it grows
+    // past 1x. Grow through 2x even at 1x so later quality changes, which run
+    // on the audio thread, never allocate.
+    SynthModule::setOversampleAmount(std::max(amount, 2));
+    buffers_reserved_.store(true, std::memory_order_release);
+  }
+  // A parked effect's controls missed quality changes; this stays within
+  // their reserved capacity.
+  SynthModule::setOversampleAmount(amount);
   controls_reserved_.store(true, std::memory_order_release);
+}
+void PreparedEffectModule::park() {
+  if (controlsReserved()) {
+    controls_reserved_.store(false, std::memory_order_release);
+    // Release the DSP: what it binds to may be torn down below, and a
+    // preparation already under way publishes for an older configuration.
+    restart();
+  }
+  std::lock_guard<std::mutex> lock(wiring_mutex_);
+  std::vector<std::string> unrouted;
+  for (const auto& destination : data_->mono_mod_destinations)
+    if (destination.second->connectedInputs() <= 1) unrouted.push_back(destination.first);
+  for (const auto& name : unrouted)
+    unwireControl(name);
 }
 void PreparedEffectModule::prepareForPlayback() {
   reserveControls();
@@ -283,12 +367,21 @@ void PreparedEffectModule::renderPending(const poly_float* input, int samples) {
 }
 void PreparedEffectModule::processWithInput(const poly_float* input, int samples) {
   if (samples <= 0) return;
+  if (!controlsReserved()) {
+    if (RealtimeEffectScope::active()) {
+      // Selected but parked: the message thread makes it live after this
+      // block. Nothing is prepared before that, as the DSP binds the wiring.
+      worker_->requestControlReservation();
+      renderPending(input, samples);
+      return;
+    }
+    prepareForPlayback(); // Offline: live, and prepared, within this block.
+  }
   updateFilterTableNeed();
   requestPreparation();
   if (!RealtimeEffectScope::active()) prepareForPlayback();
   acceptPrepared();
-  if (!controlsReserved()) worker_->requestControlReservation();
-  if (!controlsReserved() || !active_ || active_->configuration != configuration()) {
+  if (!active_ || active_->configuration != configuration()) {
     // Keep audio moving, with the announced latency, until the effect is ready.
     renderPending(input, samples);
     return;

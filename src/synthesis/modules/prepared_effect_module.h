@@ -66,11 +66,25 @@ public:
   // Until a slot first selects this effect, its parameter controls keep
   // 1x buffers and only the shell's own state follows the oversampling.
   void setOversampleAmount(int amount) override;
-  // Grows the parameter controls' buffers, with room for every quality
-  // setting. It allocates and writes buffers the message thread also writes,
-  // so it runs with processing stopped (or the callback lock held) or offline.
+
+  // A shell keeps a plain value for every parameter of its effect. Only an
+  // effect a slot selects is "live": each modulated parameter then also has
+  // its modulation total and switch (its "wiring"). A parked effect keeps the
+  // wiring of the parameters routes reach, and nothing else. Wiring is built
+  // and torn down with processing stopped (or the callback lock held), or
+  // offline, as it changes the graph and allocates.
+  //
+  // Makes the effect live: wires every modulated parameter and grows the
+  // parameter controls' buffers, with room for every quality setting.
   void reserveControls();
   bool controlsReserved() const { return controls_reserved_.load(std::memory_order_acquire); }
+  // Parks an effect its slot no longer selects: releases its DSP and the
+  // wiring of every parameter no route reaches.
+  void park();
+  bool hasWiring() const { return !data_->mono_mod_destinations.empty(); }
+  // Wires one modulated parameter so a route can reach it while the effect is
+  // parked. False when `name` is not one of this effect's modulated parameters.
+  bool wireModulationDestination(const std::string& name);
   void prepareForPlayback();
   void stopPreparation() { worker_->remove(this); }
   ConvolutionReverbModule* convolutionState() const { return convolution_state_.get(); }
@@ -96,6 +110,10 @@ private:
     std::vector<Binding> bindings;
   };
   static Description describe(int type, const std::string& prefix, const Factory& factory);
+  void wireControl(const Control& control);
+  void unwireControl(const std::string& name);
+  // Gives new wiring the room for every quality setting the controls have.
+  void reserveProcessor(Processor* processor);
   uint64_t configuration() const;
   void updateFilterTableNeed();
   void requestPreparation();
@@ -110,7 +128,10 @@ private:
   Factory factory_;
   std::shared_ptr<EffectPreparationWorker> worker_;
   Description description_;
+  // The switch output of each wired parameter, which the built DSP reads.
+  // Guarded by wiring_mutex_, as the worker reads it while binding.
   output_map raw_controls_;
+  std::mutex wiring_mutex_;
   Value* fft_size_control_ = nullptr;
   Value* spectral_lock_mode_control_ = nullptr;
   Value* filter_model_control_ = nullptr;
@@ -122,6 +143,8 @@ private:
   bool filter_table_needed_ = false;
   const bool reset_in_place_;
   std::atomic<bool> controls_reserved_ { false };
+  // Set once the parameter controls' buffers have grown; parking keeps them.
+  std::atomic<bool> buffers_reserved_ { false };
 
   std::unique_ptr<ConvolutionReverbModule> convolution_state_;
   std::atomic<uint64_t> requested_ { 0 };

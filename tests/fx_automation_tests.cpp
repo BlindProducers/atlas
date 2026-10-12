@@ -20,6 +20,14 @@ namespace {
     return 1;
   }
 
+  // A modulatable effect parameter is a modulation destination once a route
+  // asks for it: an effect its slot does not select builds the wiring then,
+  // as connectModulation and preset loading do.
+  bool isModulationDestination(SynthPlugin& synth, const std::string& id) {
+    synth.prepareModulationDestination(id);
+    return synth.getEngine()->getMonoModulationDestination(id) != nullptr;
+  }
+
   std::string firstAutomatableControl(SynthPlugin& synth, const std::string& prefix) {
     for (const auto& control : synth.getControls()) {
       if (control.second != nullptr && control.first.rfind(prefix, 0) == 0 &&
@@ -314,12 +322,15 @@ int main() {
       const auto id = prefix + "spectral_gate_" + suffix;
       if (synth.getControls().count(id) == 0 || !vital::Parameters::isParameter(id))
         return fail("missing spectral gate control: " + id);
-      if (std::string(suffix) != "tilt_enabled" &&
-          synth.getEngine()->getMonoModulationDestination(id) == nullptr)
-        return fail("spectral gate parameter is not a modulation destination: " + id);
     }
     synth.parameterChanged(prefix + "type", vital::constants::kSpectralGate + 1);
     synth.parameterChanged(prefix + "enabled", 1.0f);
+    // An effect's parameters become modulation destinations once its slot selects it.
+    for (const auto* suffix : { "cutoff", "balance", "tilt", "mix" }) {
+      const auto id = prefix + "spectral_gate_" + suffix;
+      if (!isModulationDestination(synth, id))
+        return fail("spectral gate parameter is not a modulation destination: " + id);
+    }
     if (synth.assignFxParameterToAutomationSlot(prefix + "spectral_gate_tilt") != 0)
       return fail("spectral gate could not use a chain's first automation proxy");
     auto* proxy = proxyNamed(synth, "FX " + (chain == 0 ? String("Main") : "Bus " + String(chain)) + " Param 1");
@@ -401,7 +412,7 @@ int main() {
     proxyNamed(synth, proxy_prefix + "3")->setValue(0.125f);
     for (const auto& id : { dimension + "dimension_expander_quorax_size", erosion + "erosion_frequency",
                              floaty + "floaty_delay_warp_amount" })
-      if (synth.getEngine()->getMonoModulationDestination(id) == nullptr)
+      if (!isModulationDestination(synth, id))
         return fail("new JSFX modulation destination is missing: " + id);
   }
   MemoryBlock jsfx_state;
@@ -535,7 +546,7 @@ int main() {
     proxy->setValue(1.0f);
     if (!proxy->getText(1.0f, 128).contains("8192") || restored.getControls().at(gate + "spectral_gate_fft_size")->value() != 5.0f)
       return fail("FFT automation maximum is not 8192");
-    if (restored.getEngine()->getMonoModulationDestination(dimension + "dimension_expander_delay") == nullptr)
+    if (!isModulationDestination(restored, dimension + "dimension_expander_delay"))
       return fail("Mode 1 Delay is not a modulation destination");
   }
   restored.parameterChanged(slot_ids::id("sample_filter_slope"), 7.0f);
@@ -623,7 +634,7 @@ int main() {
         if (synth.getControls().count(prefix + suffix) == 0)
           return fail("Spectral Compressor parameter missing in a main/bus slot: " + prefix + suffix);
         if (String(suffix) != "compression" && String(suffix) != "curve" &&
-            synth.getEngine()->getMonoModulationDestination(prefix + suffix) == nullptr)
+            !isModulationDestination(synth, prefix + suffix))
           return fail("Spectral Compressor DSP slider is not a modulation destination: " + prefix + suffix);
       }
     }
@@ -754,7 +765,7 @@ int main() {
       for (int i = 0; i < 9; ++i) {
         const auto id = prefix + scream_names[i];
         if (synth.getControls().count(id) == 0) return fail("Scream parameter missing: " + id);
-        if (i < 7 && synth.getEngine()->getMonoModulationDestination(id) == nullptr)
+        if (i < 7 && !isModulationDestination(synth, id))
           return fail("Scream slider missing modulation destination: " + id);
       }
       for (const auto& control : synth.getControls())
@@ -848,7 +859,7 @@ int main() {
         const auto id = prefix + name;
         if (synth.getControls().count(id) == 0 || vital::Parameters::getDetails(id).version_added != 0x020106)
           return fail("Tremolo Pan parameter missing or has an incorrect host version: " + id);
-        if (String(name) != "sync" && String(name) != "shape" && synth.getEngine()->getMonoModulationDestination(id) == nullptr)
+        if (String(name) != "sync" && String(name) != "shape" && !isModulationDestination(synth, id))
           return fail("Tremolo Pan modulation destination missing: " + id);
       }
     }
@@ -946,7 +957,7 @@ int main() {
         const auto id = cp + "fx_slot_" + std::to_string(slot) + "_tape_" + control.suffix;
         if (synth.getControls().count(id) == 0 || vital::Parameters::getDetails(id).version_added != (String(control.suffix).startsWith("global_") ? 0x020108 : 0x020107))
           return fail("Tape parameter missing or has wrong host version: " + id);
-        if (!control.indexed && synth.getEngine()->getMonoModulationDestination(id) == nullptr)
+        if (!control.indexed && !isModulationDestination(synth, id))
           return fail("Tape continuous modulation destination missing: " + id);
       }
     }
@@ -1027,7 +1038,7 @@ int main() {
             vital::Parameters::getDetails(id).version_added != 0x020108)
           return fail("Defuse is missing a versioned slot parameter: " + id);
         if (String(name) != "stages" && String(name) != "spread_style" &&
-            synth.getEngine()->getMonoModulationDestination(id) == nullptr)
+            !isModulationDestination(synth, id))
           return fail("Defuse modulation destination missing: " + id);
       }
     }
@@ -1150,7 +1161,7 @@ int main() {
         const auto id = cp + "fx_slot_" + std::to_string(slot) + "_suppressor_" + name;
         if (!vital::Parameters::isParameter(id) || synth.getControls().count(id) == 0)
           return fail("Suppressor parameter missing: " + id);
-        if (String(name) != "delta" && synth.getEngine()->getMonoModulationDestination(id) == nullptr)
+        if (String(name) != "delta" && !isModulationDestination(synth, id))
           return fail("Suppressor modulation destination missing: " + id);
       }
       for (const char* removed : { "sidechain", "spectrum", "spectrum_line", "silk", "bypass" })

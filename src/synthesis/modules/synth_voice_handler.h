@@ -53,7 +53,7 @@ namespace vital {
       void disableUnnecessaryModSources();
       void disableModSource(const std::string& source);
 
-      output_map& getPolyModulations() override;
+      output_map getPolyModulations() override;
       ModulationConnectionBank& getModulationBank() { return modulation_bank_; }
       Wavetable* getWavetable(int index) { return producers_->getWavetable(index); }
       // Filter Table: the table Filter 1 (0) or Filter 2 (1) reads, shared by all voices.

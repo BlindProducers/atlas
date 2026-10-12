@@ -146,10 +146,13 @@ namespace vital {
       void updateAllModulationSwitches();
 
       output_map& getModulationSources();
-      input_map& getMonoModulationDestinations();
-      input_map& getPolyModulationDestinations();
-      virtual output_map& getMonoModulations();
-      virtual output_map& getPolyModulations();
+      // Every destination and readout at and below this module, collected
+      // fresh. (They used to be merged into this module's own maps, which then
+      // kept pointers to destinations built on demand and later removed.)
+      input_map getMonoModulationDestinations();
+      input_map getPolyModulationDestinations();
+      virtual output_map getMonoModulations();
+      virtual output_map getPolyModulations();
       virtual void correctToTime(double seconds) { }
       // Algorithmic delay at this module's effective (possibly oversampled) rate.
       virtual int getLatencySamples() const { return 0; }
@@ -157,6 +160,10 @@ namespace vital {
       virtual void enable(bool enable) override;
       void addMonoProcessor(Processor* processor, bool own = true);
       void addIdleMonoProcessor(Processor* processor);
+      // Take one processor this module added out of its mono router again and
+      // delete it. Message thread, with processing stopped.
+      void removeMonoProcessor(Processor* processor);
+      void removeIdleMonoProcessor(Processor* processor);
 
       virtual Processor* clone() const override { return new SynthModule(*this); }
       void addSubmodule(SynthModule* module) { data_->sub_modules.push_back(module); }
