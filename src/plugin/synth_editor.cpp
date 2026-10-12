@@ -523,6 +523,9 @@ namespace {
         return OscillatorRowGroup::kScaleLock;
       if (rest == "transpose" || rest == "tune" || rest == "keytrack" || rest == "root_key")
         return OscillatorRowGroup::kPitch;
+      // Braids random phase sits with pitch, as the Wavetable's does.
+      if (suffix == "braids_random_phase")
+        return OscillatorRowGroup::kPitch;
       if (suffix == "braids_timbre" || suffix == "braids_color")
         return OscillatorRowGroup::kTypeMode;
       return suffix.startsWith("sample_") ? OscillatorRowGroup::kSample : OscillatorRowGroup::kType;
@@ -2108,6 +2111,17 @@ namespace {
       return 5690;
     }
 
+    // Braids pitch rows: random phase follows Transpose and Tune, as on the
+    // Wavetable. The other Braids rows keep their source order.
+    if (id.startsWith("braids_")) {
+      const String suffix = id.fromFirstOccurrenceOf("braids_", false, false);
+      static const std::array<const char*, 3> braids_pitch_order = {{ "transpose", "tune", "random_phase" }};
+      for (int i = 0; i < static_cast<int>(braids_pitch_order.size()); ++i) {
+        if (suffix == braids_pitch_order[i])
+          return 5700 + i;
+      }
+    }
+
     for (int random = 1; random <= vital::kNumRandomLfos; ++random) {
       const String prefix = "random_" + String(random) + "_";
       if (!id.startsWith(prefix))
@@ -2954,6 +2968,9 @@ namespace {
       if (suffix == "sample_rate") return "Hold samples to reduce the sample rate, as Braids' RATE setting does. 96 kHz is the clean signal.";
       if (suffix == "transpose") return "Transpose the Braids oscillator in semitones.";
       if (suffix == "tune") return "Fine tune the Braids oscillator in cents.";
+      if (suffix == "random_phase")
+        return "Randomize where the oscillator starts its cycle on each note that starts from silence. "
+               "0% starts every note the same way.";
     }
 
     if (id.startsWith("filter_") || id.startsWith("filter_fx_") || id.contains("_filter_fx_")) {
@@ -7119,7 +7136,7 @@ std::unique_ptr<AccessibleParameterRow> SynthEditor::createAccessibleParameterRo
         last_oscillator_modes_[prefix] = oscillatorModeKey(oscillator);
         return std::make_unique<AccessibleParameterRow>(
             parameter, String(), std::function<String(double)>(), 1.0, 0.0, String(), String(),
-            "Choose this oscillator's type: Wavetable, Analog, Sample, Granular, Spectral or Noise. "
+            "Choose this oscillator's type: Wavetable, Analog, Sample, Granular, Spectral, Noise, Multi-sample or Braids. "
             "Each type keeps its own settings, wavetable and sample for when you switch back.", true);
       }
       if (suffix == "analog_waveform")
@@ -7426,6 +7443,16 @@ String SynthEditor::focusedAccessibleTitle() const {
   if (title.isNotEmpty())
     return title;
   return focused->getName();
+}
+
+String SynthEditor::focusedSectionKey() const {
+  for (auto* component = Component::getCurrentlyFocusedComponent(); component != nullptr;
+       component = component->getParentComponent()) {
+    const String key = component->getProperties()["SectionName"].toString();
+    if (key.isNotEmpty())
+      return key;
+  }
+  return {};
 }
 
 Component* SynthEditor::persistentFocusedComponent() const {
@@ -7922,7 +7949,7 @@ int SynthEditor::sourceSlotType(int oscillator) const {
 }
 
 bool SynthEditor::refreshOscillatorModeRowsIfNeeded() {
-  bool changed = false;
+  bool changed = std::exchange(instrument_preset_menu_stale_, false);
   for (auto& mode : last_oscillator_modes_) {
     const int oscillator = mode.first.fromFirstOccurrenceOf("osc_", false, false).getIntValue() - 1;
     const int key = oscillatorModeKey(oscillator);
@@ -7934,12 +7961,14 @@ bool SynthEditor::refreshOscillatorModeRowsIfNeeded() {
 
   const String parameter_id = focusedParameterId();
   const String accessible_title = focusedAccessibleTitle();
+  // Every Multi-sample slot has a Load instrument button: stay in this one.
+  const String section_key = focusedSectionKey();
   auto* persistent_focus = persistentFocusedComponent();
   if (show_all_sections_)
     showAllSections(false);
   else
     selectSectionByName(last_section_name, false);
-  restoreFocusAfterRebuild(parameter_id, persistent_focus, accessible_title, {}, true);
+  restoreFocusAfterRebuild(parameter_id, persistent_focus, accessible_title, section_key, true);
   return true;
 }
 
@@ -7990,6 +8019,7 @@ void SynthEditor::clearSectionComponents() {
   last_filter_states_.clear();
   last_random_amplitude_modes_.clear();
   last_oscillator_modes_.clear();
+  instrument_preset_menu_stale_ = false;
   rows_container_.removeAllChildren();
 }
 
@@ -18642,15 +18672,33 @@ void SynthEditor::stepInstrumentPreset(int oscillator, int direction) {
   position = (position + direction + count) % count;
   const auto& preset = presets[static_cast<size_t>(position)];
   manager->selectSf2Preset(oscillator, preset.index);
-  for (auto& component : section_headers_) {
-    const var& property = component != nullptr ? component->getProperties()["InstrumentPresetMenu"] : var();
-    if (!property.isVoid() && static_cast<int>(property) == oscillator) {
-      if (auto* combo = dynamic_cast<ComboBox*>(component.get()))
-        combo->setSelectedId(position + 1, dontSendNotification);
-    }
-  }
+  syncInstrumentPresetMenu(oscillator);
   postPluginAnnouncement("Instrument preset " + instrumentPresetLabel(preset),
                          AccessibilityHandler::AnnouncementPriority::high);
+}
+
+void SynthEditor::syncInstrumentPresetMenu(int oscillator) {
+  auto* manager = synth_.getMultiSampleManager();
+  const auto result = manager != nullptr ? manager->result(oscillator) : nullptr;
+  for (auto& component : section_headers_) {
+    auto* combo = dynamic_cast<ComboBox*>(component.get());
+    const var& property = combo != nullptr ? combo->getProperties()["InstrumentPresetMenu"] : var();
+    if (property.isVoid() || static_cast<int>(property) != oscillator)
+      continue;
+    // Another SoundFont (a new load, a preset or host state naming one) has
+    // other presets: the menu must be built again, not kept with stale items.
+    // Loading the same file again only moves the selection.
+    if (result == nullptr || result->instrument == nullptr ||
+        combo->getProperties()["InstrumentPresetList"].toString() != String(result->hash)) {
+      instrument_preset_menu_stale_ = true;
+      return;
+    }
+    const auto& presets = result->instrument->preset_names;
+    for (size_t i = 0; i < presets.size(); ++i) {
+      if (presets[i].index == result->instrument->preset_index && combo->getSelectedId() != static_cast<int>(i) + 1)
+        combo->setSelectedId(static_cast<int>(i) + 1, dontSendNotification);
+    }
+  }
 }
 
 int SynthEditor::multiSampleUiState(int oscillator) const {
@@ -18772,6 +18820,8 @@ void SynthEditor::addMultiSampleControlsGroup(int oscillator, Component& parent,
                                                      AccessibilityHandler::AnnouncementPriority::high);
                             });
   status->getProperties().set("InstrumentStatus", oscillator);
+  add_button("Clear instrument", "Remove the instrument from " + section_name,
+             [this, oscillator] { clearInstrument(oscillator); });
 
   auto* manager = synth_.getMultiSampleManager();
   const auto result = manager != nullptr ? manager->result(oscillator) : nullptr;
@@ -18781,6 +18831,9 @@ void SynthEditor::addMultiSampleControlsGroup(int oscillator, Component& parent,
     auto combo = std::make_unique<InstrumentPresetComboBox>();
     auto* combo_ptr = combo.get();
     combo_ptr->getProperties().set("InstrumentPresetMenu", oscillator);
+    // Which SoundFont the items list; syncInstrumentPresetMenu compares it.
+    const std::string preset_list = result->hash;
+    combo_ptr->getProperties().set("InstrumentPresetList", String(preset_list));
     const String title = String(oscillator + 1) + " Instrument preset";
     combo_ptr->setTitle(title);
     combo_ptr->setDescription("Choose which preset of the SoundFont " + section_name + " plays");
@@ -18801,10 +18854,14 @@ void SynthEditor::addMultiSampleControlsGroup(int oscillator, Component& parent,
           safe_combo->setSelectedId(result, sendNotificationSync);
       });
     };
-    combo_ptr->onChange = [this, oscillator, presets, combo_ptr] {
+    combo_ptr->onChange = [this, oscillator, presets, preset_list, combo_ptr] {
       const int item = combo_ptr->getSelectedId() - 1;
       auto* multisample = synth_.getMultiSampleManager();
       if (multisample == nullptr || !isPositiveAndBelow(item, static_cast<int>(presets->size())))
+        return;
+      // Another SoundFont loaded since this menu was built; it is about to be rebuilt.
+      const auto current = multisample->result(oscillator);
+      if (current == nullptr || current->hash != preset_list)
         return;
       multisample->selectSf2Preset(oscillator, (*presets)[static_cast<size_t>(item)].index);
       postPluginAnnouncement("Instrument preset " + instrumentPresetLabel((*presets)[static_cast<size_t>(item)]),
@@ -18898,6 +18955,45 @@ void SynthEditor::reloadInstrument(int oscillator) {
                          AccessibilityHandler::AnnouncementPriority::high);
 }
 
+void SynthEditor::clearInstrument(int oscillator) {
+  auto* manager = synth_.getMultiSampleManager();
+  if (manager == nullptr)
+    return;
+  const String section_name = "Oscillator " + String(oscillator + 1);
+  const auto status = manager->status(oscillator);
+  if (manager->result(oscillator) == nullptr && manager->spec(oscillator).empty() &&
+      status.state == vital::multisample::SlotStatus::kEmpty) {
+    postPluginAnnouncement("No instrument to clear in " + section_name,
+                           AccessibilityHandler::AnnouncementPriority::high);
+    return;
+  }
+
+  // A first load in progress has nothing playing yet: clearing only cancels it.
+  const bool only_loading = status.state == vital::multisample::SlotStatus::kLoading &&
+                            manager->result(oscillator) == nullptr;
+  // Rows follow what is loaded; a load in progress or a missing file shows none.
+  const bool rows_change = multiSampleUiState(oscillator) != 0;
+  manager->clear(oscillator);
+  const String announcement = section_name + (only_loading ? " instrument load cancelled" : " instrument cleared");
+  if (!rows_change) {
+    postPluginAnnouncement(announcement, AccessibilityHandler::AnnouncementPriority::high);
+    return;
+  }
+  // The preset menu or SFZ buttons go away, so rebuild once the click has
+  // returned (before the timer does) and stay on Clear instrument here.
+  Component::SafePointer<SynthEditor> safe_this(this);
+  MessageManager::callAsync([safe_this, section_name, announcement] {
+    if (safe_this == nullptr)
+      return;
+    if (safe_this->show_all_sections_)
+      safe_this->showAllSections(false);
+    else
+      safe_this->selectSectionByName(last_section_name, false);
+    safe_this->restoreFocusAfterRebuild({}, nullptr, "Clear instrument", section_name);
+    postPluginAnnouncement(announcement, AccessibilityHandler::AnnouncementPriority::high);
+  });
+}
+
 void SynthEditor::refreshMultiSampleStatus() {
   auto* manager = synth_.getMultiSampleManager();
   if (manager == nullptr)
@@ -18929,6 +19025,7 @@ void SynthEditor::refreshMultiSampleStatus() {
           header->setHeaderTitle(sourceStatusTitleForSection(section_name));
       }
     }
+    syncInstrumentPresetMenu(oscillator);
 
     const String prefix = "Oscillator " + String(oscillator + 1) + " instrument";
     if (status.state == vital::multisample::SlotStatus::kLoading) {

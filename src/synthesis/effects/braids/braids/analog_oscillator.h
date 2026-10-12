@@ -68,7 +68,14 @@ class AnalogOscillator {
   ~AnalogOscillator() { }
   
   inline void Init() {
-    phase_ = 0;
+    // Atlas: start the cycle at start_phase_ (0 unless random phase is on).
+    phase_ = start_phase_;
+    if (start_phase_ != 0 && previous_phase_increment_ < (1UL << 16)) {
+      // Atlas: an edge can now fall on the first sample, and its timing
+      // divides by the increment >> 16. A fresh oscillator ramps up from a
+      // zero increment, so start that ramp at the lowest safe one.
+      previous_phase_increment_ = 1UL << 16;
+    }
     phase_increment_ = 1;
     high_ = false;
     parameter_ = previous_parameter_ = 0;
@@ -77,7 +84,12 @@ class AnalogOscillator {
     pitch_ = 60 << 7;
     next_sample_ = 0;
   }
-  
+
+  // Atlas: where Init starts the cycle, for random phase (2^32 is a cycle).
+  inline void set_start_phase(uint32_t phase) {
+    start_phase_ = phase;
+  }
+
   inline void set_shape(AnalogOscillatorShape shape) {
     shape_ = shape;
   }
@@ -139,6 +151,7 @@ class AnalogOscillator {
   uint32_t phase_;
   uint32_t phase_increment_;
   uint32_t previous_phase_increment_;
+  uint32_t start_phase_;  // Atlas
   bool high_;
 
   int16_t parameter_;

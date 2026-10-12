@@ -1771,6 +1771,9 @@ namespace vital {
       ValueDetails::kIndexed, false, "", "Braids Transpose", nullptr },
     { "braids_tune", 0x000000, -1.0, 1.0, 0.0, 0.0, 100.0,
       ValueDetails::kLinear, false, "", "Braids Tune", nullptr },
+    // Off by default: every note from silence starts its cycle at zero.
+    { "braids_random_phase", 0x000000, 0.0, 1.0, 0.0, 0.0, 100.0,
+      ValueDetails::kLinear, false, "%", "Braids Phase Randomization", nullptr },
   };
 
   const ValueDetails ValueDetailsLookup::mod_parameter_list[] = {

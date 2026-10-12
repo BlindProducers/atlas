@@ -252,9 +252,15 @@ class DigitalOscillator {
     svf_[0].Init();
     svf_[1].Init();
     svf_[2].Init();
-    phase_ = 0;
+    // Atlas: start the cycle at start_phase_ (0 unless random phase is on).
+    phase_ = start_phase_;
     strike_ = true;
     init_ = true;
+  }
+
+  // Atlas: where Init starts the cycle, for random phase (2^32 is a cycle).
+  inline void set_start_phase(uint32_t phase) {
+    start_phase_ = phase;
   }
   
   inline void set_shape(DigitalOscillatorShape shape) {
@@ -341,6 +347,7 @@ class DigitalOscillator {
   uint32_t phase_;
   uint32_t phase_increment_;
   uint32_t delay_;
+  uint32_t start_phase_;  // Atlas
 
   int16_t parameter_[2];
   int16_t previous_parameter_[2];

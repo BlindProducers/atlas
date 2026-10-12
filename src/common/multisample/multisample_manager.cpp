@@ -355,7 +355,12 @@ namespace multisample {
     {
       std::lock_guard<std::mutex> lock(mutex_);
       Slot& state = slots_[static_cast<size_t>(slot)];
+      // This cancels a load in progress (or finished but not yet applied),
+      // whose spec names the other file.
       state.request = next_request_++;
+      state.has_pending = false;
+      state.pending = nullptr;
+      state.spec = state.applied_spec;
       describePreset(state.spec, *result->instrument);
       state.applied_spec = state.spec;
       setStatus(slot, SlotStatus::kLoaded, "Loaded", 1.0f);

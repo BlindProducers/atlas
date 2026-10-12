@@ -4,6 +4,7 @@
 #include "processor.h"
 #include "braids_engine.h"
 #include "slot_modulation.h"
+#include "utils.h"
 
 #include <array>
 #include <memory>
@@ -13,7 +14,8 @@ namespace vital {
   // The per-voice engine of the Braids oscillator type. Each voice runs a
   // Braids macro-oscillator at its native 96 kHz and a windowed-sinc
   // resampler brings it to the engine's rate. A note-on strikes the voice, so
-  // the plucked, struck and percussion models sound on every note.
+  // the plucked, struck and percussion models sound on every note. A voice
+  // that starts from silence can start its oscillators at random phases.
   class BraidsSource : public Processor {
     public:
       static constexpr int kVoicesPerProcessor = poly_float::kSize / 2;
@@ -35,6 +37,7 @@ namespace vital {
         kSampleRate,
         kTranspose,
         kTune,
+        kRandomPhase,
         kLevel,
         kPan,
         kDistortionType,
@@ -77,12 +80,13 @@ namespace vital {
         float color = 0.5f;
       };
 
-      void resetVoice(VoiceState& state);
+      void resetVoice(VoiceState& state, float random_phase);
       void renderBlock(VoiceState& state, float note, float timbre, float color);
       float readSample(const VoiceState& state) const;
 
       std::array<VoiceState, kVoicesPerProcessor> voices_;
       std::shared_ptr<const Kernel> kernel_;
+      utils::RandomGenerator random_generator_ { -1.0f, 1.0f };
       poly_float pan_amplitude_ = 0.0f;
       bool pan_initialized_ = false;
       SlotModulation modulation_;

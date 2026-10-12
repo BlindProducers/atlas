@@ -435,7 +435,7 @@ if(ATLAS_BUILD_TIMING_TESTS)
     JUCE_MODAL_LOOPS_PERMITTED=1)
   target_link_libraries(AtlasBraidsTests PRIVATE
     Atlas juce::juce_audio_utils juce::juce_dsp juce::juce_gui_extra juce::juce_recommended_config_flags)
-  foreach(braids_test models pitch strike slot-modulation resampler parameters editor)
+  foreach(braids_test models pitch strike random-phase slot-modulation resampler parameters editor)
     add_test(NAME atlas_braids_${braids_test} COMMAND AtlasBraidsTests --${braids_test})
   endforeach()
 
