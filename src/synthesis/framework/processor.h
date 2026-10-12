@@ -164,6 +164,10 @@ namespace vital {
   class Processor {
     public:
       Processor(int num_inputs, int num_outputs, bool control_rate = false, int max_oversample = 1);
+      // A processor with no inputs, outputs or state of its own: it shares one
+      // control-rate state and never joins a graph (see StoredValue).
+      struct DetachedTag {};
+      explicit Processor(DetachedTag);
 
       virtual ~Processor() { }
 

@@ -42,6 +42,21 @@ namespace vital {
       addOutput(max_oversample);
   }
 
+  Processor::Processor(DetachedTag) {
+    static const std::shared_ptr<ProcessorState> detached_state = [] {
+      auto state = std::make_shared<ProcessorState>();
+      state->control_rate = true;
+      return state;
+    }();
+    static const std::shared_ptr<std::vector<Input*>> no_inputs = std::make_shared<std::vector<Input*>>();
+    static const std::shared_ptr<std::vector<Output*>> no_outputs = std::make_shared<std::vector<Output*>>();
+    plugging_start_ = 0;
+    state_ = detached_state;
+    inputs_ = no_inputs;
+    outputs_ = no_outputs;
+    router_ = nullptr;
+  }
+
   bool Processor::inputMatchesBufferSize(int input) {
     if (input >= inputs_->size())
       return false;

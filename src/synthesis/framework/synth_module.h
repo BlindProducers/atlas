@@ -132,7 +132,7 @@ namespace vital {
       virtual ~SynthModule() { }
 
       // Returns a map of all controls of this module and all submodules.
-      control_map getControls();
+      virtual control_map getControls();
 
       Output* getModulationSource(std::string name);
       const StatusOutput* getStatusOutput(std::string name) const;

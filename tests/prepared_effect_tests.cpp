@@ -44,6 +44,7 @@
 #include "sound_engine.h"
 #include "value_switch.h"
 #include "synth_oscillator.h"
+#include "smooth_value.h"
 #include <cstdlib>
 #include <new>
 #if JUCE_MAC
@@ -521,6 +522,10 @@ void constructionCost(bool chain_only, int shell_type = -1) {
     return;
   }
   std::unique_ptr<SynthPlugin> plugin;
+  // Shifts the heap before construction, to see how much timings depend on layout.
+  std::vector<std::unique_ptr<char[]>> layout_shift;
+  if (const char* shift = std::getenv("ATLAS_HEAP_SHIFT"))
+    for (int i = 0; i < std::atoi(shift); ++i) layout_shift.emplace_back(new char[1000 + 37 * i]);
   const auto whole = measureConstruction([&] { plugin = std::make_unique<SynthPlugin>(); });
   std::cout << "plugin construction ms=" << whole.ms << " allocations=" << whole.allocations
             << " requested_MiB=" << whole.bytes / 1048576.0 << " footprint_MiB=" << whole.footprint << '\n';
@@ -559,6 +564,13 @@ void constructionCost(bool chain_only, int shell_type = -1) {
       for (int block = 0; block < 1000; ++block) plugin->processBlock(audio, midi);
     });
     std::cout << "plugin processBlock with four light effects us_per_block=" << effects.ms << '\n';
+    // Keeps processing the light effects so a profiler can sample them.
+    if (const char* seconds = std::getenv("ATLAS_LIGHT_EFFECTS_SECONDS")) {
+      std::cout << "profiling pid=" << getpid() << std::endl;
+      const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(std::atoi(seconds));
+      while (std::chrono::steady_clock::now() < end)
+        for (int block = 0; block < 100; ++block) plugin->processBlock(audio, midi);
+    }
     juce::MemoryBlock state;
     plugin->getStateInformation(state);
     const auto restore = measureConstruction([&] {
@@ -1078,6 +1090,33 @@ void editorMemory() {
   report("destroyed");
 }
 
+// Per effect type: how many parameter controls, and how many are modulated,
+// smoothed and audio-rate (the shells' parameter cost).
+void describeEffectControls() {
+  using namespace vital;
+  cr::Value bpm(2), keytrack(0);
+  EffectFactoryProbe probe(bpm.output(), keytrack.output());
+  int totals[4] = {};
+  for (int type = 0; type < constants::kNumEffects; ++type) {
+    std::unique_ptr<SynthModule> module(probe.createEffectDsp(type, "fx_slot_1_"));
+    module->init();
+    const auto controls = module->getControls();
+    const auto destinations = module->getMonoModulationDestinations();
+    int counts[4] = { int(controls.size()), 0, 0, 0 };
+    for (const auto& control : controls) {
+      counts[1] += destinations.count(control.first) != 0;
+      counts[2] += dynamic_cast<const SmoothValue*>(control.second) != nullptr ||
+                   dynamic_cast<const cr::SmoothValue*>(control.second) != nullptr;
+      counts[3] += !control.second->isControlRate();
+    }
+    std::cout << strings::kEffectOrder[type] << " controls=" << counts[0] << " modulated=" << counts[1]
+              << " smoothed=" << counts[2] << " audio_rate=" << counts[3] << '\n';
+    for (int i = 0; i < 4; ++i) totals[i] += counts[i];
+  }
+  std::cout << "all controls=" << totals[0] << " modulated=" << totals[1] << " smoothed=" << totals[2]
+            << " audio_rate=" << totals[3] << '\n';
+}
+
 // Counts the host parameters by group (the first words of their names, or
 // the automation proxies); with `list`, prints every ID and name too.
 void hostParameterSummary(bool list) {
@@ -1108,6 +1147,10 @@ void hostParameterSummary(bool list) {
 
 int main(int argc, char** argv) {
   juce::ScopedJuceInitialiser_GUI gui;
+  if (argc > 1 && String(argv[1]) == "--describe-effects") {
+    describeEffectControls();
+    return 0;
+  }
   if (argc > 1 && String(argv[1]) == "--host-parameters") {
     hostParameterSummary(argc > 2 && String(argv[2]) == "list");
     return 0;

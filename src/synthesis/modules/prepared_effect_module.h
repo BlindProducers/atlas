@@ -1,6 +1,7 @@
 #pragma once
 
 #include "synth_module.h"
+#include "value.h"
 #include <atomic>
 #include <condition_variable>
 #include <functional>
@@ -58,6 +59,8 @@ public:
   ~PreparedEffectModule() override;
   void init() override;
   void processWithInput(const poly_float* input, int samples) override;
+  // Its parameters, named on request: a shell keeps no name map of its own.
+  control_map getControls() override;
   void hardReset() override;
   void enable(bool on) override;
   void correctToTime(double seconds) override { time_ = seconds; }
@@ -67,12 +70,15 @@ public:
   // 1x buffers and only the shell's own state follows the oversampling.
   void setOversampleAmount(int amount) override;
 
-  // A shell keeps a plain value for every parameter of its effect. Only an
-  // effect a slot selects is "live": each modulated parameter then also has
-  // its modulation total and switch (its "wiring"). A parked effect keeps the
-  // wiring of the parameters routes reach, and nothing else. Wiring is built
-  // and torn down with processing stopped (or the callback lock held), or
-  // offline, as it changes the graph and allocates.
+  // A shell keeps every parameter of its effect as a StoredValue: a number,
+  // no processor. Only an effect a slot selects is "live": each smoothed
+  // parameter then has its SmoothValue (kept from then on, as it carries the
+  // glide) and each modulated one its "wiring" (a cr::Value base, the
+  // modulation total and the switch). A parked effect keeps the wiring of
+  // the parameters routes reach, and nothing else. These processors follow
+  // the stored values at the start of each block. Wiring is built and torn
+  // down with processing stopped (or the callback lock held), or offline, as
+  // it changes the graph and allocates.
   //
   // Makes the effect live: wires every modulated parameter and grows the
   // parameter controls' buffers, with room for every quality setting.
@@ -110,7 +116,10 @@ private:
     std::vector<Binding> bindings;
   };
   static Description describe(int type, const std::string& prefix, const Factory& factory);
-  void wireControl(const Control& control);
+  int controlIndex(const std::string& name) const;
+  // The processor the effect's graph reads a parameter through, made on demand.
+  Value* ensureBase(int index);
+  void wireControl(int index);
   void unwireControl(const std::string& name);
   // Gives new wiring the room for every quality setting the controls have.
   void reserveProcessor(Processor* processor);
@@ -128,6 +137,10 @@ private:
   Factory factory_;
   std::shared_ptr<EffectPreparationWorker> worker_;
   Description description_;
+  // In description_.controls order. parameters_ never reallocates: the
+  // controls map, the editor and automation keep pointers to its entries.
+  std::vector<StoredValue> parameters_;
+  std::vector<Value*> bases_;
   // The switch output of each wired parameter, which the built DSP reads.
   // Guarded by wiring_mutex_, as the worker reads it while binding.
   output_map raw_controls_;

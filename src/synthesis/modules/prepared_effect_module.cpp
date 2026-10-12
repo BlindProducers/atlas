@@ -132,20 +132,24 @@ PreparedEffectModule::~PreparedEffectModule() {
   delete retired_.load();
 }
 void PreparedEffectModule::init() {
-  // Every parameter's value, as createBaseModControl would make it; the
-  // modulation wiring around it waits until the effect is selected or routed.
-  for (const auto& control : description_.controls) {
-    const auto name = prefix_ + control.suffix;
-    createBaseControl(name, control.audio_rate, control.smooth);
-    data_->controls.at(name)->set(control.initial);
-  }
+  // Every parameter's value; the processors that read it wait until the
+  // effect is selected or routed.
+  parameters_.reserve(description_.controls.size());
+  bases_.assign(description_.controls.size(), nullptr);
+  for (const auto& control : description_.controls)
+    parameters_.emplace_back(control.initial);
+  auto parameter = [this](const char* suffix) -> Value* {
+    const int index = controlIndex(prefix_ + suffix);
+    VITAL_ASSERT(index >= 0);
+    return index < 0 ? nullptr : &parameters_[index];
+  };
   if (type_ == constants::kSpectralGate)
-    fft_size_control_ = data_->controls.at(prefix_ + "spectral_gate_fft_size");
+    fft_size_control_ = parameter("spectral_gate_fft_size");
   if (type_ == constants::kSpectralLock)
-    spectral_lock_mode_control_ = data_->controls.at(prefix_ + "spectral_lock_mode");
+    spectral_lock_mode_control_ = parameter("spectral_lock_mode");
   if (type_ == constants::kFilterFx) {
-    filter_model_control_ = data_->controls.at(prefix_ + "filter_fx_model");
-    filter_style_control_ = data_->controls.at(prefix_ + "filter_fx_style");
+    filter_model_control_ = parameter("filter_fx_model");
+    filter_style_control_ = parameter("filter_fx_style");
   }
   SynthModule::init();
   worker_->add(this);
@@ -199,7 +203,7 @@ void PreparedEffectModule::prepareOnWorker() {
     for (const auto& entry : inputs) {
       const auto raw = raw_controls_.find(entry.first);
       const auto readout = data_->mono_modulation_readout.find(entry.first);
-      prepared->bindings.push_back({ entry.second.value, data_->controls.at(entry.first),
+      prepared->bindings.push_back({ entry.second.value, &parameters_.at(size_t(controlIndex(entry.first))),
           entry.second.modulated && raw != raw_controls_.end() ? raw->second : nullptr,
           entry.second.internal_total,
           readout == data_->mono_modulation_readout.end() ? nullptr : readout->second });
@@ -239,10 +243,47 @@ void PreparedEffectModule::setOversampleAmount(int amount) {
   else
     Processor::setOversampleAmount(amount);
 }
-void PreparedEffectModule::wireControl(const Control& control) {
-  // createBaseModControl's wiring, around the parameter's existing value.
+control_map PreparedEffectModule::getControls() {
+  control_map controls = SynthModule::getControls();
+  for (size_t i = 0; i < parameters_.size(); ++i)
+    controls[prefix_ + description_.controls[i].suffix] = &parameters_[i];
+  return controls;
+}
+int PreparedEffectModule::controlIndex(const std::string& name) const {
+  if (name.compare(0, prefix_.size(), prefix_) != 0)
+    return -1;
+  for (int i = 0; i < int(description_.controls.size()); ++i)
+    if (name.compare(prefix_.size(), std::string::npos, description_.controls[i].suffix) == 0)
+      return i;
+  return -1;
+}
+Value* PreparedEffectModule::ensureBase(int index) {
+  if (bases_[index] != nullptr)
+    return bases_[index];
+  const Control& control = description_.controls[index];
+  const poly_float value = parameters_[index].value();
+  Value* base = nullptr;
+  if (control.smooth) {
+    // As createBaseControl made it, from the parameter's default: the first
+    // time the effect runs, the parameter glides from there to its value.
+    const mono_float initial = Parameters::getDetails(prefix_ + control.suffix).default_value;
+    base = control.audio_rate ? static_cast<Value*>(new SmoothValue(initial)) : new cr::SmoothValue(initial);
+    base->set(value);
+    addMonoProcessor(base, false);
+  }
+  else {
+    base = control.audio_rate ? new Value(value) : new cr::Value(value);
+    addIdleMonoProcessor(base);
+  }
+  reserveProcessor(base);
+  bases_[index] = base;
+  return base;
+}
+void PreparedEffectModule::wireControl(int index) {
+  // createBaseModControl's wiring, around the parameter's base.
+  const Control& control = description_.controls[index];
   const std::string name = prefix_ + control.suffix;
-  Value* base = data_->controls.at(name);
+  Value* base = ensureBase(index);
   Processor* mono_total = control.audio_rate ? static_cast<Processor*>(new ModulationSum()) : new cr::VariableAdd();
   mono_total->plugNext(base);
   addMonoProcessor(mono_total, false);
@@ -258,9 +299,7 @@ void PreparedEffectModule::wireControl(const Control& control) {
   data_->mono_modulation_switches[name] = control_switch;
   raw_controls_[name] = control_switch->output(ValueSwitch::kSwitch);
 
-  mono_total->setSampleRate(getSampleRate());
-  control_switch->setSampleRate(getSampleRate());
-  // Wiring can be built while the parameter already runs at a higher quality,
+  // Wiring can be built while the effect already runs at a higher quality,
   // so reserve it here rather than relying on its first growth.
   reserveProcessor(mono_total);
   reserveProcessor(control_switch);
@@ -274,34 +313,45 @@ void PreparedEffectModule::unwireControl(const std::string& name) {
   raw_controls_.erase(name);
   removeIdleMonoProcessor(control_switch);
   removeMonoProcessor(mono_total);
+  // A smoothed parameter keeps its SmoothValue; a plain base goes with its wiring.
+  const int index = controlIndex(name);
+  if (index >= 0 && bases_[index] != nullptr && !description_.controls[index].smooth) {
+    removeIdleMonoProcessor(bases_[index]);
+    bases_[index] = nullptr;
+  }
 }
 void PreparedEffectModule::reserveProcessor(Processor* processor) {
+  // A processor joining the graph takes the shell's rate and quality, with
+  // room for every quality setting.
   const int amount = getOversampleAmount();
+  processor->setSampleRate(getSampleRate() / amount);
   processor->setOversampleAmount(std::max(amount, 2));
   if (amount < 2) processor->setOversampleAmount(amount);
   for (int i = 0; i < processor->numOwnedOutputs(); ++i)
     processor->ownedOutput(i)->reserveAllQualities();
 }
 bool PreparedEffectModule::wireModulationDestination(const std::string& name) {
-  if (name.compare(0, prefix_.size(), prefix_) != 0)
+  const int index = controlIndex(name);
+  if (index < 0 || !description_.controls[index].modulated)
     return false;
-  for (const auto& control : description_.controls) {
-    if (!control.modulated || name.compare(prefix_.size(), std::string::npos, control.suffix) != 0)
-      continue;
-    std::lock_guard<std::mutex> lock(wiring_mutex_);
-    if (data_->mono_mod_destinations.count(name) == 0)
-      wireControl(control);
-    return true;
-  }
-  return false;
+  std::lock_guard<std::mutex> lock(wiring_mutex_);
+  if (data_->mono_mod_destinations.count(name) == 0)
+    wireControl(index);
+  else if (bases_[index]->value() != parameters_[index].value())
+    bases_[index]->set(parameters_[index].value()); // A parked base missed changes.
+  return true;
 }
 void PreparedEffectModule::reserveControls() {
   if (controlsReserved()) return;
   {
     std::lock_guard<std::mutex> lock(wiring_mutex_);
-    for (const auto& control : description_.controls)
+    for (int i = 0; i < int(description_.controls.size()); ++i) {
+      const Control& control = description_.controls[i];
+      if (control.smooth)
+        ensureBase(i);
       if (control.modulated && data_->mono_mod_destinations.count(prefix_ + control.suffix) == 0)
-        wireControl(control);
+        wireControl(i);
+    }
   }
   const int amount = getOversampleAmount();
   if (!buffers_reserved_.load(std::memory_order_acquire)) {
@@ -386,6 +436,10 @@ void PreparedEffectModule::processWithInput(const poly_float* input, int samples
     renderPending(input, samples);
     return;
   }
+  // The graph reads each parameter as it stands at this block.
+  for (size_t i = 0; i < bases_.size(); ++i)
+    if (bases_[i] != nullptr && bases_[i]->value() != parameters_[i].value())
+      bases_[i]->set(parameters_[i].value());
   SynthModule::process(samples);
   // An audio-rate modulated control reads the permanent control's samples in
   // place (as ValueSwitch does); its source can change when routes do. An

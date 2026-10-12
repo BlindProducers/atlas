@@ -29,6 +29,7 @@
 #include "startup.h"
 #include "synth_gui_interface.h"
 #include "synth_parameters.h"
+#include "synth_strings.h"
 #include "utils.h"
 
 #include <algorithm>
@@ -241,7 +242,8 @@ SynthBase::SynthBase() : expired_(false) {
     }
   }
   for (const auto& control : controls_)
-    pending_gui_updates_.try_emplace(control.first);
+    if (!isEffectParameter(control.first))
+      pending_gui_updates_.try_emplace(control.first);
   for (int arp = 0; arp < 2; ++arp) {
     for (int destination = 0; destination < kNumArpDestinations; ++destination) {
       const int64 seed = 0x41544c4153415250ll + arp * kNumArpDestinations + destination;
@@ -381,11 +383,28 @@ void SynthBase::valueChangedThroughMidi(const std::string& name, vital::mono_flo
 }
 
 void SynthBase::valueMidiLearned(const std::string& name, int midi_id) {
-  const auto update = pending_gui_updates_.find(name);
-  if (update != pending_gui_updates_.end()) {
-    update->second.midi_id.store(midi_id, std::memory_order_release);
-    gui_updates_pending_.store(true, std::memory_order_release);
+  if (!vital::Parameters::isParameter(name))
+    return;
+  midi_learned_id_.store(midi_id, std::memory_order_relaxed);
+  midi_learned_name_.store(&vital::Parameters::getDetails(name).name, std::memory_order_release);
+  gui_updates_pending_.store(true, std::memory_order_release);
+}
+
+bool SynthBase::isEffectParameter(const std::string& name) {
+  size_t position = 0;
+  if (name.rfind("bus_", 0) == 0) {
+    position = name.find('_', 4);
+    if (position == std::string::npos) return false;
+    ++position;
   }
+  if (name.compare(position, 8, "fx_slot_") == 0)
+    return true;
+  for (const auto& effect : strings::kEffectOrder) {
+    if (name.compare(position, effect.size(), effect) == 0 && name.size() > position + effect.size() &&
+        name[position + effect.size()] == '_')
+      return true;
+  }
+  return false;
 }
 
 void SynthBase::pitchWheelMidiChanged(vital::mono_float value) {
@@ -1745,18 +1764,16 @@ void SynthBase::dispatchPendingGuiUpdates(SynthGuiInterface& gui_interface) {
       gui_interface.updateGuiControl(update.first, update.second.value.load(std::memory_order_relaxed));
       changed = changed || update.first != "pitch_wheel";
     }
-    const int midi_id = update.second.midi_id.exchange(-1, std::memory_order_acquire);
-    if (midi_id >= 0)
-      gui_interface.notifyMidiLearned(update.first, midi_id);
   }
+  if (const std::string* learned = midi_learned_name_.exchange(nullptr, std::memory_order_acquire))
+    gui_interface.notifyMidiLearned(*learned, midi_learned_id_.load(std::memory_order_relaxed));
   if (changed)
     gui_interface.notifyChange();
 }
 
 void SynthBase::clearPendingGuiUpdates() {
   gui_updates_pending_.store(false, std::memory_order_relaxed);
-  for (auto& update : pending_gui_updates_) {
+  for (auto& update : pending_gui_updates_)
     update.second.dirty.store(false, std::memory_order_relaxed);
-    update.second.midi_id.store(-1, std::memory_order_relaxed);
-  }
+  midi_learned_name_.store(nullptr, std::memory_order_relaxed);
 }

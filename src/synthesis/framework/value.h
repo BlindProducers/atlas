@@ -37,9 +37,27 @@ namespace vital {
       virtual void set(poly_float value);
 
     protected:
+      Value(poly_float value, DetachedTag tag) : Processor(tag), value_(value) { }
+
       poly_float value_;
 
       JUCE_LEAK_DETECTOR(Value)
+  };
+
+  // A parameter's value and nothing else: no inputs, outputs or processing,
+  // and no allocation. Effect shells keep their parameters as these; the
+  // processors of a live effect read them (see PreparedEffectModule). Only
+  // value() and set() apply: it never joins a graph.
+  class StoredValue : public Value {
+    public:
+      explicit StoredValue(poly_float value = 0.0f) : Value(value, DetachedTag()) { }
+
+      Processor* clone() const override { VITAL_ASSERT(false); return nullptr; }
+      void process(int num_samples) override { }
+      void setSampleRate(int sample_rate) override { }
+      void setOversampleAmount(int oversample) override { }
+      void enable(bool enable) override { }
+      void set(poly_float value) override { value_ = value; }
   };
 
   namespace cr {

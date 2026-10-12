@@ -443,19 +443,26 @@ namespace {
            "Host automation and MIDI display updates must not allocate, even without an editor");
     expect(gui.updates == 0, "Audio-side changes must not invoke GUI code synchronously");
     plugin.dispatchPendingGuiUpdates(gui);
-    expect(gui.updates == 4, "Thousands of events must coalesce to one display update per control");
+    // Effect parameters queue no display updates: there are tens of thousands
+    // of them, and the editor reads the ones it shows itself.
+    expect(gui.updates == 3, "Thousands of events must coalesce to one display update per control");
     expectClose(gui.values.at(name), 0.999f, 1.0e-6f, "Coalescing must preserve the latest parameter value");
+    expect(gui.values.count(fx_name) == 0, "Effect parameters queue no display updates");
+    expectClose(plugin.getControls().at(fx_name)->value(), 0.999f, 1.0e-6f, "FX automation must still reach the control");
     plugin.dispatchPendingGuiUpdates(gui);
-    expectClose(gui.values.at(fx_name), 0.999f, 1.0e-6f, "Coalescing must preserve the latest FX control value");
-    expect(gui.updates == 4, "An idle GUI refresh must not repeat consumed updates");
+    expect(gui.updates == 3, "An idle GUI refresh must not repeat consumed updates");
 
     plugin.valueMidiLearned(name, 74);
     plugin.dispatchPendingGuiUpdates(gui);
     expect(gui.learned.at(name) == 74, "MIDI-learn notification must reach the message-thread consumer");
+    plugin.valueMidiLearned(fx_name, 75);
+    plugin.dispatchPendingGuiUpdates(gui);
+    expect(gui.learned.count(fx_name) && gui.learned.at(fx_name) == 75,
+           "MIDI-learn notification must reach the consumer for effect parameters too");
     parameter->setValue(0.1f);
     plugin.clearPendingGuiUpdates();
     plugin.dispatchPendingGuiUpdates(gui);
-    expect(gui.updates == 4, "Preset replacement must discard obsolete pending display values");
+    expect(gui.updates == 3, "Preset replacement must discard obsolete pending display values");
   }
 
   void testLineGeneratorPublishesCompleteBuffers() {

@@ -67,6 +67,17 @@ A shell keeps its parameter values whether or not it is selected, but only the s
 
 ## Stage 2: parameter table (about 70 MB more)
 
+**Status: implemented** on `effect-parameter-redesign`. One instance with the editor open went from 262 MB (Stage 1) to 207 MB; construction from 174 to 120 MiB (about 195 to 150 ms, 2.25 M to 0.8 M allocations). All deterministic golden renders still match the original build sample for sample and the round trip matches. As built:
+
+- Each shell keeps its parameters in one array of `StoredValue`s: a `Value` subclass with no inputs, outputs, state or allocation of its own. Because it is still a `Value`, the controls map, presets, the editor, FX automation and MIDI learn needed no changes, and the controls map keeps every name (so host parameter IDs are unaffected).
+- A live effect's processors read the stored values at the start of each block. Smoothed parameters (38 of 752 per set, all audio-rate) get their `SmoothValue` when the effect first goes live and keep it, as it carries the glide; a modulated parameter's `cr::Value` base comes and goes with its wiring.
+- Shells name their parameters on request (`getControls` is virtual) instead of keeping a name map each.
+- FX automation bindings are made when a parameter is first assigned to a proxy, not for every parameter up front.
+- The GUI update list leaves out effect parameters (the accessible editor reads the ones it shows itself); MIDI-learned notices for any parameter go through one hand-off slot. `atlas_timing_stability` now expects this.
+- Not done: the plugin-level controls map still holds every name (about 8 MB).
+
+CPU: Stage 1 measured about 4% slower than before in a micro-benchmark with four light effects (about 12 µs per 512-sample block, 0.1% of the real-time budget). The live effects run exactly the same processors; shifting the heap layout alone moves that benchmark by up to 20 µs, so it is attributed to memory layout. Stage 2 matches Stage 1.
+
 Parked value objects are replaced by plain numbers. Each parked parameter costs about 1.2 KB today, as an engine object plus name map entries; a table cell costs a few bytes.
 
 1. **Per-slot table** of plain numbers for all 37 types. A name lookup shared by all instances maps each parameter name to its chain, slot, type and index.

@@ -310,13 +310,20 @@ class SynthBase : public MidiManager::Listener {
     // Resolve the source Compression macro's targets before host automation
     // begins, so macro changes do not allocate parameter-name strings.
     std::map<std::string, std::array<std::string, 2>> spectral_compression_targets_;
+    // Value changes the GUI shows, for every control except effects'
+    // parameters (the accessible editor reads those itself, and they are
+    // most of the controls).
     struct PendingGuiUpdate {
       std::atomic<vital::mono_float> value { 0.0f };
       std::atomic<bool> dirty { false };
-      std::atomic<int> midi_id { -1 };
     };
     std::map<std::string, PendingGuiUpdate> pending_gui_updates_;
+    // MIDI learn arms one parameter at a time; the learned parameter (its name
+    // in the static parameter table) and controller wait here for the GUI.
+    std::atomic<const std::string*> midi_learned_name_ { nullptr };
+    std::atomic<int> midi_learned_id_ { -1 };
     std::atomic<bool> gui_updates_pending_ { false };
+    static bool isEffectParameter(const std::string& name);
     vital::CircularQueue<vital::ModulationConnection*> mod_connections_;
     moodycamel::ConcurrentQueue<vital::control_change> value_change_queue_;
     moodycamel::ConcurrentQueue<vital::modulation_change> modulation_change_queue_;
