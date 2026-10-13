@@ -9,6 +9,7 @@
 #include "source_types.h"
 #include "synth_strings.h"
 #include "file_source.h"
+#include "line_generator.h"
 #include "phase_modifier.h"
 #include "wave_source.h"
 #include "wavetable_creator.h"
@@ -195,6 +196,46 @@ namespace {
     lfoPitchCurves(1, false, { 0.37, 0.61 }, 0.6, &origin);
     expect(std::abs(origin - 0.37) < 0.01,
            "a note played while another sounds joins the running clock instead of restarting it");
+  }
+
+  // As in a preset made on a Mac: LFO 5 holds 0.5, then 1, then 0 across two
+  // bars and pushes LFO 3's Tempo (1/8) up by that much of a division. As on
+  // the arm64 build, LFO 3 runs at 1/16 only while the push is 1. x86 builds
+  // used to round 0.5 up too and ran at 1/16 for seven of the eight beats.
+  void testLfoTempoModulatedByAnotherLfo() {
+    SynthPlugin synth;
+    prepare(synth);
+    auto& controls = synth.getControls();
+    controls.at("lfo_3_sync")->set(1.0f);        // tempo
+    controls.at("lfo_3_tempo")->set(9.0f);       // 1/8
+    controls.at("lfo_5_sync")->set(1.0f);
+    controls.at("lfo_5_tempo")->set(5.0f);       // 2/1: one cycle every two bars
+    synth.getLfoSource(4)->jsonToState({
+      { "num_points", 4 },
+      { "points", { 0.0f, 0.5f, 0.75f, 0.0f, 0.875f, 1.0f, 1.0f, 0.5f } },
+      { "powers", { 20.0f, 20.0f, 20.0f, 0.0f } },   // held steps
+      { "smooth", false }
+    });
+    connect(synth, "lfo_5", "lfo_3_tempo", 1.0f / 12.0f);   // full scale is one division
+    connect(synth, "lfo_3", "osc_1_wave_frame");            // an LFO runs only while it modulates something
+
+    const float beats_per_second = controls.at("beats_per_minute")->value();
+    const float eighth = vital::constants::kSyncedFrequencyRatios[9] * beats_per_second;
+    const float sixteenth = vital::constants::kSyncedFrequencyRatios[10] * beats_per_second;
+    const int blocks = static_cast<int>(8.0f / beats_per_second * 48000.0f) / 128;
+    int at_eighth = 0, at_sixteenth = 0;
+    for (int block = 0; block < blocks; ++block) {
+      MidiBuffer midi;
+      if (block == 0)
+        midi.addEvent(MidiMessage::noteOn(1, 48, 1.0f), 0);
+      renderMidi(synth, midi);
+      const float frequency = synth.getStatusOutput("lfo_3_frequency")->value()[0];
+      at_eighth += std::abs(frequency - eighth) < 1.0e-3f ? 1 : 0;
+      at_sixteenth += std::abs(frequency - sixteenth) < 1.0e-3f ? 1 : 0;
+    }
+    expect(at_eighth + at_sixteenth == blocks, "LFO 3 runs at 1/8 or 1/16 throughout");
+    close(at_sixteenth / static_cast<float>(blocks), 0.125f,
+          "LFO 3 runs at 1/16 only for the beat LFO 5 holds 1", 0.02f);
   }
 
   void testSameSampleNoteOnOffDoesNotStick() {
@@ -693,6 +734,7 @@ int main(int argc, char** argv) {
   testArpeggiatorEnableAndDisableReleaseNotes();
   testGranularGridFollowsPluginClock();
   testSyncedLfoNotesWithTransportStoppedAndPlaying();
+  testLfoTempoModulatedByAnotherLfo();
   if (failures == 0)
     std::cout << "Atlas macro tests passed\n";
   return failures == 0 ? 0 : 1;
