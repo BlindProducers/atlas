@@ -648,6 +648,7 @@ int main(int argc, char** argv) {
   }
   if (argc > 1 && String(argv[1]) == "--editor-speech") {
     testKeyboardEditorsAnnounceNavigation();
+    testListsSayTheSelectedRow();
     testUiaNotificationOnJuceElement();
     testAnnouncementsReachNvda();
     if (failures == 0)

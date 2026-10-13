@@ -66,15 +66,45 @@ struct PresetFacetItem {
   bool active = false;
 };
 
-class PresetTableListBox : public TableListBox {
+// A list keeps the keyboard focus while the arrow, Page and Home/End keys move
+// its selection. JUCE reports the new selection to Windows screen readers on
+// the list rather than on the row, so NVDA says nothing; onSelectionKey runs
+// after those keys, even at either end of the list, so the editor can say the row.
+template <typename ListType>
+class SelectionKeyList : public ListType {
   public:
-    using TableListBox::TableListBox;
+    using ListType::ListType;
+
+    std::function<void()> onSelectionKey;
+
+    bool keyPressed(const KeyPress& key) override {
+      if (!ListType::keyPressed(key))
+        return false;
+      if (onSelectionKey && isSelectionKey(key))
+        onSelectionKey();
+      return true;
+    }
+
+  private:
+    static bool isSelectionKey(const KeyPress& key) {
+      for (const int code : { KeyPress::upKey, KeyPress::downKey, KeyPress::pageUpKey,
+                              KeyPress::pageDownKey, KeyPress::homeKey, KeyPress::endKey }) {
+        if (key.isKeyCode(code))
+          return true;
+      }
+      return false;
+    }
+};
+
+class PresetTableListBox : public SelectionKeyList<TableListBox> {
+  public:
+    using SelectionKeyList::SelectionKeyList;
 
     std::function<bool(const KeyPress&)> onKeyPressed;
     std::function<void()> onFocusGained;
 
     void focusGained(FocusChangeType cause) override {
-      TableListBox::focusGained(cause);
+      SelectionKeyList::focusGained(cause);
       if (onFocusGained)
         onFocusGained();
     }
@@ -82,7 +112,7 @@ class PresetTableListBox : public TableListBox {
     bool keyPressed(const KeyPress& key) override {
       if (onKeyPressed && onKeyPressed(key))
         return true;
-      return TableListBox::keyPressed(key);
+      return SelectionKeyList::keyPressed(key);
     }
 };
 
@@ -780,7 +810,7 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     ComboBox modulation_destination_;
     TextButton add_modulation_ { "Connect modulation" };
     TextButton remove_modulation_ { "Remove selected modulation" };
-    ListBox modulation_list_ { "Modulation routes", this };
+    SelectionKeyList<ListBox> modulation_list_ { "Modulation routes", this };
     Label modulation_remap_summary_;
     AccessibleComboBox modulation_remap_preset_;
     TextButton modulation_remap_apply_preset_ { "Apply remap preset" };

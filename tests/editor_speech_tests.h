@@ -95,6 +95,86 @@ namespace {
     atlas::speech::settings().speech_feedback = true;
   }
 
+  // A list's selection keys say the row on Windows, where JUCE leaves NVDA
+  // silent. VoiceOver reads the row itself, so macOS adds nothing.
+  void expectListRowSpoken(Component& list, SpokenMessages& spoken, const KeyPress& key,
+                           const String& expected, const String& what) {
+#if JUCE_WINDOWS
+    expectNavigationSpoken(list, spoken, key, expected, what);
+#else
+    spoken.messages.clear();
+    const String name = what + " " + key.getTextDescription();
+    expect(list.keyPressed(key), (name + " is handled").toStdString());
+    expect(spoken.messages.isEmpty(), (name + " leaves the row to VoiceOver").toStdString());
+#endif
+  }
+
+  void testListsSayTheSelectedRow() {
+    SpokenMessages spoken;
+    SynthPlugin synth;
+    synth.connectModulation("lfo_1", "osc_1_transpose");
+    synth.connectModulation("lfo_2", "osc_1_level");
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    editor.refreshPresetLibrary();
+    pumpUntil([&] { return !editor.isPresetLibraryBusy(); }, 60000);
+
+    auto* autoload = dynamic_cast<Button*>(titled(editor, "Autoload preset when scrolling"));
+    const bool autoload_was_on = autoload != nullptr && autoload->getToggleState();
+    if (autoload != nullptr)
+      autoload->setToggleState(false, dontSendNotification);
+
+    auto* collection = dynamic_cast<TableListBox*>(titled(editor, "Collection"));
+    expect(collection != nullptr && collection->getNumRows() == 2,
+           "the preset browser lists All presets and Favourites");
+    if (collection != nullptr && collection->getNumRows() == 2) {
+      collection->selectRow(0);
+      expectListRowSpoken(*collection, spoken, KeyPress(KeyPress::downKey), "Favourites, 2 of 2", "Collection");
+      expectListRowSpoken(*collection, spoken, KeyPress(KeyPress::downKey), "Favourites, 2 of 2", "Collection at its end");
+      expectListRowSpoken(*collection, spoken, KeyPress(KeyPress::homeKey), "All presets, 1 of 2", "Collection");
+    }
+
+    auto* results = dynamic_cast<TableListBox*>(titled(editor, "Preset results table"));
+    expect(results != nullptr, "the preset browser has its results table");
+    const int rows = results != nullptr ? results->getNumRows() : 0;
+    if (rows >= 2) {
+      auto rowText = [&](int row) {
+        return editor.presetFileAtRow(row).getFileNameWithoutExtension() + ", " + String(row + 1) + " of " + String(rows);
+      };
+      results->selectRow(0);
+      expectListRowSpoken(*results, spoken, KeyPress(KeyPress::downKey), rowText(1), "Preset results");
+      expectListRowSpoken(*results, spoken, KeyPress(KeyPress::endKey), rowText(rows - 1), "Preset results");
+      expectListRowSpoken(*results, spoken, KeyPress(KeyPress::upKey), rowText(rows - 2), "Preset results");
+    }
+    else {
+      std::cout << "  fewer than two presets installed; skipped the preset results rows\n";
+    }
+
+    auto* routes = dynamic_cast<ListBox*>(titled(editor, "Connected modulations"));
+    expect(routes != nullptr && routes->getListBoxModel() != nullptr &&
+               routes->getListBoxModel()->getNumRows() == 2,
+           "the modulation list shows both routes");
+    if (routes != nullptr && routes->getListBoxModel() != nullptr && routes->getListBoxModel()->getNumRows() == 2) {
+      routes->selectRow(0);
+      expectListRowSpoken(*routes, spoken, KeyPress(KeyPress::downKey), "Modulation two, LFO 2", "Connected modulations");
+      expectListRowSpoken(*routes, spoken, KeyPress(KeyPress::upKey), "Modulation one, LFO 1", "Connected modulations");
+    }
+
+    // Use speech feedback off silences them too.
+    atlas::speech::settings().speech_feedback = false;
+    spoken.messages.clear();
+    if (collection != nullptr) collection->keyPressed(KeyPress(KeyPress::endKey));
+    if (routes != nullptr) routes->keyPressed(KeyPress(KeyPress::downKey));
+    expect(spoken.messages.isEmpty(), "Use speech feedback off silences the lists");
+    atlas::speech::settings().speech_feedback = true;
+
+    if (autoload != nullptr)
+      autoload->setToggleState(autoload_was_on, dontSendNotification);
+    editor.removeFromDesktop();
+  }
+
   // Without NVDA, other screen readers get a UI Automation notification raised
   // on the focused control's JUCE element. Check that JUCE's element accepts it.
   void testUiaNotificationOnJuceElement() {

@@ -359,6 +359,22 @@ namespace {
       atlas::speech::announce(message, priority);
   }
 
+  // The row a list's selection keys landed on (see SelectionKeyList). VoiceOver
+  // reads it from the list itself; NVDA cannot, so Windows says it here. It is
+  // what the screen reader would say, so no optional category silences it.
+  void postListRowAnnouncement(const String& message) {
+#if JUCE_WINDOWS
+    if (accessibilitySpeechSettings().speech_feedback)
+      atlas::speech::announce(message, AccessibilityHandler::AnnouncementPriority::high);
+#else
+    ignoreUnused(message);
+#endif
+  }
+
+  String listRowText(const String& name, int row, int rows) {
+    return name + ", " + String(row + 1) + " of " + String(rows);
+  }
+
   void postLfoAnnouncement(const String& message) {
     const auto& settings = accessibilitySpeechSettings();
     if (settings.speech_feedback && settings.lfo_editor)
@@ -5658,6 +5674,12 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
       }
       return false;
     };
+    table.onSelectionKey = [this, table_pointer = &table, kind] {
+      const int row = table_pointer->getSelectedRow();
+      const int rows = presetFacetRowCount(kind);
+      if (isPositiveAndBelow(row, rows))
+        postListRowAnnouncement(listRowText(presetFacetCellText(kind, row), row, rows));
+    };
     addChildComponent(table);
   };
   configureFacetTable(preset_collection_table_, preset_collection_model_, kCollectionFacet, "Collection");
@@ -5746,6 +5768,13 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
       return true;
     }
     return false;
+  };
+  preset_table_.onSelectionKey = [this] {
+    const int row = preset_table_.getSelectedRow();
+    if (isPositiveAndBelow(row, filtered_presets_.size()))
+      postListRowAnnouncement(listRowText(presetTableCellText(row, kPresetNameColumn), row, filtered_presets_.size()));
+    else
+      postListRowAnnouncement(preset_list_loaded_ ? "No matching presets" : "Preset list loading");
   };
   addChildComponent(preset_table_);
 
@@ -6121,6 +6150,11 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   modulation_list_.setHelpText("Use Up and Down Arrow to select a route. Its amount and options appear below.");
   modulation_list_.setWantsKeyboardFocus(true);
   modulation_list_.setRowHeight(30);
+  modulation_list_.onSelectionKey = [this] {
+    const int row = modulation_list_.getSelectedRow();
+    postListRowAnnouncement(isPositiveAndBelow(row, getNumRows()) ? getNameForRow(row)
+                                                                  : String("No modulation routes"));
+  };
   addChildComponent(modulation_list_);
 
   modulation_remap_summary_.setTitle("Modulation remap summary");
