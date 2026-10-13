@@ -14,6 +14,12 @@ project(Atlas VERSION 2.1.0 LANGUAGES ${ATLAS_PROJECT_LANGUAGES})
 if(MSVC)
   # Keep Atlas and all static dependencies on the same self-contained CRT.
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+  # MSVC only declares M_PI and the other <cmath> constants with this macro.
+  add_compile_definitions(_USE_MATH_DEFINES)
+  # JUCE turns on /MP, which starts one compiler per core inside each project.
+  # The unity files need several GB each, so cap it like --parallel caps make.
+  set(ATLAS_MSVC_COMPILE_JOBS 4 CACHE STRING "Compiler processes per Visual Studio project (/MP)")
+  set(CMAKE_VS_GLOBALS "CL_MPCount=${ATLAS_MSVC_COMPILE_JOBS}")
 endif()
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
@@ -233,6 +239,53 @@ if(APPLE)
   endforeach()
 elseif(WIN32)
   target_link_libraries(Atlas PRIVATE bcrypt)
+
+  # Announcements go to NVDA through its controller interface. MIDL generates
+  # the RPC client stub from NVDA's interface definition with the flags NVDA's
+  # own client build uses (see third_party/nvda_controller/README.atlas.md).
+  # MIDL comes with the Windows SDK the generator selected (or a developer
+  # prompt set up), in the SDK's bin/<version>/<host> folder.
+  set(ATLAS_WINDOWS_SDK_VERSION "${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}")
+  if(NOT ATLAS_WINDOWS_SDK_VERSION)
+    string(REGEX REPLACE "[\\/]$" "" ATLAS_WINDOWS_SDK_VERSION "$ENV{WindowsSDKVersion}")
+  endif()
+  set(ATLAS_PROGRAM_FILES_X86 "ProgramFiles(x86)")
+  set(ATLAS_MIDL_HINTS)
+  foreach(root "$ENV{WindowsSdkDir}" "${CMAKE_WINDOWS_KITS_10_DIR}"
+               "$ENV{${ATLAS_PROGRAM_FILES_X86}}/Windows Kits/10" "$ENV{ProgramFiles}/Windows Kits/10")
+    if(root)
+      foreach(host x64 arm64 x86)
+        list(APPEND ATLAS_MIDL_HINTS "${root}/bin/${ATLAS_WINDOWS_SDK_VERSION}/${host}")
+      endforeach()
+    endif()
+  endforeach()
+  find_program(ATLAS_MIDL midl HINTS ${ATLAS_MIDL_HINTS} REQUIRED)
+  if(CMAKE_CXX_COMPILER_ARCHITECTURE_ID MATCHES "ARM64")
+    set(ATLAS_MIDL_ENV arm64)
+  elseif(CMAKE_SIZEOF_VOID_P EQUAL 8)
+    set(ATLAS_MIDL_ENV x64)
+  else()
+    set(ATLAS_MIDL_ENV win32)
+  endif()
+  get_filename_component(ATLAS_CL_DIR "${CMAKE_C_COMPILER}" DIRECTORY)
+  set(ATLAS_NVDA_DIR "${CMAKE_SOURCE_DIR}/third_party/nvda_controller")
+  set(ATLAS_NVDA_STUB_DIR "${CMAKE_CURRENT_BINARY_DIR}/nvda_controller")
+  file(MAKE_DIRECTORY "${ATLAS_NVDA_STUB_DIR}")
+  add_custom_command(
+    OUTPUT "${ATLAS_NVDA_STUB_DIR}/nvdaController.h" "${ATLAS_NVDA_STUB_DIR}/nvdaController_c.c"
+    COMMAND ${CMAKE_COMMAND} "-DMIDL=${ATLAS_MIDL}" "-DCL_DIR=${ATLAS_CL_DIR}" "-DMIDL_ENV=${ATLAS_MIDL_ENV}"
+      "-DSOURCE_DIR=${ATLAS_NVDA_DIR}" "-DOUTPUT_DIR=${ATLAS_NVDA_STUB_DIR}"
+      -P "${ATLAS_NVDA_DIR}/generate_stub.cmake"
+    DEPENDS "${ATLAS_NVDA_DIR}/nvdaController.idl" "${ATLAS_NVDA_DIR}/nvdaController.acf"
+      "${ATLAS_NVDA_DIR}/generate_stub.cmake"
+    COMMENT "Generating the NVDA controller client stub"
+    VERBATIM)
+  target_sources(Atlas PRIVATE
+    src/plugin/windows_screen_reader.cpp
+    "${ATLAS_NVDA_STUB_DIR}/nvdaController_c.c")
+  target_include_directories(Atlas PRIVATE "${ATLAS_NVDA_STUB_DIR}")
+  target_link_libraries(Atlas PRIVATE rpcrt4)
+
   add_custom_command(TARGET Atlas_VST3 POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Factory/Samples/Tape"
       "$<TARGET_FILE_DIR:Atlas_VST3>/../Resources/Tape" VERBATIM)
@@ -406,6 +459,7 @@ if(ATLAS_BUILD_TIMING_TESTS)
     Atlas juce::juce_audio_utils juce::juce_dsp juce::juce_gui_extra juce::juce_recommended_config_flags)
   add_test(NAME atlas_macros COMMAND AtlasMacroTests)
   add_test(NAME atlas_editor_accessibility COMMAND AtlasMacroTests --editor-accessibility)
+  add_test(NAME atlas_editor_speech COMMAND AtlasMacroTests --editor-speech)
   add_test(NAME atlas_editor_rebuild_focus COMMAND AtlasMacroTests --editor-rebuild-focus)
   add_test(NAME atlas_oscillator_modulation COMMAND AtlasMacroTests --oscillator-modulation)
 

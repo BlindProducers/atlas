@@ -22,6 +22,13 @@ settings, the keyboard help and the list of MIDI learn mappings. The Preset menu
 initialises, imports and exports patches and banks, and the preset browser searches
 and filters the library by bank, category, tag and favourites.
 
+Atlas's own announcements, such as the cursor position in the LFO, Trance gate and
+wavetable editors, are spoken by the screen reader. On Windows they go straight to
+NVDA's speech and braille. With another screen reader they are sent as UI Automation
+notifications. Atlas never speaks with the Windows SAPI voice. On macOS they go to
+VoiceOver. Accessibility settings in the Editor menu choose which kinds of
+announcement you hear.
+
 ## Oscillators
 
 Atlas has eight oscillators. Each one chooses a **Type**:
@@ -122,7 +129,9 @@ git clone --recurse-submodules https://github.com/BlindProducers/atlas.git
 
 In a clone made without them, run `git submodule update --init`. You need CMake
 3.22 or newer and a C++17 compiler: Xcode command line tools on macOS, or Visual
-Studio 2022 with Desktop development with C++ on Windows.
+Studio 2022 with Desktop development with C++ on Windows. That workload includes
+the Windows SDK, whose MIDL compiler builds Atlas's NVDA speech client from
+`third_party/nvda_controller`.
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
@@ -130,7 +139,8 @@ cmake --build build --config Release --parallel
 ```
 
 The plugins are written to `build/Atlas_artefacts/Release`. Copy the whole
-`Atlas.vst3` folder, which includes the Tape effect's resources, to your VST3 folder.
+`Atlas.vst3` folder, which includes the Tape effect's resources, to your VST3 folder
+(`C:\Program Files\Common Files\VST3` on Windows).
 On macOS the Audio Unit goes to `~/Library/Audio/Plug-Ins/Components`.
 
 Atlas keeps its presets, wavetables, samples and effect presets in

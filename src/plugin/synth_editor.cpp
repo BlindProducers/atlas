@@ -20,6 +20,7 @@
 #include "delay.h"
 
 #include "synth_plugin.h"
+#include "screen_reader_speech.h"
 #include "value_bridge.h"
 #include "tape_controls.h"
 #include "resonator/resonator_engine.h"
@@ -107,61 +108,14 @@ namespace {
     kPresetModifiedColumn,
   };
 
-  struct AccessibilitySpeechSettings {
-    bool speech_feedback = true;
-    bool navigation = false;
-    bool presets = false;
-    bool lfo_editor = true;
-    bool wavetable_editor = false;
-    bool sample_browser = false;
-    bool modulation = true;
-    bool parameters = false;
-    bool other = false;
-    bool frequency_values_in_hz = false;
-  };
+  using AccessibilitySpeechSettings = atlas::speech::Settings;
 
   AccessibilitySpeechSettings& accessibilitySpeechSettings() {
-    static AccessibilitySpeechSettings settings;
-    static bool loaded = false;
-    if (!loaded) {
-      loaded = true;
-      json config = LoadSave::getConfigJson();
-      if (config.count("accessibility_speech") && config["accessibility_speech"].is_object()) {
-        const json& data = config["accessibility_speech"];
-        auto loadBool = [&data](const char* name, bool fallback) {
-          return data.count(name) && data[name].is_boolean() ? data[name].get<bool>() : fallback;
-        };
-        settings.speech_feedback = loadBool("speech_feedback", settings.speech_feedback);
-        settings.navigation = loadBool("navigation", settings.navigation);
-        settings.presets = loadBool("presets", settings.presets);
-        settings.lfo_editor = loadBool("lfo_editor", settings.lfo_editor);
-        settings.wavetable_editor = loadBool("wavetable_editor", settings.wavetable_editor);
-        settings.sample_browser = loadBool("sample_browser", settings.sample_browser);
-        settings.modulation = loadBool("modulation", settings.modulation);
-        settings.parameters = loadBool("parameters", settings.parameters);
-        settings.other = loadBool("other", settings.other);
-        settings.frequency_values_in_hz = loadBool("frequency_values_in_hz", settings.frequency_values_in_hz);
-      }
-    }
-    return settings;
+    return atlas::speech::settings();
   }
 
   void saveAccessibilitySpeechSettings() {
-    const auto& settings = accessibilitySpeechSettings();
-    json config = LoadSave::getConfigJson();
-    json data;
-    data["speech_feedback"] = settings.speech_feedback;
-    data["navigation"] = settings.navigation;
-    data["presets"] = settings.presets;
-    data["lfo_editor"] = settings.lfo_editor;
-    data["wavetable_editor"] = settings.wavetable_editor;
-    data["sample_browser"] = settings.sample_browser;
-    data["modulation"] = settings.modulation;
-    data["parameters"] = settings.parameters;
-    data["other"] = settings.other;
-    data["frequency_values_in_hz"] = settings.frequency_values_in_hz;
-    config["accessibility_speech"] = data;
-    LoadSave::saveJsonToConfig(config);
+    atlas::speech::saveSettings();
   }
 
   String onOff(bool enabled) {
@@ -393,7 +347,7 @@ namespace {
 
   void postPluginAnnouncement(const String& message, AccessibilityHandler::AnnouncementPriority priority) {
     if (shouldPostPluginAnnouncement(message))
-      AccessibilityHandler::postAnnouncement(message, priority);
+      atlas::speech::announce(message, priority);
   }
 
   // Direct responses to a preset-browser command must not disappear when the
@@ -402,13 +356,23 @@ namespace {
   void postPresetActionAnnouncement(const String& message,
                                     AccessibilityHandler::AnnouncementPriority priority) {
     if (accessibilitySpeechSettings().speech_feedback)
-      AccessibilityHandler::postAnnouncement(message, priority);
+      atlas::speech::announce(message, priority);
   }
 
   void postLfoAnnouncement(const String& message) {
     const auto& settings = accessibilitySpeechSettings();
     if (settings.speech_feedback && settings.lfo_editor)
-      AccessibilityHandler::postAnnouncement(message, AccessibilityHandler::AnnouncementPriority::high);
+      atlas::speech::announce(message, AccessibilityHandler::AnnouncementPriority::high);
+  }
+
+  // The wavetable keyboard editor's frames, harmonics, layers, keyframes and
+  // lines. Its messages ("Layer 2", "Point removed") do not all name the
+  // editor, so they skip postPluginAnnouncement's guess from the wording.
+  void postWavetableEditorAnnouncement(const String& message,
+                                       AccessibilityHandler::AnnouncementPriority priority) {
+    const auto& settings = accessibilitySpeechSettings();
+    if (settings.speech_feedback && settings.wavetable_editor)
+      atlas::speech::announce(message, priority);
   }
 
   void postModulationRemapAnnouncement(const String& message) {
@@ -416,7 +380,7 @@ namespace {
     // the modulation category without repeating a spoken category prefix.
     const auto& settings = accessibilitySpeechSettings();
     if (settings.speech_feedback && settings.modulation)
-      AccessibilityHandler::postAnnouncement(message, AccessibilityHandler::AnnouncementPriority::high);
+      atlas::speech::announce(message, AccessibilityHandler::AnnouncementPriority::high);
   }
 
   struct MsegTimeDivision {
@@ -17543,8 +17507,8 @@ void SynthEditor::moveWavetableFrameCursor(int oscillator, int direction, bool e
     for (int frame = first; frame <= last; ++frame)
       state.selected_frames.insert(frame);
   }
-  postPluginAnnouncement(wavetableFrameStatusText(oscillator),
-                         AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement(wavetableFrameStatusText(oscillator),
+                                  AccessibilityHandler::AnnouncementPriority::high);
 }
 
 void SynthEditor::moveWavetableHarmonicCursor(int oscillator, int direction) {
@@ -17552,8 +17516,8 @@ void SynthEditor::moveWavetableHarmonicCursor(int oscillator, int direction) {
     return;
   auto& state = wavetable_keyboard_state_[oscillator];
   state.harmonic = jlimit(1, vital::WaveFrame::kNumRealComplex - 2, state.harmonic + direction);
-  postPluginAnnouncement(wavetableHarmonicStatusText(oscillator, true, true),
-                         AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement(wavetableHarmonicStatusText(oscillator, true, true),
+                                  AccessibilityHandler::AnnouncementPriority::high);
 }
 
 void SynthEditor::toggleWavetableFrameSelection(int oscillator) {
@@ -17567,17 +17531,17 @@ void SynthEditor::toggleWavetableFrameSelection(int oscillator) {
   const bool selected = state.selected_frames.erase(state.frame) == 0;
   if (selected)
     state.selected_frames.insert(state.frame);
-  postPluginAnnouncement("Frame " + String(state.frame + 1) + (selected ? " selected, " : " unselected, ") +
-                             String(state.selected_frames.size()) + " selected",
-                         AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement("Frame " + String(state.frame + 1) + (selected ? " selected, " : " unselected, ") +
+                                      String(state.selected_frames.size()) + " selected",
+                                  AccessibilityHandler::AnnouncementPriority::high);
 }
 
 void SynthEditor::clearWavetableFrameSelection(int oscillator) {
   if (!isPositiveAndBelow(oscillator, vital::kNumOscillators))
     return;
   wavetable_keyboard_state_[oscillator].selected_frames.clear();
-  postPluginAnnouncement("Frame selection cleared",
-                         AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement("Frame selection cleared",
+                                  AccessibilityHandler::AnnouncementPriority::high);
 }
 
 void SynthEditor::selectAllWavetableFrames(int oscillator) {
@@ -17590,8 +17554,8 @@ void SynthEditor::selectAllWavetableFrames(int oscillator) {
   selected.clear();
   for (int frame = 0; frame < source->numFrames(); ++frame)
     selected.insert(frame);
-  postPluginAnnouncement("Selected all " + String(source->numFrames()) + " wavetable frames",
-                         AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement("Selected all " + String(source->numFrames()) + " wavetable frames",
+                                  AccessibilityHandler::AnnouncementPriority::high);
 }
 
 void SynthEditor::adjustWavetableHarmonicLevel(int oscillator, float deltaPercent) {
@@ -17617,9 +17581,9 @@ void SynthEditor::adjustWavetableHarmonicLevel(int oscillator, float deltaPercen
     wave_frame->toFrequencyDomain();
   }
   creator->render();
-  postPluginAnnouncement(wavetableHarmonicStatusText(oscillator, true, false) +
-                             (targets.size() > 1 ? ", " + String(targets.size()) + " frames" : ""),
-                         AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement(wavetableHarmonicStatusText(oscillator, true, false) +
+                                      (targets.size() > 1 ? ", " + String(targets.size()) + " frames" : ""),
+                                  AccessibilityHandler::AnnouncementPriority::high);
 }
 
 void SynthEditor::adjustWavetableHarmonicPhase(int oscillator, float deltaDegrees) {
@@ -17643,9 +17607,9 @@ void SynthEditor::adjustWavetableHarmonicPhase(int oscillator, float deltaDegree
     wave_frame->toFrequencyDomain();
   }
   creator->render();
-  postPluginAnnouncement(wavetableHarmonicStatusText(oscillator, false, true) +
-                             (targets.size() > 1 ? ", " + String(targets.size()) + " frames" : ""),
-                         AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement(wavetableHarmonicStatusText(oscillator, false, true) +
+                                      (targets.size() > 1 ? ", " + String(targets.size()) + " frames" : ""),
+                                  AccessibilityHandler::AnnouncementPriority::high);
 }
 
 void SynthEditor::copyWavetableFrames(int oscillator) {
@@ -17666,14 +17630,14 @@ void SynthEditor::copyWavetableFrames(int oscillator) {
     copy.sample_rate = wave_frame->sample_rate;
     copied_wavetable_frames_.push_back(std::move(copy));
   }
-  postPluginAnnouncement("Copied " + String(copied_wavetable_frames_.size()) + " wavetable frame" +
-                         (copied_wavetable_frames_.size() == 1 ? String() : String("s")),
-                         AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement("Copied " + String(copied_wavetable_frames_.size()) + " wavetable frame" +
+                                  (copied_wavetable_frames_.size() == 1 ? String() : String("s")),
+                                  AccessibilityHandler::AnnouncementPriority::high);
 }
 
 void SynthEditor::pasteWavetableFrames(int oscillator) {
   if (copied_wavetable_frames_.empty()) {
-    postPluginAnnouncement("No wavetable frames copied", AccessibilityHandler::AnnouncementPriority::high);
+    postWavetableEditorAnnouncement("No wavetable frames copied", AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
 
@@ -17702,9 +17666,9 @@ void SynthEditor::pasteWavetableFrames(int oscillator) {
     }
   }
   creator->render();
-  postPluginAnnouncement("Pasted into " + String(targets.size()) + " wavetable frame" +
-                         (targets.size() == 1 ? String() : String("s")),
-                         AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement("Pasted into " + String(targets.size()) + " wavetable frame" +
+                                  (targets.size() == 1 ? String() : String("s")),
+                                  AccessibilityHandler::AnnouncementPriority::high);
 }
 
 void SynthEditor::addWavetableFrame(int oscillator) {
@@ -17713,8 +17677,8 @@ void SynthEditor::addWavetableFrame(int oscillator) {
   if (creator == nullptr || source == nullptr || source->numFrames() == 0)
     return;
   if (source->numFrames() >= vital::kNumOscillatorWaveFrames) {
-    postPluginAnnouncement("Wavetable already has the maximum number of frames",
-                           AccessibilityHandler::AnnouncementPriority::high);
+    postWavetableEditorAnnouncement("Wavetable already has the maximum number of frames",
+                                    AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
 
@@ -17725,8 +17689,8 @@ void SynthEditor::addWavetableFrame(int oscillator) {
   // so interpolation has positions to fill between the frames.
   const int position = atlas::wavetable_edit::suggestKeyframePosition(source, state.frame);
   if (position < 0) {
-    postPluginAnnouncement("No free timeline position is available for another frame",
-                           AccessibilityHandler::AnnouncementPriority::high);
+    postWavetableEditorAnnouncement("No free timeline position is available for another frame",
+                                    AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
   auto* inserted = source->insertNewKeyframe(position);
@@ -17738,8 +17702,8 @@ void SynthEditor::addWavetableFrame(int oscillator) {
   state.frame = source->indexOf(inserted);
   state.selected_frames.clear();
   creator->render();
-  postPluginAnnouncement("Frame added, " + wavetableFrameStatusText(oscillator),
-                         AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement("Frame added, " + wavetableFrameStatusText(oscillator),
+                                  AccessibilityHandler::AnnouncementPriority::high);
 }
 
 void SynthEditor::deleteWavetableFrames(int oscillator) {
@@ -17751,8 +17715,8 @@ void SynthEditor::deleteWavetableFrames(int oscillator) {
   pruneWavetableFrameSelection(oscillator, source->numFrames());
   auto targets = wavetableTargetFrameIndices(oscillator, source->numFrames());
   if (static_cast<int>(targets.size()) >= source->numFrames()) {
-    postPluginAnnouncement("A wavetable must keep at least one frame",
-                           AccessibilityHandler::AnnouncementPriority::high);
+    postWavetableEditorAnnouncement("A wavetable must keep at least one frame",
+                                    AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
   std::sort(targets.rbegin(), targets.rend());
@@ -17764,10 +17728,10 @@ void SynthEditor::deleteWavetableFrames(int oscillator) {
   state.frame = jlimit(0, source->numFrames() - 1, next_cursor);
   state.selected_frames.clear();
   creator->render();
-  postPluginAnnouncement("Deleted " + String(targets.size()) + " wavetable frame" +
-                         (targets.size() == 1 ? String() : String("s")) + ", " +
-                         wavetableFrameStatusText(oscillator),
-                         AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement("Deleted " + String(targets.size()) + " wavetable frame" +
+                                  (targets.size() == 1 ? String() : String("s")) + ", " +
+                                  wavetableFrameStatusText(oscillator),
+                                  AccessibilityHandler::AnnouncementPriority::high);
 }
 
 void SynthEditor::setWavetableFramePosition(int oscillator, int frame, int position) {
@@ -17787,8 +17751,8 @@ void SynthEditor::setWavetableFramePosition(int oscillator, int frame, int posit
   const int target = jlimit(minimum, maximum, position);
   if (target == keyframe->position()) {
     if (target != position)
-      postPluginAnnouncement("Frame cannot cross the adjacent source frame",
-                             AccessibilityHandler::AnnouncementPriority::medium);
+      postWavetableEditorAnnouncement("Frame cannot cross the adjacent source frame",
+                                      AccessibilityHandler::AnnouncementPriority::medium);
     return;
   }
 
@@ -17813,9 +17777,9 @@ void SynthEditor::clearWavetableDc(int oscillator) {
     wave_frame->toFrequencyDomain();
   }
   creator->render();
-  postPluginAnnouncement("Removed DC offset from " + String(targets.size()) + " wavetable frame" +
-                         (targets.size() == 1 ? String() : String("s")),
-                         AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement("Removed DC offset from " + String(targets.size()) + " wavetable frame" +
+                                  (targets.size() == 1 ? String() : String("s")),
+                                  AccessibilityHandler::AnnouncementPriority::high);
 }
 
 void SynthEditor::setWavetableInterpolation(int oscillator, int interpolation) {
@@ -17828,9 +17792,9 @@ void SynthEditor::setWavetableInterpolation(int oscillator, int interpolation) {
   atlas::wavetable_edit::setValue(source, "interpolation", 0, jlimit(0, 4, interpolation));
   synth_.getWavetableCreator(oscillator)->render();
   if (atlas::wavetable_edit::interpolatedPositions(source) == 0 && source->numFrames() > 1)
-    postPluginAnnouncement("The frames sit on neighbouring positions, so there is nothing between them to interpolate. "
-                           "Use Spread frames evenly or move a frame's timeline position",
-                           AccessibilityHandler::AnnouncementPriority::medium);
+    postWavetableEditorAnnouncement("The frames sit on neighbouring positions, so there is nothing between them to interpolate. "
+                                    "Use Spread frames evenly or move a frame's timeline position",
+                                    AccessibilityHandler::AnnouncementPriority::medium);
 }
 
 void SynthEditor::cycleWavetableInterpolation(int oscillator, int direction) {
@@ -17839,8 +17803,8 @@ void SynthEditor::cycleWavetableInterpolation(int oscillator, int direction) {
     return;
   const int current = int(atlas::wavetable_edit::getValue(source, "interpolation", 0));
   setWavetableInterpolation(oscillator, (current + direction + 5) % 5);
-  postPluginAnnouncement("Interpolation: " + wavetableInterpolationName(oscillator),
-                         AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement("Interpolation: " + wavetableInterpolationName(oscillator),
+                                  AccessibilityHandler::AnnouncementPriority::high);
 }
 
 void SynthEditor::rebuildWavetableEditor(int oscillator, const String& focus_title) {
@@ -17865,7 +17829,7 @@ void SynthEditor::addWavetableModifier(int oscillator, int modifier_type) {
   const int layer = isPositiveAndBelow(oscillator, vital::kNumOscillators) ? wavetable_keyboard_state_[oscillator].layer : 0;
   auto* group = creator != nullptr && isPositiveAndBelow(layer, creator->numGroups()) ? creator->getGroup(layer) : nullptr;
   if (group == nullptr) {
-    postPluginAnnouncement("No wavetable layer is available", AccessibilityHandler::AnnouncementPriority::high);
+    postWavetableEditorAnnouncement("No wavetable layer is available", AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
   auto* component = atlas::wavetable_edit::addModifier(*group, modifier_type);
@@ -17874,7 +17838,7 @@ void SynthEditor::addWavetableModifier(int oscillator, int modifier_type) {
   creator->render();
   const int component_index = group->numComponents() - 1;
   const String name = atlas::wavetable_edit::componentName(component);
-  postPluginAnnouncement(name + " added to layer " + String(layer + 1), AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement(name + " added to layer " + String(layer + 1), AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, name + " " + String(component_index) + " keyframe interpolation");
 }
 
@@ -17887,7 +17851,7 @@ void SynthEditor::removeWavetableModifier(int oscillator, int component_index) {
   creator->getGroup(wavetable_keyboard_state_[oscillator].layer)->removeComponent(component_index);
   wavetable_keyboard_state_[oscillator].keyframes.clear();
   creator->render();
-  postPluginAnnouncement(name + " removed", AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement(name + " removed", AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, "Add modifier");
 }
 
@@ -17899,7 +17863,7 @@ void SynthEditor::resetWavetableModifier(int oscillator, int component_index) {
   component->reset();
   wavetable_keyboard_state_[oscillator].keyframes[component_index] = 0;
   synth_.getWavetableCreator(oscillator)->render();
-  postPluginAnnouncement(name + " reset", AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement(name + " reset", AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, name + " " + String(component_index) + " reset");
 }
 
@@ -17920,7 +17884,7 @@ void SynthEditor::moveWavetableModifier(int oscillator, int component_index, int
   auto& keyframes = wavetable_keyboard_state_[oscillator].keyframes;
   std::swap(keyframes[component_index], keyframes[destination]);
   creator->render();
-  postPluginAnnouncement(name + (direction < 0 ? " moved up" : " moved down"), AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement(name + (direction < 0 ? " moved up" : " moved down"), AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, name + " " + String(destination) + " keyframe interpolation");
 }
 
@@ -17940,11 +17904,11 @@ WaveSource* SynthEditor::editableWaveSource(int oscillator) {
   if (creator != nullptr) {
     const int layer = wavetable_keyboard_state_[oscillator].layer;
     auto* component = wavetableComponent(oscillator, 0);
-    postPluginAnnouncement("Layer " + String(layer + 1) + " is " +
-                           (component != nullptr ? "an " + atlas::wavetable_edit::componentName(component).toLowerCase()
-                                                 : String("empty")) +
-                           ". Frames and harmonics are edited on a wave source layer; add one, or flatten the wavetable to editable frames",
-                           AccessibilityHandler::AnnouncementPriority::high);
+    postWavetableEditorAnnouncement("Layer " + String(layer + 1) + " is " +
+                                    (component != nullptr ? "an " + atlas::wavetable_edit::componentName(component).toLowerCase()
+                                                          : String("empty")) +
+                                    ". Frames and harmonics are edited on a wave source layer; add one, or flatten the wavetable to editable frames",
+                                    AccessibilityHandler::AnnouncementPriority::high);
   }
   return nullptr;
 }
@@ -18002,9 +17966,9 @@ void SynthEditor::addWavetableLayer(int oscillator, int sourceType) {
   state.frame = 0;
   state.selected_frames.clear();
   state.keyframes.clear();
-  postPluginAnnouncement("Added layer " + String(state.layer + 1) + ", " +
-                         atlas::wavetable_edit::sourceTypeNames()[sourceType].toLowerCase(),
-                         AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement("Added layer " + String(state.layer + 1) + ", " +
+                                  atlas::wavetable_edit::sourceTypeNames()[sourceType].toLowerCase(),
+                                  AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, "Layer");
 }
 
@@ -18023,7 +17987,7 @@ void SynthEditor::addWavetableAudioLayer(int oscillator, const File& file) {
   AudioSampleBuffer buffer;
   int sample_rate = 0;
   if (creator == nullptr || !decodeAudioFile(file, buffer, sample_rate)) {
-    postPluginAnnouncement("Unable to load " + file.getFileName(), AccessibilityHandler::AnnouncementPriority::high);
+    postWavetableEditorAnnouncement("Unable to load " + file.getFileName(), AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
   auto* group = atlas::wavetable_edit::addLayer(*creator, WavetableComponentFactory::kFileSource);
@@ -18034,8 +17998,8 @@ void SynthEditor::addWavetableAudioLayer(int oscillator, const File& file) {
   auto& state = wavetable_keyboard_state_[oscillator];
   state.layer = creator->numGroups() - 1;
   state.keyframes.clear();
-  postPluginAnnouncement("Added layer " + String(state.layer + 1) + " from " + file.getFileNameWithoutExtension(),
-                         AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement("Added layer " + String(state.layer + 1) + " from " + file.getFileNameWithoutExtension(),
+                                  AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, "Layer");
 }
 
@@ -18057,12 +18021,12 @@ void SynthEditor::replaceWavetableLayerAudio(int oscillator, const File& file) {
   int sample_rate = 0;
   if (component == nullptr || !decodeAudioFile(file, buffer, sample_rate) ||
       !atlas::wavetable_edit::replaceFileSourceAudio(component, buffer.getReadPointer(0), buffer.getNumSamples(), sample_rate)) {
-    postPluginAnnouncement("Unable to load " + file.getFileName(), AccessibilityHandler::AnnouncementPriority::high);
+    postWavetableEditorAnnouncement("Unable to load " + file.getFileName(), AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
   synth_.getWavetableCreator(oscillator)->render();
-  postPluginAnnouncement("Layer audio replaced with " + file.getFileNameWithoutExtension(),
-                         AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement("Layer audio replaced with " + file.getFileNameWithoutExtension(),
+                                  AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, "Replace audio");
 }
 
@@ -18073,7 +18037,7 @@ void SynthEditor::removeWavetableLayer(int oscillator) {
   auto& state = wavetable_keyboard_state_[oscillator];
   const int removed = state.layer;
   if (!atlas::wavetable_edit::removeLayer(*creator, removed)) {
-    postPluginAnnouncement("A wavetable keeps at least one layer", AccessibilityHandler::AnnouncementPriority::high);
+    postWavetableEditorAnnouncement("A wavetable keeps at least one layer", AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
   creator->render();
@@ -18081,7 +18045,7 @@ void SynthEditor::removeWavetableLayer(int oscillator) {
   state.frame = 0;
   state.selected_frames.clear();
   state.keyframes.clear();
-  postPluginAnnouncement("Removed layer " + String(removed + 1), AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement("Removed layer " + String(removed + 1), AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, "Layer");
 }
 
@@ -18094,7 +18058,7 @@ void SynthEditor::moveWavetableLayer(int oscillator, int direction) {
     return;
   state.layer += direction < 0 ? -1 : 1;
   creator->render();
-  postPluginAnnouncement("Layer moved to position " + String(state.layer + 1), AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement("Layer moved to position " + String(state.layer + 1), AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, direction < 0 ? "Move layer earlier" : "Move layer later");
 }
 
@@ -18120,7 +18084,7 @@ void SynthEditor::moveWavetableKeyframe(int oscillator, int componentIndex, int 
   if (moved < 0)
     return;
   if (moved != position)
-    postPluginAnnouncement("Keyframes cannot cross their neighbours", AccessibilityHandler::AnnouncementPriority::medium);
+    postWavetableEditorAnnouncement("Keyframes cannot cross their neighbours", AccessibilityHandler::AnnouncementPriority::medium);
   if (moved != previous)
     synth_.getWavetableCreator(oscillator)->render();
 }
@@ -18134,13 +18098,13 @@ void SynthEditor::addWavetableKeyframe(int oscillator, int componentIndex, const
   const int position = atlas::wavetable_edit::suggestKeyframePosition(component, after);
   const int added = position >= 0 ? atlas::wavetable_edit::addKeyframe(component, position) : -1;
   if (added < 0) {
-    postPluginAnnouncement("No free timeline position for another keyframe", AccessibilityHandler::AnnouncementPriority::high);
+    postWavetableEditorAnnouncement("No free timeline position for another keyframe", AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
   state.keyframes[componentIndex] = added;
   synth_.getWavetableCreator(oscillator)->render();
-  postPluginAnnouncement("Added " + atlas::wavetable_edit::describeKeyframe(component, added).toLowerCase(),
-                         AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement("Added " + atlas::wavetable_edit::describeKeyframe(component, added).toLowerCase(),
+                                  AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, focusPrefix + " keyframe");
 }
 
@@ -18151,13 +18115,13 @@ void SynthEditor::removeWavetableKeyframe(int oscillator, int componentIndex, co
   auto& state = wavetable_keyboard_state_[oscillator];
   const int keyframe = jlimit(0, jmax(0, component->numFrames() - 1), state.keyframes[componentIndex]);
   if (!atlas::wavetable_edit::removeKeyframe(component, keyframe)) {
-    postPluginAnnouncement("The last keyframe stays", AccessibilityHandler::AnnouncementPriority::high);
+    postWavetableEditorAnnouncement("The last keyframe stays", AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
   state.keyframes[componentIndex] = jlimit(0, component->numFrames() - 1, keyframe);
   synth_.getWavetableCreator(oscillator)->render();
-  postPluginAnnouncement("Keyframe removed, " + atlas::wavetable_edit::describeKeyframe(component, state.keyframes[componentIndex]),
-                         AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement("Keyframe removed, " + atlas::wavetable_edit::describeKeyframe(component, state.keyframes[componentIndex]),
+                                  AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, focusPrefix + " keyframe");
 }
 
@@ -18167,8 +18131,8 @@ void SynthEditor::spreadWavetableKeyframes(int oscillator, int componentIndex, c
     return;
   synth_.getWavetableCreator(oscillator)->render();
   const bool frames = component->getType() == WavetableComponentFactory::kWaveSource;
-  postPluginAnnouncement(String(component->numFrames()) + (frames ? " frames" : " keyframes") +
-                         " spread across the timeline", AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement(String(component->numFrames()) + (frames ? " frames" : " keyframes") +
+                                  " spread across the timeline", AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, frames ? String("Spread frames evenly") : focusPrefix + " spread keyframes evenly");
 }
 
@@ -18188,13 +18152,13 @@ void SynthEditor::addWavetableLinePoint(int oscillator, int componentIndex, cons
   auto& state = wavetable_keyboard_state_[oscillator];
   const int added = atlas::wavetable_edit::addLinePoint(line, state.line_point);
   if (added < 0) {
-    postPluginAnnouncement("The line has the most points it can hold", AccessibilityHandler::AnnouncementPriority::high);
+    postWavetableEditorAnnouncement("The line has the most points it can hold", AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
   state.line_point = added;
   synth_.getWavetableCreator(oscillator)->render();
-  postPluginAnnouncement("Added point " + String(added + 1) + " of " + String(atlas::wavetable_edit::numLinePoints(line)),
-                         AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement("Added point " + String(added + 1) + " of " + String(atlas::wavetable_edit::numLinePoints(line)),
+                                  AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, focusPrefix + " line point");
 }
 
@@ -18204,13 +18168,13 @@ void SynthEditor::removeWavetableLinePoint(int oscillator, int componentIndex, c
     return;
   auto& state = wavetable_keyboard_state_[oscillator];
   if (!atlas::wavetable_edit::removeLinePoint(line, state.line_point)) {
-    postPluginAnnouncement("A line keeps at least two points", AccessibilityHandler::AnnouncementPriority::high);
+    postWavetableEditorAnnouncement("A line keeps at least two points", AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
   state.line_point = jlimit(0, atlas::wavetable_edit::numLinePoints(line) - 1, state.line_point);
   synth_.getWavetableCreator(oscillator)->render();
-  postPluginAnnouncement("Point removed, " + String(atlas::wavetable_edit::numLinePoints(line)) + " points",
-                         AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement("Point removed, " + String(atlas::wavetable_edit::numLinePoints(line)) + " points",
+                                  AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, focusPrefix + " line point");
 }
 
@@ -18224,8 +18188,8 @@ void SynthEditor::flattenWavetableToFrames(int oscillator) {
   state.frame = 0;
   state.selected_frames.clear();
   state.keyframes.clear();
-  postPluginAnnouncement("Wavetable flattened to " + String(source->numFrames()) + " editable frames",
-                         AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement("Wavetable flattened to " + String(source->numFrames()) + " editable frames",
+                                  AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, "Layer");
 }
 
@@ -18254,8 +18218,8 @@ bool SynthEditor::handleWavetableShortcut(int oscillator, const KeyPress& key, C
       for (int frame = jmin(previous, state.frame); frame <= jmax(previous, state.frame); ++frame)
         state.selected_frames.insert(frame);
     }
-    postPluginAnnouncement(wavetableFrameStatusText(oscillator),
-                           AccessibilityHandler::AnnouncementPriority::high);
+    postWavetableEditorAnnouncement(wavetableFrameStatusText(oscillator),
+                                    AccessibilityHandler::AnnouncementPriority::high);
     return true;
   }
   if (key_code == KeyPress::pageUpKey || key_code == KeyPress::pageDownKey) {
@@ -18363,8 +18327,8 @@ void SynthEditor::setWavetableEditorVisible(int oscillator, bool visible) {
       safe_this->selectSectionByName(section, false);
     safe_this->restoreFocusAfterRebuild({}, nullptr, restore_title, section);
 
-    postPluginAnnouncement(visible ? "Wavetable editor shown" : "Wavetable editor hidden",
-                                           AccessibilityHandler::AnnouncementPriority::medium);
+    postWavetableEditorAnnouncement(visible ? "Wavetable editor shown" : "Wavetable editor hidden",
+                                    AccessibilityHandler::AnnouncementPriority::medium);
   });
 }
 
@@ -18403,10 +18367,10 @@ void SynthEditor::applyWavetableHarmonicEdit(int oscillator, int frame, bool all
   }
   creator->render();
 
-  postPluginAnnouncement("Set harmonic " + String(harmonic) +
-                                         (targets.size() == 1 ? " on frame " + String(targets.front() + 1) :
-                                          " on " + String(static_cast<int>(targets.size())) + " frames"),
-                                         AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement("Set harmonic " + String(harmonic) +
+                                  (targets.size() == 1 ? " on frame " + String(targets.front() + 1) :
+                                   " on " + String(static_cast<int>(targets.size())) + " frames"),
+                                  AccessibilityHandler::AnnouncementPriority::high);
 }
 
 void SynthEditor::applyWavetableStartingShape(int oscillator, int frame, bool allFrames, int shape) {
@@ -18441,10 +18405,10 @@ void SynthEditor::applyWavetableStartingShape(int oscillator, int frame, bool al
   static const char* const kShapeNames[] = {
     "Sine", "Saturated sine", "Triangle", "Square", "Pulse 25 percent", "Saw"
   };
-  postPluginAnnouncement(String(kShapeNames[shape]) + " waveform applied to " +
-                             String(static_cast<int>(targets.size())) + " wavetable frame" +
-                             (targets.size() == 1 ? String() : String("s")),
-                         AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement(String(kShapeNames[shape]) + " waveform applied to " +
+                                      String(static_cast<int>(targets.size())) + " wavetable frame" +
+                                      (targets.size() == 1 ? String() : String("s")),
+                                  AccessibilityHandler::AnnouncementPriority::high);
 }
 
 void SynthEditor::clearWavetableHarmonic(int oscillator, int frame, bool allFrames, int harmonic) {
@@ -18477,10 +18441,10 @@ void SynthEditor::clearWavetableHarmonic(int oscillator, int frame, bool allFram
   }
   creator->render();
 
-  postPluginAnnouncement("Cleared harmonic " + String(harmonic) +
-                                         (targets.size() == 1 ? " on frame " + String(targets.front() + 1) :
-                                          " on " + String(static_cast<int>(targets.size())) + " frames"),
-                                         AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement("Cleared harmonic " + String(harmonic) +
+                                  (targets.size() == 1 ? " on frame " + String(targets.front() + 1) :
+                                   " on " + String(static_cast<int>(targets.size())) + " frames"),
+                                  AccessibilityHandler::AnnouncementPriority::high);
 }
 
 void SynthEditor::normalizeWavetableFrame(int oscillator, int frame, bool allFrames) {
@@ -18511,10 +18475,10 @@ void SynthEditor::normalizeWavetableFrame(int oscillator, int frame, bool allFra
   }
   creator->render();
 
-  postPluginAnnouncement(targets.size() == 1 ? "Normalized wavetable frame " + String(targets.front() + 1) :
-                                               "Normalized " + String(static_cast<int>(targets.size())) +
-                                               " wavetable frames",
-                                         AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement(targets.size() == 1 ? "Normalized wavetable frame " + String(targets.front() + 1) :
+                                                        "Normalized " + String(static_cast<int>(targets.size())) +
+                                                        " wavetable frames",
+                                  AccessibilityHandler::AnnouncementPriority::high);
 }
 
 void SynthEditor::removeWavetableFundamental(int oscillator, int frame, bool allFrames) {

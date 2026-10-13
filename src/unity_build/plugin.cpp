@@ -14,5 +14,6 @@
  * along with vital.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "screen_reader_speech.cpp"
 #include "synth_editor.cpp"
 #include "synth_plugin.cpp"

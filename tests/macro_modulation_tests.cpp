@@ -591,6 +591,7 @@ namespace {
 }
 
 #include "editor_accessibility_tests.h"
+#include "editor_speech_tests.h"
 #include "oscillator_modulation_tests.h"
 
 int main(int argc, char** argv) {
@@ -643,6 +644,14 @@ int main(int argc, char** argv) {
     testEditorOffersOscillatorSources();
     if (failures == 0)
       std::cout << "Atlas oscillator modulation tests passed\n";
+    return failures == 0 ? 0 : 1;
+  }
+  if (argc > 1 && String(argv[1]) == "--editor-speech") {
+    testKeyboardEditorsAnnounceNavigation();
+    testUiaNotificationOnJuceElement();
+    testAnnouncementsReachNvda();
+    if (failures == 0)
+      std::cout << "Atlas editor speech tests passed\n";
     return failures == 0 ? 0 : 1;
   }
   if (argc > 1 && String(argv[1]) == "--editor-accessibility") {
