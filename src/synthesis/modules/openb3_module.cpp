@@ -23,6 +23,7 @@ namespace vital {
     Value* percussion_decay = createBaseControl(prefix_ + "percussion_decay");
     Value* percussion_harmonic = createBaseControl(prefix_ + "percussion_harmonic");
     Output* key_click = createPolyModControl(prefix_ + "key_click");
+    Output* release_click = createPolyModControl(prefix_ + "release_click");
     Value* temperament = createBaseControl(prefix_ + "temperament");
     Output* transpose = createPolyModControl(prefix_ + "transpose");
     Output* tune = createPolyModControl(prefix_ + "tune");
@@ -39,6 +40,7 @@ namespace vital {
     source_->plug(percussion_decay, OpenB3Source::kPercussionDecay);
     source_->plug(percussion_harmonic, OpenB3Source::kPercussionHarmonic);
     source_->plug(key_click, OpenB3Source::kKeyClick);
+    source_->plug(release_click, OpenB3Source::kReleaseClick);
     source_->plug(temperament, OpenB3Source::kTemperament);
     source_->plug(transpose, OpenB3Source::kTranspose);
     source_->plug(tune, OpenB3Source::kTune);

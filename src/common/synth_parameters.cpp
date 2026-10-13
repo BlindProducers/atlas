@@ -1869,9 +1869,13 @@ namespace vital {
       ValueDetails::kIndexed, false, "", "OpenB3 Percussion Decay", strings::kOpenB3PercussionDecayNames },
     { "b3_percussion_harmonic", 0x000000, 0.0, 1.0, 1.0, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "OpenB3 Percussion Harmonic", strings::kOpenB3PercussionHarmonicNames },
-    // osc.attack.click.level: the contact noise when a key closes.
+    // The contacts as a key closes and opens: 0% a clean fade, 50% setBfree's
+    // click model (osc.attack.click.level 0.5, osc.release.click.level 0.25),
+    // 100% worn contacts chattering for up to about 10 ms.
     { "b3_key_click", 0x000000, 0.0, 1.0, 0.5, 0.0, 100.0,
       ValueDetails::kLinear, false, "%", "OpenB3 Key Click", nullptr },
+    { "b3_release_click", 0x000000, 0.0, 1.0, 0.5, 0.0, 100.0,
+      ValueDetails::kLinear, false, "%", "OpenB3 Release Click", nullptr },
     { "b3_temperament", 0x000000, 0.0, 2.0, 0.0, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "OpenB3 Tuning", strings::kOpenB3TemperamentNames },
     { "b3_transpose", 0x000000, -48.0, 48.0, 0.0, 0.0, 1.0,

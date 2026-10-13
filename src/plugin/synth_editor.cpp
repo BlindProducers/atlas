@@ -2150,10 +2150,10 @@ namespace {
     // four switches in the organ's order, the key click and the pitch rows.
     if (id.startsWith("b3_")) {
       const String suffix = id.fromFirstOccurrenceOf("b3_", false, false);
-      static const std::array<const char*, 18> b3_order = {{
+      static const std::array<const char*, 19> b3_order = {{
         "amp_env", "drawbar_16", "drawbar_5_1_3", "drawbar_8", "drawbar_4", "drawbar_2_2_3", "drawbar_2",
         "drawbar_1_3_5", "drawbar_1_1_3", "drawbar_1", "percussion", "percussion_volume", "percussion_decay",
-        "percussion_harmonic", "key_click", "temperament", "transpose", "tune"
+        "percussion_harmonic", "key_click", "release_click", "temperament", "transpose", "tune"
       }};
       for (int i = 0; i < static_cast<int>(b3_order.size()); ++i) {
         if (suffix == b3_order[i])
@@ -3020,7 +3020,7 @@ namespace {
       const String suffix = legacy_id.fromFirstOccurrenceOf("b3_", false, false);
       if (suffix == "amp_env")
         return "Choose what shapes each note. Organ sounds while the key is down, with the key click as it closes "
-               "and a quick fade as it opens, and keeps the voice open while it sounds. Envelope 1 lets Envelope 1 "
+               "and as it opens, and keeps the voice open while it sounds. Envelope 1 lets Envelope 1 "
                "shape the organ instead, sounding on through its release.";
       if (suffix.startsWith("drawbar_")) {
         const String footage = suffix.fromFirstOccurrenceOf("drawbar_", false, false);
@@ -3049,8 +3049,13 @@ namespace {
         return "Choose which harmonic percussion sounds: Second, an octave above the note, or Third, an octave "
                "and a fifth above.";
       if (suffix == "key_click")
-        return "Set the noise of the key contacts as they close. A higher setting sounds like a worn instrument. "
-               "Even at 0% the contacts close at slightly different moments and click a little. 50% is OpenB3's.";
+        return "Set the click of the key contacts as they close. 0% closes them cleanly, with no click; 50% is "
+               "OpenB3's click, each contact closing at its own moment with a burst of noise; above that the "
+               "contacts sound worn, chattering louder and for longer, up to about 10 milliseconds.";
+      if (suffix == "release_click")
+        return "Set the click of the key contacts as they open when a key is released. 0% lets the note fade out "
+               "cleanly; 50% is setBfree's release click; above that the contacts chatter louder and for longer, "
+               "up to about 10 milliseconds.";
       if (suffix == "temperament")
         return "Choose the tonewheels' tuning. Gear 60 Hz uses the gear ratios of an organ built for 60 hertz "
                "mains, as OpenB3 does; Gear 50 Hz estimates those of a 50 hertz organ; Equal is equal "

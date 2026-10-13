@@ -51,12 +51,28 @@ namespace atlas::openb3 {
     int temperament = kGear60;
   };
 
-  // Fills `envelopes` (kNumClickEnvelopes x length) with tonegen.c's ENV_CLICK
-  // attack shapes: silence until a random contact time, a burst of random
-  // contact noise of random length (8 to 40 samples at 22.05 kHz, at most a
-  // fragment), then full level, smoothed by its two-point filter. `level` is
-  // osc.attack.click.level (0.5 by default). `state` is a xorshift seed.
-  void makeClickEnvelopes(float* envelopes, int length, double sample_rate, float level, uint32_t& state);
+  // The longest contact envelope: chatter at Key Click 100% lasts up to about
+  // 10 ms, as long as 512 samples allow.
+  constexpr int kMaxContactLength = 512;
+
+  // Fills `envelopes` (kNumClickEnvelopes shapes, each the returned length)
+  // with the contacts' shapes as a key closes (`closing`) or opens: each
+  // envelope runs from 0 to 1 and a wheel moves through its own one.
+  // `amount` is Key Click or Release Click:
+  // - 50% is tonegen.c's ENV_CLICK model as setBfree sets it: silence (or
+  //   full level) until a random contact time, a burst of random contact
+  //   noise (osc.attack.click.level 0.5 closing, osc.release.click.level 0.25
+  //   opening) of random length (8 to 40 samples at 22.05 kHz closing, 8 to 39
+  //   at 48 kHz opening, within a fragment), then the other state, smoothed by
+  //   its two-point filter.
+  // - Toward 0% each contact still closes at its own moment, but through a
+  //   smooth raised-cosine ramp that widens to four fragments (about 5 ms) at
+  //   0%, with less noise, so it clicks less and at 0% not at all.
+  // - Toward 100% the contacts wear: the noise deepens to full, the bursts
+  //   grow up to 8 times longer (to about 10 ms) and the smoothing goes.
+  // `state` is a xorshift seed.
+  int makeContactEnvelopes(float* envelopes, bool closing, float amount, double sample_rate, int fragment,
+                           uint32_t& state);
 
   class Organ {
    public:
@@ -121,12 +137,14 @@ namespace atlas::openb3 {
     // Closes the contacts of `key` (0 = C2 .. 60 = C7). `time` is the organ
     // clock at the voice's first sample of sound; the wheels start where
     // they are then. `envelopes` holds kNumClickEnvelopes attack shapes of
-    // the organ's fragment length. `frequencies` lists the wheels' Hz
-    // (index 1-91). A voice still sounding glides to the new contacts.
-    void noteOn(int key, double time, const Registration& registration, const float* envelopes,
+    // `length` samples (at most kMaxContactLength). `frequencies` lists the
+    // wheels' Hz (index 1-91). A voice still sounding glides to the new contacts.
+    void noteOn(int key, double time, const Registration& registration, const float* envelopes, int length,
                 const Organ& organ, const double* frequencies);
-    // Opens the contacts: every wheel fades out over a fragment.
-    void noteOff();
+    // Opens the contacts: through `envelopes` (kNumClickEnvelopes release
+    // shapes of `length` samples), or linearly over a fragment (tonegen.c's
+    // ENV_LINEAR, OpenB3's default) without them.
+    void noteOff(const float* envelopes = nullptr, int length = 0);
     void clear();
 
     // The voice's pitch against its key's, applied from the next sample.
@@ -147,7 +165,7 @@ namespace atlas::openb3 {
     float percussionGain(int index) const { return wheels_[static_cast<size_t>(index)].percussion_to; }
 
    private:
-    enum Ramp { kNoRamp, kClickRamp, kLinearRamp };
+    enum Ramp { kNoRamp, kClickRamp, kReleaseRamp, kLinearRamp };
 
     struct Wheel {
       int wheel = 0;
@@ -180,7 +198,9 @@ namespace atlas::openb3 {
 
     Ramp ramp_ = kNoRamp;
     int ramp_position_ = 0, ramp_length_ = kReferenceFragment;
-    std::array<float, kNumClickEnvelopes * kMaxFragment> envelopes_ {};
+    std::array<float, kNumClickEnvelopes * kMaxContactLength> envelopes_ {};
+    std::array<float, kNumClickEnvelopes * kMaxContactLength> release_envelopes_ {};
+    int fragment_ = kReferenceFragment;
     // The percussion high pass's previous input.
     double percussion_previous_ = 0.0;
   };

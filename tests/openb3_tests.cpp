@@ -427,6 +427,52 @@ namespace {
     return finish("percussion");
   }
 
+  // High-frequency energy (above about 2 kHz, by a 4-pole high pass) in
+  // [start, start + 20 ms), in dB: how loud a click is against a held organ.
+  double clickLevel(const std::vector<float>& audio, int start) {
+    const double a = std::exp(-2.0 * kPi * 2000.0 / kRate);
+    double state[4] = {}, previous[4] = {}, energy = 0.0;
+    for (int i = std::max(0, start - 2400); i < start + kRate / 50; ++i) {
+      double x = audio[static_cast<size_t>(i)];
+      for (int stage = 0; stage < 4; ++stage) {
+        const double y = a * (state[stage] + x - previous[stage]);
+        previous[stage] = x;
+        state[stage] = y;
+        x = y;
+      }
+      if (i >= start)
+        energy += x * x;
+    }
+    return db(std::sqrt(energy / (kRate / 50)));
+  }
+
+  // The click levels averaged (in power) over 40 strikes in one plugin, each
+  // with its own random contacts: what attack and release add to the held
+  // note's own high frequencies.
+  std::pair<double, double> averageClicks(float key_click, float release_click) {
+    SynthPlugin plugin;
+    preparePlayback(plugin);
+    setDrawbars(plugin, "008000000");
+    setControl(plugin, "osc_1_b3_key_click", key_click);
+    setControl(plugin, "osc_1_b3_release_click", release_click);
+    constexpr int kStrikes = 40, kPeriod = kRate / 5, kHold = kRate / 10;
+    std::vector<MidiEvent> events;
+    for (int i = 0; i < kStrikes; ++i) {
+      const int note = 48 + (i * 7) % 25;
+      events.push_back({ i * kPeriod, juce::MidiMessage::noteOn(1, note, 1.0f) });
+      events.push_back({ i * kPeriod + kHold, juce::MidiMessage::noteOff(1, note) });
+    }
+    const auto audio = render(plugin, kStrikes * kPeriod, events);
+    double attack = 0.0, opening = 0.0;
+    for (int i = 0; i < kStrikes; ++i) {
+      const int on = i * kPeriod, off = on + kHold;
+      const double held = std::pow(10.0, clickLevel(audio, off - 2400) / 10.0);
+      attack += std::max(0.0, std::pow(10.0, clickLevel(audio, on) / 10.0) - held);
+      opening += std::pow(10.0, clickLevel(audio, off) / 10.0);
+    }
+    return { 10.0 * std::log10(attack / kStrikes + 1e-30), 10.0 * std::log10(opening / kStrikes + 1e-30) };
+  }
+
   // Organ mode: the key shapes the note and ends it at once. Envelope 1 mode:
   // Env 1's release carries it. The key click follows its control.
   int envelope() {
@@ -461,6 +507,75 @@ namespace {
     for (size_t i = 512; i < clean.size(); ++i)
       steady_difference = std::max(steady_difference, double(std::abs(clean[i] - worn[i])));
     expect(attack_difference > 1e-3 && steady_difference < 1e-6, "the key click shapes only the attack");
+
+    // The release clicks: against a linear fade over the same fragment, the
+    // contacts opening at their own moments leave sharp edges (high
+    // frequencies), more with more contact noise.
+    const auto release_edges = [&](float level) {
+      const auto audio = renderNote(60, "008000000", { { "release_click", level } }, release + 4800, release);
+      double edges = 0.0;
+      for (int i = release; i < release + 128; ++i) {
+        const double second = audio[static_cast<size_t>(i + 1)] - 2.0 * audio[static_cast<size_t>(i)] +
+                              audio[static_cast<size_t>(i - 1)];
+        edges += second * second;
+      }
+      const double after = rms(audio, release + 512, release + 4800);
+      expect(after < 1e-6, "the note ends after its release click");
+      return std::sqrt(edges);
+    };
+    const double quiet = release_edges(0.0), standard = release_edges(0.5), noisy = release_edges(1.0);
+    double held_edges = 0.0;
+    {
+      const auto held = renderNote(60, "008000000", {}, release + 128);
+      for (int i = release - 128; i < release; ++i) {
+        const double second = held[static_cast<size_t>(i + 1)] - 2.0 * held[static_cast<size_t>(i)] +
+                              held[static_cast<size_t>(i - 1)];
+        held_edges += second * second;
+      }
+      held_edges = std::sqrt(held_edges);
+    }
+    std::cout << "release edges: held " << held_edges << ", click 0% " << quiet << ", 50% " << standard << ", 100% "
+              << noisy << '\n';
+    expect(quiet < 3.0 * held_edges && standard > 3.0 * quiet && noisy > 3.0 * standard,
+           "0% releases cleanly; more Release Click clicks more");
+
+    // Across the range the clicks change by tens of decibels; 0% adds none.
+    {
+      const auto clean = averageClicks(0.0f, 0.0f);
+      const auto standard_click = averageClicks(0.5f, 0.5f);
+      const auto worn_click = averageClicks(1.0f, 1.0f);
+      std::cout << "clicks 0/50/100%: attack " << clean.first << " / " << standard_click.first << " / "
+                << worn_click.first << " dB, release " << clean.second << " / " << standard_click.second << " / "
+                << worn_click.second << " dB\n";
+      expect(clean.first < -100.0, "Key Click 0% closes the contacts without a click");
+      expect(standard_click.first > clean.first + 20.0 && worn_click.first > standard_click.first + 12.0,
+             "Key Click spans a wide range");
+      expect(standard_click.second > clean.second + 8.0 && worn_click.second > standard_click.second + 12.0,
+             "Release Click spans a wide range");
+    }
+
+    // Keys released under Envelope 1 keep their contacts closed; switching to
+    // Organ opens them, so no voice is left held open.
+    {
+      SynthPlugin plugin;
+      preparePlayback(plugin);
+      setControl(plugin, "osc_1_b3_amp_env", 1.0f);
+      setControl(plugin, "env_1_release", 1.0f);
+      std::vector<MidiEvent> chord;
+      for (int note : { 48, 52, 55, 60, 64 }) {
+        chord.push_back({ 0, juce::MidiMessage::noteOn(1, note, 1.0f) });
+        chord.push_back({ kRate / 8, juce::MidiMessage::noteOff(1, note) });
+      }
+      render(plugin, kRate / 8 + 2 * kBlock, chord);
+      setControl(plugin, "osc_1_b3_amp_env", 0.0f);
+      const auto after = render(plugin, kRate / 2, {});
+      expect(rms(after, kRate / 4, kRate / 2) < 1e-6, "switching to Organ after Envelope 1 releases leaves no stuck note");
+      // And back: held under Organ, released under Envelope 1.
+      render(plugin, kRate / 8, { { 0, juce::MidiMessage::noteOn(1, 62, 1.0f) } });
+      setControl(plugin, "osc_1_b3_amp_env", 1.0f);
+      const auto released = render(plugin, 2 * kRate, { { 0, juce::MidiMessage::noteOff(1, 62) } });
+      expect(rms(released, 3 * kRate / 2, 2 * kRate) < 1e-6, "switching to Envelope 1 while a key is held leaves no stuck note");
+    }
     return finish("envelope");
   }
 
@@ -486,6 +601,14 @@ namespace {
     return finish("coherence");
   }
 
+  int clickSweep() {
+    for (float amount : { 0.0f, 0.125f, 0.25f, 0.375f, 0.5f, 0.625f, 0.75f, 0.875f, 1.0f }) {
+      const auto [attack, release] = averageClicks(amount, amount);
+      std::cout << "click " << amount * 100.0f << "%: attack " << attack << " dB, release " << release << " dB\n";
+    }
+    return finish("click sweep");
+  }
+
   // ---- Parameters -----------------------------------------------------------------
 
   int parameters() {
@@ -493,7 +616,7 @@ namespace {
     const char* const suffixes[] = { "amp_env", "drawbar_16", "drawbar_5_1_3", "drawbar_8", "drawbar_4",
                                      "drawbar_2_2_3", "drawbar_2", "drawbar_1_3_5", "drawbar_1_1_3", "drawbar_1",
                                      "percussion", "percussion_volume", "percussion_decay", "percussion_harmonic",
-                                     "key_click", "temperament", "transpose", "tune" };
+                                     "key_click", "release_click", "temperament", "transpose", "tune" };
     {
       SynthPlugin plugin;
       preparePlayback(plugin);
@@ -512,6 +635,7 @@ namespace {
              control(plugin, "osc_2_b3_percussion_decay") == 0.0f && control(plugin, "osc_2_b3_percussion_harmonic") == 1.0f,
              "percussion defaults to off, Normal, Fast, Third");
       close(control(plugin, "osc_2_b3_key_click"), 0.5, "key click defaults to 50%", 1e-6);
+      close(control(plugin, "osc_2_b3_release_click"), 0.5, "release click defaults to setBfree's click", 1e-6);
       expect(control(plugin, "osc_2_b3_temperament") == 0.0f && control(plugin, "osc_2_b3_amp_env") == 0.0f,
              "Gear 60 Hz tuning and the Organ envelope by default");
       for (int chain = 0; chain <= vital::kNumBuses; ++chain) {
@@ -1048,7 +1172,7 @@ namespace {
         std::map<int, std::pair<double, double>> actual;
         for (int key : keys) {
           openb3::Voice voice;
-          voice.noteOn(key, 0.0, registration, envelopes.data(), organ, openb3::tables().frequencies[0].data());
+          voice.noteOn(key, 0.0, registration, envelopes.data(), 64, organ, openb3::tables().frequencies[0].data());
           for (int i = 0; i < voice.numWheels(); ++i) {
             actual[voice.wheelNumber(i)].first += voice.swellGain(i);
             actual[voice.wheelNumber(i)].second += voice.percussionGain(i);
@@ -1089,14 +1213,15 @@ namespace {
   // Returns the residual's RMS relative to the reference's over fragments
   // from `from` on.
   double compareTonegen(const std::string& reference, const Setup& setup, const std::vector<Event>& events,
-                        int fragments, int from, bool same_start) {
+                        int fragments, int from, bool same_start, bool release_click = false) {
     const std::string directory = scratchDirectory();
     std::string list;
     for (const Event& event : events)
       list += (list.empty() ? "" : ",") + std::to_string(event.fragment) + (event.on ? ":on:" : ":off:") +
               std::to_string(event.key);
     if (!run(reference, { "tonegen", "48000", setup.drawbars, setup.percussion, std::to_string(fragments),
-                          list.empty() ? "-" : list, directory + "/tonegen.f32", directory + "/envelopes.f32" }) ||
+                          list.empty() ? "-" : list, directory + "/tonegen.f32", directory + "/envelopes.f32",
+                          release_click ? "click" : "linear" }) ||
         !run(reference, { "tables", "48000", directory + "/loops.txt" }))
       return 1e9;
     const auto expected = readFloats(directory + "/tonegen.f32");
@@ -1138,12 +1263,12 @@ namespace {
         if (event.on) {
           // tonegen.c starts every wheel from its loop's beginning when it
           // first sounds; for keys pressed together that is the same moment.
-          voices[event.key].noteOn(event.key, same_start ? 0.0 : organ.time(), registration, envelopes.data(), organ,
-                                   loops.data());
+          voices[event.key].noteOn(event.key, same_start ? 0.0 : organ.time(), registration, envelopes.data(), 64,
+                                   organ, loops.data());
           organ.keyPressed(0);
         }
         else
-          voices[event.key].noteOff();
+          voices[event.key].noteOff(release_click ? envelopes.data() + openb3::kNumClickEnvelopes * 64 : nullptr, 64);
       }
       std::fill(block.begin(), block.end(), 0.0);
       for (auto& [key, voice] : voices)
@@ -1170,6 +1295,14 @@ namespace {
                   << db(residual) << " dB\n";
         expect(residual < 0.01, std::string("key ") + std::to_string(key) + " matches tonegen.c (" + setup.drawbars + ")");
       }
+    }
+    // setBfree's click release model: each contact opens at its own moment
+    // with noise, through tonegen.c's release envelopes.
+    for (int key : { 5, 30, 55 }) {
+      const double residual = compareTonegen(reference, kSetups[1], { { 1, true, key }, { 100, false, key } }, 110, 1,
+                                             true, true);
+      std::cout << "tonegen click release key " << key << ": residual " << db(residual) << " dB\n";
+      expect(residual < 0.01, "the click release matches tonegen.c, key " + std::to_string(key));
     }
     // A chord pressed together, from the fragment after its clicks: key
     // compression and shared wheels.
@@ -1209,7 +1342,7 @@ namespace {
           if (event.fragment != fragment)
             continue;
           if (event.on) {
-            voices[event.key].noteOn(event.key, organ.time(), registration, envelopes.data(), organ,
+            voices[event.key].noteOn(event.key, organ.time(), registration, envelopes.data(), 64, organ,
                                      openb3::tables().frequencies[0].data());
             organ.keyPressed(0);
           }
@@ -1401,6 +1534,7 @@ int main(int argc, char** argv) {
   if (flag == "--scanner") return scanner();
   if (flag == "--whirl") return whirl();
   if (flag == "--editor") return editorTest();
+  if (flag == "--click-sweep") return clickSweep();
   if (!argument.empty()) {
     if (flag == "--wiring-reference") return wiringReference(argument);
     if (flag == "--gains-reference") return gainsReference(argument);

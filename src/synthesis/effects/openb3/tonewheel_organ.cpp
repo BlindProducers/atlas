@@ -33,30 +33,64 @@ namespace atlas::openb3 {
     return std::clamp(static_cast<int>(std::lround(kReferenceFragment * sample_rate / kReferenceRate)), 1, kMaxFragment);
   }
 
-  void makeClickEnvelopes(float* envelopes, int length, double sample_rate, float level, uint32_t& state) {
+  int makeContactEnvelopes(float* envelopes, bool closing, float amount, double sample_rate, int fragment,
+                           uint32_t& state) {
     if (state == 0)
       state = 0x9e3779b9u;
-    // initToneGenerator(): 8 to 40 samples at 22.05 kHz, at most a fragment.
-    const int minimum = std::min(length, static_cast<int>(std::floor(sample_rate * 8.0 / 22050.0)));
-    const int maximum = std::min(length, static_cast<int>(std::ceil(sample_rate * 40.0 / 22050.0)));
+    amount = std::clamp(amount, 0.0f, 1.0f);
+    // Up to 50%, how sharp the contacts are; past it, how worn.
+    const double sharp = std::min(1.0, amount / 0.5);
+    const double wear = std::max(0.0, (amount - 0.5) / 0.5);
+    const double base_level = closing ? 0.5 : 0.25;
+    const double level = wear > 0.0 ? base_level + wear * (1.0 - base_level) : base_level * sharp;
+    const double stretch = 1.0 + 7.0 * wear;
+    // The two-point filter's weight on the newest sample: 0.5 in tonegen.c.
+    const double smoothing = 0.5 + 0.5 * wear;
+
+    // initToneGenerator() and initEnvelopes(): the burst lengths.
+    double minimum, maximum;
+    if (closing) {
+      minimum = std::min<double>(fragment, std::floor(sample_rate * 8.0 / 22050.0));
+      maximum = std::min<double>(fragment, std::ceil(sample_rate * 40.0 / 22050.0));
+    }
+    else {
+      minimum = 8.0 * fragment / kReferenceFragment;
+      maximum = 40.0 * fragment / kReferenceFragment;
+    }
+    minimum *= stretch;
+    maximum *= stretch;
+    // A fragment at 50%, as in tonegen.c. Below, the contacts close through
+    // a smooth ramp that widens to four fragments (about 5 ms) at 0%; above,
+    // worn contacts chatter on past a fragment.
+    const int length = std::clamp(wear > 0.0 ? std::max(fragment, static_cast<int>(std::ceil(maximum)) + fragment / 4)
+                                             : static_cast<int>(std::lround(fragment * (1.0 + 3.0 * (1.0 - sharp)))),
+                                  2, kMaxContactLength);
+    const int ramp = std::max(1, static_cast<int>(std::lround((length - 1) * (1.0 - sharp))) + 1);
+
     for (int b = 0; b < kNumClickEnvelopes; ++b) {
       float* envelope = envelopes + b * length;
-      const int bound = std::max(1, maximum - minimum);
-      int burst = minimum + static_cast<int>(next(state) % static_cast<uint32_t>(bound));
-      if (length <= burst)
-        burst = length - 1;
-      const int start = static_cast<int>(next(state) % static_cast<uint32_t>(length - burst));
-      int i = 0;
-      for (; i < start; ++i)
-        envelope[i] = 0.0f;
-      for (; i < start + burst; ++i)
-        envelope[i] = static_cast<float>(1.0 - (level * (next(state) / 4294967295.0)));
-      for (; i < length; ++i)
-        envelope[i] = 1.0f;
-      envelope[0] /= 2.0;
-      for (i = 1; i < length; ++i)
-        envelope[i] = static_cast<float>((envelope[i - 1] + envelope[i]) / 2.0);
+      const int bound = std::max(1, static_cast<int>(std::lround(maximum - minimum)));
+      int burst = static_cast<int>(std::lround(minimum)) + static_cast<int>(next(state) % static_cast<uint32_t>(bound));
+      burst = std::clamp(burst, 1, length - 1);
+      const int span = std::max(1, length - std::max(burst, ramp));
+      const int start = static_cast<int>(next(state) % static_cast<uint32_t>(span));
+      double filtered = 0.0;
+      for (int i = 0; i < length; ++i) {
+        // The contact closes (or opens) through a raised cosine of `ramp`
+        // samples from its moment; at 50% that is tonegen.c's step.
+        double closed = 0.0;
+        if (i >= start) {
+          const double t = std::min(1.0, static_cast<double>(i - start + 1) / ramp);
+          closed = 0.5 - 0.5 * std::cos(kTwoPi * 0.5 * t);
+        }
+        // With noise while it makes contact.
+        const double raw = i >= start && i < start + burst ? closed * (1.0 - level * (next(state) / 4294967295.0))
+                                                           : closed;
+        filtered = i == 0 ? raw * smoothing : filtered + smoothing * (raw - filtered);
+        envelope[i] = static_cast<float>(filtered);
+      }
     }
+    return length;
   }
 
   // ---- Organ -----------------------------------------------------------------
@@ -171,6 +205,8 @@ namespace atlas::openb3 {
   float Voice::rampValue(const Wheel& wheel) const {
     if (ramp_ == kClickRamp)
       return envelopes_[static_cast<size_t>(wheel.envelope * ramp_length_ + ramp_position_)];
+    if (ramp_ == kReleaseRamp)
+      return release_envelopes_[static_cast<size_t>(wheel.envelope * ramp_length_ + ramp_position_)];
     return static_cast<float>(ramp_position_) / static_cast<float>(ramp_length_);
   }
 
@@ -189,7 +225,7 @@ namespace atlas::openb3 {
     ramp_position_ = 0;
   }
 
-  void Voice::noteOn(int key, double time, const Registration& registration, const float* envelopes,
+  void Voice::noteOn(int key, double time, const Registration& registration, const float* envelopes, int length,
                      const Organ& organ, const double* frequencies) {
     key = std::clamp(key, 0, kNumKeys - 1);
     const bool fresh = !active_ || key != key_;
@@ -216,7 +252,8 @@ namespace atlas::openb3 {
     // The contacts close through the click: a new key's wheels from silence,
     // a sounding key's from where they are.
     startRamp(kClickRamp);
-    ramp_length_ = organ.fragmentLength();
+    fragment_ = organ.fragmentLength();
+    ramp_length_ = std::clamp(length, 1, kMaxContactLength);
     std::copy(envelopes, envelopes + kNumClickEnvelopes * ramp_length_, envelopes_.begin());
     targets(registration);
     if (fresh)
@@ -224,11 +261,14 @@ namespace atlas::openb3 {
     active_ = held_ = true;
   }
 
-  void Voice::noteOff() {
+  void Voice::noteOff(const float* envelopes, int length) {
     if (!active_ || !held_)
       return;
     held_ = false;
-    startRamp(kLinearRamp);
+    startRamp(envelopes != nullptr ? kReleaseRamp : kLinearRamp);
+    ramp_length_ = envelopes != nullptr ? std::clamp(length, 1, kMaxContactLength) : fragment_;
+    if (envelopes != nullptr)
+      std::copy(envelopes, envelopes + kNumClickEnvelopes * ramp_length_, release_envelopes_.begin());
     for (int i = 0; i < num_wheels_; ++i) {
       Wheel& wheel = wheels_[static_cast<size_t>(i)];
       wheel.swell_to = 0.0f;
@@ -247,6 +287,7 @@ namespace atlas::openb3 {
     if (same || !active_ || !held_)
       return;
     startRamp(kLinearRamp);
+    ramp_length_ = fragment_;
     targets(registration);
   }
 

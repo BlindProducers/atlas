@@ -9,8 +9,10 @@
  *                                   loop frequencies at RATE and key compression
  *   gains RATE DRAWBARS PERC KEYS OUT
  *                                   per wheel sumSwell and sumPercn after the keys
- *   tonegen RATE DRAWBARS PERC FRAGMENTS EVENTS OUT ENVELOPES
- *                                   oscGenerateFragment's output, and the attack envelopes
+ *   tonegen RATE DRAWBARS PERC FRAGMENTS EVENTS OUT ENVELOPES [RELEASE]
+ *                                   oscGenerateFragment's output, and the attack
+ *                                   then release envelopes; RELEASE "click" picks
+ *                                   osc.release.model click (default linear)
  *   scanner RATE SELECT HZ IN OUT   vibratoProc over IN
  *   whirl RATE EVENTS IN OUT        whirlProc3 over IN (left, right interleaved)
  *
@@ -65,10 +67,11 @@ static float* readFloats (const char* path, long* count) {
 }
 
 /* An upper manual set up as OpenB3's plugin sets it. */
-static struct b_tonegen* makeTonegen (double rate, const char* drawbars, const char* perc) {
+static struct b_tonegen* makeTonegenWith (double rate, const char* drawbars, const char* perc, int release) {
 	SampleRateD = rate;
 	srand (1);
 	struct b_tonegen* t = allocTonegen ();
+	setEnvReleaseModel (t, release);
 	initToneGenerator (t, NULL);
 	b_instance inst;
 	memset (&inst, 0, sizeof (inst));
@@ -82,6 +85,10 @@ static struct b_tonegen* makeTonegen (double rate, const char* drawbars, const c
 	setPercussionFast (t, perc[2] == '1');
 	setPercussionEnabled (t, perc[0] == '1');
 	return t;
+}
+
+static struct b_tonegen* makeTonegen (double rate, const char* drawbars, const char* perc) {
+	return makeTonegenWith (rate, drawbars, perc, ENV_LINEAR);
 }
 
 static int wiring (const char* out) {
@@ -148,11 +155,14 @@ static int gains (double rate, const char* drawbars, const char* perc, const cha
 }
 
 static int tonegen (double rate, const char* drawbars, const char* perc, int fragments, const char* events,
-                    const char* out, const char* envelopes) {
-	struct b_tonegen* t = makeTonegen (rate, drawbars, perc);
+                    const char* out, const char* envelopes, const char* release) {
+	struct b_tonegen* t = makeTonegenWith (rate, drawbars, perc,
+	                                       release && !strcmp (release, "click") ? ENV_CLICK : ENV_LINEAR);
 	FILE* e = openOut (envelopes, "wb");
 	for (int b = 0; b < 8; ++b)
 		fwrite (t->attackEnv[b], sizeof (float), BUFFER_SIZE_SAMPLES, e);
+	for (int b = 0; b < 8; ++b)
+		fwrite (t->releaseEnv[b], sizeof (float), BUFFER_SIZE_SAMPLES, e);
 	fclose (e);
 	FILE* f = openOut (out, "wb");
 	float buffer[BUFFER_SIZE_SAMPLES];
@@ -234,7 +244,8 @@ int main (int argc, char** argv) {
 	if (argc >= 7 && !strcmp (argv[1], "gains"))
 		return gains (atof (argv[2]), argv[3], argv[4], argv[5], argv[6]);
 	if (argc >= 9 && !strcmp (argv[1], "tonegen"))
-		return tonegen (atof (argv[2]), argv[3], argv[4], atoi (argv[5]), argv[6], argv[7], argv[8]);
+		return tonegen (atof (argv[2]), argv[3], argv[4], atoi (argv[5]), argv[6], argv[7], argv[8],
+		                argc >= 10 ? argv[9] : NULL);
 	if (argc >= 7 && !strcmp (argv[1], "scanner"))
 		return scanner (atof (argv[2]), (int)strtol (argv[3], NULL, 0), atof (argv[4]), argv[5], argv[6]);
 	if (argc >= 6 && !strcmp (argv[1], "whirl"))
