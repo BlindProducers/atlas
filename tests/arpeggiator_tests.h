@@ -412,7 +412,7 @@ namespace {
            "Loop values read from 1 to Infinite");
   }
 
-  // Arpeggiators 3 and 4 have every Arpeggiator 1 control, with the same range
+  // Arpeggiators 3 to 8 have every Arpeggiator 1 control, with the same range
   // and default, and each one plays its notes through the synth.
   void testArpeggiatorsBeyondTwo() {
     const std::string first_prefix = "arp_1_";
