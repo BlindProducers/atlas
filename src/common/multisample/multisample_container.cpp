@@ -349,8 +349,10 @@ namespace container {
       const juce::File target = partial.getChildFile(juce::String(info.relative));
       target.getParentDirectory().createDirectory();
       std::error_code code;
-      std::filesystem::create_hard_link(std::filesystem::path(info.file.getFullPathName().toStdString()),
-                                        std::filesystem::path(target.getFullPathName().toStdString()), code);
+      // u8path: a plain std::string path is read in the ANSI code page on Windows,
+      // which breaks (or throws on) any path with characters outside it.
+      std::filesystem::create_hard_link(std::filesystem::u8path(info.file.getFullPathName().toStdString()),
+                                        std::filesystem::u8path(target.getFullPathName().toStdString()), code);
       if (code) {
         to_copy.push_back(&info);
         copy_bytes += info.size;
