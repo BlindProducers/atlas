@@ -42,6 +42,8 @@ namespace vital {
         kMidiKey,
         // Env 1, the voice's amplitude envelope.
         kAmplitudeEnvelope,
+        // How many voices are sounding, for the Analog oscillator's supply sag.
+        kSoundingVoices,
         kNumInputs
       };
 

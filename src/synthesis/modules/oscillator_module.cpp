@@ -93,11 +93,21 @@ namespace vital {
     oscillator_->plug(sub_level, SynthOscillator::kSubLevel);
     oscillator_->plug(sub_octave, SynthOscillator::kSubOctave);
     oscillator_->plug(sub_waveform, SynthOscillator::kSubWaveform);
+    oscillator_->plug(createPolyModControl(prefix_ + "_analog_age"), SynthOscillator::kAnalogAge);
+    oscillator_->plug(createPolyModControl(prefix_ + "_analog_drift"), SynthOscillator::kAnalogDrift);
+    oscillator_->plug(createPolyModControl(prefix_ + "_analog_voice_spread"), SynthOscillator::kAnalogVoiceSpread);
+    oscillator_->plug(createPolyModControl(prefix_ + "_analog_tracking"), SynthOscillator::kAnalogTracking);
+    oscillator_->plug(createPolyModControl(prefix_ + "_analog_wear"), SynthOscillator::kAnalogWear);
+    oscillator_->plug(createPolyModControl(prefix_ + "_analog_noise"), SynthOscillator::kAnalogNoise);
+    oscillator_->plug(createBaseControl(prefix_ + "_analog_hum_frequency"), SynthOscillator::kAnalogHumFrequency);
+    oscillator_->plug(createPolyModControl(prefix_ + "_analog_sag"), SynthOscillator::kAnalogSag);
+    oscillator_->setVoiceCardSalt(prefix_);
 
     oscillator_->useInput(input(kReset), SynthOscillator::kReset);
     oscillator_->useInput(input(kRetrigger), SynthOscillator::kRetrigger);
     oscillator_->useInput(input(kActiveVoices), SynthOscillator::kActiveVoices);
     oscillator_->useInput(input(kNotePressed), SynthOscillator::kNotePressed);
+    oscillator_->useInput(input(kSoundingVoices), SynthOscillator::kSoundingVoices);
     oscillator_->useInput(input(kMidi), SynthOscillator::kMidiNote);
     oscillator_->plug(wave_frame, SynthOscillator::kWaveFrame);
     oscillator_->plug(midi_track, SynthOscillator::kMidiTrack);

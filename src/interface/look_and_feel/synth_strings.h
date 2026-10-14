@@ -450,6 +450,11 @@ namespace strings {
     "2 Octaves Down",
   };
 
+  const std::string kHumFrequencyNames[] = {
+    "50 Hz",
+    "60 Hz",
+  };
+
   const std::string kSubWaveformNames[] = {
     "Sine",
     "Triangle",

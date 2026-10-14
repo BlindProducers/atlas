@@ -292,6 +292,7 @@ namespace vital {
         oscillator->useInput(input(kMidi), OscillatorModule::kMidi);
         oscillator->useInput(input(kActiveVoices), OscillatorModule::kActiveVoices);
         oscillator->useInput(input(kNotePressed), OscillatorModule::kNotePressed);
+        oscillator->useInput(input(kSoundingVoices), OscillatorModule::kSoundingVoices);
         oscillator->useOutput(output(kRaw), OscillatorModule::kRaw);
         oscillator->useOutput(output(kLevelled), OscillatorModule::kLevelled);
         state_->oscillator = oscillator;
