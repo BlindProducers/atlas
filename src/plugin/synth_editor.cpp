@@ -2224,7 +2224,7 @@ namespace {
         continue;
 
       const String suffix = id.fromFirstOccurrenceOf(prefix, false, false);
-      static const std::array<const char*, 28> arp_order = {{
+      static const std::array<const char*, 29> arp_order = {{
         "on",
         "time_mode",
         "sync_rate",
@@ -2237,6 +2237,7 @@ namespace {
         "loop",
         "offset",
         "distance",
+        "octave",
         "steps",
         "velocity",
         "velocity_decay",
@@ -2648,6 +2649,7 @@ namespace {
     if (suffix == "loop") return "Loop";
     if (suffix == "offset") return "Offset";
     if (suffix == "distance") return "Distance";
+    if (suffix == "octave") return "Octave";
     if (suffix == "steps") return "Steps";
     if (suffix == "velocity") return "Velocity";
     if (suffix == "velocity_decay") return "Velocity decay";

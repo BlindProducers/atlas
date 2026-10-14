@@ -645,6 +645,7 @@ int main(int argc, char** argv) {
     testArpBeatRetriggerWithTransportStopped();
     testArpPlayOrder();
     testArpLoop();
+    testArpOctave();
     testArpRetriggerDivisionParameter();
     testArpeggiatorsBeyondTwo();
     if (failures == 0)

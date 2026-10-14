@@ -1457,6 +1457,17 @@ namespace vital {
       ValueDetails::kIndexed, false, "", "Arpeggiator 4 Play Order", strings::kArpPlayOrderNames },
     { "arp_4_loop", 0x020121, 0.0, 16.0, 16.0, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Arpeggiator 4 Loop", strings::kArpLoopNames },
+
+    // Octave each arpeggiator plays in relative to the held keys, appended by
+    // version to preserve every existing host parameter ID. 0 matches older patches.
+    { "arp_1_octave", 0x020122, -4.0, 4.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, " octaves", "Arpeggiator 1 Octave", nullptr },
+    { "arp_2_octave", 0x020122, -4.0, 4.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, " octaves", "Arpeggiator 2 Octave", nullptr },
+    { "arp_3_octave", 0x020122, -4.0, 4.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, " octaves", "Arpeggiator 3 Octave", nullptr },
+    { "arp_4_octave", 0x020122, -4.0, 4.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, " octaves", "Arpeggiator 4 Octave", nullptr },
   };
 
   const ValueDetails ValueDetailsLookup::env_parameter_list[] = {

@@ -367,12 +367,16 @@ void AtlasArpeggiator::triggerStep(MidiBuffer& output, int sample_offset, int ga
   const float random_gate_scale = 1.0f - random_.nextFloat() *
       jlimit(0.0f, 1.0f, settings.random_gate);
   gate_samples = jmax(1, roundToInt(gate_samples * random_gate_scale));
+  const int transpose = 12 * jlimit(kMinOctave, kMaxOctave, settings.octave);
   if (style == kChordTrigger) {
     const int velocity = velocityForStep(source_notes, settings);
     std::vector<int>& chord_notes = pattern_notes_;
     chord_notes.clear();
-    for (const auto& held : source_notes)
-      chord_notes.push_back(held.note);
+    for (const auto& held : source_notes) {
+      const int note = held.note + transpose;
+      if (isPositiveAndBelow(note, 128))
+        chord_notes.push_back(note);
+    }
     std::sort(chord_notes.begin(), chord_notes.end());
     chord_notes.erase(std::unique(chord_notes.begin(), chord_notes.end()), chord_notes.end());
     for (int note : chord_notes)
@@ -380,8 +384,11 @@ void AtlasArpeggiator::triggerStep(MidiBuffer& output, int sample_offset, int ga
     return;
   }
 
-  addGeneratedNote(output, choosePatternNote(*pattern, settings), channel, velocityForStep(source_notes, settings),
-                   sample_offset, gate_samples, block_samples);
+  // Notes the Octave shift pushes outside the MIDI range rest for the step.
+  const int note = choosePatternNote(*pattern, settings) + transpose;
+  const int velocity = velocityForStep(source_notes, settings);
+  if (isPositiveAndBelow(note, 128))
+    addGeneratedNote(output, note, channel, velocity, sample_offset, gate_samples, block_samples);
 }
 
 const std::vector<AtlasArpeggiator::HeldNote>& AtlasArpeggiator::sortedHeldNotes() {
