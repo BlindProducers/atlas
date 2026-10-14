@@ -5,11 +5,16 @@ set(ATLAS_PLUGIN_FORMATS VST3)
 
 if(APPLE)
   set(CMAKE_OSX_ARCHITECTURES arm64 CACHE STRING "macOS architectures" FORCE)
+  # Without a deployment target the plugins only load on the macOS version
+  # that built them. 11.0 is the first macOS for Apple Silicon.
+  if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET 11.0 CACHE STRING "Minimum macOS version" FORCE)
+  endif()
   list(APPEND ATLAS_PROJECT_LANGUAGES OBJC OBJCXX)
   list(APPEND ATLAS_PLUGIN_FORMATS AU)
 endif()
 
-project(Atlas VERSION 2.1.0 LANGUAGES ${ATLAS_PROJECT_LANGUAGES})
+project(Atlas VERSION 2.0.0 LANGUAGES ${ATLAS_PROJECT_LANGUAGES})
 
 if(MSVC)
   # Keep Atlas and all static dependencies on the same self-contained CRT.
