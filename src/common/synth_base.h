@@ -113,6 +113,11 @@ class SynthBase : public MidiManager::Listener {
     // modulation routes into parameters of the types it left. Message thread;
     // callers pause processing around it.
     void prepareSelectedSources();
+    // The engine half of prepareSelectedSources: builds each slot's selected
+    // type and moves the routes that stay onto it, leaving the wavetables alone.
+    // Loading a state runs it before reading the routes, which plug into the
+    // type's controls; the wavetables load later.
+    void prepareSourceEngines();
     // Makes each effect slot's selected effect live and parks the others, then
     // prepares the enabled effects' DSP. Processing stopped or the callback
     // lock held.

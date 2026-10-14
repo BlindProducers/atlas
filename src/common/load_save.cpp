@@ -1631,6 +1631,11 @@ bool LoadSave::jsonToState(SynthBase* synth, std::map<std::string, String>& save
   migrateLegacyEffectChains(settings, modulations);
 
   loadControls(synth, settings);
+  // Routes plug into the controls of each oscillator's type, so build the
+  // types the state selects before reading them. Clear the routes first: they
+  // belong to the state being replaced.
+  synth->clearModulations();
+  synth->prepareSourceEngines();
   loadModulations(synth, modulations);
   loadSlotSamples(synth, settings);
   loadSlotInstruments(synth, settings);

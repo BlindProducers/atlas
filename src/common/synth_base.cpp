@@ -750,36 +750,6 @@ vital::Sample* SynthBase::getSample(int index) {
 }
 
 void SynthBase::prepareSelectedSources() {
-  // Routes into a type a slot is leaving would point at destroyed destinations.
-  std::vector<vital::ModulationConnection*> stale;
-  for (int slot = 0; slot < vital::kNumOscillators; ++slot) {
-    vital::SourceSlotModule* module = engine_->getSourceSlot(slot);
-    if (module == nullptr)
-      continue;
-    const int requested = module->requestedType();
-    const int active = module->activeType();
-    if (module->hasActiveModule() && vital::source_types::shareModule(active, requested))
-      continue;
-    const std::string prefix = vital::source_types::slotPrefix(slot);
-    for (vital::ModulationConnection* connection : mod_connections_) {
-      const std::string& destination = connection->destination_name;
-      if (destination.rfind(prefix, 0) != 0)
-        continue;
-      const std::string suffix = destination.substr(prefix.size());
-      const int owner = vital::source_types::typeForParameterSuffix(suffix);
-      const bool wavetable_group = owner < 0;
-      const bool stays = wavetable_group ? (vital::source_types::describe(requested).uses_wavetable ||
-                                            vital::source_types::isSharedSlotParameter(suffix))
-                                         : vital::source_types::shareModule(owner, requested);
-      if (!stays)
-        stale.push_back(connection);
-    }
-  }
-  for (vital::ModulationConnection* connection : stale)
-    disconnectModulation(connection);
-  // Route changes are queued for the audio thread; apply them now, while
-  // processing is paused, so none of them touches an engine we destroy below.
-  processModulationChanges();
   // Wavetables exist only for the slots that play them. A slot leaving the
   // wavetable group drops its table to one frame (the creator keeps the state);
   // a slot joining it renders the table it was holding back.
@@ -799,7 +769,56 @@ void SynthBase::prepareSelectedSources() {
       wavetable_render_pending_[slot] = true;
     }
   }
+  prepareSourceEngines();
+}
+
+void SynthBase::prepareSourceEngines() {
+  // A slot changing type gets a new engine, with its own modulation
+  // destinations. Routes into a parameter of the type it leaves are dropped.
+  // The others (level, pan, the FM/RM amounts) are lifted off the old engine
+  // and plugged into the new one; left alone they would feed a destroyed
+  // destination and modulate nothing.
+  std::vector<vital::ModulationConnection*> stale;
+  std::vector<std::pair<vital::ModulationConnection*, std::pair<std::string, std::string>>> moving;
+  for (int slot = 0; slot < vital::kNumOscillators; ++slot) {
+    vital::SourceSlotModule* module = engine_->getSourceSlot(slot);
+    if (module == nullptr)
+      continue;
+    const int requested = module->requestedType();
+    const int active = module->activeType();
+    if (module->hasActiveModule() && vital::source_types::shareModule(active, requested))
+      continue;
+    const std::string prefix = vital::source_types::slotPrefix(slot);
+    for (vital::ModulationConnection* connection : mod_connections_) {
+      const std::string& destination = connection->destination_name;
+      if (destination.rfind(prefix, 0) != 0)
+        continue;
+      const std::string suffix = destination.substr(prefix.size());
+      const int owner = vital::source_types::typeForParameterSuffix(suffix);
+      const bool wavetable_group = owner < 0;
+      const bool stays = wavetable_group ? (vital::source_types::describe(requested).uses_wavetable ||
+                                            vital::source_types::isSharedSlotParameter(suffix))
+                                         : vital::source_types::shareModule(owner, requested);
+      if (stays)
+        moving.push_back({ connection, { connection->source_name, destination } });
+      else
+        stale.push_back(connection);
+    }
+  }
+  for (vital::ModulationConnection* connection : stale)
+    disconnectModulation(connection);
+  for (auto& route : moving)
+    disconnectModulation(route.first);
+  // Route changes are queued for the audio thread; apply them now, while
+  // processing is paused, so none of them touches an engine we destroy below.
+  processModulationChanges();
   engine_->prepareSelectedSources();
+  for (auto& route : moving) {
+    route.first->source_name = route.second.first;
+    route.first->destination_name = route.second.second;
+    connectModulation(route.first);
+  }
+  processModulationChanges();
 }
 
 bool SynthBase::slotUsesWavetable(int slot) const {

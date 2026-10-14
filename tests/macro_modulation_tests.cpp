@@ -9,6 +9,7 @@
 #include "source_types.h"
 #include "synth_strings.h"
 #include "file_source.h"
+#include "load_save.h"
 #include "phase_modifier.h"
 #include "wave_source.h"
 #include "wavetable_creator.h"
@@ -640,6 +641,8 @@ int main(int argc, char** argv) {
     testOscillatorSourcesReachOnlyAudioRateControls();
     testOscillatorRoutesFollowTheirSourceWithinTheBlock();
     testOscillatorRouteKeepsOtherRoutesInPlace();
+    testOscillatorRoutesSurviveStateRestore();
+    testSharedRoutesFollowATypeChange();
     testEditorOffersOscillatorSources();
     if (failures == 0)
       std::cout << "Atlas oscillator modulation tests passed\n";
