@@ -1,0 +1,5 @@
+#!/bin/sh
+# Restarts the Audio Unit registry so hosts see the new Atlas.component
+# without logging out.
+killall -9 AudioComponentRegistrar 2> /dev/null
+exit 0

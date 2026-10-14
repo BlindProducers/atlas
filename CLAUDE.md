@@ -17,7 +17,9 @@ cmake --build build --config Release --parallel 4
 
 Always give `--parallel` a job count. Ninja is not installed, so CMake uses Makefiles, and a bare `--parallel` becomes `make -j` with no limit. Each job can use several GB of RAM (the editor unity file alone is about 19k lines plus JUCE), and an unlimited build will freeze a 16 GB machine. Use 4 jobs. Drop to 2 if the machine is busy.
 
-The plugins are written to `build/Atlas_artefacts/Release`. Ship the whole `Atlas.vst3` bundle: a post-build step copies `Factory/Samples/Tape/*.atape` into the bundle's `Resources/Tape` and, on macOS, re-signs the bundle ad hoc.
+The plugins are written to `build/Atlas_artefacts/Release`. Ship the whole `Atlas.vst3` bundle: a post-build step copies `Factory/Samples/Tape/*.atape` into the bundle's `Resources/Tape` and, on macOS, re-signs the bundle ad hoc. The version the plugins report comes from `project(Atlas VERSION ...)`, and macOS builds target macOS 11.0 (`CMAKE_OSX_DEPLOYMENT_TARGET`).
+
+`installer/macos/build_pkg.sh` packages a finished Release build of `Atlas_VST3` and `Atlas_AU` as `dist/Atlas-<version>-macOS.pkg`, which installs both in `/Library/Audio/Plug-Ins`. `.github/workflows/macos.yml` builds every push to `dev` on a GitHub `macos-26` runner and replaces the files of the `dev-build` pre-release on the Releases page. The `build-*` line in `.gitignore` also matches file names, so a new file called `build-something` is silently ignored.
 
 Tests are off by default. Turn them on with `-DATLAS_BUILD_TIMING_TESTS=ON`. That adds about 26 console executables, and each one compiles its own copy of the JUCE modules, so **never build the whole suite** (`cmake --build build` with no `--target`). Build and run only the tests that cover the code you changed:
 

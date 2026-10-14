@@ -133,6 +133,12 @@ The plugins are written to `build/Atlas_artefacts/Release`. Copy the whole
 `Atlas.vst3` folder, which includes the Tape effect's resources, to your VST3 folder.
 On macOS the Audio Unit goes to `~/Library/Audio/Plug-Ins/Components`.
 
+On macOS, `installer/macos/build_pkg.sh` turns that build into an installer,
+`dist/Atlas-<version>-macOS.pkg`, which installs the VST3 and the Audio Unit for
+all users in `/Library/Audio/Plug-Ins`. Every push to `dev` is also built on
+GitHub Actions, and the installer and plugins are published as the "dev build"
+pre-release on the Releases page.
+
 Atlas keeps its presets, wavetables, samples and effect presets in
 `Documents/Blind Producers Plugins/Atlas`.
 
