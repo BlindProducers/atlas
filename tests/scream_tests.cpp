@@ -40,10 +40,12 @@ namespace {
   constexpr const char* source_ids[] = { "cutoff", "scream", "resonance", "inputGain", "wet",
                                         "outputGain", "gateRelease" };
 
+  // The voice handler gives both SIMD pairs the same stereo signal, so the
+  // module runs one BP Scream on lanes 0/1 and mirrors it into lanes 2/3.
   bool compare(vital::SynthModule& module, vital::Value& midi_note, int rate, int factor,
                int block, Parameters p, bool changes, const std::string& prefix = "") {
-    std::array<BPScreamProcessor, vital::poly_float::kSize / 2> source;
-    for (auto& processor : source) processor.prepareToPlay(rate * factor, block);
+    BPScreamProcessor processor;
+    processor.prepareToPlay(rate * factor, block);
     juce::AudioBuffer<float> reference(2, block);
     std::vector<vital::poly_float> input(block);
     uint32_t random = 0xabcdef;
@@ -72,13 +74,14 @@ namespace {
       controls.at(prefix + "scream_autogain")->set(autogain ? 1.0f : 0.0f);
       controls.at(prefix + "scream_keytracking")->set(keytracking ? 1.0f : 0.0f);
       for (int i = 0; i < block; ++i) {
-        for (int lane = 0; lane < vital::poly_float::kSize; ++lane) {
+        for (int ch = 0; ch < 2; ++ch) {
           // Silence, asymmetric stereo transients, bass/sweeps and overdrive.
-          float x = 0.4f * (next() - 0.5f) + 0.6f * std::sin((iteration * block + i) * (lane + 1) * 0.013f);
+          float x = 0.4f * (next() - 0.5f) + 0.6f * std::sin((iteration * block + i) * (ch + 1) * 0.013f);
           if (iteration % 47 >= 40) x = 0;
           else if (iteration % 31 >= 27) x *= 0.001f;
           else if (iteration % 17 == 3) x *= 3.0f;
-          input[i].set(lane, x);
+          input[i].set(ch, x);
+          input[i].set(ch + 2, x);
         }
       }
 
@@ -86,26 +89,24 @@ namespace {
       module.processWithInput(input.data(), block);
       tracking.store(false);
       expect(allocations.load() == 0, "processing/parameter changes must not allocate");
-      for (int pair = 0; pair < vital::poly_float::kSize / 2; ++pair) {
-        auto& processor = source[pair];
-        for (int i = 0; i < 7; ++i)
-          processor.getAPVTS().getRawParameterValue(source_ids[i])->store(p[i]);
-        processor.autogainOn.store(autogain);
-        processor.midiKeytracking.store(keytracking);
-        for (int ch = 0; ch < 2; ++ch)
-          for (int i = 0; i < block; ++i)
-            reference.setSample(ch, i, input[i][pair * 2 + ch]);
-        processor.processBlock(reference, midi);
-        for (int ch = 0; ch < 2; ++ch) {
-          for (int i = 0; i < block; ++i) {
-            float actual = module.output()->buffer[i][pair * 2 + ch];
-            float expected = reference.getSample(ch, i);
-            if (!std::isfinite(actual) || std::memcmp(&actual, &expected, sizeof(float)) != 0) {
-              std::cerr << "Mismatch rate=" << rate * factor << " block=" << block << " iteration="
-                        << iteration << " lane=" << pair * 2 + ch << " sample=" << i << " Atlas="
-                        << actual << " source=" << expected << '\n';
-              return false;
-            }
+      for (int i = 0; i < 7; ++i)
+        processor.getAPVTS().getRawParameterValue(source_ids[i])->store(p[i]);
+      processor.autogainOn.store(autogain);
+      processor.midiKeytracking.store(keytracking);
+      for (int ch = 0; ch < 2; ++ch)
+        for (int i = 0; i < block; ++i)
+          reference.setSample(ch, i, input[i][ch]);
+      processor.processBlock(reference, midi);
+      for (int lane = 0; lane < vital::poly_float::kSize; ++lane) {
+        const int ch = lane % 2;
+        for (int i = 0; i < block; ++i) {
+          float actual = module.output()->buffer[i][lane];
+          float expected = reference.getSample(ch, i);
+          if (!std::isfinite(actual) || std::memcmp(&actual, &expected, sizeof(float)) != 0) {
+            std::cerr << "Mismatch rate=" << rate * factor << " block=" << block << " iteration="
+                      << iteration << " lane=" << lane << " sample=" << i << " Atlas="
+                      << actual << " source=" << expected << '\n';
+            return false;
           }
         }
       }

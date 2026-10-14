@@ -4,8 +4,7 @@
 
 namespace vital {
   struct SpectralCompressorModule::Engines {
-    // One stereo engine per Atlas SIMD stereo pair, allocated up front.
-    std::array<atlas::spectral_compressor::Engine, poly_float::kSize / 2> pairs;
+    atlas::spectral_compressor::Engine engine;
     std::array<std::array<float, kMaxBufferSize * kMaxOversample>, 4> scratch {};
   };
 
@@ -29,8 +28,7 @@ namespace vital {
   }
 
   void SpectralCompressorModule::prepare() {
-    for (auto& engine : engines_->pairs)
-      engine.prepare(getSampleRate());
+    engines_->engine.prepare(getSampleRate());
   }
 
   void SpectralCompressorModule::processWithInput(const poly_float* input, int samples) {
@@ -53,31 +51,27 @@ namespace vital {
     parameters.makeup_db = value(7, -6, 18);
     parameters.mix = value(8, 0, 100) / 100.0f;
 
-    for (int pair = 0; pair < poly_float::kSize / 2; ++pair) {
-      auto& engine = engines_->pairs[pair];
-      engine.setParameters(parameters);
-      for (int offset = 0; offset < samples;) {
-        const int count = std::min(kMaxBufferSize * kMaxOversample, samples - offset);
-        float* in_left = engines_->scratch[0].data();
-        float* in_right = engines_->scratch[1].data();
-        float* out_left = engines_->scratch[2].data();
-        float* out_right = engines_->scratch[3].data();
-        for (int i = 0; i < count; ++i) {
-          in_left[i] = input[offset + i][pair * 2];
-          in_right[i] = input[offset + i][pair * 2 + 1];
-        }
-        engine.process(in_left, in_right, out_left, out_right, count);
-        for (int i = 0; i < count; ++i) {
-          output()->buffer[offset + i].set(pair * 2, out_left[i]);
-          output()->buffer[offset + i].set(pair * 2 + 1, out_right[i]);
-        }
-        offset += count;
+    auto& engine = engines_->engine;
+    engine.setParameters(parameters);
+    for (int offset = 0; offset < samples;) {
+      const int count = std::min(kMaxBufferSize * kMaxOversample, samples - offset);
+      float* in_left = engines_->scratch[0].data();
+      float* in_right = engines_->scratch[1].data();
+      float* out_left = engines_->scratch[2].data();
+      float* out_right = engines_->scratch[3].data();
+      for (int i = 0; i < count; ++i) {
+        in_left[i] = input[offset + i][0];
+        in_right[i] = input[offset + i][1];
       }
+      engine.process(in_left, in_right, out_left, out_right, count);
+      for (int i = 0; i < count; ++i)
+        output()->buffer[offset + i] = poly_float(out_left[i], out_right[i], out_left[i], out_right[i]);
+      offset += count;
     }
   }
 
   void SpectralCompressorModule::hardReset() {
-    for (auto& engine : engines_->pairs) engine.reset();
+    engines_->engine.reset();
   }
 
   void SpectralCompressorModule::enable(bool on) {
