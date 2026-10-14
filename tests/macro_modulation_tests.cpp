@@ -643,6 +643,7 @@ int main(int argc, char** argv) {
     testArpBeatRetriggerFollowsTransport();
     testArpBeatRetriggerWithTransportStopped();
     testArpPlayOrder();
+    testArpLoop();
     testArpRetriggerDivisionParameter();
     if (failures == 0)
       std::cout << "Atlas arpeggiator tests passed\n";

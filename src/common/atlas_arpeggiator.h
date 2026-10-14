@@ -51,6 +51,11 @@ class AtlasArpeggiator {
       kNumPlayOrders
     };
 
+    // Loop values 0 to kLoopInfinite - 1 play the pattern that many times plus
+    // one; kLoopInfinite repeats it until the keys are released.
+    static constexpr int kMaxLoops = 16;
+    static constexpr int kLoopInfinite = kMaxLoops;
+
     struct SyncRate {
       const char* name;
       double quarter_notes;
@@ -74,6 +79,8 @@ class AtlasArpeggiator {
       float gate = 80.0f;
       float random_gate = 0.0f;
       int repeats = 1;
+      // How many times the pattern plays before the arp falls silent (see kLoopInfinite).
+      int loop = kLoopInfinite;
       int offset = 0;
       int distance = 12;
       int steps = 1;
@@ -152,6 +159,8 @@ class AtlasArpeggiator {
     double samples_until_next_step_ = 0.0;
     int pattern_index_ = 0;
     int repeat_index_ = 0;
+    // Steps played since the pattern last restarted, for Loop.
+    int loop_steps_ = 0;
     int last_random_note_ = -1;
     uint64_t next_held_order_ = 1;
     uint64_t chord_fingerprint_ = 0;
