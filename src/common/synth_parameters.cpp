@@ -1337,6 +1337,12 @@ namespace vital {
       ValueDetails::kIndexed, false, "", "Arpeggiator 1 Play Order", strings::kArpPlayOrderNames },
     { "arp_2_play_order", 0x02011f, 0.0, 1.0, 0.0, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Arpeggiator 2 Play Order", strings::kArpPlayOrderNames },
+    // How many times each arpeggiator pattern plays, appended by version to
+    // preserve every existing host parameter ID. Infinite matches older patches.
+    { "arp_1_loop", 0x020120, 0.0, 16.0, 16.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Arpeggiator 1 Loop", strings::kArpLoopNames },
+    { "arp_2_loop", 0x020120, 0.0, 16.0, 16.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Arpeggiator 2 Loop", strings::kArpLoopNames },
   };
 
   const ValueDetails ValueDetailsLookup::env_parameter_list[] = {

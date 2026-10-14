@@ -72,6 +72,7 @@ namespace vital {
       createBaseControl(prefix + "gate");
       createBaseControl(prefix + "random_gate");
       createBaseControl(prefix + "repeats");
+      createBaseControl(prefix + "loop");
       createBaseControl(prefix + "offset");
       createBaseControl(prefix + "distance");
       createBaseControl(prefix + "steps");

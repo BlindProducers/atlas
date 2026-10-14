@@ -250,6 +250,67 @@ namespace {
            "A key pressed later plays after the keys pressed before it");
   }
 
+  void testArpLoop() {
+    const int step = static_cast<int>(kArpTestSamplesPerQuarter * 0.5);
+    auto settings = arpTestSettings();
+    expect(settings.loop == AtlasArpeggiator::kLoopInfinite, "Loop defaults to infinite");
+    expect(arpNoteOns(runArpeggiator(settings, arpChord(0), step * 10)).size() == 10,
+           "Infinite loop keeps playing the pattern");
+
+    // Loop value 1 plays the pattern twice, then the arp falls silent.
+    settings.loop = 1;
+    const auto twice = arpNoteOns(runArpeggiator(settings, arpChord(0), step * 10));
+    expect(twice.size() == 6, "Loop 2 plays a three-note pattern twice (found " +
+                              std::to_string(twice.size()) + " notes)");
+    expectArpSteps(twice, { 60, 64, 67, 60, 64, 67 }, { 0, step, 2 * step, 3 * step, 4 * step, 5 * step },
+                   "Loop 2 plays the whole pattern each time");
+
+    // A pass includes every repeat of each note.
+    settings.loop = 0;
+    settings.repeats = 2;
+    expect(arpNoteOns(runArpeggiator(settings, arpChord(0), step * 10)).size() == 6,
+           "Loop counts a pass with every repeat");
+    settings.repeats = 1;
+
+    // Up Down plays 60 64 67 64 in one pass.
+    settings.style = AtlasArpeggiator::kUpDown;
+    const auto up_down = arpNoteOns(runArpeggiator(settings, arpChord(0), step * 10));
+    expectArpSteps(up_down, { 60, 64, 67, 64 }, { 0, step, 2 * step, 3 * step }, "Loop 1 plays one Up Down pass");
+    expect(up_down.size() == 4, "Loop 1 stops after one Up Down pass");
+
+    settings.style = AtlasArpeggiator::kChordTrigger;
+    settings.loop = 2;
+    expect(arpNoteOns(runArpeggiator(settings, arpChord(0), step * 10)).size() == 9,
+           "Chord trigger plays the chord once per loop");
+    settings.style = AtlasArpeggiator::kUp;
+
+    // A new note under Note retrigger restarts the counted pattern.
+    settings.loop = 0;
+    auto replayed = arpChord(0);
+    replayed.insert({ step * 5, MidiMessage::noteOn(1, 72, 1.0f) });
+    const auto restarted = arpNoteOns(runArpeggiator(settings, replayed, step * 12));
+    expect(restarted.size() == 7, "Note retrigger restarts a finished loop (found " +
+                                  std::to_string(restarted.size()) + " notes)");
+
+    // Beat retrigger restarts it on each division: one pass per bar.
+    settings.retrigger = AtlasArpeggiator::kRetriggerBeat;
+    settings.retrigger_division = arpRetriggerDivisionIndex("1 Bar");
+    const auto per_bar = arpNoteOns(runArpeggiator(settings, arpChord(0), step * 16, 0.0));
+    expectArpSteps(per_bar, { 60, 64, 67, 60, 64, 67 }, { 0, step, 2 * step, 8 * step, 9 * step, 10 * step },
+                   "Beat retrigger plays the looped pattern again on each division");
+    expect(per_bar.size() == 6, "Beat retrigger with Loop 1 plays one pass per bar");
+
+    // Off: the pattern restarts after every key is released and pressed again.
+    settings.retrigger = AtlasArpeggiator::kRetriggerOff;
+    auto again = arpChord(0);
+    for (int note : { 60, 64, 67 })
+      again.insert({ step * 5, MidiMessage::noteOff(1, note) });
+    for (const auto& event : arpChord(step * 6))
+      again.insert(event);
+    expect(arpNoteOns(runArpeggiator(settings, again, step * 12)).size() == 6,
+           "Off retrigger restarts a finished loop on a new chord after release");
+  }
+
   void testArpRetriggerDivisionParameter() {
     SynthPlugin synth;
     auto& controls = synth.getControls();
@@ -278,5 +339,16 @@ namespace {
     }
     expect(static_cast<int>(vital::Parameters::getDetails("arp_1_play_order").max) + 1 ==
            AtlasArpeggiator::kNumPlayOrders, "Every play order has a parameter value");
+    for (const char* name : { "arp_1_loop", "arp_2_loop" }) {
+      const auto found = controls.find(name);
+      expect(found != controls.end(), std::string(name) + " exists");
+      if (found != controls.end())
+        close(found->second->value(), static_cast<float>(AtlasArpeggiator::kLoopInfinite),
+              std::string(name) + " defaults to infinite");
+    }
+    expect(static_cast<int>(vital::Parameters::getDetails("arp_1_loop").max) == AtlasArpeggiator::kLoopInfinite,
+           "The last loop value is infinite");
+    expect(strings::kArpLoopNames[0] == "1" && strings::kArpLoopNames[AtlasArpeggiator::kLoopInfinite] == "Infinite",
+           "Loop values read from 1 to Infinite");
   }
 }

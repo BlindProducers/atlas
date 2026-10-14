@@ -332,6 +332,7 @@ void AtlasArpeggiator::restartPatternAtDivision(int64 division_index) {
   last_division_index_ = division_index;
   pattern_index_ = 0;
   repeat_index_ = 0;
+  loop_steps_ = 0;
   last_random_note_ = -1;
 }
 
@@ -344,6 +345,24 @@ void AtlasArpeggiator::triggerStep(MidiBuffer& output, int sample_offset, int ga
   }
 
   const int style = jlimit(0, kNumStyles - 1, settings.style);
+  const std::vector<int>* pattern = nullptr;
+  int steps_per_loop = 1;
+  if (style != kChordTrigger) {
+    pattern = &buildPatternNotes(source_notes, settings);
+    if (pattern->empty())
+      return;
+    // Random styles ignore Repeats; the others play each note Repeats times.
+    const bool repeats_apply = style != kRandom && style != kRandomOther;
+    steps_per_loop = static_cast<int>(pattern->size()) * (repeats_apply ? jmax(1, settings.repeats) : 1);
+  }
+
+  // Loop: once the pattern has played the set number of times the arp stays
+  // silent until a retrigger, or a new chord after release, restarts it.
+  if (settings.loop >= 0 && settings.loop < kLoopInfinite &&
+      loop_steps_ >= (settings.loop + 1) * steps_per_loop)
+    return;
+  ++loop_steps_;
+
   const int channel = outputChannel(source_notes, settings);
   const float random_gate_scale = 1.0f - random_.nextFloat() *
       jlimit(0.0f, 1.0f, settings.random_gate);
@@ -361,11 +380,7 @@ void AtlasArpeggiator::triggerStep(MidiBuffer& output, int sample_offset, int ga
     return;
   }
 
-  const auto& pattern = buildPatternNotes(source_notes, settings);
-  if (pattern.empty())
-    return;
-
-  addGeneratedNote(output, choosePatternNote(pattern, settings), channel, velocityForStep(source_notes, settings),
+  addGeneratedNote(output, choosePatternNote(*pattern, settings), channel, velocityForStep(source_notes, settings),
                    sample_offset, gate_samples, block_samples);
 }
 
@@ -561,6 +576,7 @@ void AtlasArpeggiator::resetSequence(double samples_until_next_step) {
   samples_until_next_step_ = jmax(0.0, samples_until_next_step);
   pattern_index_ = 0;
   repeat_index_ = 0;
+  loop_steps_ = 0;
   last_random_note_ = -1;
   last_division_index_ = kNoDivision;
   random_once_pattern_.clear();

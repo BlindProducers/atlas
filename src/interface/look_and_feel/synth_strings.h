@@ -818,6 +818,13 @@ namespace strings {
     "As Played"
   };
 
+  // Matches AtlasArpeggiator::kMaxLoops and kLoopInfinite.
+  const std::string kArpLoopNames[] = {
+    "1", "2", "3", "4", "5", "6", "7", "8",
+    "9", "10", "11", "12", "13", "14", "15", "16",
+    "Infinite"
+  };
+
   // Matches AtlasArpeggiator::retriggerDivisions().
   const std::string kArpRetriggerDivisionNames[] = {
     "1/16",

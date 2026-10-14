@@ -2222,7 +2222,7 @@ namespace {
         continue;
 
       const String suffix = id.fromFirstOccurrenceOf(prefix, false, false);
-      static const std::array<const char*, 27> arp_order = {{
+      static const std::array<const char*, 28> arp_order = {{
         "on",
         "time_mode",
         "sync_rate",
@@ -2232,6 +2232,7 @@ namespace {
         "gate",
         "random_gate",
         "repeats",
+        "loop",
         "offset",
         "distance",
         "steps",
@@ -2637,6 +2638,7 @@ namespace {
     if (suffix == "gate") return "Gate";
     if (suffix == "random_gate") return "Random gate";
     if (suffix == "repeats") return "Repeats";
+    if (suffix == "loop") return "Loop";
     if (suffix == "offset") return "Offset";
     if (suffix == "distance") return "Distance";
     if (suffix == "steps") return "Steps";
