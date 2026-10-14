@@ -229,11 +229,35 @@ namespace strings {
     "Noise",
     "Multi-sample",
     "Braids",
+    "OpenWurli",
+    "OpenB3",
   };
 
   const std::string kMultiSampleAmpEnvNames[] = {
     "Instrument",
     "Envelope 1",
+  };
+
+  const std::string kOpenWurliAmpEnvNames[] = {
+    "Reed",
+    "Envelope 1",
+  };
+
+  const std::string kOpenB3AmpEnvNames[] = {
+    "Organ",
+    "Envelope 1",
+  };
+
+  const std::string kOpenB3PercussionVolumeNames[] = { "Normal", "Soft" };
+  const std::string kOpenB3PercussionDecayNames[] = { "Fast", "Slow" };
+  const std::string kOpenB3PercussionHarmonicNames[] = { "Second", "Third" };
+  // osc.temperament: the tone generator's gear ratios for 60 or 50 Hz mains, or equal temperament.
+  const std::string kOpenB3TemperamentNames[] = { "Gear 60 Hz", "Gear 50 Hz", "Equal" };
+
+  // Where C-2 returns, which sets the pickup's corner (OpenWurli's pickup.rs fork).
+  const std::string kOpenWurliPickupLowCutNames[] = {
+    "880 Hz",
+    "1436 Hz",
   };
 
   // Braids synthesis modes, in firmware order (braids/settings.h).
@@ -581,7 +605,9 @@ namespace strings {
     "analoguespring",
     "analoguewah",
     "spectral_balance",
-    "glitch_delay"
+    "glitch_delay",
+    "openwurli_amp",
+    "scanner_vibrato"
   };
 
   const std::string kEffectSlotTypeNames[] = {
@@ -622,7 +648,9 @@ namespace strings {
     "Analogue Spring",
     "Analogue Wah",
     "Spectral Balance",
-    "Glitch Delay"
+    "Glitch Delay",
+    "OpenWurli Amp",
+    "Scanner Vibrato"
   };
 
   // Both tables are indexed by effect; a missing entry would read out of bounds.
@@ -671,9 +699,10 @@ namespace strings {
   const std::string kAnalogueChorusDimensionModeNames[] = { "1", "2", "3", "4" };
   const std::string kAnalogueMediumNames[] = { "BBD", "Tape" };
   const std::string kAnalogueEchoMediumNames[] = { "Tape", "BBD" };
-  const std::string kAnalogueRotaryModelNames[] = { "Organ 122", "Guitar 16" };
+  const std::string kAnalogueRotaryModelNames[] = { "Organ 122", "Guitar 16", "OpenB3 Whirl" };
   const std::string kAnalogueRotarySpeedNames[] = { "Slow", "Fast", "Stop" };
   const std::string kAnalogueSpringTankNames[] = { "Short", "Medium", "Long" };
+  const std::string kScannerVibratoModeNames[] = { "V1", "V2", "V3", "C1", "C2", "C3" };
   const std::string kAnalogueWahModelNames[] = { "Cry Baby", "V846", "Mu-Tron III" };
   const std::string kAnalogueWahModeNames[] = { "LP", "BP", "HP" };
   const std::string kAnalogueWahRangeNames[] = { "Lo", "Hi" };
@@ -944,6 +973,8 @@ namespace strings {
     "ANALOGUE WAH",
     "SPECTRAL BALANCE",
     "GLITCH DELAY",
+    "OPENWURLI AMP",
+    "SCANNER VIBRATO",
   };
 
   const std::string kDestinationMenuNames[vital::constants::kNumDestinations] = {
@@ -992,6 +1023,8 @@ namespace strings {
     "Analogue Wah",
     "Spectral Balance",
     "Glitch Delay",
+    "OpenWurli Amp",
+    "Scanner Vibrato",
   };
 
   const std::string kBusDestinationNames[vital::constants::kNumBusDestinations] = {

@@ -105,6 +105,8 @@ namespace vital {
       static const ValueDetails noise_slot_parameter_list[];
       static const ValueDetails multisample_slot_parameter_list[];
       static const ValueDetails braids_slot_parameter_list[];
+      static const ValueDetails wurli_slot_parameter_list[];
+      static const ValueDetails b3_slot_parameter_list[];
       static const ValueDetails mod_parameter_list[];
 
     private:

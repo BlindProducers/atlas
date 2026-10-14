@@ -22,6 +22,7 @@
 #include <cmath>
 
 #include "poly_utils.h"
+#include "zeroed_buffer.h"
 
 namespace vital {
 
@@ -35,14 +36,17 @@ namespace vital {
         size_ = utils::nextPowerOfTwo(size);
         bitmask_ = size_ - 1;
         for (int i = 0; i < kChannels; ++i) {
-          memories_[i] = std::make_unique<mono_float[]>(2 * size_);
+          memories_[i] = allocateZeroed<mono_float>(2 * size_);
           buffers_[i] = memories_[i].get();
         }
       }
 
+      // Like the original, a copy starts silent. Every voice clones a comb
+      // filter's memory whether or not the comb model is selected, so the
+      // zeroed pages stay untouched until that voice uses it.
       MemoryTemplate(const MemoryTemplate& other) {
         for (int i = 0; i < poly_float::kSize; ++i) {
-          memories_[i] = std::make_unique<mono_float[]>(2 * other.size_);
+          memories_[i] = allocateZeroed<mono_float>(2 * other.size_);
           buffers_[i] = memories_[i].get();
         }
 
@@ -107,7 +111,7 @@ namespace vital {
       }
 
     protected:
-      std::unique_ptr<mono_float[]> memories_[poly_float::kSize];
+      ZeroedBuffer<mono_float> memories_[poly_float::kSize];
       mono_float* buffers_[poly_float::kSize];
       unsigned int size_;
       unsigned int bitmask_;

@@ -33,6 +33,18 @@ it when `ATLAS_BUILD_TIMING_TESTS` is on:
   https://github.com/robbert-vdh/nih-plug at the revision recorded in
   `tests/defuse/source_sha256.json`. The Defuse reference test compiles Diopser
   with `rustc` and Python.
+- `openwurli/` and `melange/`: OpenWurli 0.9.0 (GPL v3 or later),
+  https://github.com/hal0zer0/openwurli at 531680b, and the Melange revision it
+  pins for its `melange-primitives` crate (GPL v3 or later),
+  https://github.com/hal0zer0/melange at 7ecb36c. The OpenWurli reference tests
+  compile the original `openwurli-dsp` with `rustc` and Python
+  (`tests/openwurli/build_reference.py`); see
+  `src/synthesis/effects/openwurli/README.atlas.md`.
+- `OpenB3/`: OpenB3 by Michele Perrone (AGPL v3 or later),
+  https://github.com/michele-perrone/OpenB3 at 03ac6a8, with setBfree's Beatrix
+  engine (GPL v2 or later) in `BeatrixCPP/Source`. The OpenB3 reference tests
+  build its tonegen, vibrato and whirl C files with `tests/openb3/reference.c`;
+  see `src/synthesis/effects/openb3/README.atlas.md`.
 
 Kept in this repository:
 

@@ -29,3 +29,18 @@
 	url = https://github.com/robbert-vdh/nih-plug.git
 	shallow = true
 	update = none
+[submodule "third_party/openwurli"]
+	path = third_party/openwurli
+	url = https://github.com/hal0zer0/openwurli.git
+	shallow = true
+	update = none
+[submodule "third_party/melange"]
+	path = third_party/melange
+	url = https://github.com/hal0zer0/melange.git
+	shallow = true
+	update = none
+[submodule "third_party/OpenB3"]
+	path = third_party/OpenB3
+	url = https://github.com/michele-perrone/OpenB3.git
+	shallow = true
+	update = none

@@ -760,8 +760,7 @@ namespace vital {
       Processor(kNumInputs, kNumOutputs), random_generator_(-1.0f, 1.0f),
       transpose_quantize_(0), last_quantized_transpose_(0.0f), last_quantize_ratio_(1.0f),
       unison_(1), active_oscillators_(2), wavetable_(wavetable), wavetable_version_(wavetable->getVersion()),
-      modulators_{},
-      fourier_frames1_(), fourier_frames2_() {
+      modulators_{} {
     pan_amplitude_ = 0.0f;
     center_amplitude_ = 0.0f;
     detuned_amplitude_ = 0.0f;
@@ -1026,10 +1025,10 @@ namespace vital {
       int buffer_index = phase_update * poly_float::kSize + i;
       last_buffers_[buffer_index] = wave_buffers_[buffer_index];
 
-      poly_float* fourier_buffer = fourier_frames1_[buffer_index];
+      poly_float* fourier_buffer = fourier_frames_.first(buffer_index);
       mono_float* destination = ((mono_float*)fourier_buffer) + poly_float::kSize - 1;
       if (destination == wave_buffers_[buffer_index])
-        fourier_buffer = fourier_frames2_[buffer_index];
+        fourier_buffer = fourier_frames_.second(buffer_index);
 
       float shift = morph_amount[i];
       if (formant_shift)

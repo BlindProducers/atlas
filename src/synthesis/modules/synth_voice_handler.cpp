@@ -604,13 +604,13 @@ namespace vital {
   }
 
   void SynthVoiceHandler::setupPolyModulationReadouts() {
-    output_map& poly_mods = SynthModule::getPolyModulations();
+    const output_map poly_mods = SynthModule::getPolyModulations();
 
     for (auto& mod : poly_mods)
       poly_readouts_[mod.first] = registerControlRateOutput(mod.second, mod.second->owner->enabled());
   }
 
-  output_map& SynthVoiceHandler::getPolyModulations() {
+  output_map SynthVoiceHandler::getPolyModulations() {
     return poly_readouts_;
   }
   void SynthVoiceHandler::setFilterTable(int index, Wavetable* table) {

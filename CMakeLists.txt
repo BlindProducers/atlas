@@ -58,6 +58,31 @@ juce_add_plugin(Atlas
 
 juce_generate_juce_header(Atlas)
 
+# The OpenWurli port reproduces the Rust's separate multiplies and adds: no
+# FMA contraction and no fast-math, or it drifts from the reference renders.
+set(ATLAS_OPENWURLI_SOURCES
+  src/synthesis/effects/openwurli/wurli_tables.cpp
+  src/synthesis/effects/openwurli/wurli_pickup.cpp
+  src/synthesis/effects/openwurli/wurli_pickup_tables.cpp
+  src/synthesis/effects/openwurli/wurli_mlp.cpp
+  src/synthesis/effects/openwurli/wurli_voice.cpp
+  src/synthesis/effects/openwurli/wurli_oversampler.cpp
+  src/synthesis/effects/openwurli/wurli_preamp.cpp
+  src/synthesis/effects/openwurli/wurli_tremolo.cpp
+  src/synthesis/effects/openwurli/wurli_tremolo_circuit.cpp
+  src/synthesis/effects/openwurli/wurli_power_amp.cpp
+  src/synthesis/effects/openwurli/wurli_speaker.cpp
+  src/synthesis/effects/openwurli/wurli_amp.cpp)
+
+# The OpenB3 port (setBfree's tonegen, vibrato and whirl) keeps the C code's
+# separate multiplies and adds, so the whirl and scanner match it sample for
+# sample: no FMA contraction and no fast-math.
+set(ATLAS_OPENB3_SOURCES
+  src/synthesis/effects/openb3/tonewheel_tables.cpp
+  src/synthesis/effects/openb3/tonewheel_organ.cpp
+  src/synthesis/effects/openb3/scanner_vibrato.cpp
+  src/synthesis/effects/openb3/whirl.cpp)
+
 target_sources(Atlas PRIVATE
   # Spectral effects keep IEEE semantics outside the fast-math synthesis unity build.
   src/synthesis/effects/suppressor/suppressor_engine.cpp
@@ -117,6 +142,18 @@ target_sources(Atlas PRIVATE
   src/synthesis/effects/braids/braids/macro_oscillator.cc
   src/synthesis/effects/braids/braids/resources.cc
   src/synthesis/effects/braids/stmlib/utils/random.cc
+  # OpenWurli (GPL-3.0): the Wurlitzer 200A model ported from Rust, in double
+  # precision and checked sample for sample against the original.
+  ${ATLAS_OPENWURLI_SOURCES}
+  src/synthesis/producers/openwurli_source.cpp
+  src/synthesis/modules/openwurli_module.cpp
+  src/synthesis/modules/openwurli_amp_module.cpp
+  # OpenB3 (setBfree's Beatrix engine, GPL v2 or later; OpenB3 AGPL v3 or
+  # later): the tonewheel organ, the scanner vibrato and the whirl.
+  ${ATLAS_OPENB3_SOURCES}
+  src/synthesis/producers/openb3_source.cpp
+  src/synthesis/modules/openb3_module.cpp
+  src/synthesis/modules/scanner_vibrato_module.cpp
   src/unity_build/common.cpp
   src/unity_build/synthesis.cpp
   src/unity_build/plugin.cpp)
@@ -124,6 +161,12 @@ target_sources(Atlas PRIVATE
 # Rust's all-pass recurrences use separate multiply/add operations. Do not
 # contract these into FMA or apply Atlas's unity fast-math transformations.
 set_source_files_properties(src/synthesis/modules/defuse_module.cpp PROPERTIES
+  COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:strict>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffp-contract=off;-fno-fast-math>")
+set_source_files_properties(${ATLAS_OPENWURLI_SOURCES} src/synthesis/producers/openwurli_source.cpp
+  src/synthesis/modules/openwurli_module.cpp src/synthesis/modules/openwurli_amp_module.cpp PROPERTIES
+  COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:strict>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffp-contract=off;-fno-fast-math>")
+set_source_files_properties(${ATLAS_OPENB3_SOURCES} src/synthesis/producers/openb3_source.cpp
+  src/synthesis/modules/openb3_module.cpp src/synthesis/modules/scanner_vibrato_module.cpp PROPERTIES
   COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:strict>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffp-contract=off;-fno-fast-math>")
 
 # Braids is written for the firmware's two's-complement integer arithmetic.
@@ -148,6 +191,7 @@ target_include_directories(Atlas PRIVATE
   src/synthesis/synth_engine
   src/synthesis/effects
   src/synthesis/effects/braids
+  src/synthesis/effects/openwurli
   src/synthesis/filters
   src/synthesis/framework
   src/synthesis/lookups
@@ -287,7 +331,8 @@ if(ATLAS_BUILD_TIMING_TESTS)
     src/synthesis/filters src/synthesis/producers src/synthesis/synth_engine
     src/synthesis/lookups src/synthesis/modulators src/synthesis/utilities third_party)
   target_compile_definitions(AtlasPreparedEffectTests PRIVATE
-    VITAL_ACCESSIBLE_UI=1 HEADLESS=0 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_DSP_USE_SHARED_FFTW=0)
+    VITAL_ACCESSIBLE_UI=1 HEADLESS=0 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_DSP_USE_SHARED_FFTW=0
+    JUCE_MODAL_LOOPS_PERMITTED=1)
   target_link_libraries(AtlasPreparedEffectTests PRIVATE
     Atlas juce::juce_audio_utils juce::juce_dsp juce::juce_recommended_config_flags)
   add_test(NAME atlas_prepared_effects COMMAND AtlasPreparedEffectTests)
@@ -447,6 +492,108 @@ if(ATLAS_BUILD_TIMING_TESTS)
   foreach(braids_test models pitch strike random-phase slot-modulation resampler parameters editor)
     add_test(NAME atlas_braids_${braids_test} COMMAND AtlasBraidsTests --${braids_test})
   endforeach()
+
+  juce_add_console_app(AtlasOpenWurliTests PRODUCT_NAME "Atlas OpenWurli Tests")
+  juce_generate_juce_header(AtlasOpenWurliTests)
+  target_sources(AtlasOpenWurliTests PRIVATE tests/openwurli_tests.cpp)
+  target_include_directories(AtlasOpenWurliTests PRIVATE
+    src/common src/common/multisample src/common/wavetable src/plugin src/interface/look_and_feel
+    src/synthesis/framework src/synthesis/modules src/synthesis/effects src/synthesis/effects/openwurli
+    src/synthesis/filters src/synthesis/producers src/synthesis/synth_engine
+    src/synthesis/lookups src/synthesis/modulators src/synthesis/utilities tests/openwurli third_party)
+  target_compile_definitions(AtlasOpenWurliTests PRIVATE
+    VITAL_ACCESSIBLE_UI=1 HEADLESS=0 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_DSP_USE_SHARED_FFTW=0
+    JUCE_MODAL_LOOPS_PERMITTED=1)
+  target_link_libraries(AtlasOpenWurliTests PRIVATE
+    Atlas juce::juce_audio_utils juce::juce_dsp juce::juce_gui_extra juce::juce_recommended_config_flags)
+  foreach(openwurli_test oscillator pitch envelope parameters voicing amp editor self)
+    add_test(NAME atlas_openwurli_${openwurli_test} COMMAND AtlasOpenWurliTests --${openwurli_test})
+  endforeach()
+
+  # Optional oracle: the original OpenWurli (Rust) renders the reference. It is
+  # built with rustc alone from the opt-in third_party/openwurli and
+  # third_party/melange submodules; production builds need neither.
+  set(ATLAS_OPENWURLI_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/third_party/openwurli" CACHE PATH
+      "OpenWurli checkout for the reference tests")
+  set(ATLAS_MELANGE_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/third_party/melange" CACHE PATH
+      "Melange checkout (the revision OpenWurli pins) for the reference tests")
+  if(EXISTS "${ATLAS_OPENWURLI_SOURCE}/crates/openwurli-dsp/src/lib.rs" AND
+     EXISTS "${ATLAS_MELANGE_SOURCE}/crates/melange-primitives/src/lib.rs")
+    find_package(Python3 COMPONENTS Interpreter REQUIRED)
+    find_program(ATLAS_OPENWURLI_RUSTC rustc REQUIRED)
+    file(GLOB ATLAS_OPENWURLI_RUST_SOURCES CONFIGURE_DEPENDS
+      "${ATLAS_OPENWURLI_SOURCE}/crates/openwurli-dsp/src/*.rs"
+      "${ATLAS_OPENWURLI_SOURCE}/crates/openwurli-dsp/src/*/*.rs"
+      "${ATLAS_MELANGE_SOURCE}/crates/melange-primitives/src/*.rs")
+    set(ATLAS_OPENWURLI_REFERENCE "${CMAKE_CURRENT_BINARY_DIR}/openwurli-reference${CMAKE_EXECUTABLE_SUFFIX}")
+    add_custom_command(OUTPUT "${ATLAS_OPENWURLI_REFERENCE}"
+      COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/openwurli/build_reference.py"
+        "${ATLAS_OPENWURLI_SOURCE}" "${ATLAS_MELANGE_SOURCE}" "${ATLAS_OPENWURLI_REFERENCE}"
+        --rustc "${ATLAS_OPENWURLI_RUSTC}"
+      DEPENDS tests/openwurli/build_reference.py tests/openwurli/reference.rs ${ATLAS_OPENWURLI_RUST_SOURCES}
+      VERBATIM)
+    add_custom_target(AtlasOpenWurliReference DEPENDS "${ATLAS_OPENWURLI_REFERENCE}")
+    add_dependencies(AtlasOpenWurliTests AtlasOpenWurliReference)
+    foreach(openwurli_test voice-reference amp-reference oscillator-reference engine-reference)
+      add_test(NAME atlas_openwurli_${openwurli_test}
+               COMMAND AtlasOpenWurliTests --${openwurli_test} "${ATLAS_OPENWURLI_REFERENCE}")
+    endforeach()
+  else()
+    message(STATUS "OpenWurli reference tests skipped: "
+                   "git submodule update --init --checkout third_party/openwurli third_party/melange")
+  endif()
+
+  juce_add_console_app(AtlasOpenB3Tests PRODUCT_NAME "Atlas OpenB3 Tests")
+  juce_generate_juce_header(AtlasOpenB3Tests)
+  target_sources(AtlasOpenB3Tests PRIVATE tests/openb3_tests.cpp)
+  target_include_directories(AtlasOpenB3Tests PRIVATE
+    src/common src/common/multisample src/common/wavetable src/plugin src/interface/look_and_feel
+    src/synthesis/framework src/synthesis/modules src/synthesis/effects src/synthesis/effects/openwurli
+    src/synthesis/filters src/synthesis/producers src/synthesis/synth_engine
+    src/synthesis/lookups src/synthesis/modulators src/synthesis/utilities third_party)
+  target_compile_definitions(AtlasOpenB3Tests PRIVATE
+    VITAL_ACCESSIBLE_UI=1 HEADLESS=0 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_DSP_USE_SHARED_FFTW=0
+    JUCE_MODAL_LOOPS_PERMITTED=1)
+  target_link_libraries(AtlasOpenB3Tests PRIVATE
+    Atlas juce::juce_audio_utils juce::juce_dsp juce::juce_gui_extra juce::juce_recommended_config_flags)
+  foreach(openb3_test self oscillator drawbars percussion envelope coherence parameters scanner whirl editor)
+    add_test(NAME atlas_openb3_${openb3_test} COMMAND AtlasOpenB3Tests --${openb3_test})
+  endforeach()
+
+  # Optional oracle: OpenB3's own Beatrix engine (C, from the opt-in
+  # third_party/OpenB3 submodule) renders the reference. Production builds do
+  # not need it.
+  set(ATLAS_OPENB3_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/third_party/OpenB3" CACHE PATH
+      "OpenB3 checkout for the reference tests")
+  set(ATLAS_BEATRIX "${ATLAS_OPENB3_SOURCE}/BeatrixCPP/Source")
+  if(EXISTS "${ATLAS_BEATRIX}/tonegen/tonegen.c")
+    add_executable(AtlasOpenB3Reference
+      tests/openb3/reference.c
+      "${ATLAS_BEATRIX}/tonegen/tonegen.c"
+      "${ATLAS_BEATRIX}/vibrato/vibrato.c"
+      "${ATLAS_BEATRIX}/whirl/whirl.c"
+      "${ATLAS_BEATRIX}/whirl/eqcomp.c"
+      "${ATLAS_BEATRIX}/global_definitions.c")
+    target_include_directories(AtlasOpenB3Reference PRIVATE
+      "${ATLAS_BEATRIX}" "${ATLAS_BEATRIX}/tonegen" "${ATLAS_BEATRIX}/vibrato" "${ATLAS_BEATRIX}/whirl"
+      "${ATLAS_BEATRIX}/midi" "${ATLAS_BEATRIX}/config" "${ATLAS_BEATRIX}/overdrive" "${ATLAS_BEATRIX}/program"
+      "${ATLAS_BEATRIX}/reverb" "${ATLAS_BEATRIX}/state" "${ATLAS_BEATRIX}/memstream"
+      "${ATLAS_BEATRIX}/convolution")
+    # As the Atlas port: separate multiplies and adds, IEEE semantics.
+    target_compile_options(AtlasOpenB3Reference PRIVATE
+      "$<$<C_COMPILER_ID:MSVC>:/fp:strict;/w>" "$<$<NOT:$<C_COMPILER_ID:MSVC>>:-ffp-contract=off;-fno-fast-math;-w>")
+    if(NOT MSVC)
+      target_link_libraries(AtlasOpenB3Reference PRIVATE m)
+    endif()
+    add_dependencies(AtlasOpenB3Tests AtlasOpenB3Reference)
+    foreach(openb3_test wiring-reference gains-reference tonegen-reference scanner-reference whirl-reference
+                        rotary-reference)
+      add_test(NAME atlas_openb3_${openb3_test}
+               COMMAND AtlasOpenB3Tests --${openb3_test} "$<TARGET_FILE:AtlasOpenB3Reference>")
+    endforeach()
+  else()
+    message(STATUS "OpenB3 reference tests skipped: git submodule update --init --checkout third_party/OpenB3")
+  endif()
 
   # Optional independent oracle: production builds do not require Rust or
   # the external Diopser checkout. Point this at nih-plug/plugins/diopser, or

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "synth_module.h"
+#include "value.h"
 #include <atomic>
 #include <condition_variable>
 #include <functional>
@@ -58,6 +59,8 @@ public:
   ~PreparedEffectModule() override;
   void init() override;
   void processWithInput(const poly_float* input, int samples) override;
+  // Its parameters, named on request: a shell keeps no name map of its own.
+  control_map getControls() override;
   void hardReset() override;
   void enable(bool on) override;
   void correctToTime(double seconds) override { time_ = seconds; }
@@ -66,11 +69,28 @@ public:
   // Until a slot first selects this effect, its parameter controls keep
   // 1x buffers and only the shell's own state follows the oversampling.
   void setOversampleAmount(int amount) override;
-  // Grows the parameter controls' buffers, with room for every quality
-  // setting. It allocates and writes buffers the message thread also writes,
-  // so it runs with processing stopped (or the callback lock held) or offline.
+
+  // A shell keeps every parameter of its effect as a StoredValue: a number,
+  // no processor. Only an effect a slot selects is "live": each smoothed
+  // parameter then has its SmoothValue (kept from then on, as it carries the
+  // glide) and each modulated one its "wiring" (a cr::Value base, the
+  // modulation total and the switch). A parked effect keeps the wiring of
+  // the parameters routes reach, and nothing else. These processors follow
+  // the stored values at the start of each block. Wiring is built and torn
+  // down with processing stopped (or the callback lock held), or offline, as
+  // it changes the graph and allocates.
+  //
+  // Makes the effect live: wires every modulated parameter and grows the
+  // parameter controls' buffers, with room for every quality setting.
   void reserveControls();
   bool controlsReserved() const { return controls_reserved_.load(std::memory_order_acquire); }
+  // Parks an effect its slot no longer selects: releases its DSP and the
+  // wiring of every parameter no route reaches.
+  void park();
+  bool hasWiring() const { return !data_->mono_mod_destinations.empty(); }
+  // Wires one modulated parameter so a route can reach it while the effect is
+  // parked. False when `name` is not one of this effect's modulated parameters.
+  bool wireModulationDestination(const std::string& name);
   void prepareForPlayback();
   void stopPreparation() { worker_->remove(this); }
   ConvolutionReverbModule* convolutionState() const { return convolution_state_.get(); }
@@ -96,6 +116,13 @@ private:
     std::vector<Binding> bindings;
   };
   static Description describe(int type, const std::string& prefix, const Factory& factory);
+  int controlIndex(const std::string& name) const;
+  // The processor the effect's graph reads a parameter through, made on demand.
+  Value* ensureBase(int index);
+  void wireControl(int index);
+  void unwireControl(const std::string& name);
+  // Gives new wiring the room for every quality setting the controls have.
+  void reserveProcessor(Processor* processor);
   uint64_t configuration() const;
   void updateFilterTableNeed();
   void requestPreparation();
@@ -110,7 +137,14 @@ private:
   Factory factory_;
   std::shared_ptr<EffectPreparationWorker> worker_;
   Description description_;
+  // In description_.controls order. parameters_ never reallocates: the
+  // controls map, the editor and automation keep pointers to its entries.
+  std::vector<StoredValue> parameters_;
+  std::vector<Value*> bases_;
+  // The switch output of each wired parameter, which the built DSP reads.
+  // Guarded by wiring_mutex_, as the worker reads it while binding.
   output_map raw_controls_;
+  std::mutex wiring_mutex_;
   Value* fft_size_control_ = nullptr;
   Value* spectral_lock_mode_control_ = nullptr;
   Value* filter_model_control_ = nullptr;
@@ -122,6 +156,8 @@ private:
   bool filter_table_needed_ = false;
   const bool reset_in_place_;
   std::atomic<bool> controls_reserved_ { false };
+  // Set once the parameter controls' buffers have grown; parking keeps them.
+  std::atomic<bool> buffers_reserved_ { false };
 
   std::unique_ptr<ConvolutionReverbModule> convolution_state_;
   std::atomic<uint64_t> requested_ { 0 };

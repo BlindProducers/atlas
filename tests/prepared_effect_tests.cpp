@@ -36,6 +36,8 @@
 #include "defuse_module.h"
 #include "trance_gate_module.h"
 #include "resonator_module.h"
+#include "openwurli_amp_module.h"
+#include "scanner_vibrato_module.h"
 #include "note_monitor.h"
 #include "table_filter.h"
 #include "reorderable_effect_chain.h"
@@ -43,13 +45,18 @@
 #include "synth_strings.h"
 #include "sound_engine.h"
 #include "value_switch.h"
+#include "synth_oscillator.h"
+#include "smooth_value.h"
 #include <cstdlib>
 #include <new>
 #if JUCE_MAC
 #include <execinfo.h>
 #include <mach/mach.h>
+#include <unistd.h>
 #endif
 #include <atomic>
+#include <functional>
+#include <map>
 #include <chrono>
 #include <iostream>
 #include <thread>
@@ -152,6 +159,8 @@ std::unique_ptr<vital::SynthModule> create(int type, vital::Output* bpm) {
     case constants::kAnalogueWah: return std::make_unique<AnalogueWahModule>();
     case constants::kSpectralBalance: return std::make_unique<SpectralBalanceModule>();
     case constants::kGlitchDelay: return std::make_unique<GlitchDelayModule>(bpm, nullptr);
+    case constants::kOpenWurliAmp: return std::make_unique<OpenWurliAmpModule>();
+    case constants::kScannerVibrato: return std::make_unique<ScannerVibratoModule>();
   }
   return {};
 }
@@ -171,6 +180,8 @@ void compareEffects() {
       for (auto* module : { original.get(), static_cast<SynthModule*>(&prepared) }) {
         module->init(); module->setSampleRate(48000); module->setOversampleAmount(factor);
       }
+      // A slot selecting the effect makes it live: its modulation wiring.
+      prepared.reserveControls();
       auto before = original->getControls(), after = prepared.getControls();
       expect(before.size() == after.size(), "all saved controls retained");
       // Exercise non-default, modulated and smoothed controls, as well as the
@@ -288,6 +299,7 @@ void cancelledPreparationIsReleased() {
     return std::make_unique<CountedDelay>(bpm.output(), live);
   }, worker);
   module.init(); module.setSampleRate(48000); module.setOversampleAmount(2);
+  module.reserveControls(); // Selected: only a live effect prepares its DSP.
   allow = false;
   std::array<poly_float, 128> input {};
   {
@@ -514,6 +526,10 @@ void constructionCost(bool chain_only, int shell_type = -1) {
     return;
   }
   std::unique_ptr<SynthPlugin> plugin;
+  // Shifts the heap before construction, to see how much timings depend on layout.
+  std::vector<std::unique_ptr<char[]>> layout_shift;
+  if (const char* shift = std::getenv("ATLAS_HEAP_SHIFT"))
+    for (int i = 0; i < std::atoi(shift); ++i) layout_shift.emplace_back(new char[1000 + 37 * i]);
   const auto whole = measureConstruction([&] { plugin = std::make_unique<SynthPlugin>(); });
   std::cout << "plugin construction ms=" << whole.ms << " allocations=" << whole.allocations
             << " requested_MiB=" << whole.bytes / 1048576.0 << " footprint_MiB=" << whole.footprint << '\n';
@@ -523,6 +539,11 @@ void constructionCost(bool chain_only, int shell_type = -1) {
   });
   std::cout << "plugin prepareToPlay ms=" << prepared.ms << " allocations=" << prepared.allocations
             << " requested_MiB=" << prepared.bytes / 1048576.0 << " footprint_MiB=" << prepared.footprint << '\n';
+  // Keeps the prepared instance alive so heap tools (heap, malloc_history) can attribute its memory.
+  if (const char* hold = std::getenv("ATLAS_CONSTRUCTION_HOLD_SECONDS")) {
+    std::cout << "holding pid=" << getpid() << " total_footprint_MiB=" << footprintMiB() << std::endl;
+    std::this_thread::sleep_for(std::chrono::seconds(std::atoi(hold)));
+  }
   {
     juce::AudioBuffer<float> audio(2, 512);
     juce::MidiBuffer midi;
@@ -547,6 +568,13 @@ void constructionCost(bool chain_only, int shell_type = -1) {
       for (int block = 0; block < 1000; ++block) plugin->processBlock(audio, midi);
     });
     std::cout << "plugin processBlock with four light effects us_per_block=" << effects.ms << '\n';
+    // Keeps processing the light effects so a profiler can sample them.
+    if (const char* seconds = std::getenv("ATLAS_LIGHT_EFFECTS_SECONDS")) {
+      std::cout << "profiling pid=" << getpid() << std::endl;
+      const auto end = std::chrono::steady_clock::now() + std::chrono::seconds(std::atoi(seconds));
+      while (std::chrono::steady_clock::now() < end)
+        for (int block = 0; block < 100; ++block) plugin->processBlock(audio, midi);
+    }
     juce::MemoryBlock state;
     plugin->getStateInformation(state);
     const auto restore = measureConstruction([&] {
@@ -571,6 +599,65 @@ void constructionCost(bool chain_only, int shell_type = -1) {
 }
 
 }
+// An effect a slot does not select keeps its parameter values but none of
+// their modulation wiring, except where a route reaches it. Selecting it
+// wires it; leaving it tears down the wiring no route uses.
+void parkedEffectWiring() {
+  using namespace vital;
+  cr::Value bpm(2), keytrack(0);
+  ReorderableEffectChain chain(bpm.output(), keytrack.output(), "bus_1_");
+  chain.init(); chain.setSampleRate(48000); chain.setOversampleAmount(2);
+  const auto controls = chain.getControls();
+  const std::string slot = "bus_1_fx_slot_4_";
+  const std::string feedback = slot + "delay_feedback", dry_wet = slot + "delay_dry_wet";
+  expect(controls.count(feedback) == 1, "a parked effect keeps its parameter values");
+  expect(chain.getMonoModulationDestination(feedback) == nullptr, "a parked effect has no modulation wiring");
+  expect(chain.getMonoModulationDestinations().empty(), "nothing is wired before a slot selects an effect");
+
+  controls.at(slot + "type")->set(constants::kDelay + 1);
+  chain.reserveSelectedControls();
+  expect(chain.getMonoModulationDestination(feedback) != nullptr, "selecting an effect wires its parameters");
+  expect(chain.getMonoModulationDestination(dry_wet) != nullptr, "every modulated parameter is wired");
+  controls.at(feedback)->set(.61f);
+
+  // A route keeps its parameter wired after the slot moves on.
+  cr::Value modulation(.2f);
+  chain.getMonoModulationDestination(feedback)->plugNext(modulation.output());
+  controls.at(slot + "type")->set(constants::kReverb + 1);
+  chain.parkUnselectedEffects();
+  chain.reserveSelectedControls();
+  expect(chain.getMonoModulationDestination(feedback) != nullptr, "a routed parameter stays wired when parked");
+  expect(chain.getMonoModulationDestination(dry_wet) == nullptr, "unrouted parameters lose their wiring when parked");
+  expect(chain.getMonoModulationDestination(slot + "reverb_decay_time") != nullptr, "the newly selected effect is live");
+  expect(controls.at(feedback)->value() == .61f, "a parked effect keeps its settings");
+
+  // A route can be made to a parked effect's parameter, and only to modulated ones.
+  expect(chain.wireModulationDestination(slot + "chorus_frequency"), "a parked parameter can be wired for a route");
+  expect(chain.getMonoModulationDestination(slot + "chorus_frequency") != nullptr, "the wired parameter is a target");
+  expect(!chain.wireModulationDestination(slot + "type"), "a slot's type is not a modulation target");
+  expect(!chain.wireModulationDestination("fx_slot_4_delay_feedback"), "another chain's parameter is not wired here");
+
+  // Once its route goes, the parameter's wiring goes at the next park.
+  chain.getMonoModulationDestination(feedback)->unplug(modulation.output());
+  chain.parkUnselectedEffects();
+  expect(chain.getMonoModulationDestination(feedback) == nullptr, "an unrouted parked parameter is unwired");
+  expect(chain.getMonoModulationDestination(slot + "chorus_frequency") == nullptr, "so is one wired for a route that never came");
+
+  // Returning to an effect wires it again and it runs, offline.
+  controls.at(slot + "type")->set(constants::kDelay + 1);
+  controls.at(slot + "enabled")->set(1);
+  std::array<poly_float, 256> input {};
+  for (int i = 0; i < 256; ++i) input[i] = .3f * std::sin(i * .9f);
+  double difference = 0;
+  for (int block = 0; block < 40; ++block) {
+    chain.processWithInput(input.data(), 256);
+    for (int i = 0; i < 256; ++i)
+      difference = std::max(difference, double(std::abs(chain.output()->buffer[i][0] - input[i][0])));
+  }
+  expect(chain.getMonoModulationDestination(feedback) != nullptr, "a reselected effect is live again");
+  expect(difference > .01, "a reselected effect runs");
+}
+
 // A slot's effect reserves its controls' buffers only once selected, on the
 // message thread; until then the slot passes audio through without allocating.
 void controlsReservedOnSelection() {
@@ -625,10 +712,467 @@ void controlsReservedOnSelection() {
   expect(difference > .01, "the effect runs once its controls are reserved");
 }
 
+// Stable across builds and platforms, unlike std::hash.
+uint32_t stableHash(const std::string& text) {
+  uint32_t hash = 2166136261u;
+  for (unsigned char c : text) { hash ^= c; hash *= 16777619u; }
+  return hash;
+}
+
+// Sets every parameter of a slot's effect to a fixed value away from its
+// default, through valueChanged as the editor does. The value depends on the
+// parameter's name without the slot, so main and bus slots get the same.
+void setEffectParameters(SynthPlugin& plugin, const std::string& slot_prefix, int type, uint32_t seed = 0) {
+  const std::string prefix = slot_prefix + strings::kEffectOrder[type] + "_";
+  std::vector<std::pair<std::string, float>> changes;
+  for (const auto& control : plugin.getControls()) {
+    if (control.first.rfind(prefix, 0) != 0 || !vital::Parameters::isParameter(control.first))
+      continue;
+    const auto& details = vital::Parameters::getDetails(control.first);
+    const float fraction = .25f + .5f * float((stableHash(control.first.substr(slot_prefix.size())) + seed) % 1000) / 1000.0f;
+    float value = details.min + (details.max - details.min) * fraction;
+    if (details.value_scale == vital::ValueDetails::kIndexed)
+      value = std::round(value);
+    changes.emplace_back(control.first, value);
+  }
+  for (const auto& [name, value] : changes)
+    plugin.valueChanged(name, value);
+}
+
+// Routes `source` into the first modulatable parameter of a slot's effect
+// (which must be selected) and returns its name.
+std::string routeIntoEffect(SynthPlugin& plugin, const std::string& slot_prefix, int type,
+                            const std::string& source, float amount) {
+  const std::string prefix = slot_prefix + strings::kEffectOrder[type] + "_";
+  std::vector<std::string> names;
+  for (const auto& control : plugin.getControls())
+    if (control.first.rfind(prefix, 0) == 0) names.push_back(control.first);
+  for (const auto& name : names) {
+    if (plugin.getEngine()->getMonoModulationDestination(name) == nullptr)
+      continue;
+    plugin.connectModulation(source, name);
+    const int index = plugin.getConnectionIndex(source, name);
+    if (index >= 0)
+      plugin.valueChanged("modulation_" + std::to_string(index + 1) + "_amount", amount);
+    return name;
+  }
+  return {};
+}
+
+void selectEffect(SynthPlugin& plugin, const std::string& slot_prefix, int type) {
+  plugin.valueChanged(slot_prefix + "type", float(type + 1));
+  plugin.valueChanged(slot_prefix + "enabled", 1.0f);
+}
+
+juce::AudioProcessorParameter* hostParameter(SynthPlugin& plugin, const String& id) {
+  for (auto* parameter : plugin.getParameters())
+    if (auto* with_id = dynamic_cast<juce::AudioProcessorParameterWithID*>(parameter))
+      if (with_id->getParameterID() == id) return parameter;
+  return nullptr;
+}
+
+// Renders fixed patches to raw float files, so two builds can be compared
+// sample for sample after a memory or graph change: spectral morphs, every
+// filter model and style, each quality, every effect in a main and a bus slot
+// (non-default settings and an LFO route into it), effects switched during
+// playback, FX proxy automation, a bus preset and the factory presets.
+void renderScenarios(const std::string& directory, const std::string& factory, const std::string& only = {}) {
+  using namespace vital;
+  struct Scenario {
+    std::string name;
+    std::vector<std::pair<std::string, float>> values;
+    juce::File preset;
+    std::function<void(SynthPlugin&)> setup;
+    std::function<void(SynthPlugin&, int block)> during;
+  };
+  std::vector<Scenario> scenarios;
+  scenarios.push_back({ "default", {}, {} });
+  for (int morph = 0; morph < SynthOscillator::kNumSpectralMorphTypes; ++morph) {
+    scenarios.push_back({ "morph_" + std::to_string(morph),
+        { { "osc_1_spectral_morph_type", morph }, { "osc_1_spectral_morph_amount", .6f } }, {} });
+    scenarios.push_back({ "secondary_morph_" + std::to_string(morph),
+        { { "osc_1_spectral_morph_type", (morph + 3) % SynthOscillator::kNumSpectralMorphTypes },
+          { "osc_1_spectral_morph_amount", .4f },
+          { "osc_1_secondary_spectral_morph_type", morph }, { "osc_1_secondary_spectral_morph_amount", .6f } }, {} });
+  }
+  for (int model = 0; model < constants::kNumFilterModels; ++model) {
+    for (int style = 0; style < 4; ++style) {
+      scenarios.push_back({ "filter_" + std::to_string(model) + "_" + std::to_string(style),
+          { { "filter_1_on", 1 }, { "filter_1_model", model }, { "filter_1_style", style },
+            { "filter_1_resonance", .7f }, { "filter_1_cutoff", 70 } }, {} });
+    }
+  }
+  for (int quality = 0; quality < 4; ++quality) {
+    scenarios.push_back({ "quality_" + std::to_string(quality),
+        { { "oversampling", quality }, { "osc_1_spectral_morph_type", 2 }, { "osc_1_spectral_morph_amount", .5f },
+          { "filter_1_on", 1 }, { "filter_1_model", constants::kComb }, { "filter_1_resonance", .8f } }, {} });
+  }
+  for (const auto& file : juce::File(factory).findChildFiles(juce::File::findFiles, true, "*.atp"))
+    scenarios.push_back({ "preset_" + file.getFileNameWithoutExtension().replaceCharacter(' ', '_').toStdString(), {}, file });
+
+  for (int type = 0; type < constants::kNumEffects; ++type) {
+    const std::string effect = strings::kEffectOrder[type];
+    scenarios.push_back({ "fx_main_" + effect, {}, {}, [type](SynthPlugin& plugin) {
+      selectEffect(plugin, "fx_slot_1_", type);
+      setEffectParameters(plugin, "fx_slot_1_", type);
+      routeIntoEffect(plugin, "fx_slot_1_", type, "lfo_1", .35f);
+    } });
+    scenarios.push_back({ "fx_bus_" + effect, { { "osc_1_destination", constants::kBus1 } }, {}, [type](SynthPlugin& plugin) {
+      selectEffect(plugin, "bus_1_fx_slot_3_", type);
+      setEffectParameters(plugin, "bus_1_fx_slot_3_", type, 17);
+      routeIntoEffect(plugin, "bus_1_fx_slot_3_", type, "lfo_2", -.25f);
+    } });
+  }
+
+  // Effects switched during playback keep the settings and routes of the one
+  // a slot leaves, and a slot running several effects in a row.
+  const std::pair<int, int> switches[] = {
+    { constants::kDelay, constants::kReverb }, { constants::kFilterFx, constants::kGlitchDelay },
+    { constants::kChorus, constants::kSpectralGate }, { constants::kCompressor, constants::kTranceGate } };
+  for (const auto& [first, second] : switches) {
+    const std::string name = std::string("fx_switch_") + strings::kEffectOrder[first] + "_" + strings::kEffectOrder[second];
+    scenarios.push_back({ name, {}, {}, [first = first, second = second](SynthPlugin& plugin) {
+      selectEffect(plugin, "fx_slot_2_", first);
+      setEffectParameters(plugin, "fx_slot_2_", first);
+      routeIntoEffect(plugin, "fx_slot_2_", first, "lfo_1", .3f);
+      selectEffect(plugin, "fx_slot_2_", second);
+      setEffectParameters(plugin, "fx_slot_2_", second, 5);
+      routeIntoEffect(plugin, "fx_slot_2_", second, "env_2", .4f);
+      selectEffect(plugin, "fx_slot_4_", constants::kDistortion);
+      setEffectParameters(plugin, "fx_slot_4_", constants::kDistortion);
+    }, [first = first, second = second](SynthPlugin& plugin, int block) {
+      if (block == 90) plugin.valueChanged("fx_slot_2_type", float(first + 1));
+      if (block == 180) plugin.valueChanged("fx_slot_2_type", float(second + 1));
+      if (block == 260) plugin.valueChanged("fx_slot_2_enabled", 0.0f);
+      if (block == 300) plugin.valueChanged("fx_slot_2_enabled", 1.0f);
+      if (block == 320) plugin.valueChanged("fx_slot_2_type", float(first + 1));
+    } });
+  }
+
+  // A host automating an FX proxy that drives an effect parameter.
+  scenarios.push_back({ "fx_proxy_automation", {}, {}, [](SynthPlugin& plugin) {
+    selectEffect(plugin, "fx_slot_1_", constants::kFilterFx);
+    setEffectParameters(plugin, "fx_slot_1_", constants::kFilterFx);
+    plugin.valueChanged("fx_slot_1_filter_fx_model", constants::kAnalog);
+    const int slot = plugin.assignFxParameterToAutomationSlot("fx_slot_1_filter_fx_cutoff");
+    expect(slot >= 0, "an FX proxy takes the Filter FX cutoff");
+  }, [](SynthPlugin& plugin, int block) {
+    if (block % 10 != 0) return;
+    if (auto* proxy = hostParameter(plugin, "fx_automation_main_param_1"))
+      proxy->setValue(float(block % 200) / 200.0f);
+  } });
+
+  // A factory bus preset loaded into bus 1.
+  const juce::File bus_preset = juce::File(factory).getParentDirectory()
+                                    .getChildFile("FX/Analogue/Analogue Echo - Worn Tape.atfx");
+  scenarios.push_back({ "fx_bus_preset", { { "osc_1_destination", constants::kBus1 } }, {}, [bus_preset](SynthPlugin& plugin) {
+    String error;
+    const bool loaded = bus_preset.existsAsFile() &&
+        plugin.loadFxBusPreset(1, json::parse(bus_preset.loadFileAsString().toStdString()), error);
+    expect(loaded, "the factory bus preset loads");
+  } });
+
+  if (!only.empty())
+    scenarios.erase(std::remove_if(scenarios.begin(), scenarios.end(),
+        [&](const Scenario& s) { return s.name.find(only) == std::string::npos; }), scenarios.end());
+  constexpr int kBlock = 512;
+  for (const auto& scenario : scenarios) {
+    SynthPlugin plugin;
+    // Offline, as a host renders: effects prepare within the block that
+    // selects them, so the output does not depend on the worker's timing.
+    plugin.setNonRealtime(true);
+    plugin.setPlayConfigDetails(0, 2, 48000, kBlock);
+    plugin.prepareToPlay(48000, kBlock);
+    if (scenario.preset.existsAsFile()) {
+      std::string error;
+      expect(plugin.loadFromFile(scenario.preset, error), "factory preset loads");
+    }
+    for (const auto& [name, value] : scenario.values)
+      plugin.valueChanged(name, value);
+    if (scenario.setup)
+      scenario.setup(plugin);
+    plugin.getEngine()->prepareSelectedEffects();
+    // Impulse responses and tape noise build on background threads, offline
+    // too; give them time so the render starts from the finished state.
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(250);
+
+    juce::FileOutputStream out(juce::File(directory).getChildFile(scenario.name + ".raw"));
+    out.truncate();
+    juce::AudioBuffer<float> audio(2, kBlock);
+    juce::MidiBuffer midi;
+    const int chord[] = { 36, 48, 55, 60, 64, 67, 71, 74, 79, 84, 88 };
+    for (int block = 0; block < 400; ++block) {
+      midi.clear();
+      if (block == 2 || block == 200)
+        for (int note : chord) midi.addEvent(juce::MidiMessage::noteOn(1, note + (block == 200 ? 1 : 0), .8f), 17);
+      if (block == 150 || block == 330)
+        for (int note : chord) midi.addEvent(juce::MidiMessage::noteOff(1, note + (block == 330 ? 1 : 0)), 211);
+      if (scenario.during)
+        scenario.during(plugin, block);
+      audio.clear();
+      plugin.processBlock(audio, midi);
+      for (int channel = 0; channel < 2; ++channel)
+        out.write(audio.getReadPointer(channel), kBlock * sizeof(float));
+    }
+  }
+  std::cout << "rendered scenarios=" << scenarios.size() << '\n';
+}
+
+// Compares two --render directories sample for sample. Scenarios whose
+// output depends on background loading (impulse responses and tape noise
+// build on worker threads, even offline) are reported but never fail.
+int compareRenders(const std::string& baseline_directory, const std::string& candidate_directory) {
+  static const char* kTimingDependent[] = { "convolution_reverb", "fx_bus_tape" };
+  int failed = 0, compared = 0;
+  for (const auto& baseline : juce::File(baseline_directory).findChildFiles(juce::File::findFiles, false, "*.raw")) {
+    const auto candidate = juce::File(candidate_directory).getChildFile(baseline.getFileName());
+    const std::string name = baseline.getFileNameWithoutExtension().toStdString();
+    bool timing_dependent = false;
+    for (const char* pattern : kTimingDependent) timing_dependent |= name.find(pattern) != std::string::npos;
+    juce::MemoryBlock a, b;
+    if (!candidate.existsAsFile() || !baseline.loadFileAsData(a) || !candidate.loadFileAsData(b) || a.getSize() != b.getSize()) {
+      std::cout << "MISSING " << name << '\n';
+      ++failed;
+      continue;
+    }
+    ++compared;
+    if (a == b) continue;
+    const auto* x = static_cast<const float*>(a.getData());
+    const auto* y = static_cast<const float*>(b.getData());
+    const size_t count = a.getSize() / sizeof(float);
+    size_t first = count;
+    double largest = 0.0;
+    for (size_t i = 0; i < count; ++i) {
+      const double difference = std::abs(double(x[i]) - double(y[i]));
+      if (difference > 0.0 && first == count) first = i;
+      largest = std::max(largest, difference);
+    }
+    std::cout << (timing_dependent ? "timing-dependent " : "DIFFERS ") << name << " first_sample=" << first
+              << " max_difference=" << largest << '\n';
+    failed += timing_dependent ? 0 : 1;
+  }
+  std::cout << "compared=" << compared << " differing=" << failed << '\n';
+  return failed == 0 ? 0 : 1;
+}
+
+// Saving, loading into a fresh instance and saving again gives identical state,
+// including settings of effects a slot no longer selects, routes into them,
+// and FX automation assignments to them.
+void stateRoundTrip() {
+  using namespace vital;
+  json first;
+  {
+    SynthPlugin plugin;
+    plugin.setPlayConfigDetails(0, 2, 48000, 512);
+    plugin.prepareToPlay(48000, 512);
+    selectEffect(plugin, "fx_slot_1_", constants::kDelay);
+    setEffectParameters(plugin, "fx_slot_1_", constants::kDelay);
+    const std::string delay_route = routeIntoEffect(plugin, "fx_slot_1_", constants::kDelay, "lfo_1", .3f);
+    expect(!delay_route.empty(), "a route reaches the Delay");
+    expect(plugin.assignFxParameterToAutomationSlot("fx_slot_1_delay_feedback") >= 0, "an FX proxy takes the Delay feedback");
+    selectEffect(plugin, "fx_slot_1_", constants::kReverb);
+    setEffectParameters(plugin, "fx_slot_1_", constants::kReverb, 3);
+    routeIntoEffect(plugin, "fx_slot_1_", constants::kReverb, "env_2", .5f);
+    selectEffect(plugin, "bus_2_fx_slot_5_", constants::kGlitchDelay);
+    setEffectParameters(plugin, "bus_2_fx_slot_5_", constants::kGlitchDelay, 11);
+    routeIntoEffect(plugin, "bus_2_fx_slot_5_", constants::kGlitchDelay, "lfo_3", -.2f);
+    selectEffect(plugin, "bus_2_fx_slot_5_", constants::kTranceGate);
+    setEffectParameters(plugin, "bus_2_fx_slot_5_", constants::kTranceGate, 7);
+    juce::MemoryBlock state;
+    plugin.getStateInformation(state);
+    first = json::parse(state.toString().toStdString());
+    expect(first["settings"].value("fx_slot_1_delay_feedback", -1.0f) != Parameters::getDetails("fx_slot_1_delay_feedback").default_value,
+           "the unselected Delay keeps its settings");
+  }
+  juce::MemoryBlock state;
+  {
+    juce::MemoryBlock saved;
+    SynthPlugin plugin;
+    plugin.setPlayConfigDetails(0, 2, 48000, 512);
+    plugin.prepareToPlay(48000, 512);
+    const std::string text = first.dump();
+    plugin.setStateInformation(text.data(), int(text.size()));
+    plugin.getStateInformation(state);
+  }
+  const json second = json::parse(state.toString().toStdString());
+  auto effect_routes = [](const json& data) {
+    int routes = 0;
+    for (const auto& modulation : data["settings"]["modulations"])
+      routes += modulation["destination"].get<std::string>().find("fx_slot_") != std::string::npos;
+    return routes;
+  };
+  expect(effect_routes(first) == 3, "three routes reach effects, two of them no longer selected");
+  expect(effect_routes(second) == 3, "routes into effects survive a reload");
+  expect(first.count("fx_automation_slots") && first["fx_automation_slots"].dump().find("fx_slot_1_delay_feedback") != std::string::npos,
+         "the FX proxy assignment to the unselected Delay is saved");
+  int differences = 0;
+  for (auto it = first.begin(); it != first.end(); ++it) {
+    if (!second.count(it.key()) || second[it.key()] != it.value()) {
+      if (it.value().is_object() && second.count(it.key()) && second[it.key()].is_object()) {
+        for (auto inner = it.value().begin(); inner != it.value().end(); ++inner)
+          if (!second[it.key()].count(inner.key()) || second[it.key()][inner.key()] != inner.value())
+            if (++differences <= 10) std::cout << "differs: " << it.key() << "/" << inner.key() << '\n';
+      }
+      else if (++differences <= 10)
+        std::cout << "differs: " << it.key() << '\n';
+    }
+  }
+  for (auto it = second.begin(); it != second.end(); ++it)
+    if (!first.count(it.key()) && ++differences <= 10) std::cout << "only after reload: " << it.key() << '\n';
+  std::cout << "state round trip differences=" << differences << '\n';
+  expect(differences == 0, "saving, loading and saving again gives the same state");
+}
+
+// Footprint of one instance as a host sees it: construction, playback, then
+// the editor opened in a window, closed and opened again.
+void editorMemory() {
+  auto pump = [](int ms) {
+    const auto end = juce::Time::getMillisecondCounter() + uint32(ms);
+    while (juce::Time::getMillisecondCounter() < end)
+      juce::MessageManager::getInstance()->runDispatchLoopUntil(10);
+  };
+  double last = footprintMiB();
+  const double start = last;
+  auto report = [&](const char* stage) {
+    const double now = footprintMiB();
+    std::cout << stage << " total_MiB=" << now << " step_MiB=" << now - last << " since_start_MiB=" << now - start << std::endl;
+    last = now;
+  };
+  report("process start");
+  auto plugin = std::make_unique<SynthPlugin>();
+  report("constructed");
+  plugin->setPlayConfigDetails(0, 2, 48000, 512);
+  plugin->prepareToPlay(48000, 512);
+  report("prepared");
+  juce::AudioBuffer<float> audio(2, 512);
+  juce::MidiBuffer midi;
+  for (int block = 0; block < 200; ++block) {
+    midi.clear();
+    if (block == 0) for (int note : { 48, 55, 60, 64 }) midi.addEvent(juce::MidiMessage::noteOn(1, note, .8f), 0);
+    audio.clear();
+    plugin->processBlock(audio, midi);
+  }
+  report("played");
+  // A host restoring a project hands the instance its saved state.
+  for (int restore = 0; restore < 2; ++restore) {
+    juce::MemoryBlock state;
+    plugin->getStateInformation(state);
+    std::cout << "saved state KiB=" << state.getSize() / 1024.0 << std::endl;
+    plugin->setStateInformation(state.getData(), int(state.getSize()));
+    for (int block = 0; block < 200; ++block) {
+      midi.clear();
+      if (block == 0) for (int note : { 48, 55, 60, 64 }) midi.addEvent(juce::MidiMessage::noteOn(1, note, .8f), 0);
+      audio.clear();
+      plugin->processBlock(audio, midi);
+    }
+    pump(300);
+    report(restore == 0 ? "state restored and played" : "state restored again and played");
+  }
+  std::unique_ptr<juce::AudioProcessorEditor> editor(plugin->createEditorIfNeeded());
+  report("editor created");
+  editor->addToDesktop(juce::ComponentPeer::windowHasTitleBar);
+  editor->setVisible(true);
+  pump(2000);
+  report("editor shown");
+  if (const char* hold = std::getenv("ATLAS_CONSTRUCTION_HOLD_SECONDS")) {
+    std::cout << "holding pid=" << getpid() << std::endl;
+    pump(1000 * std::atoi(hold));
+  }
+  plugin->editorBeingDeleted(editor.get());
+  editor.reset();
+  pump(500);
+  report("editor closed");
+  editor.reset(plugin->createEditorIfNeeded());
+  editor->addToDesktop(juce::ComponentPeer::windowHasTitleBar);
+  editor->setVisible(true);
+  pump(2000);
+  report("editor reopened");
+  plugin->editorBeingDeleted(editor.get());
+  editor.reset();
+  plugin.reset();
+  pump(500);
+  report("destroyed");
+}
+
+// Per effect type: how many parameter controls, and how many are modulated,
+// smoothed and audio-rate (the shells' parameter cost).
+void describeEffectControls() {
+  using namespace vital;
+  cr::Value bpm(2), keytrack(0);
+  EffectFactoryProbe probe(bpm.output(), keytrack.output());
+  int totals[4] = {};
+  for (int type = 0; type < constants::kNumEffects; ++type) {
+    std::unique_ptr<SynthModule> module(probe.createEffectDsp(type, "fx_slot_1_"));
+    module->init();
+    const auto controls = module->getControls();
+    const auto destinations = module->getMonoModulationDestinations();
+    int counts[4] = { int(controls.size()), 0, 0, 0 };
+    for (const auto& control : controls) {
+      counts[1] += destinations.count(control.first) != 0;
+      counts[2] += dynamic_cast<const SmoothValue*>(control.second) != nullptr ||
+                   dynamic_cast<const cr::SmoothValue*>(control.second) != nullptr;
+      counts[3] += !control.second->isControlRate();
+    }
+    std::cout << strings::kEffectOrder[type] << " controls=" << counts[0] << " modulated=" << counts[1]
+              << " smoothed=" << counts[2] << " audio_rate=" << counts[3] << '\n';
+    for (int i = 0; i < 4; ++i) totals[i] += counts[i];
+  }
+  std::cout << "all controls=" << totals[0] << " modulated=" << totals[1] << " smoothed=" << totals[2]
+            << " audio_rate=" << totals[3] << '\n';
+}
+
+// Counts the host parameters by group (the first words of their names, or
+// the automation proxies); with `list`, prints every ID and name too.
+void hostParameterSummary(bool list) {
+  SynthPlugin plugin;
+  std::map<std::string, int> groups;
+  for (auto* parameter : plugin.getParameters()) {
+    const String name = parameter->getName(200);
+    String group;
+    if (name.contains(" Param ") && (name.startsWith("Osc ") || name.startsWith("FX ")))
+      group = name.upToFirstOccurrenceOf(" ", false, false) + " automation proxies";
+    else {
+      const int words = name.startsWith("Oscillator ") ? 3 : 1;
+      juce::StringArray tokens = juce::StringArray::fromTokens(name, " ", "");
+      tokens.removeRange(words, tokens.size());
+      group = tokens.joinIntoString(" ");
+    }
+    groups[group.toStdString()]++;
+    if (list) {
+      auto* with_id = dynamic_cast<juce::AudioProcessorParameterWithID*>(parameter);
+      std::cout << (with_id ? with_id->getParameterID() : String()) << " | " << name << '\n';
+    }
+  }
+  std::cout << "host parameters=" << plugin.getParameters().size() << '\n';
+  for (const auto& [group, count] : groups) std::cout << count << "  " << group << '\n';
+}
+
 #include "ir_switching_tests.h"
 
 int main(int argc, char** argv) {
   juce::ScopedJuceInitialiser_GUI gui;
+  if (argc > 1 && String(argv[1]) == "--describe-effects") {
+    describeEffectControls();
+    return 0;
+  }
+  if (argc > 1 && String(argv[1]) == "--host-parameters") {
+    hostParameterSummary(argc > 2 && String(argv[2]) == "list");
+    return 0;
+  }
+  if (argc > 1 && String(argv[1]) == "--editor-memory") {
+    editorMemory();
+    return failures ? 1 : 0;
+  }
+  if (argc > 1 && String(argv[1]) == "--state-round-trip") {
+    stateRoundTrip();
+    return failures ? 1 : 0;
+  }
+  if (argc > 3 && String(argv[1]) == "--compare")
+    return compareRenders(argv[2], argv[3]);
+  if (argc > 3 && String(argv[1]) == "--render") {
+    renderScenarios(argv[2], argv[3], argc > 4 ? argv[4] : "");
+    return failures ? 1 : 0;
+  }
   if (argc > 1 && String(argv[1]) == "--ir-switching") {
     irSwitchingKeepsLiveEngine();
     asyncIrLoadingIsLatestWins();
@@ -650,5 +1194,6 @@ int main(int argc, char** argv) {
   cancelledPreparationIsReleased();
   slotFilterTable();
   controlsReservedOnSelection();
+  parkedEffectWiring();
   return failures ? 1 : 0;
 }

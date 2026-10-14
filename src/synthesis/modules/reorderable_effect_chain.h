@@ -78,9 +78,17 @@ namespace vital {
       ~ReorderableEffectChain() override;
       void stopPreparation();
       void prepareSelectedEffects();
-      // Reserves the parameter controls of every slot's selected effect, enabled
-      // or not. Allocates: processing stopped or the callback lock held.
+      // Makes every slot's selected effect live, enabled or not: its modulation
+      // wiring and its controls' buffers. Allocates: processing stopped or the
+      // callback lock held.
       void reserveSelectedControls();
+      // Parks every effect its slot does not select (and the never-processed
+      // fixed-order set), keeping only the wiring routes reach. Message
+      // thread, with processing stopped or the callback lock held.
+      void parkUnselectedEffects();
+      // Wires a parked effect's modulated parameter so a route can reach it.
+      // False when `name` is not a modulated parameter of this chain's effects.
+      bool wireModulationDestination(const std::string& name);
       void setSampleRate(int rate) override;
       void setOversampleAmount(int amount) override;
 

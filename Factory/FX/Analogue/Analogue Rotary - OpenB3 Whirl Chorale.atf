@@ -1,0 +1,12 @@
+{
+  "type": "Atlas FX Preset",
+  "version": 1,
+  "effect": "analoguerotary",
+  "name": "OpenB3 Whirl Chorale",
+  "parameters": {
+    "analoguerotary_model": 2,
+    "analoguerotary_speed": 0,
+    "analoguerotary_spread": 1.0,
+    "analoguerotary_mix": 1.0
+  }
+}

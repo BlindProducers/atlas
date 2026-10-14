@@ -10,14 +10,22 @@
 // follow with their own inertia (the light horn quickly, the heavy drum
 // slowly), scaled by Inertia (50% = the hardware). Stop lets the rotors coast
 // to rest wherever they are.
+//
+// OpenB3 Whirl: OpenB3's rotary speaker, setBfree's whirl.c
+// (src/synthesis/effects/openb3). Inertia scales its time constants the same
+// way and Spread sets its microphone angle (100% = OpenB3's opposite sides);
+// it has no amplifier, so Drive does not apply.
 #pragma once
 
 #include <array>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
+namespace atlas::openb3 { class Whirl; }
+
 namespace atlas::analogue::rotary {
-  enum Model { kOrgan, kGuitar, kNumModels };
+  enum Model { kOrgan, kGuitar, kWhirl, kNumModels };
   enum Speed { kSlow, kFast, kStop, kNumSpeeds };
 
   struct Parameters {
@@ -44,13 +52,14 @@ namespace atlas::analogue::rotary {
   class Engine {
    public:
     Engine();
+    ~Engine();
     void prepare(double sample_rate);
     void reset();
     void setParameters(const Parameters& parameters);
     void process(const float* in_left, const float* in_right, float* out_left, float* out_right, int count);
     // Current rotor speeds in Hz (for tests).
-    double hornHz() const { return rotors_[kHorn].hz; }
-    double drumHz() const { return rotors_[parameters_.model == kGuitar ? kGuitarDrum : kOrganDrum].hz; }
+    double hornHz() const;
+    double drumHz() const;
 
    private:
     enum RotorIndex { kHorn, kOrganDrum, kGuitarDrum, kNumRotors };
@@ -87,6 +96,7 @@ namespace atlas::analogue::rotary {
     // lowpass_: crossover, drum still band. highpass_: crossover, Guitar low cut.
     std::array<Biquad, 2> lowpass_ {}, highpass_ {};
     Biquad horn_voice_;
+    std::unique_ptr<openb3::Whirl> whirl_;
     double drive_ = 0.3, balance_ = 0.0, spread_ = 0.5, mix_ = 1.0;
     double smoothing_ = 0.01;
     int current_model_ = kOrgan, fading_model_ = -1, fade_remaining_ = 0, fade_length_ = 1;

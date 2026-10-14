@@ -93,6 +93,22 @@ namespace vital {
       clearBuffer();
     }
 
+    // Gives a buffer of more than one sample room for every quality setting,
+    // as its first growth does, so later growth never allocates. A buffer
+    // that reads another output's samples (a ValueSwitch) takes its size from
+    // that output and may never grow itself.
+    void reserveAllQualities() {
+      if (buffer_size == 1 || buffer_capacity >= kMaxBufferSize * 8)
+        return;
+      buffer_capacity = kMaxBufferSize * 8;
+      bool buffer_is_original = buffer == owned_buffer.get();
+      owned_buffer = allocateBuffer(buffer_capacity);
+      if (buffer_is_original) {
+        buffer = owned_buffer.get();
+        clearBuffer();
+      }
+    }
+
     poly_float* buffer;
     BufferPointer owned_buffer;
     Processor* owner;
@@ -148,6 +164,10 @@ namespace vital {
   class Processor {
     public:
       Processor(int num_inputs, int num_outputs, bool control_rate = false, int max_oversample = 1);
+      // A processor with no inputs, outputs or state of its own: it shares one
+      // control-rate state and never joins a graph (see StoredValue).
+      struct DetachedTag {};
+      explicit Processor(DetachedTag);
 
       virtual ~Processor() { }
 

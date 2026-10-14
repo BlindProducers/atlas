@@ -102,9 +102,10 @@
 
     // Analogue Rotary: Speed is a switch that modulation can also move (the
     // mod wheel as a half-moon switch); Inertia 50% is the hardware's rotors.
+    // Model 2, OpenB3 Whirl, came later; older presets only hold 0 and 1.
     { "analoguerotary_on", 0x020115, 0.0, 1.0, 0.0, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Analogue Rotary Switch", strings::kOffOnNames },
-    { "analoguerotary_model", 0x020115, 0.0, 1.0, 0.0, 0.0, 1.0,
+    { "analoguerotary_model", 0x020115, 0.0, 2.0, 0.0, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Analogue Rotary Model", strings::kAnalogueRotaryModelNames },
     { "analoguerotary_speed", 0x020115, 0.0, 2.0, 0.0, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Analogue Rotary Speed", strings::kAnalogueRotarySpeedNames },

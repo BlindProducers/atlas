@@ -167,7 +167,7 @@ namespace vital {
       int analysis_revision_ = -1;
       std::array<LaneState, poly_float::kSize> lanes_;
       std::array<float, SpectralAnalysis::kFftSize> window_;
-      juce::dsp::FFT fft_;
+      std::shared_ptr<const juce::dsp::FFT> fft_;
       SlotModulation modulation_;
 
       JUCE_LEAK_DETECTOR(SpectralSource)

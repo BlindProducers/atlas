@@ -57,7 +57,8 @@ namespace vital {
       enum {
         kRaw,
         kLevelled,
-        // 1 per voice while a Multi-sample instrument still sounds (holds the voice open).
+        // 1 per voice while a Multi-sample instrument, an OpenWurli reed or an
+        // OpenB3 key still sounds (holds the voice open).
         kHold,
         kNumOutputs
       };
@@ -77,8 +78,8 @@ namespace vital {
       bool prepareActiveType();
       int requestedType() const;
       int activeType() const { return state_->active_type; }
-      // A Multi-sample type in Instrument envelope mode: its own envelopes
-      // shape it, not Env 1.
+      // A Multi-sample type in Instrument envelope mode, OpenWurli in Reed
+      // mode or OpenB3 in Organ mode: its own envelopes shape it, not Env 1.
       bool holdsVoiceOpen() const;
       bool hasActiveModule() const { return state_->module != nullptr; }
       int slot() const { return slot_; }
@@ -162,6 +163,8 @@ namespace vital {
       // The shared distortion controls, read for render ordering whatever the type.
       Value* distortion_type_ = nullptr;
       Value* multisample_amp_env_ = nullptr;
+      Value* wurli_amp_env_ = nullptr;
+      Value* b3_amp_env_ = nullptr;
       Value* secondary_distortion_type_ = nullptr;
       // The output buffers are shared by every voice copy, so the "clear once
       // after switching off" flag must be shared too: the copy that last wrote

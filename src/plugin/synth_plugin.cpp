@@ -58,7 +58,8 @@ namespace {
       "mid_side_eq_", "phase_shift_", "phaser_", "reverb_", "utility_", "waveshaper_", "spectral_gate_",
       "erosion_", "floaty_delay_", "spectral_compressor_", "scream_", "tremolo_pan_", "tape_", "defuse_", "suppressor_", "trance_gate_", "spectral_lock_", "resonator_",
       "analoguechorus_", "analogueflanger_", "analogueecho_",
-      "analoguerotary_", "analoguespring_", "analoguewah_", "spectral_balance_", "glitch_delay_"
+      "analoguerotary_", "analoguespring_", "analoguewah_", "spectral_balance_", "glitch_delay_",
+      "openwurli_amp_", "scanner_vibrato_"
     };
     for (const auto& prefix : prefixes) {
       if (name.rfind(prefix, 0) == 0)
@@ -204,20 +205,8 @@ SynthPlugin::SynthPlugin() {
     addParameter(bridge);
   }
 
-  // Dynamic FX controls deliberately stay out of the host parameter list.
-  // Keep a small immutable binding record for each one so any of the stable
-  // proxy slots can be reassigned without locking the audio thread.
-  for (const auto& control : controls_) {
-    const int chain = automationChainForParameter(control.first);
-    if (chain < 0 || control.second == nullptr || !vital::Parameters::isParameter(control.first))
-      continue;
-
-    FxAutomationBinding binding;
-    binding.details = &vital::Parameters::getDetails(control.first);
-    binding.value = control.second;
-    binding.suppressor_sample_rate = &fx_sample_rate_;
-    fx_automation_bindings_.emplace(control.first, binding);
-  }
+  // Dynamic FX controls deliberately stay out of the host parameter list;
+  // stable proxy slots are assigned to them instead (automationBinding).
 
   for (int chain = 0; chain < kNumAutomationChains; ++chain) {
     for (int slot = 0; slot < automationSlotsForChain(chain); ++slot) {
@@ -281,7 +270,7 @@ const CriticalSection& SynthPlugin::getCriticalSection() {
 void SynthPlugin::pauseProcessing(bool pause) {
   if (!pause) {
     const ScopedLock lock(getCallbackLock());
-    engine_->prepareSelectedEffects();
+    prepareSelectedEffects();
   }
   suspendProcessing(pause);
 }
@@ -347,7 +336,7 @@ void SynthPlugin::prepareToPlay(double sample_rate, int buffer_size) {
   engine_->setSampleRate(sample_rate);
   engine_->checkOversampling();
   engine_->updateAllModulationSwitches();
-  engine_->prepareSelectedEffects();
+  prepareSelectedEffects();
   midi_manager_->setSampleRate(sample_rate);
   updateHostLatency();
 }
@@ -554,6 +543,23 @@ bool SynthPlugin::legacySourceAliasTargetExists(const std::string& engineName) {
   return legacySourceAliasTarget(alias) == engineName;
 }
 
+const FxAutomationBinding* SynthPlugin::automationBinding(const std::string& parameterName) {
+  const std::lock_guard<std::mutex> lock(fx_automation_bindings_mutex_);
+  const auto found = fx_automation_bindings_.find(parameterName);
+  if (found != fx_automation_bindings_.end())
+    return &found->second;
+  if (automationChainForParameter(parameterName) < 0 || !vital::Parameters::isParameter(parameterName))
+    return nullptr;
+  const auto control = controls_.find(parameterName);
+  if (control == controls_.end() || control->second == nullptr)
+    return nullptr;
+  FxAutomationBinding binding;
+  binding.details = &vital::Parameters::getDetails(parameterName);
+  binding.value = control->second;
+  binding.suppressor_sample_rate = &fx_sample_rate_;
+  return &fx_automation_bindings_.emplace(parameterName, binding).first->second;
+}
+
 int SynthPlugin::automationChainForParameter(const std::string& parameterName) const {
   const int fx_chain = dynamicFxChainForParameter(parameterName);
   if (fx_chain >= 0)
@@ -582,14 +588,14 @@ bool SynthPlugin::setFxAutomationAssignment(int chain, int slot, const std::stri
       automationChainForParameter(parameterName) != chain)
     return false;
 
-  const auto binding = fx_automation_bindings_.find(parameterName);
-  if (binding == fx_automation_bindings_.end())
+  const FxAutomationBinding* binding = automationBinding(parameterName);
+  if (binding == nullptr)
     return false;
 
   auto* parameter = fx_automation_parameters_[chain][slot];
   if (parameter == nullptr)
     return false;
-  parameter->setBinding(&binding->second, notifyHost);
+  parameter->setBinding(binding, notifyHost);
   return true;
 }
 
@@ -671,9 +677,7 @@ void SynthPlugin::swapFxAutomationPrefixes(const std::string& firstPrefix,
       else
         continue;
 
-      const auto replacement_binding = fx_automation_bindings_.find(replacement);
-      parameter->setBinding(replacement_binding == fx_automation_bindings_.end()
-                                ? nullptr : &replacement_binding->second, true);
+      parameter->setBinding(automationBinding(replacement), true);
     }
   }
 }
@@ -981,7 +985,7 @@ void SynthPlugin::setStateInformation(const void* data, int size_in_bytes) {
   {
     const ScopedLock lock(getCallbackLock());
     engine_->checkOversampling();
-    engine_->prepareSelectedEffects();
+    prepareSelectedEffects();
     engine_->updateEffectLatency();
     updateFxSampleRate();
   }

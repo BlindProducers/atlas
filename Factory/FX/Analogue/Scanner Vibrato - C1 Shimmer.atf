@@ -1,0 +1,10 @@
+{
+  "type": "Atlas FX Preset",
+  "version": 1,
+  "effect": "scanner_vibrato",
+  "name": "C1 Shimmer",
+  "parameters": {
+    "scanner_vibrato_mode": 3,
+    "scanner_vibrato_rate": 7.25
+  }
+}

@@ -22,6 +22,7 @@
 #include "utils.h"
 #include "wave_frame.h"
 #include "wavetable.h"
+#include "zeroed_buffer.h"
 
 #include <array>
 
@@ -477,8 +478,21 @@ namespace vital {
       int wavetable_frames_ = -1;
       Output* modulators_[kNumModulatorPositions];
     
-      poly_float fourier_frames1_[kNumBuffers + 1][kSpectralBufferSize];
-      poly_float fourier_frames2_[kNumBuffers + 1][kSpectralBufferSize];
+      // The spectral morph frames, two sets of kNumBuffers + 1. They used to be
+      // member arrays (about 1 MB), so every voice clone copied and touched
+      // them; now each oscillator has its own zeroed storage that stays
+      // untouched until a voice runs a spectral morph. A clone starts from
+      // zero, as the never-processed prototype holds.
+      struct FourierFrames {
+        static constexpr int kFrames = kNumBuffers + 1;
+        FourierFrames() : storage(allocateZeroed<poly_float>(2 * kFrames * kSpectralBufferSize)) { }
+        FourierFrames(const FourierFrames&) : FourierFrames() { }
+        FourierFrames& operator=(const FourierFrames&) = delete;
+        poly_float* first(int index) { return storage.get() + index * kSpectralBufferSize; }
+        poly_float* second(int index) { return storage.get() + (kFrames + index) * kSpectralBufferSize; }
+        ZeroedBuffer<poly_float> storage;
+      };
+      FourierFrames fourier_frames_;
       std::shared_ptr<FourierTransform> fourier_transform_;
       std::shared_ptr<SpectralMorphChain> spectral_chain_;
       std::shared_ptr<RandomValues> random_amplitudes_;

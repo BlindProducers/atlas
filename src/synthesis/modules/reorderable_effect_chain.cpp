@@ -26,6 +26,8 @@
 #include "filter_fx_module.h"
 #include "spectral_balance_module.h"
 #include "glitch_delay_module.h"
+#include "openwurli_amp_module.h"
+#include "scanner_vibrato_module.h"
 #include "chorus_module.h"
 #include "compressor_module.h"
 #include "convolution_reverb_module.h"
@@ -214,6 +216,10 @@ namespace vital {
         return new SpectralBalanceModule(module_prefix);
       case constants::kGlitchDelay:
         return new GlitchDelayModule(beats_per_second_, trance_gate_clock_, module_prefix);
+      case constants::kOpenWurliAmp:
+        return new OpenWurliAmpModule(module_prefix);
+      case constants::kScannerVibrato:
+        return new ScannerVibratoModule(module_prefix);
       default:
         return nullptr;
     }
@@ -386,6 +392,45 @@ namespace vital {
       if (auto* prepared = dynamic_cast<PreparedEffectModule*>(slot_effects_[slot][index]))
         prepared->reserveControls();
     }
+  }
+
+  void ReorderableEffectChain::parkUnselectedEffects() {
+    auto park = [](SynthModule* module) {
+      if (auto* prepared = dynamic_cast<PreparedEffectModule*>(module))
+        if (prepared->controlsReserved() || prepared->hasWiring()) prepared->park();
+    };
+    for (auto* module : effects_)
+      park(module);
+    for (int slot = 0; slot < constants::kMaxEffectSlots; ++slot) {
+      const int index = utils::iclamp(static_cast<int>(slot_types_[slot]->value() + 0.5f) - 1,
+                                      -1, constants::kNumEffects - 1);
+      for (int effect = 0; effect < constants::kNumEffects; ++effect)
+        if (effect != index) park(slot_effects_[slot][effect]);
+    }
+  }
+
+  bool ReorderableEffectChain::wireModulationDestination(const std::string& name) {
+    if (name.compare(0, prefix_.size(), prefix_) != 0)
+      return false;
+    auto wire = [&name](SynthModule* module) {
+      auto* prepared = dynamic_cast<PreparedEffectModule*>(module);
+      return prepared != nullptr && prepared->wireModulationDestination(name);
+    };
+    const std::string slots = prefix_ + "fx_slot_";
+    if (name.compare(0, slots.size(), slots) == 0) {
+      for (int slot = 0; slot < constants::kMaxEffectSlots; ++slot) {
+        const std::string slot_prefix = slots + std::to_string(slot + 1) + "_";
+        if (name.compare(0, slot_prefix.size(), slot_prefix) != 0)
+          continue;
+        for (auto* module : slot_effects_[slot])
+          if (wire(module)) return true;
+        return false;
+      }
+      return false;
+    }
+    for (auto* module : effects_)
+      if (wire(module)) return true;
+    return false;
   }
 
   void ReorderableEffectChain::prepareSelectedEffects() {

@@ -1,0 +1,10 @@
+{
+  "type": "Atlas FX Preset",
+  "version": 1,
+  "effect": "scanner_vibrato",
+  "name": "V3 Vibrato",
+  "parameters": {
+    "scanner_vibrato_mode": 2,
+    "scanner_vibrato_rate": 7.25
+  }
+}

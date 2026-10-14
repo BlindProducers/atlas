@@ -178,6 +178,8 @@ namespace vital {
       kAnalogueWah,
       kSpectralBalance,
       kGlitchDelay,
+      kOpenWurliAmp,
+      kScannerVibrato,
       kNumEffects
     };
 

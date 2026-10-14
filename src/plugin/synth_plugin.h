@@ -23,6 +23,7 @@
 #include "value_bridge.h"
 
 #include <array>
+#include <mutex>
 
 class ValueBridge;
 
@@ -120,7 +121,12 @@ class SynthPlugin : public SynthBase, public AudioProcessor, public ValueBridge:
     AudioPlayHead::CurrentPositionInfo position_info_;
 
     std::map<std::string, ValueBridge*> bridge_lookup_;
+    // Made the first time a parameter is assigned to a proxy, then kept:
+    // proxies read them from the host's threads without a lock, and map
+    // nodes never move. Only assignments insert, under the mutex.
     std::map<std::string, FxAutomationBinding> fx_automation_bindings_;
+    std::mutex fx_automation_bindings_mutex_;
+    const FxAutomationBinding* automationBinding(const std::string& parameterName);
     std::array<std::array<FxAutomationParameter*, kFxAutomationSlotsPerChain>,
                kNumAutomationChains> fx_automation_parameters_ {};
 
