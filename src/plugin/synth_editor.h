@@ -43,6 +43,27 @@ namespace vital {
   class ConvolutionReverbModule;
 }
 
+// Key names for help texts and menus. Command is a key of its own only on
+// macOS; elsewhere JUCE reports Ctrl as the command modifier, and there is no
+// VoiceOver to open a context menu.
+namespace atlas::keys {
+  inline String commandName() {
+#if JUCE_MAC
+    return "Command";
+#else
+    return "Ctrl";
+#endif
+  }
+
+  inline String contextMenuKeys() {
+#if JUCE_MAC
+    return "Shift M, the right bracket key, or VoiceOver Shift M";
+#else
+    return "Shift M, Shift F10, or the right bracket key";
+#endif
+  }
+}
+
 struct PresetBrowserItem {
   File file;
   int64 file_size = 0;
@@ -114,6 +135,18 @@ class PresetTableListBox : public SelectionKeyList<TableListBox> {
         return true;
       return SelectionKeyList::keyPressed(key);
     }
+};
+
+// A toggle that says its new state after the user flips it. JUCE reports a
+// toggle's change to Windows screen readers only as a new value, which NVDA
+// never speaks for a check box; VoiceOver reads the change itself, so this
+// speaks on Windows only (see SpokenToggleButton::clicked).
+class SpokenToggleButton : public ToggleButton {
+  public:
+    using ToggleButton::ToggleButton;
+
+  protected:
+    void clicked() override;
 };
 
 class AccessibleComboBox : public ComboBox {
@@ -204,7 +237,7 @@ class WavetableKeyboardComponent : public Component {
     WavetableKeyboardComponent() {
       setWantsKeyboardFocus(true);
       setDescription("Keyboard wavetable editor with starting waveforms, frame selection, harmonic editing, and interpolation.");
-      setHelpText("Keys 1 through 6 apply Sine, Saturated sine, Triangle, Square, Pulse, or Saw to the current frame selection. Left and right move between frames. Shift left and right extend frame selection. Home and End move to the first and last frame. S toggles frame selection. R clears selection. Command A or Shift A selects all frames. Comma and period move between harmonics. Page Up and Page Down move by ten harmonics. Up and Down change harmonic level by one percent; hold Shift for five percent. J and L change harmonic phase by one degree; hold Shift for fifteen degrees. Backspace clears the harmonic. F removes the fundamental. Zero removes DC. N normalizes. A adds a frame. E or Delete deletes frames. C and V copy and paste frames. I cycles interpolation modes.");
+      setHelpText("Keys 1 through 6 apply Sine, Saturated sine, Triangle, Square, Pulse, or Saw to the current frame selection. Left and right move between frames. Shift left and right extend frame selection. Home and End move to the first and last frame. S toggles frame selection. R clears selection. " + atlas::keys::commandName() + " A or Shift A selects all frames. Comma and period move between harmonics. Page Up and Page Down move by ten harmonics. Up and Down change harmonic level by one percent; hold Shift for five percent. J and L change harmonic phase by one degree; hold Shift for fifteen degrees. Backspace clears the harmonic. F removes the fundamental. Zero removes DC. N normalizes. A adds a frame. E or Delete deletes frames. C and V copy and paste frames. I cycles interpolation modes.");
     }
 
     bool keyPressed(const KeyPress& key) override {
@@ -753,6 +786,15 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
 
     std::map<String, TranceGateEditor::State> trance_gate_editor_states_;
     SynthPlugin& synth_;
+    // This instance's section and preset browser state (SynthPlugin::EditorMemory):
+    // reopening the window returns to them, other Atlas instances keep their own.
+    String& last_section_name_;
+    String& last_preset_path_;
+    String& last_preset_search_;
+    String& last_preset_library_;
+    String& last_preset_bank_;
+    String& last_preset_category_;
+    String& last_preset_tag_;
     void addCpuMeter(Component& parent, int x, int& y, int width, int& focusOrder);
     std::unique_ptr<CpuUsageMeter> cpu_meter_;
     Label title_;
@@ -818,7 +860,7 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     ParameterSlider modulation_remap_input_;
     ParameterSlider modulation_remap_output_;
     AccessibleComboBox modulation_remap_curve_;
-    ToggleButton modulation_remap_smooth_ { "Smooth remap" };
+    SpokenToggleButton modulation_remap_smooth_ { "Smooth remap" };
     TextButton modulation_remap_add_point_ { "Add remap point" };
     TextButton modulation_remap_delete_point_ { "Delete remap point" };
     TextButton modulation_remap_flip_horizontal_ { "Flip remap horizontally" };
@@ -844,7 +886,7 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     TextButton lfo_mseg_value_down_ { "Value down" };
     TextButton lfo_mseg_value_up_ { "Value up" };
     AccessibleComboBox lfo_mseg_curve_;
-    ToggleButton lfo_mseg_smooth_ { "Smooth MSEG" };
+    SpokenToggleButton lfo_mseg_smooth_ { "Smooth MSEG" };
     LfoMsegKeyboardComponent lfo_mseg_keyboard_;
     Viewport viewport_;
     Component rows_container_;

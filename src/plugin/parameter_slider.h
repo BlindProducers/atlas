@@ -49,8 +49,13 @@ class ParameterSlider : public Slider {
   private:
     void setKeyboardValue(double value) {
       Slider::ScopedDragNotification drag(*this);
+      const double previous = getValue();
       setValue(jlimit(getMinimum(), getMaximum(), value), sendNotificationSync);
-      if (auto* handler = getAccessibilityHandler())
-        handler->notifyAccessibilityEvent(AccessibilityEvent::valueChanged);
+      // A changed value has already told the screen reader (Slider raises
+      // valueChanged); raising it again made NVDA speak every value twice. At
+      // either end of the range nothing changes, so say the value again here.
+      if (getValue() == previous)
+        if (auto* handler = getAccessibilityHandler())
+          handler->notifyAccessibilityEvent(AccessibilityEvent::valueChanged);
     }
 };

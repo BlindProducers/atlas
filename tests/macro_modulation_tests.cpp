@@ -544,8 +544,26 @@ namespace {
         }
         auto handler = meter->createAccessibilityHandler();
         auto* value = handler->getValueInterface();
+#if JUCE_WINDOWS
+        // NVDA beeps at every change of a progress bar, so Windows gets a quiet readout.
+        expect(value == nullptr && handler->getRole() == AccessibilityRole::staticText,
+               "On Windows the CPU meter is a plain readout, not a progress bar");
+        render(active, 128, true);
+        const double load = active.getCpuUsagePercent();
+        expect(load > 0.0 && handler->getTitle() == "CPU Usage, " + String(load, 1) + " percent",
+               "The CPU readout's name gives the current percentage");
+        expect(handler->getDescription().isEmpty(), "The CPU readout has no generic description");
+        active.releaseResources();
+        expect(handler->getTitle() == "CPU Usage, 0.0 percent",
+               "The CPU readout's name updates to zero when processing stops");
+        prepare(active);
+        render(active, 128, true);
+        expect(handler->getTitle() != "CPU Usage, 0.0 percent",
+               "The CPU readout's name updates when processing resumes");
+#else
         expect(value != nullptr && value->isReadOnly() && value->getCurrentValueAsString().endsWith("%"),
                "CPU percentage is exposed as a read-only screen-reader value");
+#endif
         if (value != nullptr) {
           render(active, 128, true);
           const double before = value->getCurrentValue();
@@ -690,6 +708,7 @@ int main(int argc, char** argv) {
   if (argc > 1 && String(argv[1]) == "--editor-speech") {
     testKeyboardEditorsAnnounceNavigation();
     testListsSayTheSelectedRow();
+    testTogglesSayTheirState();
     testUiaNotificationOnJuceElement();
     testAnnouncementsReachNvda();
     if (failures == 0)
@@ -710,6 +729,7 @@ int main(int argc, char** argv) {
     testArpeggiatorDestinationsAreAGroup();
     testWavetableEditorLayersAndInterpolation();
     testPresetAutoloadAndRefresh();
+    testEditorStateIsPerInstance();
     testConvolutionPredelayRows();
     testFractionalModulationAmountOnTranspose();
     testModulationPromptsKeepFocus();

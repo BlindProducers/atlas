@@ -55,6 +55,9 @@ namespace {
       expectNavigationSpoken(*lfo, spoken, characterKey('.'), "Bar ", "LFO editor next point");
       expectNavigationSpoken(*lfo, spoken, characterKey(','), "Bar ", "LFO editor previous point");
       expectNavigationSpoken(*lfo, spoken, characterKey('='), "Grid ", "LFO editor finer grid");
+      // KeyPress == ignores keys with a modifier held, so Shift's 5% step was never reached.
+      expectNavigationSpoken(*lfo, spoken, KeyPress(KeyPress::upKey, ModifierKeys::shiftModifier, 0), "5%",
+                             "LFO editor five percent up");
     }
 
     auto* slot = editorSection(editor, "Chain and routing", 0);
@@ -172,6 +175,49 @@ namespace {
 
     if (autoload != nullptr)
       autoload->setToggleState(autoload_was_on, dontSendNotification);
+    editor.removeFromDesktop();
+  }
+
+  ToggleButton* findToggle(Component& parent, const std::function<bool(ToggleButton&)>& matches) {
+    if (auto* toggle = dynamic_cast<ToggleButton*>(&parent))
+      if (matches(*toggle))
+        return toggle;
+    for (auto* child : parent.getChildren())
+      if (auto* found = findToggle(*child, matches))
+        return found;
+    return nullptr;
+  }
+
+  // Flipping a toggle says its new state on Windows, where NVDA never speaks a
+  // check box's new value; VoiceOver reads the state itself, so macOS adds nothing.
+  void testTogglesSayTheirState() {
+    SpokenMessages spoken;
+    SynthPlugin synth;
+    synth.getControls().at("fx_slot_1_type")->set(vital::constants::kTranceGate + 1);
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    pumpEditorEvents();
+
+    Component::SafePointer<ToggleButton> slot_toggle(findToggle(editor, [](ToggleButton& toggle) {
+      return toggle.getProperties()["accessibleOnText"].toString() == "Enabled";
+    }));
+    expect(slot_toggle != nullptr, "the effect slot has its Enabled toggle");
+    if (slot_toggle != nullptr) {
+      const bool was_on = slot_toggle->getToggleState();
+      const String expected = was_on ? "Bypassed" : "Enabled";
+      spoken.messages.clear();
+      Component& focused_toggle = *slot_toggle;   // Button::keyPressed is protected
+      expect(focused_toggle.keyPressed(KeyPress(KeyPress::returnKey)), "Enter flips the effect slot toggle");
+      pumpUntil([&] { return spoken.messages.contains(expected); }, 1000);
+      std::cout << "  Effect slot toggle: " << spoken.messages.joinIntoString(" | ") << '\n';
+#if JUCE_WINDOWS
+      expect(spoken.messages.contains(expected), ("the toggle says " + expected).toStdString());
+#else
+      expect(!spoken.messages.contains(expected), "VoiceOver reads the toggle's state itself");
+#endif
+    }
     editor.removeFromDesktop();
   }
 

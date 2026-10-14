@@ -359,16 +359,37 @@ namespace {
       atlas::speech::announce(message, priority);
   }
 
-  // The row a list's selection keys landed on (see SelectionKeyList). VoiceOver
-  // reads it from the list itself; NVDA cannot, so Windows says it here. It is
-  // what the screen reader would say, so no optional category silences it.
-  void postListRowAnnouncement(const String& message) {
+  // What the screen reader would read from a control where JUCE gives NVDA
+  // nothing to read: the row a list's selection keys landed on (see
+  // SelectionKeyList) and a toggle's new state (see SpokenToggleButton).
+  // VoiceOver reads these itself, so Windows says them here, and no optional
+  // category silences them.
+  void postWindowsReadout(const String& message) {
 #if JUCE_WINDOWS
     if (accessibilitySpeechSettings().speech_feedback)
       atlas::speech::announce(message, AccessibilityHandler::AnnouncementPriority::high);
 #else
     ignoreUnused(message);
 #endif
+  }
+
+  // JUCE moves accessibility focus onto a popup menu's items and drops it when
+  // the menu closes, while the control that opened the menu keeps the keyboard
+  // focus, so Windows gets no focus event and NVDA stays on the closed menu.
+  // Opens `menu`, then hands the focus back to whichever control has it.
+  void showAccessibleMenuAsync(PopupMenu& menu, const PopupMenu::Options& options,
+                               std::function<void(int)> callback = {}) {
+    menu.showMenuAsync(options, [callback = std::move(callback)](int result) {
+      if (callback)
+        callback(result);
+#if JUCE_WINDOWS
+      MessageManager::callAsync([] {
+        if (auto* focused = Component::getCurrentlyFocusedComponent())
+          if (auto* handler = focused->getAccessibilityHandler())
+            handler->grabFocus();
+      });
+#endif
+    });
   }
 
   String listRowText(const String& name, int row, int rows) {
@@ -715,13 +736,8 @@ namespace {
     return "Between band pass and high pass, " + String(engine_value, 2);
   }
 
-  String last_section_name;
-  String last_preset_path;
-  String last_preset_search;
-  String last_preset_library = kAllLibraries;
-  String last_preset_bank = kAllBanks;
-  String last_preset_category = kAllCategories;
-  String last_preset_tag = kAllTags;
+  // A preference, so shared by every Atlas instance. The section and preset
+  // browser state are per instance: SynthPlugin::EditorMemory.
   bool last_preset_preview = false;
 
   force_inline int chunkNameToData(const char* chunk_name) {
@@ -3551,12 +3567,35 @@ namespace {
            CharacterFunctions::toLowerCase(key.getTextCharacter()) == 'c';
   }
 
-  // The right bracket key acts as a "context menu" modifier on every platform so
-  // that Windows screen reader users (and anyone without VoiceOver) can open the
-  // same menu that VoiceOver exposes through VO+Shift+M (the showMenu action).
+  // The right bracket key, and Shift F10 as in other Windows programs, open the
+  // same menu that VoiceOver exposes through VO+Shift+M (the showMenu action),
+  // for Windows screen reader users and anyone without VoiceOver.
   bool isContextMenuKey(const KeyPress& key) {
-    return !key.getModifiers().isAnyModifierKeyDown() &&
+    const ModifierKeys modifiers = key.getModifiers();
+    if (key.getKeyCode() == KeyPress::F10Key)
+      return modifiers.isShiftDown() && !modifiers.isCommandDown() && !modifiers.isCtrlDown() &&
+             !modifiers.isAltDown();
+    return !modifiers.isAnyModifierKeyDown() &&
            (key.getKeyCode() == ']' || key.getTextCharacter() == ']');
+  }
+
+  // Command chords: Command on macOS, Ctrl elsewhere. Off the Mac JUCE reports
+  // Ctrl as the command modifier, so "Command without Ctrl" never matches there.
+  bool isCommandChord(const ModifierKeys& modifiers) {
+#if JUCE_MAC
+    return modifiers.isCommandDown() && !modifiers.isCtrlDown() && !modifiers.isAltDown();
+#else
+    return modifiers.isCtrlDown() && !modifiers.isAltDown();
+#endif
+  }
+
+  // Control chords: Control without Command, a separate key only on macOS.
+  bool isControlChord(const ModifierKeys& modifiers) {
+#if JUCE_MAC
+    return modifiers.isCtrlDown() && !modifiers.isCommandDown() && !modifiers.isAltDown();
+#else
+    return modifiers.isCtrlDown() && !modifiers.isAltDown();
+#endif
   }
 
   bool isEffectMoveEarlierKey(const KeyPress& key) {
@@ -4312,7 +4351,7 @@ namespace {
       }
   };
 
-  class OffscreenToggleButton : public ToggleButton, public AccessibleContextMenuTarget {
+  class OffscreenToggleButton : public SpokenToggleButton, public AccessibleContextMenuTarget {
     public:
       std::function<bool(const KeyPress&, Component&)> onAccessibleCommand;
       std::function<void()> onContextMenuCommand;
@@ -4336,6 +4375,19 @@ namespace {
         return std::make_unique<OffscreenButtonAccessibilityHandler>(*this, AccessibilityRole::toggleButton);
       }
   };
+}
+
+void SpokenToggleButton::clicked() {
+  ToggleButton::clicked();
+#if JUCE_WINDOWS
+  // The words a screen reader reads for the state: a row's own names, such as
+  // Enabled and Bypassed, or On and Off.
+  const bool on = getToggleState();
+  const String custom = getProperties()[on ? "accessibleOnText" : "accessibleOffText"].toString();
+  const String state = custom.isNotEmpty() ? custom : String(on ? "On" : "Off");
+  // After the click's own handlers, which may change the speech settings.
+  MessageManager::callAsync([state] { postWindowsReadout(state); });
+#endif
 }
 
 std::unique_ptr<AccessibilityHandler> AccessibleTextButton::createAccessibilityHandler() {
@@ -4591,8 +4643,10 @@ class CpuUsageMeter final : public Component {
       displayed_percentage_ = next_percentage;
       if (value_changed) {
         repaint();
+#if ! JUCE_WINDOWS
         if (auto* handler = getAccessibilityHandler())
           handler->notifyAccessibilityEvent(AccessibilityEvent::valueChanged);
+#endif
       }
     }
 
@@ -4624,8 +4678,16 @@ class CpuUsageMeter final : public Component {
       class Handler final : public AccessibilityHandler {
         public:
           explicit Handler(CpuUsageMeter& meter) :
+#if JUCE_WINDOWS
+              // NVDA beeps at every change of a progress bar's value. A plain
+              // readout instead: the title gives the percentage when the meter
+              // is reached, and nothing is announced while it changes.
+              AccessibilityHandler(meter, AccessibilityRole::staticText),
+#else
               AccessibilityHandler(meter, AccessibilityRole::progressBar, {},
-                                   Interfaces{ std::make_unique<Value>(meter) }), meter_(meter) { }
+                                   Interfaces{ std::make_unique<Value>(meter) }),
+#endif
+              meter_(meter) { }
           String getTitle() const override {
             // JUCE's macOS bridge exposes AXValue as text. VoiceOver can omit
             // that text for a progress indicator, so include the current
@@ -4742,7 +4804,8 @@ class AccessibleParameterRow : public Component {
           toggle_.getProperties().set("accessibleOffText", accessibleOffText);
         if (accessibleOnText.isNotEmpty())
           toggle_.getProperties().set("accessibleOnText", accessibleOnText);
-        toggle_.setHelpText("Press Space to toggle. Press Shift M, the right bracket key, or VoiceOver Shift M for the context menu. Press Shift L for MIDI learn, or Shift C to clear MIDI learn.");
+        toggle_.setHelpText("Press Enter to toggle. Press " + atlas::keys::contextMenuKeys() +
+                            " for the context menu. Press Shift L for MIDI learn, or Shift C to clear MIDI learn.");
         toggle_.setWantsKeyboardFocus(true);
         toggle_.onClick = [this] {
           beginParameterChange();
@@ -4954,7 +5017,9 @@ class AccessibleParameterRow : public Component {
                                         : glitch_delay_control ? "Use arrows for changes, Shift arrows for a tenth of the step, and Page keys for ten times the step. Tap times, Glide and tape times move 10 ms; Buffer and Smear Size 5 ms; slice and grain sizes 1 ms; High Cut 100 Hz; Low Cut and ring frequencies 10 Hz; pitch ranges one semitone; sweep speeds and formant shifts 0.1 semitone; FM ratios 0.05; FM index and rate reduction 0.1; densities one grain a second; Volume 0.5 dB and Output Gain 0.1 dB; percentages one percent. Home for maximum, End for minimum, Enter to type a value, Backspace to reset to default. Press Shift M for the context menu, Shift L for MIDI learn, and Shift C to clear MIDI learn."
                                         : resonator_control ? "Use arrows for changes, Shift arrows for finer changes, and Page keys for ten times the step. Tune moves one semitone; Decay, rates and Filter Frequency move in even ratio steps; percentages, degrees, cents and Glide milliseconds move by one; decibels, LFO Amount and Filter Bandwidth by 0.1; Ratio by 0.01. Named choices move one item at a time. Home for maximum, End for minimum, Enter to type a value, Backspace to reset to default. Press Shift M for the context menu, Shift L for MIDI learn, and Shift C to clear MIDI learn."
                                         : tremolo_control ? "Use arrows for changes, Shift arrows for finer changes, and Page keys for larger changes. Free Rate uses 0.1 Hz steps, Stereo Phase and Offset use one degree, Depth and Mix use one percent, and Smoothing uses 0.1 ms. Named choices move one item at a time. Home for maximum, End for minimum, Enter to type a value, Backspace to reset to default. Press Shift M for the context menu, Shift L for MIDI learn, and Shift C to clear MIDI learn."
-                                        : "Use arrows for changes, hold Shift with the arrows for finer changes, Page Up and Page Down for larger changes. For frequencies displayed in Hz, arrows change 10 Hz, Shift arrows 1 Hz, and Page keys 100 Hz. Home for maximum, End for minimum, Enter to type a value, Backspace to reset to default. Press Shift M, the right bracket key, or VoiceOver Shift M for the context menu. Press Shift L for MIDI learn, and Shift C to clear MIDI learn.");
+                                        : "Use arrows for changes, hold Shift with the arrows for finer changes, Page Up and Page Down for larger changes. For frequencies displayed in Hz, arrows change 10 Hz, Shift arrows 1 Hz, and Page keys 100 Hz. Home for maximum, End for minimum, Enter to type a value, Backspace to reset to default. Press " +
+                                          atlas::keys::contextMenuKeys() +
+                                          " for the context menu. Press Shift L for MIDI learn, and Shift C to clear MIDI learn.");
         slider_.setWantsKeyboardFocus(true);
         slider_.textFromValueFunction = [this](double value) {
           const double parameter_value = parameterValueForSliderValue(value);
@@ -5072,7 +5137,8 @@ class AccessibleParameterRow : public Component {
       indexed_value_fallback_ = fallbackIndex < static_cast<int>(engineValueOrder.size()) ? fallbackIndex : -1;
       indexed_value_order_ = std::move(engineValueOrder);
       slider_.setRange(0.0, static_cast<double>(indexed_value_order_.size() - 1), 1.0);
-      slider_.setHelpText("Use arrow keys to move through the choices in their logical display order. Enter types a value and Backspace resets to default. Press Shift M, the right bracket key, or VoiceOver Shift M for the context menu.");
+      slider_.setHelpText("Use arrow keys to move through the choices in their logical display order. Enter types a value and Backspace resets to default. Press " +
+                          atlas::keys::contextMenuKeys() + " for the context menu.");
       refresh();
     }
 
@@ -5249,7 +5315,7 @@ class AccessibleParameterRow : public Component {
       }
 
       Component::SafePointer<Component> safe_target(&target);
-      menu.showMenuAsync(PopupMenu::Options().withTargetComponent(&target),
+      showAccessibleMenuAsync(menu, PopupMenu::Options().withTargetComponent(&target),
                          [this, parameter_id, removable_modulations, add_modulation_choices, safe_target](int result) {
         Component* invoked = safe_target.getComponent();
         if (invoked == nullptr)
@@ -5583,7 +5649,19 @@ void SynthEditor::addCpuMeter(Component& parent, int x, int& y, int width, int& 
 }
 
 SynthEditor::SynthEditor(SynthPlugin& synth) :
-    AudioProcessorEditor(&synth), SynthGuiInterface(&synth, false), synth_(synth) {
+    AudioProcessorEditor(&synth), SynthGuiInterface(&synth, false), synth_(synth),
+    last_section_name_(synth.getEditorMemory().section_name),
+    last_preset_path_(synth.getEditorMemory().preset_path),
+    last_preset_search_(synth.getEditorMemory().preset_search),
+    last_preset_library_(synth.getEditorMemory().preset_library),
+    last_preset_bank_(synth.getEditorMemory().preset_bank),
+    last_preset_category_(synth.getEditorMemory().preset_category),
+    last_preset_tag_(synth.getEditorMemory().preset_tag) {
+  // A new instance's preset browser starts unfiltered.
+  if (last_preset_library_.isEmpty()) last_preset_library_ = kAllLibraries;
+  if (last_preset_bank_.isEmpty()) last_preset_bank_ = kAllBanks;
+  if (last_preset_category_.isEmpty()) last_preset_category_ = kAllCategories;
+  if (last_preset_tag_.isEmpty()) last_preset_tag_ = kAllTags;
   setTitle("Atlas");
   setDescription("Keyboard and VoiceOver accessible editor for Atlas");
   setHelpText("Use Group to choose the editor area, Element to choose the oscillator, filter, envelope, LFO, effect, or routing page, then Tab through visible controls. Press comma or period to move between elements.");
@@ -5596,7 +5674,8 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   title_.setColour(Label::textColourId, Colours::white);
   addAndMakeVisible(title_);
 
-  instructions_.setText("Choose a group and element, then use Tab and arrow keys. Comma and period move between elements. On a control, press Shift M, the right bracket key, or VoiceOver Shift M for its context menu.",
+  instructions_.setText("Choose a group and element, then use Tab and arrow keys. Comma and period move between elements. On a control, press " +
+                            atlas::keys::contextMenuKeys() + " for its context menu.",
                         dontSendNotification);
   instructions_.setTitle("Keyboard instructions");
   instructions_.setColour(Label::textColourId, Colours::white);
@@ -5678,7 +5757,7 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
       const int row = table_pointer->getSelectedRow();
       const int rows = presetFacetRowCount(kind);
       if (isPositiveAndBelow(row, rows))
-        postListRowAnnouncement(listRowText(presetFacetCellText(kind, row), row, rows));
+        postWindowsReadout(listRowText(presetFacetCellText(kind, row), row, rows));
     };
     addChildComponent(table);
   };
@@ -5693,9 +5772,9 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   preset_search_.setHelpText("Type text to narrow the preset list");
   preset_search_.setTextToShowWhenEmpty("Search presets", Colours::grey);
   preset_search_.setWantsKeyboardFocus(true);
-  preset_search_.setText(last_preset_search, false);
+  preset_search_.setText(last_preset_search_, false);
   preset_search_.onTextChange = [this] {
-    last_preset_search = preset_search_.getText();
+    last_preset_search_ = preset_search_.getText();
     if (!preset_list_loaded_) {
       ensurePresetListLoaded();
       return;
@@ -5707,8 +5786,11 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   preset_table_model_ = std::make_unique<PresetResultsTableModel>(*this);
   preset_table_.setModel(preset_table_model_.get());
   preset_table_.setTitle("Preset results table");
-  preset_table_.setDescription("Sortable preset results with Name first. Press Return to load, F to change favourite, R to rename, E to edit metadata, S to choose the next sort column, Shift S to reverse the sort, or Delete to move an editable preset to Trash. Command S saves the patch, Shift Command S saves it as a new preset.");
-  preset_table_.setHelpText("Use arrow keys to select a preset. Return loads, F toggles favourite, R renames, E edits metadata, S chooses the next sort column, Shift S reverses the sort, and column headers can also be pressed to sort. Command S saves the patch and Shift Command S saves it as a new preset.");
+  const String command = atlas::keys::commandName();
+  preset_table_.setDescription("Sortable preset results with Name first. Press Return to load, F to change favourite, R to rename, E to edit metadata, S to choose the next sort column, Shift S to reverse the sort, or Delete to move an editable preset to Trash. " +
+                               command + " S saves the patch, Shift " + command + " S saves it as a new preset.");
+  preset_table_.setHelpText("Use arrow keys to select a preset. Return loads, F toggles favourite, R renames, E edits metadata, S chooses the next sort column, Shift S reverses the sort, and column headers can also be pressed to sort. " +
+                            command + " S saves the patch and Shift " + command + " S saves it as a new preset.");
   preset_table_.setWantsKeyboardFocus(true);
   preset_table_.setRowHeight(30);
   preset_table_.setHeaderHeight(32);
@@ -5772,9 +5854,9 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   preset_table_.onSelectionKey = [this] {
     const int row = preset_table_.getSelectedRow();
     if (isPositiveAndBelow(row, filtered_presets_.size()))
-      postListRowAnnouncement(listRowText(presetTableCellText(row, kPresetNameColumn), row, filtered_presets_.size()));
+      postWindowsReadout(listRowText(presetTableCellText(row, kPresetNameColumn), row, filtered_presets_.size()));
     else
-      postListRowAnnouncement(preset_list_loaded_ ? "No matching presets" : "Preset list loading");
+      postWindowsReadout(preset_list_loaded_ ? "No matching presets" : "Preset list loading");
   };
   addChildComponent(preset_table_);
 
@@ -5785,8 +5867,15 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   preset_preview_.setToggleState(last_preset_preview, dontSendNotification);
   preset_preview_.onClick = [this] {
     last_preset_preview = preset_preview_.getToggleState();
+#if JUCE_WINDOWS
+    // NVDA says nothing when a check box changes (see SpokenToggleButton), so
+    // this is the only answer to the key press.
+    postPresetActionAnnouncement(last_preset_preview ? "Preset autoload enabled" : "Preset autoload disabled",
+                                 AccessibilityHandler::AnnouncementPriority::medium);
+#else
     postPluginAnnouncement(last_preset_preview ? "Preset autoload enabled" : "Preset autoload disabled",
                                            AccessibilityHandler::AnnouncementPriority::medium);
+#endif
   };
   addChildComponent(preset_preview_);
 
@@ -6037,7 +6126,7 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   effect_add_.setDescription("Open the list of effect modules to add to this chain");
   effect_add_.setHelpText("Press Enter to choose an effect module to add");
   effect_add_.setWantsKeyboardFocus(true);
-  effect_add_.onClick = [this] { showAddEffectMenu(last_section_name, effect_add_); };
+  effect_add_.onClick = [this] { showAddEffectMenu(last_section_name_, effect_add_); };
   addChildComponent(effect_add_);
 
   effect_remove_.setTitle("Remove effect");
@@ -6152,7 +6241,7 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   modulation_list_.setRowHeight(30);
   modulation_list_.onSelectionKey = [this] {
     const int row = modulation_list_.getSelectedRow();
-    postListRowAnnouncement(isPositiveAndBelow(row, getNumRows()) ? getNameForRow(row)
+    postWindowsReadout(isPositiveAndBelow(row, getNumRows()) ? getNameForRow(row)
                                                                   : String("No modulation routes"));
   };
   addChildComponent(modulation_list_);
@@ -6252,7 +6341,7 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
 
   modulation_remap_smooth_.setTitle("Smooth modulation remap");
   modulation_remap_smooth_.setDescription("Use smooth interpolation across the whole modulation remap");
-  modulation_remap_smooth_.setHelpText("Press Space to toggle smooth interpolation");
+  modulation_remap_smooth_.setHelpText("Press Enter to toggle smooth interpolation");
   modulation_remap_smooth_.setWantsKeyboardFocus(true);
   modulation_remap_smooth_.onClick = [this] { setModulationRemapSmooth(); };
   addChildComponent(modulation_remap_smooth_);
@@ -6294,6 +6383,8 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   modulation_amount_editor_.setHelpText("Type a value from minus one to one, then press Return or OK");
   modulation_amount_editor_.setWantsKeyboardFocus(true);
   modulation_amount_editor_.onReturnKey = [this] { applyInlineTextPrompt(); };
+  // The text box keeps Escape from reaching SynthEditor::keyPressed.
+  modulation_amount_editor_.onEscapeKey = [this] { cancelInlineTextPrompt(); };
   addChildComponent(modulation_amount_editor_);
 
   modulation_amount_ok_.setTitle("Set modulation amount");
@@ -6503,11 +6594,11 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
                            AccessibilityHandler::AnnouncementPriority::high);
   group_selector_.setVisible(!show_all_sections_);
   section_selector_.setVisible(!show_all_sections_);
-  String initial_section = last_section_name;
+  String initial_section = last_section_name_;
   if (section_names_.indexOf(initial_section) < 0 && section_names_.size() > 0)
     initial_section = section_names_[0];
   if (show_all_sections_) {
-    last_section_name = initial_section;
+    last_section_name_ = initial_section;
     showAllSections(false);
   }
   else {
@@ -6879,10 +6970,10 @@ void SynthEditor::buildGroups() {
 
   // Rebuilding (after a preset load or an effect change) keeps the group and
   // page the user is on instead of jumping back to the first group.
-  const String current_group = groupForSection(last_section_name);
+  const String current_group = groupForSection(last_section_name_);
   populateGroupSelector(current_group);
   if (group_names_.size() > 0)
-    populateElementSelectorForGroup(group_names_[jmax(0, group_selector_.getSelectedItemIndex())], last_section_name);
+    populateElementSelectorForGroup(group_names_[jmax(0, group_selector_.getSelectedItemIndex())], last_section_name_);
 }
 
 void SynthEditor::populateGroupSelector(const String& preferredGroup) {
@@ -6918,7 +7009,7 @@ void SynthEditor::selectSectionByName(const String& section, bool announce) {
     return;
 
   if (show_all_sections_) {
-    last_section_name = section;
+    last_section_name_ = section;
     if (row_focus_order_.empty())
       showAllSections(false);
     Component* target = nullptr;
@@ -8015,7 +8106,7 @@ bool SynthEditor::refreshFilterRowsIfNeeded() {
   if (show_all_sections_)
     showAllSections(false);
   else
-    selectSectionByName(last_section_name, false);
+    selectSectionByName(last_section_name_, false);
 
   restoreFocusAfterRebuild(parameter_id, persistent_focus, accessible_title, {}, true);
 
@@ -8039,7 +8130,7 @@ bool SynthEditor::refreshRandomAmplitudeRowsIfNeeded() {
   if (show_all_sections_)
     showAllSections(false);
   else
-    selectSectionByName(last_section_name, false);
+    selectSectionByName(last_section_name_, false);
   restoreFocusAfterRebuild(parameter_id, persistent_focus, accessible_title, {}, true);
   return true;
 }
@@ -8110,7 +8201,7 @@ bool SynthEditor::refreshOscillatorModeRowsIfNeeded() {
   if (show_all_sections_)
     showAllSections(false);
   else
-    selectSectionByName(last_section_name, false);
+    selectSectionByName(last_section_name_, false);
   restoreFocusAfterRebuild(parameter_id, persistent_focus, accessible_title, section_key, true);
   return true;
 }
@@ -8126,7 +8217,7 @@ bool SynthEditor::refreshZoneCrossfadeRowIfNeeded() {
 
   // Only the Voice and performance section shows the zone crossfade row, so a
   // change to glide zone crossing only needs to rebuild that view.
-  if (!show_all_sections_ && last_section_name != "Voice and performance")
+  if (!show_all_sections_ && last_section_name_ != "Voice and performance")
     return false;
 
   const String parameter_id = focusedParameterId();
@@ -8136,7 +8227,7 @@ bool SynthEditor::refreshZoneCrossfadeRowIfNeeded() {
   if (show_all_sections_)
     showAllSections(false);
   else
-    selectSectionByName(last_section_name, false);
+    selectSectionByName(last_section_name_, false);
 
   restoreFocusAfterRebuild(parameter_id, persistent_focus, accessible_title, {}, true);
 
@@ -8172,7 +8263,7 @@ void SynthEditor::showSection(int index, bool announce) {
 
   clearSectionComponents();
   const auto section_name = section_names_[index];
-  last_section_name = section_name;
+  last_section_name_ = section_name;
   setPresetControlsVisible(section_name == kPresetSection);
   configureWavetableActions(section_name);
   configureSampleActions(section_name);
@@ -8957,7 +9048,7 @@ void SynthEditor::showNavigationMenu() {
   menu.addItem(4, "Accessibility settings");
   menu.addItem(8, "Keyboard help");
 
-  menu.showMenuAsync(PopupMenu::Options().withTargetComponent(menu_button_),
+  showAccessibleMenuAsync(menu, PopupMenu::Options().withTargetComponent(menu_button_),
                      [this](int result) {
     if (result == 6)
       loadTuningFile();
@@ -8994,7 +9085,7 @@ void SynthEditor::showAccessibilitySettingsMenu() {
     DialogContent() {
       auto& settings = accessibilitySpeechSettings();
       for (const auto& e : kEntries) {
-        auto btn = std::make_unique<ToggleButton>(e.label);
+        auto btn = std::make_unique<SpokenToggleButton>(e.label);
         btn->setToggleState(settings.*(e.field), dontSendNotification);
         auto* btn_ptr = btn.get();
         auto field = e.field;
@@ -9036,6 +9127,19 @@ void SynthEditor::showAccessibilitySettingsMenu() {
           first->grabKeyboardFocus();
       }
     });
+  }
+}
+
+namespace {
+  // The keyboard help with this platform's key names: {Cmd} is Command on
+  // macOS and Ctrl elsewhere, and Windows adds Shift F10 for context menus.
+  String keyboardHelpForPlatform(const char* text) {
+#if JUCE_MAC
+    const String command = "Cmd", context_menu = "Right bracket ( ] ) or Shift+M";
+#else
+    const String command = "Ctrl", context_menu = "Right bracket ( ] ), Shift+M or Shift+F10";
+#endif
+    return String(text).replace("{Cmd}", command).replace("{ContextMenuKeys}", context_menu);
   }
 }
 
@@ -9082,7 +9186,7 @@ void SynthEditor::showKeyboardHelp() {
       "  End - Minimum value\n"
       "  Enter - Type a value\n"
       "  Backspace / Delete - Reset to default\n"
-      "  Right bracket ( ] ) or Shift+M - Open context menu\n"
+      "  {ContextMenuKeys} - Open context menu\n"
       "  Shift+L - MIDI learn: the next MIDI control moved is mapped; Shift+L again cancels\n"
       "  Shift+C - Clear MIDI learn (Editor menu, MIDI learn mappings, lists and removes them all)\n"
       "  Levels and modulation amounts read and accept percentages: 0% to 100%, or -100% to 100%\n"
@@ -9094,7 +9198,7 @@ void SynthEditor::showKeyboardHelp() {
       "  Enter / Space - Open the list of choices; arrows move, Enter chooses\n"
       "  Escape - Close the list and keep the current choice\n"
       "  Backspace / Delete - Reset to default\n"
-      "  Right bracket ( ] ) or Shift+M - Open context menu\n"
+      "  {ContextMenuKeys} - Open context menu\n"
       "\n"
       "Virtual musical keyboard\n"
       "  Alt+K - Toggle the computer-keyboard piano on or off\n"
@@ -9131,7 +9235,7 @@ void SynthEditor::showKeyboardHelp() {
       "  R - Clear all selections\n"
       "  E or Delete - Delete the current point, complete performer shape, or step\n"
       "  I / K - Cycle curve type in LFO/Performer; ignored in Step Sequencer\n"
-      "  Cmd + Up / Down - Cycle curve type up / down\n"
+      "  {Cmd} + Up / Down - Cycle curve type up / down\n"
       "  J / L - Move point in time left / right\n"
       "  G / H - Cycle shape presets backward / forward\n"
       "  Shift+A - Apply selected shape preset\n"
@@ -9159,7 +9263,7 @@ void SynthEditor::showKeyboardHelp() {
       "  Home / End - First / last frame\n"
       "  S - Toggle current frame selection\n"
       "  R - Clear frame selection\n"
-      "  Cmd+A or Shift+A - Select all frames\n"
+      "  {Cmd}+A or Shift+A - Select all frames\n"
       "  Comma ( , ) / Period ( . ) - Previous / next harmonic\n"
       "  Page Up / Page Down - Move by ten harmonics\n"
       "  Up / Down - Change harmonic level by 1% (Shift for 5%)\n"
@@ -9184,8 +9288,8 @@ void SynthEditor::showKeyboardHelp() {
       "  Shift+S - Reverse the preset table sort direction\n"
       "  R - Rename the selected editable user preset\n"
       "  E - Edit the selected editable preset's metadata\n"
-      "  Cmd+S - Save the patch over the loaded user preset, or ask where to save it\n"
-      "  Shift+Cmd+S - Save the patch as a new preset\n"
+      "  {Cmd}+S - Save the patch over the loaded user preset, or ask where to save it\n"
+      "  Shift+{Cmd}+S - Save the patch as a new preset\n"
       "  Delete - Ask before moving the selected editable user preset to Trash\n"
       "  Esc - Close the browser\n"
       "\n"
@@ -9211,7 +9315,7 @@ void SynthEditor::showKeyboardHelp() {
       text_.setWantsKeyboardFocus(true);
       text_.setExplicitFocusOrder(1);
       text_.setTitle("Keyboard shortcuts");
-      text_.setText(kHelpText, dontSendNotification);
+      text_.setText(keyboardHelpForPlatform(kHelpText), dontSendNotification);
       // The editable TextEditor swallows Escape, so it never reaches the DialogWindow's
       // escapeKeyTriggersCloseButton. Catch it here and close ourselves.
       text_.addListener(this);
@@ -9286,7 +9390,7 @@ void SynthEditor::initializePatch() {
   const File default_file = defaultPatchFile();
   std::string error;
   if (default_file.existsAsFile() && synth_.loadFromFile(default_file, error)) {
-    last_preset_path = default_file.getFullPathName();
+    last_preset_path_ = default_file.getFullPathName();
     synth_.updateHostDisplay();
     updateFullGui();
     selectPresetFile(default_file);
@@ -9915,14 +10019,14 @@ void SynthEditor::populatePresetFilters() {
     if (library != kAllLibraries)
       preset_libraries_.add(library);
   }
-  if (!preset_libraries_.contains(last_preset_library))
-    last_preset_library = kAllLibraries;
+  if (!preset_libraries_.contains(last_preset_library_))
+    last_preset_library_ = kAllLibraries;
 
   preset_banks_.clear();
   preset_banks_.add(kAllBanks);
   std::set<String> banks;
   for (const auto& item : preset_index_) {
-    if (last_preset_library != kAllLibraries && item.library != last_preset_library)
+    if (last_preset_library_ != kAllLibraries && item.library != last_preset_library_)
       continue;
     if (item.bank.isNotEmpty())
       banks.insert(item.bank);
@@ -9931,16 +10035,16 @@ void SynthEditor::populatePresetFilters() {
     if (bank != kAllBanks)
       preset_banks_.add(bank);
   }
-  if (!preset_banks_.contains(last_preset_bank))
-    last_preset_bank = kAllBanks;
+  if (!preset_banks_.contains(last_preset_bank_))
+    last_preset_bank_ = kAllBanks;
 
   preset_categories_.clear();
   preset_categories_.add(kAllCategories);
   std::set<String> categories;
   for (const auto& item : preset_index_) {
-    if (last_preset_library != kAllLibraries && item.library != last_preset_library)
+    if (last_preset_library_ != kAllLibraries && item.library != last_preset_library_)
       continue;
-    if (last_preset_bank != kAllBanks && item.bank != last_preset_bank)
+    if (last_preset_bank_ != kAllBanks && item.bank != last_preset_bank_)
       continue;
     if (item.category.isNotEmpty())
       categories.insert(item.category);
@@ -9949,18 +10053,18 @@ void SynthEditor::populatePresetFilters() {
     if (category != kAllCategories)
       preset_categories_.add(category);
   }
-  if (!preset_categories_.contains(last_preset_category))
-    last_preset_category = kAllCategories;
+  if (!preset_categories_.contains(last_preset_category_))
+    last_preset_category_ = kAllCategories;
 
   preset_tags_.clear();
   preset_tags_.add(kAllTags);
   std::set<String> tags;
   for (const auto& item : preset_index_) {
-    if (last_preset_library != kAllLibraries && item.library != last_preset_library)
+    if (last_preset_library_ != kAllLibraries && item.library != last_preset_library_)
       continue;
-    if (last_preset_bank != kAllBanks && item.bank != last_preset_bank)
+    if (last_preset_bank_ != kAllBanks && item.bank != last_preset_bank_)
       continue;
-    if (last_preset_category != kAllCategories && item.category != last_preset_category)
+    if (last_preset_category_ != kAllCategories && item.category != last_preset_category_)
       continue;
     for (const auto& tag : item.tags) {
       if (tag.isNotEmpty())
@@ -9971,8 +10075,8 @@ void SynthEditor::populatePresetFilters() {
     if (tag != kAllTags)
       preset_tags_.add(tag);
   }
-  if (!preset_tags_.contains(last_preset_tag))
-    last_preset_tag = kAllTags;
+  if (!preset_tags_.contains(last_preset_tag_))
+    last_preset_tag_ = kAllTags;
 
   auto matchesLibrary = [](const PresetBrowserItem& item, const String& library) {
     return library == kAllLibraries || item.library == library;
@@ -9999,12 +10103,12 @@ void SynthEditor::populatePresetFilters() {
   };
 
   const int all_matching_count = countMatching([&](const PresetBrowserItem& item) {
-    return matchesLibrary(item, last_preset_library) && matchesBank(item, last_preset_bank) &&
-           matchesCategory(item, last_preset_category) && matchesTag(item, last_preset_tag);
+    return matchesLibrary(item, last_preset_library_) && matchesBank(item, last_preset_bank_) &&
+           matchesCategory(item, last_preset_category_) && matchesTag(item, last_preset_tag_);
   });
   const int favorite_matching_count = countMatching([&](const PresetBrowserItem& item) {
-    return matchesLibrary(item, last_preset_library) && matchesBank(item, last_preset_bank) &&
-           matchesCategory(item, last_preset_category) && matchesTag(item, last_preset_tag) &&
+    return matchesLibrary(item, last_preset_library_) && matchesBank(item, last_preset_bank_) &&
+           matchesCategory(item, last_preset_category_) && matchesTag(item, last_preset_tag_) &&
            preset_favorites_.count(item.file.getFullPathName().toStdString()) != 0;
   });
 
@@ -10015,27 +10119,27 @@ void SynthEditor::populatePresetFilters() {
     const int count = countMatching([&](const PresetBrowserItem& item) {
       return matchesLibrary(item, library);
     });
-    addFacet(kLibraryFacet, "Library", library, count, library == last_preset_library);
+    addFacet(kLibraryFacet, "Library", library, count, library == last_preset_library_);
   }
   for (const auto& bank : preset_banks_) {
     const int count = countMatching([&](const PresetBrowserItem& item) {
-      return matchesLibrary(item, last_preset_library) && matchesBank(item, bank);
+      return matchesLibrary(item, last_preset_library_) && matchesBank(item, bank);
     });
-    addFacet(kBankFacet, "Bank", bank, count, bank == last_preset_bank);
+    addFacet(kBankFacet, "Bank", bank, count, bank == last_preset_bank_);
   }
   for (const auto& category : preset_categories_) {
     const int count = countMatching([&](const PresetBrowserItem& item) {
-      return matchesLibrary(item, last_preset_library) && matchesBank(item, last_preset_bank) &&
+      return matchesLibrary(item, last_preset_library_) && matchesBank(item, last_preset_bank_) &&
              matchesCategory(item, category);
     });
-    addFacet(kCategoryFacet, "Category", category, count, category == last_preset_category);
+    addFacet(kCategoryFacet, "Category", category, count, category == last_preset_category_);
   }
   for (const auto& tag : preset_tags_) {
     const int count = countMatching([&](const PresetBrowserItem& item) {
-      return matchesLibrary(item, last_preset_library) && matchesBank(item, last_preset_bank) &&
-             matchesCategory(item, last_preset_category) && matchesTag(item, tag);
+      return matchesLibrary(item, last_preset_library_) && matchesBank(item, last_preset_bank_) &&
+             matchesCategory(item, last_preset_category_) && matchesTag(item, tag);
     });
-    addFacet(kTagFacet, "Tag", tag, count, tag == last_preset_tag);
+    addFacet(kTagFacet, "Tag", tag, count, tag == last_preset_tag_);
   }
 
   for (int kind = kLibraryFacet; kind <= kCollectionFacet; ++kind) {
@@ -10072,13 +10176,13 @@ void SynthEditor::filterPresetList() {
   const String filter = preset_search_.getText().trim().toLowerCase();
   std::vector<File> matches;
   for (const auto& item : preset_index_) {
-    if (last_preset_library != kAllLibraries && item.library != last_preset_library)
+    if (last_preset_library_ != kAllLibraries && item.library != last_preset_library_)
       continue;
-    if (last_preset_bank != kAllBanks && item.bank != last_preset_bank)
+    if (last_preset_bank_ != kAllBanks && item.bank != last_preset_bank_)
       continue;
-    if (last_preset_category != kAllCategories && item.category != last_preset_category)
+    if (last_preset_category_ != kAllCategories && item.category != last_preset_category_)
       continue;
-    if (last_preset_tag != kAllTags && !item.tags.contains(last_preset_tag))
+    if (last_preset_tag_ != kAllTags && !item.tags.contains(last_preset_tag_))
       continue;
     if (preset_favorites_only_ && !isPresetFavorite(item.file))
       continue;
@@ -10121,7 +10225,7 @@ void SynthEditor::filterPresetList() {
   for (const auto& match : matches)
     filtered_presets_.add(match);
 
-  const String previous_path = last_preset_path.isNotEmpty() ? last_preset_path
+  const String previous_path = last_preset_path_.isNotEmpty() ? last_preset_path_
                              : synth_.getActiveFile().existsAsFile() ? synth_.getActiveFile().getFullPathName()
                              : String();
   preset_table_.updateContent();
@@ -10134,7 +10238,7 @@ void SynthEditor::filterPresetList() {
       }
     }
     preset_table_.selectRow(selected, false, true);
-    last_preset_path = filtered_presets_[selected].getFullPathName();
+    last_preset_path_ = filtered_presets_[selected].getFullPathName();
   }
   else {
     preset_table_.deselectAllRows();
@@ -10185,22 +10289,22 @@ void SynthEditor::activatePresetFacet(int kind, int row) {
   const auto facet = *selected_facet;
   switch (kind) {
     case kLibraryFacet:
-      last_preset_library = facet.value;
-      last_preset_bank = kAllBanks;
-      last_preset_category = kAllCategories;
-      last_preset_tag = kAllTags;
+      last_preset_library_ = facet.value;
+      last_preset_bank_ = kAllBanks;
+      last_preset_category_ = kAllCategories;
+      last_preset_tag_ = kAllTags;
       break;
     case kBankFacet:
-      last_preset_bank = facet.value;
-      last_preset_category = kAllCategories;
-      last_preset_tag = kAllTags;
+      last_preset_bank_ = facet.value;
+      last_preset_category_ = kAllCategories;
+      last_preset_tag_ = kAllTags;
       break;
     case kCategoryFacet:
-      last_preset_category = facet.value;
-      last_preset_tag = kAllTags;
+      last_preset_category_ = facet.value;
+      last_preset_tag_ = kAllTags;
       break;
     case kTagFacet:
-      last_preset_tag = facet.value;
+      last_preset_tag_ = facet.value;
       break;
     case kCollectionFacet:
       preset_favorites_only_ = facet.value == "Favourites";
@@ -10260,7 +10364,7 @@ void SynthEditor::presetSelectionChanged(int row, bool allowAutoload) {
     return;
   }
 
-  last_preset_path = filtered_presets_[row].getFullPathName();
+  last_preset_path_ = filtered_presets_[row].getFullPathName();
   updatePresetManagementControls();
   if (!allowAutoload || !preset_preview_.getToggleState())
     return;
@@ -10403,7 +10507,7 @@ void SynthEditor::renameSelectedPreset() {
     }
     if (safe_this->synth_.getActiveFile() == file)
       safe_this->synth_.setActiveFile(destination);
-    last_preset_path = destination.getFullPathName();
+    safe_this->last_preset_path_ = destination.getFullPathName();
     safe_this->refreshPresetList(false);
     postPresetActionAnnouncement("Renamed preset to " + name, AccessibilityHandler::AnnouncementPriority::high);
   });
@@ -10540,9 +10644,9 @@ void SynthEditor::updatePresetSummary() {
                          ". Atlas resources path: " + LoadSave::getDataDirectory().getFullPathName() +
                          ". " + String(all_presets_.size()) + " presets found, " +
                          String(filtered_presets_.size()) + " shown. Library: " +
-                         last_preset_library + ". Bank: " + last_preset_bank +
-                         ". Category: " + last_preset_category +
-                         ". Tag: " + last_preset_tag +
+                         last_preset_library_ + ". Bank: " + last_preset_bank_ +
+                         ". Category: " + last_preset_category_ +
+                         ". Tag: " + last_preset_tag_ +
                          ". Collection: " + (preset_favorites_only_ ? String("Favourites") : String("All presets")) +
                          (preset_list_loading_ ? ". Refreshing the preset list" +
                             (preset_index_progress_.isNotEmpty() ? ", " + preset_index_progress_.toLowerCase() : String()) :
@@ -10564,8 +10668,8 @@ void SynthEditor::showPresetMenu() {
               kExportPreset, kReveal, kRefresh, kScanDownloads };
   const bool has_selection = selectedPresetFile().existsAsFile();
   PopupMenu menu;
-  menu.addItem(kSave, "Save patch (Command S)");
-  menu.addItem(kSaveAs, "Save patch as... (Shift Command S)");
+  menu.addItem(kSave, "Save patch (" + atlas::keys::commandName() + " S)");
+  menu.addItem(kSaveAs, "Save patch as... (Shift " + atlas::keys::commandName() + " S)");
   menu.addItem(kSaveDefault, "Save patch as default");
   menu.addItem(kInitialize, "Initialize patch");
   menu.addSeparator();
@@ -10579,7 +10683,7 @@ void SynthEditor::showPresetMenu() {
   menu.addItem(kScanDownloads, LoadSave::shouldScanDownloads() ? "Turn scan Downloads folder on startup off"
                                                               : "Turn scan Downloads folder on startup on");
 
-  menu.showMenuAsync(PopupMenu::Options().withTargetComponent(preset_menu_), [this](int result) {
+  showAccessibleMenuAsync(menu, PopupMenu::Options().withTargetComponent(preset_menu_), [this](int result) {
     switch (result) {
       case kSave: savePatch(); break;
       case kSaveAs: savePresetAs(); break;
@@ -10614,7 +10718,7 @@ void SynthEditor::showSelectedPresetMenu(Component& target) {
   menu.addItem(6, "Move preset to Trash... (Delete)", editable);
 
   Component::SafePointer<SynthEditor> safe_this(this);
-  menu.showMenuAsync(PopupMenu::Options().withTargetComponent(&target),
+  showAccessibleMenuAsync(menu, PopupMenu::Options().withTargetComponent(&target),
                      [safe_this](int result) {
     if (safe_this == nullptr)
       return;
@@ -10656,7 +10760,7 @@ void SynthEditor::toggleScanDownloads() {
 void SynthEditor::selectPresetFile(const File& file) {
   if (!file.existsAsFile())
     return;
-  last_preset_path = file.getFullPathName();
+  last_preset_path_ = file.getFullPathName();
   if (!preset_list_loaded_) {
     updatePresetSummary();
     return;
@@ -10665,18 +10769,18 @@ void SynthEditor::selectPresetFile(const File& file) {
   const auto* item = presetItemForFile(file);
   const String library = item != nullptr ? item->library : presetLibraryName(file);
   if (preset_libraries_.contains(library)) {
-    last_preset_library = library;
+    last_preset_library_ = library;
     populatePresetFilters();
   }
   const String bank = item != nullptr ? item->bank : presetBankName(file);
   if (preset_banks_.contains(bank)) {
-    last_preset_bank = bank;
+    last_preset_bank_ = bank;
     populatePresetFilters();
   }
   const String category = item != nullptr ? item->category : presetCategoryName(file);
   if (preset_categories_.contains(category))
-    last_preset_category = category;
-  last_preset_tag = kAllTags;
+    last_preset_category_ = category;
+  last_preset_tag_ = kAllTags;
   preset_favorites_only_ = false;
   populatePresetFilters();
   filterPresetList();
@@ -10716,7 +10820,7 @@ void SynthEditor::loadPresetFile(const File& file, bool preview, bool updateBrow
     postPluginAnnouncement("Unable to load preset", AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
-  last_preset_path = file.getFullPathName();
+  last_preset_path_ = file.getFullPathName();
   synth_.updateHostDisplay();
   // When this editor is the plugin's active editor, loading already refreshed it.
   if (synth_.getGuiInterface() != this)
@@ -10972,9 +11076,9 @@ void SynthEditor::showSavePresetDialog() {
   String preset_name = synth_.getPresetName().isEmpty() ? "Untitled" : synth_.getPresetName();
   save_patch_name_.setText(preset_name, false);
   save_patch_author_.setText(synth_.getAuthor().isNotEmpty() ? synth_.getAuthor() : String(LoadSave::getAuthor()), false);
-  save_patch_bank_.setText(last_preset_bank != kAllBanks ? last_preset_bank : "User", false);
+  save_patch_bank_.setText(last_preset_bank_ != kAllBanks ? last_preset_bank_ : "User", false);
   save_patch_category_.setText(synth_.getStyle().isNotEmpty() ? synth_.getStyle() :
-                               (last_preset_category != kAllCategories ? last_preset_category : ""), false);
+                               (last_preset_category_ != kAllCategories ? last_preset_category_ : ""), false);
   save_patch_tags_.setText(synth_.getTags(), false);
   save_patch_comments_.setText(synth_.getComments(), false);
   save_patch_prompt_.setText("Save patch", dontSendNotification);
@@ -11080,7 +11184,7 @@ void SynthEditor::commitSavePresetDialog() {
       synth_.setComments(comments);
       synth_.setActiveFile(destination);
     }
-    last_preset_path = destination.getFullPathName();
+    last_preset_path_ = destination.getFullPathName();
     hideSavePresetDialog();
     refreshPresetList(false);
     postPluginAnnouncement("Saved metadata for " + preset_name,
@@ -11108,7 +11212,7 @@ void SynthEditor::savePresetFile(const File& file) {
     postPluginAnnouncement("Unable to save preset", AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
-  last_preset_path = synth_.getActiveFile().getFullPathName();
+  last_preset_path_ = synth_.getActiveFile().getFullPathName();
   refreshPresetList();
   selectPresetFile(synth_.getActiveFile());
   updatePresetSummary();
@@ -12088,6 +12192,12 @@ bool SynthEditor::handleLfoMsegShortcut(const KeyPress& key) {
   const juce_wchar character = CharacterFunctions::toLowerCase(key.getTextCharacter());
   const bool shift = key.getModifiers().isShiftDown();
   const bool command = key.getModifiers().isCommandDown();
+  // KeyPress == only matches a key with no modifier held, so the Shift and
+  // Command arrows compare key codes.
+  const int key_code = key.getKeyCode();
+  const bool up_or_down = key_code == KeyPress::upKey || key_code == KeyPress::downKey;
+  const bool left_or_right = key_code == KeyPress::leftKey || key_code == KeyPress::rightKey;
+  const bool no_other_modifier = !command && !key.getModifiers().isCtrlDown() && !key.getModifiers().isAltDown();
 
   const int lfo_index = shiftedDigitIndex(key);
   if (lfo_index >= 0 && lfo_index < vital::kNumLfos) {
@@ -12095,22 +12205,22 @@ bool SynthEditor::handleLfoMsegShortcut(const KeyPress& key) {
     return true;
   }
 
-  if (command && (key == KeyPress::upKey || key == KeyPress::downKey)) {
-    lfo_mseg_curve_.setSelectedItemIndex((lfo_mseg_curve_.getSelectedItemIndex() + (key == KeyPress::upKey ? 1 : -1) +
+  if (isCommandChord(key.getModifiers()) && !shift && up_or_down) {
+    lfo_mseg_curve_.setSelectedItemIndex((lfo_mseg_curve_.getSelectedItemIndex() + (key_code == KeyPress::upKey ? 1 : -1) +
                                           lfo_mseg_curve_.getNumItems()) % jmax(1, lfo_mseg_curve_.getNumItems()),
                                          sendNotificationSync);
     return true;
   }
-  if (shift && (key == KeyPress::leftKey || key == KeyPress::rightKey)) {
-    moveLfoPointTime(key == KeyPress::rightKey ? lfoGridAmount() : -lfoGridAmount());
+  if (shift && no_other_modifier && left_or_right) {
+    moveLfoPointTime(key_code == KeyPress::rightKey ? lfoGridAmount() : -lfoGridAmount());
     return true;
   }
   if (key == KeyPress::leftKey || key == KeyPress::rightKey) {
     moveLfoCursor(key == KeyPress::rightKey ? lfoGridAmount() : -lfoGridAmount());
     return true;
   }
-  if (key == KeyPress::upKey || key == KeyPress::downKey) {
-    moveLfoPointValue(key == KeyPress::upKey ? (shift ? 0.05f : 0.01f) : (shift ? -0.05f : -0.01f));
+  if (no_other_modifier && up_or_down) {
+    moveLfoPointValue(key_code == KeyPress::upKey ? (shift ? 0.05f : 0.01f) : (shift ? -0.05f : -0.01f));
     return true;
   }
   if (key.getKeyCode() == KeyPress::backspaceKey) {
@@ -13195,7 +13305,7 @@ void SynthEditor::showOscillatorContextMenu(int targetOscillator, Component& tar
   }
 
   Component::SafePointer<Component> target_pointer(&target);
-  menu.showMenuAsync(PopupMenu::Options().withTargetComponent(&target),
+  showAccessibleMenuAsync(menu, PopupMenu::Options().withTargetComponent(&target),
                      [this, targetOscillator, target_pointer](int result) {
     if (result == kPasteItem) {
       if (target_pointer != nullptr)
@@ -13743,7 +13853,7 @@ void SynthEditor::showEffectSlotContextMenu(const String& sectionName, int slot,
   PopupMenu menu = createEffectSlotContextMenu(sectionName, slot, target.getTitle());
   if (menu.getNumItems() == 0)
     return;
-  menu.showMenuAsync(PopupMenu::Options().withTargetComponent(&target));
+  showAccessibleMenuAsync(menu, PopupMenu::Options().withTargetComponent(&target));
 }
 
 void SynthEditor::copyEffectSlotToClipboard(const String& sectionName, int slot, bool includeModulations) {
@@ -13907,7 +14017,7 @@ void SynthEditor::addEffectToCurrentChain() {
   if (!isPositiveAndBelow(effect, vital::constants::kNumEffects))
     return;
 
-  addEffectToChain(last_section_name, effect, effect_add_);
+  addEffectToChain(last_section_name_, effect, effect_add_);
 }
 
 void SynthEditor::addEffectToChain(const String& sectionName, int effect, Component& target) {
@@ -13941,7 +14051,7 @@ void SynthEditor::showAddEffectMenu(const String& sectionName, Component& target
 
   Component::SafePointer<Component> safe_target(&target);
   Component::SafePointer<SynthEditor> safe_this(this);
-  menu.showMenuAsync(PopupMenu::Options().withTargetComponent(target),
+  showAccessibleMenuAsync(menu, PopupMenu::Options().withTargetComponent(target),
                      [safe_this, safe_target, sectionName](int result) {
     if (safe_this == nullptr || safe_target == nullptr || result <= 0)
       return;
@@ -14556,12 +14666,12 @@ void SynthEditor::removeSelectedEffectSlot() {
   if (effect_chain_rebuild_queued_)
     return;
 
-  const auto slots = activeEffectSlots(last_section_name);
+  const auto slots = activeEffectSlots(last_section_name_);
   const int selected = effect_chain_selector_.getSelectedItemIndex();
   if (!isPositiveAndBelow(selected, static_cast<int>(slots.size())))
     return;
 
-  removeEffectSlot(last_section_name, slots[static_cast<size_t>(selected)], "Effect position");
+  removeEffectSlot(last_section_name_, slots[static_cast<size_t>(selected)], "Effect position");
 }
 
 void SynthEditor::readEffectChainOrder(const String& sectionName, int* order) const {
@@ -14687,7 +14797,7 @@ void SynthEditor::populateEffectChainSelector(ComboBox& selector, Label* summary
 }
 
 void SynthEditor::refreshEffectChainControls() {
-  populateEffectChainSelector(effect_chain_selector_, &effect_chain_summary_, last_section_name);
+  populateEffectChainSelector(effect_chain_selector_, &effect_chain_summary_, last_section_name_);
 }
 
 void SynthEditor::scheduleEffectChainRebuild(const String& preferredSection, const String& focusedTitle,
@@ -14755,7 +14865,7 @@ void SynthEditor::scheduleEffectChainRebuild(const String& preferredSection, con
 
 void SynthEditor::rebuildSectionsAfterEffectOrderChange(const String& preferredSection, const String& focusedTitle,
                                                         const String& focusedParameter) {
-  const String section = preferredSection.isNotEmpty() ? preferredSection : last_section_name;
+  const String section = preferredSection.isNotEmpty() ? preferredSection : last_section_name_;
   // An explicit title names the control that must end up focused (a button
   // whose action caused the rebuild); only without one do we fall back to
   // whatever is focused now, which may be the window itself mid-action.
@@ -14780,11 +14890,11 @@ void SynthEditor::moveSelectedEffect(int direction) {
   if (effect_chain_rebuild_queued_)
     return;
 
-  const auto slots = activeEffectSlots(last_section_name);
+  const auto slots = activeEffectSlots(last_section_name_);
   // Move the slot that holds the focused control; the hidden selector only
   // decides when focus is elsewhere.
   int selected = effect_chain_selector_.getSelectedItemIndex();
-  const int focused_slot = focusedEffectSlot(last_section_name);
+  const int focused_slot = focusedEffectSlot(last_section_name_);
   if (focused_slot >= 0) {
     const auto found = std::find(slots.begin(), slots.end(), focused_slot);
     if (found != slots.end())
@@ -14797,21 +14907,21 @@ void SynthEditor::moveSelectedEffect(int direction) {
 
   const int from_slot = slots[static_cast<size_t>(selected)];
   const int to_slot = slots[static_cast<size_t>(next)];
-  const String moved = effectSlotTitle(last_section_name, from_slot);
+  const String moved = effectSlotTitle(last_section_name_, from_slot);
   // The moved effect's controls reappear under the destination slot's prefix.
   String focused_title = focusedAccessibleTitle();
   String focused_parameter = focusedParameterId();
   if (focused_slot == from_slot) {
-    const String from_prefix = effectSlotPrefix(last_section_name, from_slot);
+    const String from_prefix = effectSlotPrefix(last_section_name_, from_slot);
     if (focused_parameter.startsWith(from_prefix))
-      focused_parameter = effectSlotPrefix(last_section_name, to_slot) + focused_parameter.substring(from_prefix.length());
+      focused_parameter = effectSlotPrefix(last_section_name_, to_slot) + focused_parameter.substring(from_prefix.length());
     else if (focused_title.startsWith("Slot " + String(selected + 1) + " ("))
       focused_title = "Slot " + String(next + 1) + focused_title.substring(focused_title.indexOf(" ("));
   }
-  swapEffectSlots(last_section_name, from_slot, to_slot);
-  pending_effect_chain_section_ = last_section_name;
+  swapEffectSlots(last_section_name_, from_slot, to_slot);
+  pending_effect_chain_section_ = last_section_name_;
   pending_effect_chain_selected_index_ = next;
-  scheduleEffectChainRebuild(last_section_name, focused_title, focused_parameter);
+  scheduleEffectChainRebuild(last_section_name_, focused_title, focused_parameter);
   postPluginAnnouncement(moved + " moved to position " + String(next + 1),
                                          AccessibilityHandler::AnnouncementPriority::high);
 }
@@ -16053,10 +16163,14 @@ bool SynthEditor::handleModulationRemapShortcut(const KeyPress& key) {
   const juce_wchar character = CharacterFunctions::toLowerCase(key.getTextCharacter());
   const bool shift = key.getModifiers().isShiftDown();
   const bool alt = key.getModifiers().isAltDown();
+  // KeyPress == only matches a key with no modifier held, so the Shift arrows
+  // compare key codes.
+  const int key_code = key.getKeyCode();
+  const bool command_or_control = key.getModifiers().isCommandDown() || key.getModifiers().isCtrlDown();
 
-  if (shift && (key == KeyPress::leftKey || key == KeyPress::rightKey)) {
+  if (shift && !command_or_control && (key_code == KeyPress::leftKey || key_code == KeyPress::rightKey)) {
     const float amount = alt ? 0.05f : 0.01f;
-    moveModulationRemapPointInput(key == KeyPress::rightKey ? amount : -amount);
+    moveModulationRemapPointInput(key_code == KeyPress::rightKey ? amount : -amount);
     return true;
   }
   if (key == KeyPress::leftKey || character == ',') {
@@ -16067,9 +16181,9 @@ bool SynthEditor::handleModulationRemapShortcut(const KeyPress& key) {
     selectModulationRemapPoint(1);
     return true;
   }
-  if (key == KeyPress::upKey || key == KeyPress::downKey) {
+  if (!alt && !command_or_control && (key_code == KeyPress::upKey || key_code == KeyPress::downKey)) {
     const float amount = shift ? 0.05f : 0.01f;
-    moveModulationRemapPointOutput(key == KeyPress::upKey ? amount : -amount);
+    moveModulationRemapPointOutput(key_code == KeyPress::upKey ? amount : -amount);
     return true;
   }
   if (key.getKeyCode() == KeyPress::backspaceKey) {
@@ -16756,7 +16870,7 @@ void SynthEditor::showFilterTableBrowserMenu(const String& filter_prefix, Compon
   menu.addSeparator();
   menu.addItem(kBrowserRescanMenuId, "Rescan wavetable folders");
   Component::SafePointer<Component> target_pointer(&target);
-  menu.showMenuAsync(PopupMenu::Options().withTargetComponent(&target),
+  showAccessibleMenuAsync(menu, PopupMenu::Options().withTargetComponent(&target),
                      [this, filter_prefix, choices, target_pointer](int result) {
     if (result == kBrowserRescanMenuId) {
       cached_wavetable_browser_files_.clear();
@@ -18270,7 +18384,8 @@ bool SynthEditor::handleWavetableShortcut(int oscillator, const KeyPress& key, C
     clearWavetableHarmonic(oscillator, state.frame, false, state.harmonic);
     return true;
   }
-  if ((command || shift) && character == 'a') {
+  // Windows sends Ctrl and a letter with no text character, so test the key code too.
+  if ((command || shift) && (character == 'a' || key_code == 'A')) {
     selectAllWavetableFrames(oscillator);
     return true;
   }
@@ -18601,7 +18716,7 @@ void SynthEditor::showWavetableActionsMenu(int oscillator, Component& target) {
   menu.addItem(kRename, "Rename wavetable");
   menu.addItem(kReset, "Reset wavetable");
   Component::SafePointer<Component> target_pointer(&target);
-  menu.showMenuAsync(PopupMenu::Options().withTargetComponent(&target),
+  showAccessibleMenuAsync(menu, PopupMenu::Options().withTargetComponent(&target),
                      [this, oscillator, target_pointer](int result) {
     switch (result) {
       case kImportSplice:
@@ -18659,7 +18774,7 @@ void SynthEditor::showWavetableBrowserMenu(int oscillator, Component& target) {
   menu.addSeparator();
   menu.addItem(kBrowserRescanMenuId, "Rescan wavetable folders");
   Component::SafePointer<Component> target_pointer(&target);
-  menu.showMenuAsync(PopupMenu::Options().withTargetComponent(&target),
+  showAccessibleMenuAsync(menu, PopupMenu::Options().withTargetComponent(&target),
                      [this, oscillator, choices, target_pointer](int result) {
     if (result == kBrowserRescanMenuId) {
       cached_wavetable_browser_files_.clear();
@@ -18992,7 +19107,7 @@ void SynthEditor::addMultiSampleControlsGroup(int oscillator, Component& parent,
       if (safe_combo == nullptr)
         return;
       PopupMenu menu = createInstrumentPresetMenu(*presets, safe_combo->getSelectedId() - 1);
-      menu.showMenuAsync(PopupMenu::Options().withTargetComponent(safe_combo.getComponent()), [safe_combo](int result) {
+      showAccessibleMenuAsync(menu, PopupMenu::Options().withTargetComponent(safe_combo.getComponent()), [safe_combo](int result) {
         if (safe_combo != nullptr && result > 0)
           safe_combo->setSelectedId(result, sendNotificationSync);
       });
@@ -19131,7 +19246,7 @@ void SynthEditor::clearInstrument(int oscillator) {
     if (safe_this->show_all_sections_)
       safe_this->showAllSections(false);
     else
-      safe_this->selectSectionByName(last_section_name, false);
+      safe_this->selectSectionByName(safe_this->last_section_name_, false);
     safe_this->restoreFocusAfterRebuild({}, nullptr, "Clear instrument", section_name);
     postPluginAnnouncement(announcement, AccessibilityHandler::AnnouncementPriority::high);
   });
@@ -19304,7 +19419,7 @@ void SynthEditor::showSampleBrowserMenu(Component& target, int sample_target) {
   menu.addSeparator();
   menu.addItem(kBrowserRescanMenuId, "Rescan sample folders");
   Component::SafePointer<Component> target_pointer(&target);
-  menu.showMenuAsync(PopupMenu::Options().withTargetComponent(&target),
+  showAccessibleMenuAsync(menu, PopupMenu::Options().withTargetComponent(&target),
                      [this, choices, sample_target, target_pointer](int result) {
     if (result == kBrowserRescanMenuId) {
       cached_sample_browser_files_.clear();
@@ -19441,7 +19556,7 @@ void SynthEditor::showConvolutionIrBrowserMenu(const String& modulePrefix, Compo
   menu.addSeparator();
   menu.addItem(kBrowserRescanMenuId, "Rescan impulse response folders");
   Component::SafePointer<Component> target_pointer(&target);
-  menu.showMenuAsync(PopupMenu::Options().withTargetComponent(&target),
+  showAccessibleMenuAsync(menu, PopupMenu::Options().withTargetComponent(&target),
                      [safe_this = Component::SafePointer<SynthEditor>(this), choices, modulePrefix, target_pointer](int result) {
     if (!safe_this) return;
     if (result == kBrowserRescanMenuId) {
@@ -19765,7 +19880,7 @@ void SynthEditor::moveToSection(int direction) {
   const int count = section_names_.size();
   if (count == 0)
     return;
-  int current = section_names_.indexOf(last_section_name);
+  int current = section_names_.indexOf(last_section_name_);
   if (current < 0)
     current = 0;
   const int next = (current + direction + count) % count;
@@ -19819,7 +19934,7 @@ bool SynthEditor::focusShortcutTarget(const KeyPress& key) {
   const juce_wchar character = CharacterFunctions::toLowerCase(key.getTextCharacter());
   const ModifierKeys modifiers = key.getModifiers();
 
-  if (modifiers.isCtrlDown() && !modifiers.isCommandDown() && !modifiers.isAltDown()) {
+  if (isControlChord(modifiers)) {
     if (key.getKeyCode() == '1') return focusGroupShortcut("Bus 1");
     if (key.getKeyCode() == '2') return focusGroupShortcut("Bus 2");
     if (key.getKeyCode() == '3') return focusGroupShortcut("Bus 3");
@@ -20040,7 +20155,7 @@ bool SynthEditor::keyPressed(const KeyPress& key) {
   }
   {
     const ModifierKeys modifiers = key.getModifiers();
-    if (modifiers.isCommandDown() && !modifiers.isAltDown() && !modifiers.isCtrlDown() &&
+    if (isCommandChord(modifiers) &&
         CharacterFunctions::toLowerCase(static_cast<juce_wchar>(key.getKeyCode())) == 's') {
       if (modifiers.isShiftDown())
         savePresetAs();
@@ -20102,7 +20217,7 @@ void SynthEditor::timerCallback() {
       if (current != mode.second) {
         mode.second = current;
         screen_reader_refocus_requested_ = true;
-        scheduleEffectChainRebuild(last_section_name, focusedAccessibleTitle(), focusedParameterId());
+        scheduleEffectChainRebuild(last_section_name_, focusedAccessibleTitle(), focusedParameterId());
         return;
       }
     }
@@ -20147,7 +20262,7 @@ void SynthEditor::updateFullGui() {
   // effects in every slot and the oscillator types. Rebuild the section
   // parameter lists too, not just the view: otherwise an effect slot whose type
   // changed shows up as an empty group until the editor is reopened.
-  rebuildSectionsAfterEffectOrderChange(last_section_name);
+  rebuildSectionsAfterEffectOrderChange(last_section_name_);
   timerCallback();
   synth_.updateHostDisplay();
 }

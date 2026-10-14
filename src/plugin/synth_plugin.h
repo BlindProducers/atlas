@@ -106,7 +106,23 @@ class SynthPlugin : public SynthBase, public AudioProcessor, public ValueBridge:
     json fxBusPreset(int bus);
     bool loadFxBusPreset(int bus, const json& preset, String& error);
 
+    // Where this instance's editor was left: its section and preset browser
+    // filters. Kept here so they outlive the editor window without being shared
+    // with the other Atlas instances a host loads into the same process.
+    // Message thread only; not saved with the host's project.
+    struct EditorMemory {
+      String section_name;
+      String preset_path;
+      String preset_search;
+      String preset_library;
+      String preset_bank;
+      String preset_category;
+      String preset_tag;
+    };
+    EditorMemory& getEditorMemory() { return editor_memory_; }
+
   private:
+    EditorMemory editor_memory_;
     void updateFxSampleRate();
     std::atomic<double> fx_sample_rate_ { 44100.0 };
     void updateHostLatency();

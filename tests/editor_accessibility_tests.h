@@ -1058,6 +1058,27 @@ namespace {
     }
   }
 
+  // Each Atlas instance remembers its own section (and preset browser filters):
+  // a host loads every instance into one process, and they used to share it.
+  void testEditorStateIsPerInstance() {
+    SynthPlugin first, second;
+    {
+      SynthEditor first_editor(first);
+      SynthEditor second_editor(second);
+      first_editor.updateFullGui();
+      second_editor.updateFullGui();
+      const String untouched = second.getEditorMemory().section_name;
+      expect(first_editor.keyPressed(KeyPress('m', ModifierKeys(), 'm')), "M moves to Modulation routing");
+      expect(first.getEditorMemory().section_name == "Modulation routing",
+             "the first instance remembers the section it moved to");
+      expect(second.getEditorMemory().section_name == untouched,
+             "the second instance keeps its own section");
+    }
+    SynthEditor reopened(first);
+    expect(first.getEditorMemory().section_name == "Modulation routing",
+           "reopening an instance's window returns to its section");
+  }
+
   // Autoload waits for the arrows to stop and loads the preset the selection
   // rests on; a refresh keeps the list on screen while it rescans.
   void testPresetAutoloadAndRefresh() {
