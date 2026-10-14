@@ -7,6 +7,13 @@ bool nativeAccessibilityFocusSettles(juce::AccessibilityHandler& handler);
 #endif
 
 namespace {
+  // The editor keeps a stepped choice's control through the rebuild on Windows only.
+#if JUCE_WINDOWS
+  constexpr bool kWindowsKeepsSwitchingFocus = true;
+#else
+  constexpr bool kWindowsKeepsSwitchingFocus = false;
+#endif
+
   void pumpEditorEvents() {
     MessageManager::getInstance()->runDispatchLoopUntil(150);
   }
@@ -838,6 +845,7 @@ namespace {
     expect(type->getText() == "Spectral", "the Type menu shows the slot's type");
     const int spectral_index = type->getSelectedItemIndex();
     Component::SafePointer<Component> stepped_type(type);
+    Component::SafePointer<Component> level(editor.controlForParameter("osc_7_level"));
     type->keyPressed(KeyPress(KeyPress::leftKey));
     expect(!type->isPopupActive(), "an arrow does not open the Type menu");
     expect(type->getSelectedItemIndex() == spectral_index - 1, "an arrow steps to the previous type");
@@ -845,11 +853,14 @@ namespace {
            "an arrow changes the type");
     pumpUntil([&] {
       auto* focused = Component::getCurrentlyFocusedComponent();
-      return stepped_type == nullptr && focused != nullptr && focused->getTitle() == "7 Type";
+      return level == nullptr && focused != nullptr && focused->getTitle() == "7 Type";
     });
     type = dynamic_cast<ComboBox*>(Component::getCurrentlyFocusedComponent());
-    expect(type != nullptr && type->getTitle() == "7 Type",
-           "after an arrow step rebuilds the rows, focus is on the new Type menu");
+    expect(level == nullptr && type != nullptr && type->getTitle() == "7 Type",
+           "after an arrow step rebuilds the rows, focus is on the Type menu");
+    // Windows keeps the menu itself through the rebuild (see testSwitchingChoiceKeepsItsControl).
+    expect(!kWindowsKeepsSwitchingFocus || type == stepped_type.getComponent(),
+           "on Windows the rebuild keeps the Type menu that was stepped");
     if (type == nullptr) {
       editor.removeFromDesktop();
       return;
@@ -892,6 +903,79 @@ namespace {
                    titled(*editorSection(editor, "Oscillator 7"), "Hide wavetable editor") : nullptr;
       expect(hide != nullptr && Component::getCurrentlyFocusedComponent() == hide,
              "slot 7 keeps keyboard focus on its wavetable toggle after showing the editor");
+    }
+    editor.removeFromDesktop();
+  }
+
+  // Stepping a choice that decides which rows show (an oscillator's Type, a
+  // filter's Model, an effect's mode) rebuilds the rows around it. The rebuild
+  // used to replace the focused menu and every group around it, so NVDA read
+  // the groups again ("Oscillators grouping...") on each step and the next step
+  // cut it off before the new value. On Windows the rebuild now keeps the menu
+  // and its groups: NVDA stays on the menu and reads only the new value.
+  void testSwitchingChoiceKeepsItsControl() {
+    SynthPlugin synth;
+    synth.parameterChanged("fx_slot_1_type", vital::constants::kDimensionExpander + 1);
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    editor.toFront(true);
+    pumpEditorEvents();
+
+    struct Choice {
+      const char* id;
+      const char* neighbour;  // a row of the same section, which the rebuild replaces
+    };
+    for (const Choice choice : { Choice { "osc_7_type", "osc_7_level" },
+                                 Choice { "filter_1_model", "filter_1_cutoff" },
+                                 Choice { "fx_slot_1_dimension_expander_mode", "fx_slot_1_enabled" } }) {
+      const std::string id = choice.id;
+      auto* menu = dynamic_cast<ComboBox*>(editor.controlForParameter(choice.id));
+      expect(menu != nullptr, id + " is a menu");
+      if (menu == nullptr)
+        continue;
+      std::vector<Component::SafePointer<Component>> groups;
+      for (auto* parent = menu->getParentComponent(); parent != nullptr && parent != &editor;
+           parent = parent->getParentComponent()) {
+        if (parent->isFocusContainer())
+          groups.emplace_back(parent);
+      }
+      expect(!groups.empty(), id + " sits in groups");
+      editor.ensureComponentVisible(menu);
+      menu->grabKeyboardFocus();
+      Component::SafePointer<Component> stepped(menu);
+      Component::SafePointer<Component> neighbour(editor.controlForParameter(choice.neighbour));
+      expect(neighbour != nullptr, id + "'s section has " + choice.neighbour);
+      const String title = menu->getTitle();
+      const String next = menu->getItemText(menu->getSelectedItemIndex() + 1);
+
+      menu->keyPressed(KeyPress(KeyPress::downKey));
+      editor.pollStateNow();
+      pumpUntil([&] { return neighbour == nullptr && Component::getCurrentlyFocusedComponent() != nullptr; });
+
+      auto* focused = Component::getCurrentlyFocusedComponent();
+      auto* now = dynamic_cast<ComboBox*>(editor.controlForParameter(choice.id));
+      expect(neighbour == nullptr, "stepping " + id + " rebuilds its rows");
+      expect(now != nullptr && focused == now && now->getText() == next && now->getTitle() == title,
+             "focus stays on " + title.toStdString() + " (" + id + "), which reads " + next.toStdString() +
+             " (reads " + (now != nullptr ? (now->getTitle() + ", " + now->getText()).toStdString() : "nothing") + ")");
+      auto* handler = focused != nullptr ? focused->getAccessibilityHandler() : nullptr;
+      expect(handler != nullptr && handler->hasFocus(false), "the screen reader stays on " + id);
+      if (kWindowsKeepsSwitchingFocus) {
+        expect(stepped != nullptr && focused == stepped.getComponent(), "the rebuild keeps " + id + "'s menu");
+        bool kept_groups = true;
+        for (auto& group : groups)
+          kept_groups = kept_groups && group != nullptr && group->isParentOf(focused);
+        expect(kept_groups, "the rebuild keeps the groups around " + id);
+      }
+      // The rebuilt view is whole: Tab reaches only live controls, the kept menu among them.
+      const auto controls = editor.createKeyboardFocusTraverser()->getAllComponents(&editor);
+      bool live = !controls.empty();
+      for (auto* control : controls)
+        live = live && editor.isParentOf(control);
+      expect(live && std::find(controls.begin(), controls.end(), focused) != controls.end(),
+             "after stepping " + id + ", Tab reaches the menu and only live controls");
     }
     editor.removeFromDesktop();
   }

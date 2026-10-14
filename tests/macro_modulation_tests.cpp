@@ -804,6 +804,7 @@ int main(int argc, char** argv) {
     testLevelsAndAmountsReadAsPercent();
     testSlotTypeRowsFollowTheType();
     testWavetableEditingOnASlotSwitchedToWavetable();
+    testSwitchingChoiceKeepsItsControl();
     testEffectMoveKeepsFocusAcrossTimerTick();
     testOscillatorRowGroups();
     testOscillatorRowsNameTheirOscillatorNumber();

@@ -178,6 +178,8 @@ class ValueBridge : public AudioProcessorParameterWithID {
 
     const String& getParameterId() const { return name_; }
     const vital::ValueDetails& getDetails() const { return details_; }
+    // The engine control this bridge reads and writes.
+    const vital::Value* engineControl() const { return value_; }
 
     // Unitless levels and amounts read as a percentage of their range: 0% to
     // 100%, or -100% to 100% for bipolar ones such as modulation amounts. A

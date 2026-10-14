@@ -88,6 +88,14 @@ namespace {
   constexpr int kBrowserRescanMenuId = 0x3fff0001;
   // How long after a rebuild the screen reader is moved back to the focused control.
   constexpr int kScreenReaderRefocusDelayMs = 250;
+  // Whether a rebuild keeps the focused choice that started it and its groups
+  // (SynthEditor::keepFocusedSwitchingRow). NVDA reads every group around a
+  // control it is moved to; VoiceOver's behaviour stays as it was.
+#if JUCE_WINDOWS
+  constexpr bool kKeepSwitchingFocus = true;
+#else
+  constexpr bool kKeepSwitchingFocus = false;
+#endif
 
   enum PresetFacetKind {
     kLibraryFacet = 1,
@@ -4760,6 +4768,8 @@ class AccessibleParameterRow : public Component {
       const String parameter_description = accessibleDescription.isNotEmpty()
           ? accessibleDescription
           : accessibleParameterHelpText(parameter_id, accessible_name, use_toggle_control_);
+      built_name_ = accessible_name;
+      built_description_ = parameter_description;
       label_.setText(accessible_name, dontSendNotification);
       label_.setTitle(accessible_name + " label");
       label_.setColour(Label::textColourId, Colours::white);
@@ -5227,6 +5237,36 @@ class AccessibleParameterRow : public Component {
       return {};
     }
 
+    const AudioProcessorParameter& parameter() const { return parameter_; }
+
+    // Whether `fresh`, built just now for the same parameter, is the same
+    // choice menu as this row, so a rebuild can keep this row in its place.
+    // Compares the parameter by address only: this row's may be gone.
+    bool readsLike(const AccessibleParameterRow& fresh) const {
+      if (!use_combo_control_ || !fresh.use_combo_control_ || &parameter_ != &fresh.parameter_ ||
+          built_name_ != fresh.built_name_ || built_description_ != fresh.built_description_ ||
+          combo_values_ != fresh.combo_values_ || combo_.getNumItems() != fresh.combo_.getNumItems())
+        return false;
+      for (int i = 0; i < combo_.getNumItems(); ++i) {
+        if (combo_.getItemText(i) != fresh.combo_.getItemText(i))
+          return false;
+      }
+      return true;
+    }
+
+    // Named as it was built, for a rebuild that keeps this row and names it
+    // as it names a fresh one.
+    void restoreBuiltName() {
+      label_.setText(built_name_, dontSendNotification);
+      label_.setTitle(built_name_ + " label");
+      focusableControl()->setTitle(built_name_);
+      focusableControl()->setDescription(built_description_);
+      if (auto* tooltip = dynamic_cast<SettableTooltipClient*>(focusableControl()))
+        tooltip->setTooltip(built_description_);
+      if (use_toggle_control_)
+        toggle_.setButtonText(built_name_);
+    }
+
     void setControlFocusOrder(int order) {
       focusableControl()->setExplicitFocusOrder(order);
     }
@@ -5430,6 +5470,9 @@ class AccessibleParameterRow : public Component {
     std::vector<int> indexed_value_order_;
     int indexed_value_fallback_ = -1;
     std::vector<float> combo_values_;   // the parameter value of each menu item
+    // The name and description the row was built with, before any rename.
+    String built_name_;
+    String built_description_;
     double min_normalized_value_ = 0.0;
     double max_normalized_value_ = 1.0;
     bool use_toggle_control_ = false;
@@ -5536,17 +5579,26 @@ class AccessibleSectionHeader : public Component, public AccessibleContextMenuTa
     std::function<void(Component&)> onContextMenuCommand;
     std::function<void()> onAccessibilityFocus;
 
-    AccessibleSectionHeader(const String& title, int groupRank, bool topLevel, const String& sectionKey = {}) :
-        title_(title), top_level_(topLevel) {
-      setTitle(title_);
-      setDescription(top_level_ ? "Control group " + title_ : "Control section " + title_);
-      setHelpText(top_level_ ? "Group heading" : "Section heading");
-      setAccessible(true);
-      setWantsKeyboardFocus(true);
-      setFocusContainerType(Component::FocusContainerType::focusContainer);
-      getProperties().set("ControlGroup", groupRank);
-      if (sectionKey.isNotEmpty())
-        getProperties().set("SectionName", sectionKey);
+    AccessibleSectionHeader(const String& title, int groupRank, bool topLevel, const String& sectionKey = {}) {
+      configure(title, groupRank, topLevel, sectionKey);
+    }
+
+    // Whether a rebuild asking for this group can have this header back.
+    bool isSameGroup(const String& title, bool topLevel, const String& sectionKey) const {
+      return top_level_ == topLevel && section_key_ == sectionKey && (sectionKey.isNotEmpty() || title_ == title);
+    }
+
+    // As the constructor leaves it, for a rebuild that takes it back: no
+    // children, callbacks or other properties.
+    void reuse(const String& title, int groupRank, bool topLevel, const String& sectionKey) {
+      removeAllChildren();
+      child_focus_order_.clear();
+      onKeyCommand = nullptr;
+      onContextMenuCommand = nullptr;
+      onAccessibilityFocus = nullptr;
+      getProperties().clear();   // the explicit focus order too
+      configure(title, groupRank, topLevel, sectionKey);
+      repaint();
     }
 
     void paint(Graphics& g) override {
@@ -5630,8 +5682,24 @@ class AccessibleSectionHeader : public Component, public AccessibleContextMenuTa
     int headerHeight() const { return top_level_ ? 42 : 34; }
 
   private:
+    void configure(const String& title, int groupRank, bool topLevel, const String& sectionKey) {
+      title_ = title;
+      top_level_ = topLevel;
+      section_key_ = sectionKey;
+      setTitle(title_);
+      setDescription(top_level_ ? "Control group " + title_ : "Control section " + title_);
+      setHelpText(top_level_ ? "Group heading" : "Section heading");
+      setAccessible(true);
+      setWantsKeyboardFocus(true);
+      setFocusContainerType(Component::FocusContainerType::focusContainer);
+      getProperties().set("ControlGroup", groupRank);
+      if (sectionKey.isNotEmpty())
+        getProperties().set("SectionName", sectionKey);
+    }
+
     String title_;
     bool top_level_ = false;
+    String section_key_;
     std::vector<Component*> child_focus_order_;
 };
 
@@ -6805,6 +6873,13 @@ void SynthEditor::buildSections() {
   group_names_.clear();
   section_selector_.clear(dontSendNotification);
   group_selector_.clear(dontSendNotification);
+  // A row a rebuild keeps (keepFocusedSwitchingRow) still uses its bridge, so
+  // a control that is still listed keeps the bridge it had.
+  std::map<String, std::unique_ptr<ValueBridge>> previous_bridges;
+  if (kKeepSwitchingFocus) {
+    for (auto& bridge : internal_fx_bridges_)
+      previous_bridges[bridge->getParameterId()] = std::move(bridge);
+  }
   internal_fx_bridges_.clear();
   parameters_by_id_.clear();
 
@@ -6820,16 +6895,22 @@ void SynthEditor::buildSections() {
   }
 
 
-  auto addInternalFxBridge = [this](const String& id, const String& section) {
+  auto addInternalFxBridge = [this, &previous_bridges](const String& id, const String& section) {
     auto& controls = synth_.getControls();
     auto found = controls.find(id.toStdString());
     if (found == controls.end() || found->second == nullptr || !vital::Parameters::isParameter(id.toStdString()))
       return;
 
-    auto bridge = std::make_unique<ValueBridge>(id.toStdString(), found->second);
-    bridge->setListener(&synth_);
-    if (vital::suppressor::isFrequency(id.toStdString()))
-      bridge->suppressorSampleRate = [this] { return synth_.getFxSampleRate(); };
+    std::unique_ptr<ValueBridge> bridge;
+    if (const auto previous = previous_bridges.find(id); previous != previous_bridges.end() &&
+        previous->second != nullptr && previous->second->engineControl() == found->second)
+      bridge = std::move(previous->second);
+    else {
+      bridge = std::make_unique<ValueBridge>(id.toStdString(), found->second);
+      bridge->setListener(&synth_);
+      if (vital::suppressor::isFrequency(id.toStdString()))
+        bridge->suppressorSampleRate = [this] { return synth_.getFxSampleRate(); };
+    }
     auto* bridge_ptr = bridge.get();
     parameters_by_id_[id] = bridge_ptr;
     sections_[section].push_back(bridge_ptr);
@@ -7070,6 +7151,26 @@ void SynthEditor::selectSectionByName(const String& section, bool announce) {
 
 std::unique_ptr<AccessibleParameterRow> SynthEditor::createAccessibleParameterRow(AudioProcessorParameter& parameter,
                                                                                   const String& sectionName) {
+  // Built even when a kept row takes its place, for what building records
+  // (the choices the editor watches for changes).
+  auto row = buildAccessibleParameterRow(parameter, sectionName);
+  if (kept_switching_row_ == nullptr || row == nullptr || &row->parameter() != kept_switching_parameter_ ||
+      row->parameterId() != kept_switching_parameter_id_)
+    return row;
+  if (!kept_switching_row_->readsLike(*row)) {
+    // The choice reads differently now: its fresh row replaces it.
+    kept_switching_control_ = nullptr;
+    kept_switching_row_.reset();
+    return row;
+  }
+  kept_switching_row_->onValueChange = row->onValueChange;
+  kept_switching_row_->restoreBuiltName();
+  kept_switching_row_->refresh();
+  return std::move(kept_switching_row_);
+}
+
+std::unique_ptr<AccessibleParameterRow> SynthEditor::buildAccessibleParameterRow(AudioProcessorParameter& parameter,
+                                                                                 const String& sectionName) {
   auto* bridge = dynamic_cast<ValueBridge*>(&parameter);
   if (bridge == nullptr)
     return std::make_unique<AccessibleParameterRow>(parameter);
@@ -7848,8 +7949,7 @@ void SynthEditor::addOscillatorSectionContent(int oscillator, const String& sect
 
   auto open_group = [&](const String& title, const String& key, const String& description, Component& group_parent,
                         AccessibleSectionHeader* parent_group, int& parent_y, int group_x, int group_width) {
-    auto group = std::make_unique<AccessibleSectionHeader>(title, groupRank("Oscillators"), false,
-                                                           section_name + " " + key);
+    auto group = makeSectionHeader(title, groupRank("Oscillators"), false, section_name + " " + key);
     auto* group_ptr = group.get();
     group_ptr->setDescription(description);
     group_ptr->setExplicitFocusOrder(focus_order++);
@@ -7971,6 +8071,10 @@ bool SynthEditor::restoreFocusAfterRebuild(const String& parameterId, Component*
   Component* initial = findRebuildFocusTarget(parameterId, persistentComponent, accessibleTitle, preferredSection);
   if (initial == nullptr)
     return false;
+  // The rebuild kept this control (keepFocusedSwitchingRow): the screen
+  // reader never left it.
+  if (initial == kept_switching_control_)
+    refocusScreenReader = false;
 
   // Focus the new control now, so keys pressed while a choice is stepped
   // (an arrow held on a Type menu) keep reaching it rather than the window.
@@ -8061,6 +8165,75 @@ Component* SynthEditor::findRebuildFocusTarget(const String& parameterId, Compon
   return target;
 }
 
+void SynthEditor::keepFocusedSwitchingRow() {
+  releaseKeptFocus();
+  if (!kKeepSwitchingFocus)
+    return;
+  const auto found = std::find_if(rows_.begin(), rows_.end(), [this](const auto& row) {
+    return row != nullptr && row->focusableControl()->hasKeyboardFocus(true) &&
+           isRowSwitchingChoice(row->parameterId()) && rows_container_.isParentOf(row.get());
+  });
+  if (found == rows_.end())
+    return;
+
+  // The groups around it, outermost first, leave the old view with it.
+  std::vector<std::unique_ptr<AccessibleSectionHeader>> groups;
+  for (auto* parent = (*found)->getParentComponent(); parent != nullptr && parent != &rows_container_;
+       parent = parent->getParentComponent()) {
+    auto* header = dynamic_cast<AccessibleSectionHeader*>(parent);
+    const auto owned = std::find_if(section_headers_.begin(), section_headers_.end(),
+                                    [parent](const auto& component) { return component.get() == parent; });
+    if (header == nullptr || owned == section_headers_.end())
+      continue;
+    owned->release();
+    section_headers_.erase(owned);
+    groups.insert(groups.begin(), std::unique_ptr<AccessibleSectionHeader>(header));
+  }
+
+  // Focus goes first, so that taking the row out moves it nowhere else.
+  if (rows_container_.hasKeyboardFocus(true))
+    rows_container_.giveAwayKeyboardFocus();
+  kept_switching_parameter_id_ = (*found)->parameterId();
+  kept_switching_parameter_ = &(*found)->parameter();
+  kept_switching_control_ = (*found)->focusableControl();
+  kept_switching_row_ = std::move(*found);
+  rows_.erase(found);
+  if (auto* parent = kept_switching_row_->getParentComponent())
+    parent->removeChildComponent(kept_switching_row_.get());
+  // Innermost first. Their other children are about to be deleted.
+  for (auto group = groups.rbegin(); group != groups.rend(); ++group) {
+    (*group)->clearAccessibleChildren();
+    if (auto* parent = (*group)->getParentComponent())
+      parent->removeChildComponent(group->get());
+  }
+  kept_switching_groups_ = std::move(groups);
+  kept_switching_groups_taken_ = 0;
+}
+
+void SynthEditor::releaseKeptFocus() {
+  // Whatever the rebuild did not take back.
+  kept_switching_control_ = nullptr;
+  kept_switching_parameter_ = nullptr;
+  kept_switching_parameter_id_.clear();
+  kept_switching_row_.reset();
+  kept_switching_groups_.clear();
+  kept_switching_groups_taken_ = 0;
+}
+
+std::unique_ptr<AccessibleSectionHeader> SynthEditor::makeSectionHeader(const String& title, int groupRank,
+                                                                       bool topLevel, const String& sectionKey) {
+  // The rebuild meets the kept groups in order, outermost first.
+  if (kept_switching_groups_taken_ < kept_switching_groups_.size()) {
+    auto& kept = kept_switching_groups_[kept_switching_groups_taken_];
+    if (kept->isSameGroup(title, topLevel, sectionKey)) {
+      ++kept_switching_groups_taken_;
+      kept->reuse(title, groupRank, topLevel, sectionKey);
+      return std::move(kept);
+    }
+  }
+  return std::make_unique<AccessibleSectionHeader>(title, groupRank, topLevel, sectionKey);
+}
+
 int SynthEditor::focusedEffectSlot(const String& sectionName) const {
   auto* focused = Component::getCurrentlyFocusedComponent();
   for (auto* component = focused; component != nullptr; component = component->getParentComponent()) {
@@ -8103,12 +8276,14 @@ bool SynthEditor::refreshFilterRowsIfNeeded() {
   const String accessible_title = focusedAccessibleTitle();
   auto* persistent_focus = persistentFocusedComponent();
 
+  keepFocusedSwitchingRow();
   if (show_all_sections_)
     showAllSections(false);
   else
     selectSectionByName(last_section_name_, false);
 
   restoreFocusAfterRebuild(parameter_id, persistent_focus, accessible_title, {}, true);
+  releaseKeptFocus();
 
   return true;
 }
@@ -8127,11 +8302,13 @@ bool SynthEditor::refreshRandomAmplitudeRowsIfNeeded() {
   const String parameter_id = focusedParameterId();
   const String accessible_title = focusedAccessibleTitle();
   auto* persistent_focus = persistentFocusedComponent();
+  keepFocusedSwitchingRow();
   if (show_all_sections_)
     showAllSections(false);
   else
     selectSectionByName(last_section_name_, false);
   restoreFocusAfterRebuild(parameter_id, persistent_focus, accessible_title, {}, true);
+  releaseKeptFocus();
   return true;
 }
 
@@ -8198,11 +8375,13 @@ bool SynthEditor::refreshOscillatorModeRowsIfNeeded() {
   // Every Multi-sample slot has a Load instrument button: stay in this one.
   const String section_key = focusedSectionKey();
   auto* persistent_focus = persistentFocusedComponent();
+  keepFocusedSwitchingRow();
   if (show_all_sections_)
     showAllSections(false);
   else
     selectSectionByName(last_section_name_, false);
   restoreFocusAfterRebuild(parameter_id, persistent_focus, accessible_title, section_key, true);
+  releaseKeptFocus();
   return true;
 }
 
@@ -8296,8 +8475,8 @@ void SynthEditor::showSection(int index, bool announce) {
 
   if (const int oscillator = oscillatorIndexForSectionName(section_name);
       isPositiveAndBelow(oscillator, vital::kNumOscillators)) {
-    auto header = std::make_unique<AccessibleSectionHeader>(sourceStatusTitleForSection(section_name),
-                                                            groupRank("Oscillators"), false, section_name);
+    auto header = makeSectionHeader(sourceStatusTitleForSection(section_name), groupRank("Oscillators"), false,
+                                    section_name);
     auto* header_ptr = header.get();
     header_ptr->onContextMenuCommand = [this, oscillator](Component& target) {
       showOscillatorContextMenu(oscillator, target);
@@ -8386,8 +8565,8 @@ void SynthEditor::showSection(int index, bool announce) {
     if (!isArpeggiatorDestination(section_name, parameter_id))
       close_arp_destinations();
     else if (arp_destinations == nullptr) {
-      auto header = std::make_unique<AccessibleSectionHeader>("Destinations", groupRank("Arpeggiators"),
-                                                              false, section_name + " destinations");
+      auto header = makeSectionHeader("Destinations", groupRank("Arpeggiators"), false,
+                                      section_name + " destinations");
       arp_destinations = header.get();
       arp_destinations->setDescription("Oscillators " + section_name + " plays");
       arp_destinations->setExplicitFocusOrder(focus_order++);
@@ -8489,7 +8668,7 @@ void SynthEditor::showAllSections(bool announce) {
   int focus_order = 10;
 
   for (const auto& group : group_names_) {
-    auto group_component = std::make_unique<AccessibleSectionHeader>(group, groupRank(group), true);
+    auto group_component = makeSectionHeader(group, groupRank(group), true);
     auto* group_ptr = group_component.get();
     group_ptr->setExplicitFocusOrder(focus_order++);
     rows_container_.addAndMakeVisible(group_ptr);
@@ -8569,8 +8748,8 @@ void SynthEditor::showAllSections(bool announce) {
       int section_y = flatten_section ? group_y : 0;
 
       if (!flatten_section) {
-        auto section_component = std::make_unique<AccessibleSectionHeader>(sourceStatusTitleForSection(section_name),
-                                                                           groupRank(group), false, section_name);
+        auto section_component = makeSectionHeader(sourceStatusTitleForSection(section_name), groupRank(group),
+                                                   false, section_name);
         section_ptr = section_component.get();
         if (effectIdForSection(section_name).isNotEmpty()) {
           section_ptr->onKeyCommand = [this, section_name](const KeyPress& key, Component& target) {
@@ -8602,7 +8781,7 @@ void SynthEditor::showAllSections(bool announce) {
         for (int slot = 1; slot <= vital::kMaxModulationConnections; ++slot) {
           const String title = modulationSlotTitle(slot);
 
-          auto slot_component = std::make_unique<AccessibleSectionHeader>(title, groupRank(group), false);
+          auto slot_component = makeSectionHeader(title, groupRank(group), false);
           auto* slot_ptr = slot_component.get();
           slot_ptr->getProperties().set("ModulationSlot", slot);
           slot_ptr->setExplicitFocusOrder(focus_order++);
@@ -8888,8 +9067,7 @@ void SynthEditor::showAllSections(bool announce) {
         if (!isArpeggiatorDestination(section_name, parameter_id))
           close_arp_destinations();
         else if (arp_destinations == nullptr) {
-          auto header = std::make_unique<AccessibleSectionHeader>("Destinations", groupRank(group), false,
-                                                                  section_name + " destinations");
+          auto header = makeSectionHeader("Destinations", groupRank(group), false, section_name + " destinations");
           arp_destinations = header.get();
           arp_destinations->setDescription("Oscillators " + section_name + " plays");
           arp_destinations->setExplicitFocusOrder(focus_order++);
@@ -14066,8 +14244,7 @@ bool SynthEditor::isEffectSlotParameter(const String& sectionName, const String&
 
 void SynthEditor::addFxBusControlsGroup(const String& sectionName, Component& parent, int& y, int x,
                                        int width, int& focusOrder) {
-  auto group = std::make_unique<AccessibleSectionHeader>("Bus controls", groupRank(sectionName), false,
-                                                        sectionName);
+  auto group = makeSectionHeader("Bus controls", groupRank(sectionName), false, sectionName);
   auto* group_ptr = group.get();
   group_ptr->setDescription("Effects bus actions for " + fxBusNameForSection(sectionName));
   group_ptr->setExplicitFocusOrder(focusOrder++);
@@ -14157,7 +14334,7 @@ void SynthEditor::addEffectSlotGroups(const String& sectionName, Component& pare
       continue;
 
     const String title = "Slot " + String(position + 1) + " (" + effectName(type - 1) + ")";
-    auto slot_component = std::make_unique<AccessibleSectionHeader>(title, groupRank(sectionName), false);
+    auto slot_component = makeSectionHeader(title, groupRank(sectionName), false);
     auto* slot_ptr = slot_component.get();
     slot_ptr->getProperties().set("SectionName", sectionName);
     slot_ptr->getProperties().set("FxSlot", slot);
@@ -14424,7 +14601,7 @@ void SynthEditor::addEffectSlotGroups(const String& sectionName, Component& pare
           ? "Browse impulse response folders, current: " + String(module->irName())
           : "Browse impulse response folders";
 
-      auto ir_group = std::make_unique<AccessibleSectionHeader>(
+      auto ir_group = makeSectionHeader(
           "Impulse response controls", groupRank(sectionName), false,
           sectionName + " slot " + String(slot + 1) + " impulse response controls");
       auto* ir_group_ptr = ir_group.get();
@@ -14554,7 +14731,7 @@ void SynthEditor::addEffectSlotGroups(const String& sectionName, Component& pare
         if (!has_rows(group, has_rows))
           return;
         const String group_id = key + group.title.toLowerCase();
-        auto header = std::make_unique<AccessibleSectionHeader>(group.title, groupRank(sectionName), false, group_id);
+        auto header = makeSectionHeader(group.title, groupRank(sectionName), false, group_id);
         auto* header_ptr = header.get();
         header_ptr->setDescription(group.description);
         header_ptr->setExplicitFocusOrder(focusOrder++);
@@ -14874,6 +15051,9 @@ void SynthEditor::rebuildSectionsAfterEffectOrderChange(const String& preferredS
   const String parameter_id = focusedParameter.isNotEmpty() ? focusedParameter
                             : (focusedTitle.isNotEmpty() ? String() : focusedParameterId());
   auto* persistent_focus = explicit_target ? nullptr : persistentFocusedComponent();
+  // An effect's mode changed: keep its focused choice through the rebuild.
+  if (std::exchange(keep_switching_row_on_rebuild_, false))
+    keepFocusedSwitchingRow();
   buildSections();
 
   if (show_all_sections_)
@@ -14884,6 +15064,7 @@ void SynthEditor::rebuildSectionsAfterEffectOrderChange(const String& preferredS
     selectSectionByName(section_names_[0], false);
 
   restoreFocusAfterRebuild(parameter_id, persistent_focus, accessible_title, section);
+  releaseKeptFocus();
 }
 
 void SynthEditor::moveSelectedEffect(int direction) {
@@ -16733,7 +16914,7 @@ void SynthEditor::addFilterTableControlsGroup(const String& filter_prefix, Compo
                                               int width, int& focus_order, const String& section_name) {
   WavetableCreator* creator = synth_.getFilterTableCreator(filter_prefix.toStdString(), false);
   const String table_name = creator != nullptr ? String(creator->getName()) : String("Default low-pass");
-  auto group = std::make_unique<AccessibleSectionHeader>(
+  auto group = makeSectionHeader(
       "Filter wavetable controls", groupRank("Filters"), false, section_name + " filter wavetable controls");
   auto* group_ptr = group.get();
   group_ptr->setDescription("Load, browse, cycle and reset the wavetable this filter reads. Current wavetable: " + table_name);
@@ -16892,7 +17073,7 @@ void SynthEditor::addWavetableControlsGroup(int oscillator, Component& parent, i
     return;
 
   const int outer_y = y;
-  auto controls_group = std::make_unique<AccessibleSectionHeader>(
+  auto controls_group = makeSectionHeader(
       "Wavetable controls", groupRank("Oscillators"), false,
       section_name + " wavetable controls");
   auto* controls_group_ptr = controls_group.get();
@@ -16971,7 +17152,7 @@ int SynthEditor::addAccessibleWavetableEditorControls(int oscillator, Component&
   const int editor_outer_y = y;
   const int editor_outer_x = x;
   const int editor_outer_width = width;
-  auto editor_group = std::make_unique<AccessibleSectionHeader>(
+  auto editor_group = makeSectionHeader(
       "Wavetable editor", groupRank("Oscillators"), false,
       "Oscillator " + String(oscillator + 1) + " wavetable editor");
   auto* editor_group_ptr = editor_group.get();
@@ -17074,7 +17255,7 @@ int SynthEditor::addAccessibleWavetableEditorControls(int oscillator, Component&
   AccessibleSectionHeader* open_group = nullptr;
   auto beginGroup = [&](const String& title, const String& description) {
     group_outer_y = control_y;
-    auto group = std::make_unique<AccessibleSectionHeader>(title, groupRank("Oscillators"), false);
+    auto group = makeSectionHeader(title, groupRank("Oscillators"), false);
     auto* group_ptr = group.get();
     group_ptr->setDescription(description);
     group_ptr->setExplicitFocusOrder(focus_order++);
@@ -18794,7 +18975,7 @@ void SynthEditor::showWavetableBrowserMenu(int oscillator, Component& target) {
 void SynthEditor::addSampleControlsGroup(int sample_target, Component& parent, int& y, int x, int width,
                                          int& focus_order, const String& section_name,
                                          const GroupRowAppender& append_rows) {
-  auto group = std::make_unique<AccessibleSectionHeader>(
+  auto group = makeSectionHeader(
       "Sample controls", groupRank("Oscillators"), false, section_name + " sample controls");
   auto* group_ptr = group.get();
   group_ptr->setDescription("Load, browse, and cycle samples for " + section_name);
@@ -19034,7 +19215,7 @@ String SynthEditor::instrumentDetails(int oscillator) const {
 void SynthEditor::addMultiSampleControlsGroup(int oscillator, Component& parent, int& y, int x, int width,
                                               int& focus_order, const String& section_name,
                                               const GroupRowAppender& append_rows) {
-  auto group = std::make_unique<AccessibleSectionHeader>(
+  auto group = makeSectionHeader(
       "Instrument", groupRank("Oscillators"), false, section_name + " instrument");
   auto* group_ptr = group.get();
   group_ptr->setDescription("Load an SFZ or SF2 instrument and choose how it plays in " + section_name);
@@ -20217,6 +20398,7 @@ void SynthEditor::timerCallback() {
       if (current != mode.second) {
         mode.second = current;
         screen_reader_refocus_requested_ = true;
+        keep_switching_row_on_rebuild_ = true;
         scheduleEffectChainRebuild(last_section_name_, focusedAccessibleTitle(), focusedParameterId());
         return;
       }

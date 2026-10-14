@@ -31,6 +31,7 @@
 #include <vector>
 
 class AccessibleParameterRow;
+class AccessibleSectionHeader;
 class CpuUsageMeter;
 class LineGenerator;
 class WaveSource;
@@ -364,6 +365,8 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void clearSectionComponents();
     std::unique_ptr<AccessibleParameterRow> createAccessibleParameterRow(AudioProcessorParameter& parameter,
                                                                          const String& sectionName);
+    std::unique_ptr<AccessibleParameterRow> buildAccessibleParameterRow(AudioProcessorParameter& parameter,
+                                                                        const String& sectionName);
     int sampleLoopPointLength() const;
     void toggleSampleLoopFineTune();
     void wireSampleLoopFineTune(AccessibleParameterRow& row);
@@ -391,6 +394,18 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
                                   bool refocusScreenReader = false);
     Component* findRebuildFocusTarget(const String& parameterId, Component* persistentComponent,
                                       const String& accessibleTitle, const String& preferredSection) const;
+    // On Windows a rebuild that a choice deciding the rows starts (an
+    // oscillator's Type, a filter's Model, an effect's mode) keeps the focused
+    // row of such a choice and the groups around it, and the new rows take them
+    // back in place of fresh copies (makeSectionHeader, createAccessibleParameterRow).
+    // NVDA then stays on the same control in the same groups and reads only its
+    // new value, instead of every group around it and the control again, which
+    // the next quick step cut short. Call before the old rows are cleared, and
+    // releaseKeptFocus once focus is back.
+    void keepFocusedSwitchingRow();
+    void releaseKeptFocus();
+    std::unique_ptr<AccessibleSectionHeader> makeSectionHeader(const String& title, int groupRank, bool topLevel,
+                                                               const String& sectionKey = {});
     // The active effect slot that holds the focused control, or -1.
     int focusedEffectSlot(const String& sectionName) const;
     void moveToSection(int direction);
@@ -892,6 +907,18 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     Component rows_container_;
     std::vector<std::unique_ptr<Component>> section_headers_;
     std::vector<std::unique_ptr<AccessibleParameterRow>> rows_;
+    // What keepFocusedSwitchingRow holds while a rebuild runs: the row, its
+    // parameter (compared, never read, as a rebuild may replace its bridge),
+    // its control, and its groups, outermost first, of which the rebuild has
+    // taken back the first kept_switching_groups_taken_.
+    std::unique_ptr<AccessibleParameterRow> kept_switching_row_;
+    String kept_switching_parameter_id_;
+    const AudioProcessorParameter* kept_switching_parameter_ = nullptr;
+    Component* kept_switching_control_ = nullptr;
+    std::vector<std::unique_ptr<AccessibleSectionHeader>> kept_switching_groups_;
+    size_t kept_switching_groups_taken_ = 0;
+    // An effect's mode changed: the rebuild it queued keeps the focused row.
+    bool keep_switching_row_on_rebuild_ = false;
     std::vector<std::unique_ptr<ValueBridge>> internal_fx_bridges_;
     bool fine_tune_sample_loop_ = false;
     std::map<String, std::vector<AudioProcessorParameter*>> sections_;
