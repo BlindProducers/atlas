@@ -2093,6 +2093,16 @@ namespace vital {
                                        "Bus " + std::to_string(bus + 1) + " ");
     }
 
+    // Envelope 1 alone has an analog mode, appended by version.
+    static const ValueDetails env_1_analog_parameters[] = {
+      { "analog", 0x020124, 0.0, 1.0, 0.0, 0.0, 1.0,
+        ValueDetails::kIndexed, false, "", "Analog", strings::kOffOnNames },
+      { "analog_age", 0x020124, 0.0, 1.0, 0.0, 0.0, 100.0,
+        ValueDetails::kLinear, false, "%", "Analog Age", nullptr },
+    };
+    addParameterGroup(env_1_analog_parameters, sizeof(env_1_analog_parameters) / sizeof(ValueDetails), 0,
+                      kEnvIdPrefix, kEnvNamePrefix);
+
     int num_env_parameters = sizeof(env_parameter_list) / sizeof(ValueDetails);
     for (int env = 0; env < std::min(kNumEnvelopesOld, kNumEnvelopes); ++env)
       addParameterGroup(env_parameter_list, num_env_parameters, env, kEnvIdPrefix, kEnvNamePrefix);

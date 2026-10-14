@@ -1843,7 +1843,7 @@ namespace {
     // including the legacy effect pages and modulation destination lists.
     if (rank_id.startsWith("env_")) {
       const String suffix = rank_id.substring(4).fromFirstOccurrenceOf("_", false, false);
-      return ordered(suffix, { "tempo_sync", "delay", "attack", "attack_power", "hold", "decay",
+      return ordered(suffix, { "analog", "analog_age", "tempo_sync", "delay", "attack", "attack_power", "hold", "decay",
                                "decay_power", "sustain", "release", "release_power" });
     }
     for (const char* prefix : { "filter_1_", "filter_2_" }) {
@@ -3170,6 +3170,14 @@ namespace {
       if (suffix == "release") return "Set how long the envelope takes to fade after note release.";
       if (suffix == "attack_power" || suffix == "decay_power" || suffix == "release_power")
         return "Shape the curve of this envelope stage.";
+      if (suffix == "analog")
+        return "Behave like an analog envelope circuit. Attack charges toward a level above full and "
+               "bends over at the top, decay and release fall away exponentially, and a new note carries "
+               "on from the current level. Curve Power settings are kept but not used while this is on.";
+      if (suffix == "analog_age")
+        return "How worn the envelope's timing parts are. Each voice's attack, decay and release times "
+               "differ and wander, the shortest times get sluggish, the attack peak drops, and sustain "
+               "slowly leaks away while a note is held. At 0% the envelope is unworn.";
     }
 
     if (id.startsWith("lfo_")) {
@@ -7534,6 +7542,18 @@ bool SynthEditor::shouldShowParameterInSection(const String& sectionName, AudioP
   if (isMacroBipolarParameterId(bridge->getParameterId()))
     return false;
 
+  // Envelope 1's analog mode uses RC curves instead of the Power settings,
+  // and only shows its Age while it is on.
+  if (parameter_id.startsWith("env_1_")) {
+    bool analog = false;
+    if (auto* analog_bridge = parameterBridge("env_1_analog"))
+      analog = analog_bridge->convertToEngineValue(analog_bridge->getValue()) >= 0.5f;
+    if (parameter_id == "env_1_analog_age")
+      return analog;
+    if (parameter_id.endsWith("_power"))
+      return !analog;
+  }
+
   for (int osc = 1; osc <= vital::kNumOscillators; ++osc) {
     const String prefix = "osc_" + String(osc) + "_";
     if (!parameter_id.startsWith(prefix))
@@ -8184,6 +8204,34 @@ bool SynthEditor::refreshOscillatorModeRowsIfNeeded() {
   else
     selectSectionByName(last_section_name, false);
   restoreFocusAfterRebuild(parameter_id, persistent_focus, accessible_title, section_key, true);
+  return true;
+}
+
+bool SynthEditor::refreshEnvelopeAnalogRowsIfNeeded() {
+  int analog = 0;
+  if (auto* bridge = parameterBridge("env_1_analog"))
+    analog = static_cast<int>(std::round(bridge->convertToEngineValue(bridge->getValue())));
+
+  if (last_envelope_analog_ == analog)
+    return false;
+  const bool first_check = last_envelope_analog_ < 0;
+  last_envelope_analog_ = analog;
+
+  // Analog mode swaps Envelope 1's Power rows for its Age row.
+  if (first_check || (!show_all_sections_ && last_section_name != "Envelope 1"))
+    return false;
+
+  const String parameter_id = focusedParameterId();
+  const String accessible_title = focusedAccessibleTitle();
+  auto* persistent_focus = persistentFocusedComponent();
+
+  if (show_all_sections_)
+    showAllSections(false);
+  else
+    selectSectionByName(last_section_name, false);
+
+  restoreFocusAfterRebuild(parameter_id, persistent_focus, accessible_title, {}, true);
+
   return true;
 }
 
@@ -20186,6 +20234,8 @@ void SynthEditor::timerCallback() {
   if (refreshOscillatorModeRowsIfNeeded())
     return;
   if (refreshZoneCrossfadeRowIfNeeded())
+    return;
+  if (refreshEnvelopeAnalogRowsIfNeeded())
     return;
   if (routing_controls_visible_)
     refreshRoutingControls();

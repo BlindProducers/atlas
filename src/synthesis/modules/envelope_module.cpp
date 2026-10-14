@@ -58,6 +58,13 @@ namespace vital {
     envelope_->plug(release_power, Envelope::kReleasePower);
     envelope_->plug(tempo_sync, Envelope::kTempoSync);
     envelope_->plug(beats_per_second_, Envelope::kBeatsPerSecond);
+
+    // Only Envelope 1, the amplitude envelope, has an analog mode.
+    if (prefix_ == "env_1") {
+      envelope_->plug(createBaseControl(prefix_ + "_analog"), Envelope::kAnalogMode);
+      envelope_->plug(createPolyModControl(prefix_ + "_analog_age"), Envelope::kAnalogAge);
+      envelope_->setVoiceCardSalt(prefix_);
+    }
   }
 
   void EnvelopeModule::setRetriggerFromZero(bool retrigger_from_zero) {

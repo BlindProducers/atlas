@@ -783,6 +783,15 @@ namespace analog_oscillator_tests {
         expectClose(controls.at(id)->value(), defaultFor(osc, entry), 0, "Clean default for " + id);
     }
 
+    // Envelope 1 alone has an analog mode, off by default.
+    for (const auto& entry : std::vector<std::pair<std::string, float>> { { "env_1_analog", 0.0f },
+                                                                          { "env_1_analog_age", 0.0f } }) {
+      expect(controls.count(entry.first) == 1, "Control exists: " + entry.first);
+      if (controls.count(entry.first))
+        expectClose(controls.at(entry.first)->value(), entry.second, 0, "Clean default for " + entry.first);
+    }
+    expect(controls.count("env_2_analog") == 0, "Only Envelope 1 has an analog mode");
+
     // Existing host automation IDs keep their positions.
     int legacy_index = 0;
     for (int i = 0; i < vital::Parameters::getNumParameters(); ++i) {

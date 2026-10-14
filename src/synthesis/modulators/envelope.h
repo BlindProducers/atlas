@@ -19,6 +19,10 @@
 #include "processor.h"
 #include "utils.h"
 
+#include <cstdint>
+#include <memory>
+#include <string>
+
 namespace vital {
 
   class Envelope : public Processor {
@@ -37,6 +41,9 @@ namespace vital {
         kTempoSync,
         kBeatsPerSecond,
         kReset,
+        // Analog mode: RC curves, and Age for worn timing components.
+        kAnalogMode,
+        kAnalogAge,
         kNumInputs
       };
 
@@ -53,9 +60,14 @@ namespace vital {
       virtual void process(int num_samples) override;
       void setRetriggerFromZero(bool retrigger_from_zero) { retrigger_from_zero_ = retrigger_from_zero; }
 
+      // Salts this envelope's voice cards. Call before the voices are cloned.
+      void setVoiceCardSalt(const std::string& salt);
+
     private:
       void processControlRate(int num_samples);
       void processAudioRate(int num_samples);
+      void processAnalog(int num_samples);
+      void prepareVoiceCards();
       poly_float tempoSyncedTime(poly_float time);
 
       poly_float processSection(poly_float* audio_out, int from, int to,
@@ -75,6 +87,32 @@ namespace vital {
       poly_float release_power_;
       poly_float sustain_;
       bool retrigger_from_zero_;
+
+      // Analog mode. Each voice clone is a voice card numbered in cloning
+      // order, so its timing tolerances are the same every time a patch loads.
+      struct VoiceCard {
+        VoiceCard() : counter(std::make_shared<int>(0)) { }
+        VoiceCard(const VoiceCard& other) : counter(other.counter), index((*counter)++), salt(other.salt) { }
+        VoiceCard& operator=(const VoiceCard&) = delete;
+        std::shared_ptr<int> counter;
+        int index = 0;
+        uint32_t salt = 0;
+        bool ready = false;
+        // Per lane, in [-1, 1]: attack, decay and release time errors, the
+        // attack overshoot, the attack peak and the sustain leak.
+        poly_float attack = 0.0f;
+        poly_float decay = 0.0f;
+        poly_float release = 0.0f;
+        poly_float overshoot = 0.0f;
+        poly_float peak = 0.0f;
+        poly_float leak = 0.0f;
+      };
+      VoiceCard voice_card_;
+      // Every stage's time also wanders slowly, like the oscillator's pitch.
+      poly_int wander_random_ = 1;
+      poly_float time_wander_ = 0.0f;
+      // How long sustain has leaked, from 0 at note start toward 1.
+      poly_float droop_ = 0.0f;
 
       JUCE_LEAK_DETECTOR(Envelope)
   };
