@@ -251,7 +251,7 @@ class SynthBase : public MidiManager::Listener {
     struct MidiSchedulingBuffers {
       MidiBuffer input;
       MidiBuffer merged_output;
-      MidiBuffer arp_input[2][8];
+      MidiBuffer arp_input[vital::kNumArpeggiators][8];
       MidiBuffer arp_segment_input;
       MidiBuffer arp_output;
     };
@@ -270,8 +270,8 @@ class SynthBase : public MidiManager::Listener {
     File multisample_container_;
     std::unique_ptr<MidiManager> midi_manager_;
     std::unique_ptr<MidiKeyboardState> keyboard_state_;
-    std::array<std::array<AtlasArpeggiator, 8>, 2> arpeggiators_;
-    std::array<std::array<vital::Value*, 20>, 2> arpeggiator_controls_ {};
+    std::array<std::array<AtlasArpeggiator, 8>, vital::kNumArpeggiators> arpeggiators_;
+    std::array<std::array<vital::Value*, 20>, vital::kNumArpeggiators> arpeggiator_controls_ {};
     MidiSchedulingBuffers midi_scheduling_buffers_;
     std::array<ScheduledMidiEvent, kMaxScheduledMidiEvents> scheduled_midi_events_;
     int scheduled_midi_event_count_ = 0;

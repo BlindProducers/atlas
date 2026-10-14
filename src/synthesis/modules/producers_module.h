@@ -149,8 +149,8 @@ namespace vital {
       SourceSlotModule* slots_[kNumOscillators];
       Value* slot_destinations_[kNumOscillators];
       Value* slot_solo_[kNumOscillators];
-      Value* arp_on_[2];
-      Value* arp_destinations_[2][kNumOscillators];
+      Value* arp_on_[kNumArpeggiators];
+      Value* arp_destinations_[kNumArpeggiators][kNumOscillators];
       Value* slot_key_zone_start_[kNumOscillators];
       Value* slot_key_zone_end_[kNumOscillators];
       Value* slot_velocity_zone_start_[kNumOscillators];

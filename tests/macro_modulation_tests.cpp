@@ -646,6 +646,7 @@ int main(int argc, char** argv) {
     testArpPlayOrder();
     testArpLoop();
     testArpRetriggerDivisionParameter();
+    testArpeggiatorsBeyondTwo();
     if (failures == 0)
       std::cout << "Atlas arpeggiator tests passed\n";
     return failures == 0 ? 0 : 1;

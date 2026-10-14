@@ -107,7 +107,7 @@ slots of its own.
   (typed in the destination's own units when assigned), bipolar or unipolar
   polarity, stereo, a curve and a remap shape. A slot in use has a Clear modulation
   slot button.
-- **Two arpeggiators** with styles, steps, gate, repeats, velocity and hold, at
+- **Four arpeggiators** with styles, steps, gate, repeats, velocity and hold, at
   tempo-synced or free rates, each playing the oscillators you choose.
 
 ## Building
