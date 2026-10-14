@@ -959,4 +959,17 @@ if(ATLAS_BUILD_TIMING_TESTS)
       set_tests_properties(${atlas_test} PROPERTIES TIMEOUT ${ATLAS_TEST_TIMEOUT})
     endif()
   endforeach()
+
+  # A program's main thread gets 8 MB of stack on macOS but 1 MB on Windows,
+  # and some tests build large fixtures (a whole SynthPlugin, spectral
+  # sources) on the stack. MSVC's frames run larger than Clang's, so give the
+  # test programs 16 MB there; untouched stack costs nothing.
+  if(MSVC)
+    get_property(atlas_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+    foreach(atlas_target IN LISTS atlas_targets)
+      if(atlas_target MATCHES "^Atlas.*(Tests|Stress)$")
+        target_link_options(${atlas_target} PRIVATE /STACK:16777216)
+      endif()
+    endforeach()
+  endif()
 endif()
