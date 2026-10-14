@@ -2222,12 +2222,13 @@ namespace {
         continue;
 
       const String suffix = id.fromFirstOccurrenceOf(prefix, false, false);
-      static const std::array<const char*, 25> arp_order = {{
+      static const std::array<const char*, 27> arp_order = {{
         "on",
         "time_mode",
         "sync_rate",
         "free_rate",
         "style",
+        "play_order",
         "gate",
         "random_gate",
         "repeats",
@@ -2239,6 +2240,7 @@ namespace {
         "random_velocity",
         "hold",
         "retrigger",
+        "retrigger_division",
         "channel",
         "destination_osc_1",
         "destination_osc_2",
@@ -2631,6 +2633,7 @@ namespace {
     if (suffix == "sync_rate") return "Sync rate";
     if (suffix == "free_rate") return "Free rate";
     if (suffix == "style") return "Style";
+    if (suffix == "play_order") return "Play order";
     if (suffix == "gate") return "Gate";
     if (suffix == "random_gate") return "Random gate";
     if (suffix == "repeats") return "Repeats";
@@ -2642,6 +2645,7 @@ namespace {
     if (suffix == "random_velocity") return "Random velocity";
     if (suffix == "hold") return "Hold";
     if (suffix == "retrigger") return "Retrigger";
+    if (suffix == "retrigger_division") return "Retrigger division";
     if (suffix == "channel") return "Output channel";
     // These rows sit in the arpeggiator's Destinations group, which says what they are.
     if (suffix.startsWith("destination_osc_"))

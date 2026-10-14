@@ -813,6 +813,24 @@ namespace strings {
     "Beat"
   };
 
+  const std::string kArpPlayOrderNames[] = {
+    "Pitch",
+    "As Played"
+  };
+
+  // Matches AtlasArpeggiator::retriggerDivisions().
+  const std::string kArpRetriggerDivisionNames[] = {
+    "1/16",
+    "1/8",
+    "1/4",
+    "1/2",
+    "1 Bar",
+    "2 Bars",
+    "4 Bars",
+    "8 Bars",
+    "16 Bars"
+  };
+
   const std::string kArpChannelNames[] = {
     "Input",
     "1",

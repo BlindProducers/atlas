@@ -1325,6 +1325,18 @@ namespace vital {
       ValueDetails::kIndexed, false, "", "Arpeggiator 2 Destination Oscillator 7", strings::kOffOnNames },
     { "arp_2_destination_osc_8", 0x020114, 0.0, 1.0, 1.0, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Arpeggiator 2 Destination Oscillator 8", strings::kOffOnNames },
+
+    // How often Beat retrigger restarts each arpeggiator, appended by version
+    // to preserve every existing host parameter ID.
+    { "arp_1_retrigger_division", 0x02011e, 0.0, 8.0, 4.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Arpeggiator 1 Retrigger Division", strings::kArpRetriggerDivisionNames },
+    { "arp_2_retrigger_division", 0x02011e, 0.0, 8.0, 4.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Arpeggiator 2 Retrigger Division", strings::kArpRetriggerDivisionNames },
+    // Arpeggiator play order, appended by version to preserve every existing host parameter ID.
+    { "arp_1_play_order", 0x02011f, 0.0, 1.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Arpeggiator 1 Play Order", strings::kArpPlayOrderNames },
+    { "arp_2_play_order", 0x02011f, 0.0, 1.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Arpeggiator 2 Play Order", strings::kArpPlayOrderNames },
   };
 
   const ValueDetails ValueDetailsLookup::env_parameter_list[] = {

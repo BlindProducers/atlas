@@ -24,6 +24,7 @@ void AtlasArpeggiator::prepare(double sample_rate, int64 random_seed) {
   active_notes_.reserve(kMaxHeldNotes);
   random_once_pattern_.reserve(kMaxPatternNotes);
   sorted_notes_.reserve(kMaxHeldNotes);
+  sorted_by_order_.reserve(kMaxHeldNotes);
   pattern_notes_.reserve(kMaxPatternNotes);
   scratch_notes_.reserve(kMaxPatternNotes);
   scratch_notes_2_.reserve(kMaxPatternNotes);
@@ -88,10 +89,10 @@ void AtlasArpeggiator::process(const MidiBuffer& input, MidiBuffer& output, int 
     }), held_notes_.end());
     const uint64_t previous_fingerprint = chord_fingerprint_;
     updateChordFingerprint();
-    if (previous_fingerprint != chord_fingerprint_) {
+    // Dropping latched notes changes the pattern, but the step already
+    // sounding keeps its full gate.
+    if (previous_fingerprint != chord_fingerprint_)
       random_once_pattern_.clear();
-      stopAllGeneratedNotes(output, 0);
-    }
   }
   last_hold_ = settings.hold;
 
@@ -102,24 +103,47 @@ void AtlasArpeggiator::process(const MidiBuffer& input, MidiBuffer& output, int 
     return;
   }
 
-  if (was_idle_ && settings.retrigger == kRetriggerOff)
-    resetSequence(first_note_sample >= 0 ? first_note_sample : 0);
+  const double quarters_per_sample = jlimit(1.0, 999.0, bpm) / (60.0 * sample_rate_);
+  if (was_idle_) {
+    const int start_sample = first_note_sample >= 0 ? first_note_sample : 0;
+    if (settings.retrigger == kRetriggerOff)
+      resetSequence(start_sample);
+    // With the transport stopped, the beat grid starts at the first note.
+    beat_position_ = -start_sample * quarters_per_sample;
+    last_division_index_ = kNoDivision;
+  }
   was_idle_ = false;
+
+  const double block_start_beat = has_ppq_position ? ppq_position : beat_position_;
+  beat_position_ = block_start_beat + quarters_per_sample * num_samples;
+
+  double division_quarters = 0.0;
+  if (settings.retrigger == kRetriggerBeat) {
+    const int division_index = jlimit(0, static_cast<int>(retriggerDivisions().size()) - 1,
+                                      settings.retrigger_division);
+    division_quarters = retriggerDivisions()[static_cast<size_t>(division_index)].quarter_notes;
+  }
 
   const int rate_index = jlimit(0, static_cast<int>(syncRates().size()) - 1, settings.sync_rate);
   const double rate_quarters = syncRates()[static_cast<size_t>(rate_index)].quarter_notes;
   const double gate_ratio = jlimit(0.01, 1.0, static_cast<double>(settings.gate) / 100.0);
 
   if (settings.time_mode == kSync) {
-    bpm = jlimit(1.0, 999.0, bpm);
-    const double step_samples = rate_quarters * (60.0 / bpm) * sample_rate_;
-    addHostClockSteps(output, num_samples, rate_quarters, step_samples * gate_ratio,
-                      bpm, ppq_position, has_ppq_position, settings);
+    const double step_samples = rate_quarters / quarters_per_sample;
+    if (division_quarters > 0.0) {
+      addBeatClockSteps(output, num_samples, rate_quarters, step_samples * gate_ratio,
+                        block_start_beat, quarters_per_sample, division_quarters, settings);
+    }
+    else {
+      addInternalClockSteps(output, num_samples, step_samples, step_samples * gate_ratio,
+                            block_start_beat, quarters_per_sample, 0.0, settings);
+    }
   }
   else {
     const double hz = jlimit(0.05, 100.0, static_cast<double>(settings.free_rate));
     const double step_samples = sample_rate_ / hz;
-    addInternalClockSteps(output, num_samples, step_samples, step_samples * gate_ratio, settings);
+    addInternalClockSteps(output, num_samples, step_samples, step_samples * gate_ratio,
+                          block_start_beat, quarters_per_sample, division_quarters, settings);
   }
 }
 
@@ -135,6 +159,14 @@ const std::vector<AtlasArpeggiator::SyncRate>& AtlasArpeggiator::syncRates() {
     { "1/128", 0.03125 }
   };
   return rates;
+}
+
+const std::vector<AtlasArpeggiator::SyncRate>& AtlasArpeggiator::retriggerDivisions() {
+  static const std::vector<SyncRate> divisions {
+    { "1/16", 0.25 }, { "1/8", 0.5 }, { "1/4", 1.0 }, { "1/2", 2.0 }, { "1 Bar", 4.0 },
+    { "2 Bars", 8.0 }, { "4 Bars", 16.0 }, { "8 Bars", 32.0 }, { "16 Bars", 64.0 }
+  };
+  return divisions;
 }
 
 int AtlasArpeggiator::consumeInputMidi(const MidiBuffer& input, MidiBuffer& output, const Settings& settings) {
@@ -165,14 +197,18 @@ int AtlasArpeggiator::consumeInputMidi(const MidiBuffer& input, MidiBuffer& outp
       if (previous_fingerprint != chord_fingerprint_) {
         chord_changed = true;
         random_once_pattern_.clear();
-        stopAllGeneratedNotes(output, metadata.samplePosition);
         previous_fingerprint = chord_fingerprint_;
       }
     }
   }
 
-  if (saw_note_on && settings.retrigger == kRetriggerNote && chord_changed)
+  // A changed chord only cuts the sounding step when a new note restarts the
+  // sequence. Otherwise (a released key, or Off and Beat retrigger) the step
+  // plays out its gate and the next step uses the new chord.
+  if (saw_note_on && settings.retrigger == kRetriggerNote && chord_changed) {
+    stopAllGeneratedNotes(output, retrigger_sample);
     resetSequence(retrigger_sample);
+  }
 
   return first_note_sample;
 }
@@ -221,43 +257,82 @@ void AtlasArpeggiator::addDueNoteOffs(MidiBuffer& output, int num_samples) {
 }
 
 void AtlasArpeggiator::addInternalClockSteps(MidiBuffer& output, int num_samples, double step_samples,
-                                             double gate_samples, const Settings& settings) {
+                                             double gate_samples, double block_start_beat,
+                                             double quarters_per_sample, double division_quarters,
+                                             const Settings& settings) {
+  static constexpr double kToleranceSamples = 0.25;
   step_samples = jmax(1.0, step_samples);
   const int max_gate_samples = jmax(1, static_cast<int>(std::floor(step_samples)) - 1);
   const int clamped_gate_samples = jlimit(1, max_gate_samples, static_cast<int>(std::round(gate_samples)));
-  while (samples_until_next_step_ < static_cast<double>(num_samples)) {
-    const int offset = jlimit(0, num_samples - 1, static_cast<int>(std::round(samples_until_next_step_)));
+  while (true) {
+    double event = samples_until_next_step_;
+    int64 event_division = kNoDivision;
+    if (division_quarters > 0.0) {
+      const double step_beat = block_start_beat + event * quarters_per_sample;
+      event_division = static_cast<int64>(std::floor((step_beat + kToleranceSamples * quarters_per_sample) /
+                                                     division_quarters));
+      if (last_division_index_ != kNoDivision && event_division > last_division_index_) {
+        // Beat retrigger: the first boundary crossed restarts the step clock,
+        // so the pattern begins exactly on the division.
+        const int64 boundary_division = last_division_index_ + 1;
+        const double boundary = (static_cast<double>(boundary_division) * division_quarters - block_start_beat) /
+                                quarters_per_sample;
+        if (boundary >= -kToleranceSamples) {
+          event = jmax(0.0, boundary);
+          event_division = boundary_division;
+        }
+      }
+    }
+    if (event >= static_cast<double>(num_samples))
+      break;
+
+    if (event_division != kNoDivision && event_division != last_division_index_)
+      restartPatternAtDivision(event_division);
+    const int offset = jlimit(0, num_samples - 1, static_cast<int>(std::round(event)));
     triggerStep(output, offset, clamped_gate_samples, num_samples, settings);
-    samples_until_next_step_ += step_samples;
+    samples_until_next_step_ = event + step_samples;
   }
   samples_until_next_step_ -= static_cast<double>(num_samples);
 }
 
-void AtlasArpeggiator::addHostClockSteps(MidiBuffer& output, int num_samples, double rate_quarters,
-                                         double gate_samples, double bpm, double ppq_position,
-                                         bool has_ppq_position, const Settings& settings) {
-  if (settings.retrigger != kRetriggerBeat || !has_ppq_position) {
-    const double step_samples = rate_quarters * (60.0 / bpm) * sample_rate_;
-    addInternalClockSteps(output, num_samples, step_samples, gate_samples, settings);
-    return;
-  }
+void AtlasArpeggiator::addBeatClockSteps(MidiBuffer& output, int num_samples, double rate_quarters,
+                                         double gate_samples, double block_start_beat,
+                                         double quarters_per_sample, double division_quarters,
+                                         const Settings& settings) {
+  // Steps sit on the beat grid (the host's while its transport plays) and the
+  // grid restarts on every division boundary, so a rate that does not divide
+  // the division still puts the first step of the pattern on the boundary.
+  const double tolerance = quarters_per_sample * 0.25;
+  const double block_end = block_start_beat + quarters_per_sample * static_cast<double>(num_samples);
+  const double step_samples = rate_quarters / quarters_per_sample;
+  const int max_gate_samples = jmax(1, static_cast<int>(std::floor(step_samples)) - 1);
+  const int clamped_gate_samples = jlimit(1, max_gate_samples, static_cast<int>(std::round(gate_samples)));
 
-  const double quarters_per_sample = bpm / (60.0 * sample_rate_);
-  const double block_start = ppq_position;
-  const double block_end = block_start + quarters_per_sample * static_cast<double>(num_samples);
-  double next_grid = std::floor(block_start / rate_quarters) * rate_quarters;
-  if (next_grid < block_start - 1.0e-9)
-    next_grid += rate_quarters;
+  double position = block_start_beat;
+  while (true) {
+    const double division_start = std::floor((position + tolerance) / division_quarters) * division_quarters;
+    double step = division_start + std::ceil((position - division_start - tolerance) / rate_quarters) * rate_quarters;
+    const double next_division = division_start + division_quarters;
+    if (step > next_division - tolerance)
+      step = next_division;
+    if (step >= block_end - tolerance)
+      break;
 
-  while (next_grid < block_end - 1.0e-9) {
+    const int64 step_division = static_cast<int64>(std::floor((step + tolerance) / division_quarters));
+    if (step_division != last_division_index_)
+      restartPatternAtDivision(step_division);
     const int offset = jlimit(0, num_samples - 1,
-                              static_cast<int>(std::round((next_grid - block_start) / quarters_per_sample)));
-    const double step_samples = rate_quarters / quarters_per_sample;
-    const int max_gate_samples = jmax(1, static_cast<int>(std::floor(step_samples)) - 1);
-    const int clamped_gate_samples = jlimit(1, max_gate_samples, static_cast<int>(std::round(gate_samples)));
+                              static_cast<int>(std::round((step - block_start_beat) / quarters_per_sample)));
     triggerStep(output, offset, clamped_gate_samples, num_samples, settings);
-    next_grid += rate_quarters;
+    position = step + 2.0 * tolerance;
   }
+}
+
+void AtlasArpeggiator::restartPatternAtDivision(int64 division_index) {
+  last_division_index_ = division_index;
+  pattern_index_ = 0;
+  repeat_index_ = 0;
+  last_random_note_ = -1;
 }
 
 void AtlasArpeggiator::triggerStep(MidiBuffer& output, int sample_offset, int gate_samples, int block_samples,
@@ -305,15 +380,35 @@ const std::vector<AtlasArpeggiator::HeldNote>& AtlasArpeggiator::sortedHeldNotes
 const std::vector<int>& AtlasArpeggiator::buildPatternNotes(const std::vector<HeldNote>& source_notes,
                                                             const Settings& settings) {
   pattern_notes_.clear();
-  for (int step = 0; step < jmax(1, settings.steps); ++step) {
-    for (const auto& held : source_notes) {
-      const int note = held.note + settings.distance * step;
-      if (isPositiveAndBelow(note, 128))
-        pattern_notes_.push_back(note);
+  if (settings.play_order == kPlayOrderAsPlayed) {
+    // Keys in the order they were pressed, each step's transposed copy after
+    // the last. Styles then treat this order as "up".
+    sorted_by_order_.assign(source_notes.begin(), source_notes.end());
+    std::sort(sorted_by_order_.begin(), sorted_by_order_.end(), [](const HeldNote& a, const HeldNote& b) {
+      return a.order < b.order;
+    });
+    std::bitset<128> used;
+    for (int step = 0; step < jmax(1, settings.steps); ++step) {
+      for (const auto& held : sorted_by_order_) {
+        const int note = held.note + settings.distance * step;
+        if (isPositiveAndBelow(note, 128) && !used[static_cast<size_t>(note)]) {
+          used[static_cast<size_t>(note)] = true;
+          pattern_notes_.push_back(note);
+        }
+      }
     }
   }
-  std::sort(pattern_notes_.begin(), pattern_notes_.end());
-  pattern_notes_.erase(std::unique(pattern_notes_.begin(), pattern_notes_.end()), pattern_notes_.end());
+  else {
+    for (int step = 0; step < jmax(1, settings.steps); ++step) {
+      for (const auto& held : source_notes) {
+        const int note = held.note + settings.distance * step;
+        if (isPositiveAndBelow(note, 128))
+          pattern_notes_.push_back(note);
+      }
+    }
+    std::sort(pattern_notes_.begin(), pattern_notes_.end());
+    pattern_notes_.erase(std::unique(pattern_notes_.begin(), pattern_notes_.end()), pattern_notes_.end());
+  }
   if (pattern_notes_.empty())
     return pattern_notes_;
 
@@ -467,6 +562,7 @@ void AtlasArpeggiator::resetSequence(double samples_until_next_step) {
   pattern_index_ = 0;
   repeat_index_ = 0;
   last_random_note_ = -1;
+  last_division_index_ = kNoDivision;
   random_once_pattern_.clear();
 }
 
