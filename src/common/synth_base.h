@@ -272,6 +272,8 @@ class SynthBase : public MidiManager::Listener {
     std::unique_ptr<MidiKeyboardState> keyboard_state_;
     std::array<std::array<AtlasArpeggiator, 8>, vital::kNumArpeggiators> arpeggiators_;
     std::array<std::array<vital::Value*, 21>, vital::kNumArpeggiators> arpeggiator_controls_ {};
+    std::array<vital::Value*, 8> arp_destination_osc_on_ {};
+    bool arpDestinationSounds(int destination) const;
     MidiSchedulingBuffers midi_scheduling_buffers_;
     std::array<ScheduledMidiEvent, kMaxScheduledMidiEvents> scheduled_midi_events_;
     int scheduled_midi_event_count_ = 0;

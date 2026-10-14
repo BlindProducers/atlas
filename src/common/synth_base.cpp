@@ -241,6 +241,10 @@ SynthBase::SynthBase() : expired_(false) {
       if (found != controls_.end()) arpeggiator_controls_[arp][i] = found->second;
     }
   }
+  for (int destination = 0; destination < kNumArpDestinations; ++destination) {
+    const auto found = controls_.find("osc_" + std::to_string(destination + 1) + "_on");
+    if (found != controls_.end()) arp_destination_osc_on_[destination] = found->second;
+  }
   const std::string compression_suffix = "spectral_compressor_compression";
   for (const auto& control : controls_) {
     const auto& name = control.first;
@@ -1426,6 +1430,8 @@ void SynthBase::buildScheduledMidiEvents(MidiBuffer& midi_messages, int start_sa
           for (const MidiMessageMetadata message : arp_output) {
             const MidiMessage midi_message = message.getMessage();
             const int event_sample = cursor + message.samplePosition;
+            if (midi_message.isNoteOn() && !arpDestinationSounds(destination))
+              continue;
             if (midi_message.isNoteOnOrOff()) {
               addScheduledMidiEvent(midi_message, event_sample,
                                     kFirstAtlasArpDestinationVoiceChannel + destination);
@@ -1453,6 +1459,14 @@ void SynthBase::buildScheduledMidiEvents(MidiBuffer& midi_messages, int start_sa
       return left_priority < right_priority;
     return left.sequence < right.sequence;
   });
+}
+
+// Each arp plays every destination oscillator on its own voices, so a chord
+// takes notes x destinations voices from the shared pool. Notes for an
+// oscillator that is off would only take voices from the ones that sound.
+bool SynthBase::arpDestinationSounds(int destination) const {
+  const vital::Value* on = arp_destination_osc_on_[static_cast<size_t>(destination)];
+  return on == nullptr || on->value() >= 0.5f;
 }
 
 void SynthBase::dispatchScheduledMidiEvent(const ScheduledMidiEvent& event) {
@@ -1580,7 +1594,7 @@ void SynthBase::processMidi(MidiBuffer& midi_messages, int start_sample, int end
           for (const MidiMessageMetadata message : arp_output) {
             const MidiMessage midi_message = message.getMessage();
             const int voice_channel = kFirstAtlasArpDestinationVoiceChannel + destination;
-            if (midi_message.isNoteOn())
+            if (midi_message.isNoteOn() && arpDestinationSounds(destination))
               engine_->noteOn(midi_message.getNoteNumber(), midi_message.getFloatVelocity(),
                               message.samplePosition, voice_channel);
             else if (midi_message.isNoteOff())
