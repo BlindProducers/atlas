@@ -311,6 +311,66 @@ namespace {
            "Off retrigger restarts a finished loop on a new chord after release");
   }
 
+  void testArpOctave() {
+    const int step = static_cast<int>(kArpTestSamplesPerQuarter * 0.5);
+    auto settings = arpTestSettings();
+    expect(settings.octave == 0, "Octave defaults to the keys played");
+    const std::vector<int> times = { 0, step, 2 * step };
+    settings.octave = 1;
+    expectArpSteps(arpNoteOns(runArpeggiator(settings, arpChord(0), step * 3)), { 72, 76, 79 }, times,
+                   "Octave 1 plays the pattern an octave up");
+    settings.octave = -2;
+    expectArpSteps(arpNoteOns(runArpeggiator(settings, arpChord(0), step * 3)), { 36, 40, 43 }, times,
+                   "Octave -2 plays the pattern two octaves down");
+
+    // Steps still stack on top of the shifted pattern.
+    settings.octave = 1;
+    settings.steps = 2;
+    expectArpSteps(arpNoteOns(runArpeggiator(settings, arpChord(0), step * 6)), { 72, 76, 79, 84, 88, 91 },
+                   { 0, step, 2 * step, 3 * step, 4 * step, 5 * step }, "Octave shifts every step of the pattern");
+    settings.steps = 1;
+
+    // Every generated note-on gets a matching note-off at the shifted pitch.
+    int on_count = 0, off_count = 0;
+    for (const auto& event : runArpeggiator(settings, arpChord(0), step * 4)) {
+      if (event.message.isNoteOn()) ++on_count;
+      if (event.message.isNoteOff()) {
+        ++off_count;
+        expect(event.message.getNoteNumber() >= 72, "Note-offs use the shifted pitch");
+      }
+    }
+    expect(on_count == 4 && off_count >= 3, "Shifted notes are released");
+
+    settings.style = AtlasArpeggiator::kChordTrigger;
+    settings.octave = -1;
+    expectArpSteps(arpNoteOns(runArpeggiator(settings, arpChord(0), 1)), { 48, 52, 55 }, { 0, 0, 0 },
+                   "Chord trigger plays the chord in the chosen octave");
+
+    // Notes shifted past the MIDI range rest instead of wrapping.
+    settings.style = AtlasArpeggiator::kUp;
+    settings.octave = AtlasArpeggiator::kMaxOctave;
+    const std::multimap<int, MidiMessage> high = {
+      { 0, MidiMessage::noteOn(1, 60, 1.0f) },
+      { 0, MidiMessage::noteOn(1, 84, 1.0f) }
+    };
+    const auto clipped = arpNoteOns(runArpeggiator(settings, high, step * 2));
+    expectArpSteps(clipped, { 108 }, { 0 }, "A note shifted inside the MIDI range plays");
+    expect(clipped.size() == 1, "A note shifted above the MIDI range rests for its step");
+
+    SynthPlugin synth;
+    auto& controls = synth.getControls();
+    for (int arp = 1; arp <= vital::kNumArpeggiators; ++arp) {
+      const std::string name = "arp_" + std::to_string(arp) + "_octave";
+      const auto found = controls.find(name);
+      expect(found != controls.end(), name + " exists");
+      if (found != controls.end())
+        close(found->second->value(), 0.0f, name + " defaults to 0");
+      const auto& details = vital::Parameters::getDetails(name);
+      expect(static_cast<int>(details.min) == AtlasArpeggiator::kMinOctave &&
+             static_cast<int>(details.max) == AtlasArpeggiator::kMaxOctave, name + " covers every octave");
+    }
+  }
+
   void testArpRetriggerDivisionParameter() {
     SynthPlugin synth;
     auto& controls = synth.getControls();
@@ -382,7 +442,7 @@ namespace {
                other + " is named for its arpeggiator");
       }
     }
-    expect(matched == 28, "Every Arpeggiator 1 control is checked");
+    expect(matched == 29, "Every Arpeggiator 1 control is checked");
 
     for (int arp = 3; arp <= vital::kNumArpeggiators; ++arp) {
       SynthPlugin synth;

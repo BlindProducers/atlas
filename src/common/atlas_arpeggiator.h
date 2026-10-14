@@ -56,6 +56,10 @@ class AtlasArpeggiator {
     static constexpr int kMaxLoops = 16;
     static constexpr int kLoopInfinite = kMaxLoops;
 
+    // Octave shifts every note the arp plays by this many octaves.
+    static constexpr int kMinOctave = -4;
+    static constexpr int kMaxOctave = 4;
+
     struct SyncRate {
       const char* name;
       double quarter_notes;
@@ -83,6 +87,8 @@ class AtlasArpeggiator {
       int loop = kLoopInfinite;
       int offset = 0;
       int distance = 12;
+      // Octaves added to every generated note, relative to the keys held.
+      int octave = 0;
       int steps = 1;
       int velocity = 100;
       float velocity_decay = 0.0f;

@@ -63,13 +63,13 @@ namespace {
     return found != controls.end() && found->second != nullptr ? found->second->value() : fallback;
   }
 
-  constexpr std::array<const char*, 20> kArpeggiatorControlNames {
+  constexpr std::array<const char*, 21> kArpeggiatorControlNames {
     "on", "time_mode", "sync_rate", "free_rate", "style", "gate", "random_gate", "repeats",
     "offset", "distance", "steps", "velocity", "velocity_decay", "random_velocity", "hold", "retrigger", "channel",
-    "retrigger_division", "play_order", "loop"
+    "retrigger_division", "play_order", "loop", "octave"
   };
 
-  AtlasArpeggiator::Settings arpeggiatorSettings(const std::array<vital::Value*, 20>& controls) {
+  AtlasArpeggiator::Settings arpeggiatorSettings(const std::array<vital::Value*, 21>& controls) {
     const auto value = [&](int index, float fallback) {
       return controls[index] ? controls[index]->value() : fallback;
     };
@@ -95,6 +95,7 @@ namespace {
         value(17, AtlasArpeggiator::kDefaultRetriggerDivision)));
     settings.play_order = static_cast<int>(std::round(value(18, AtlasArpeggiator::kPlayOrderPitch)));
     settings.loop = static_cast<int>(std::round(value(19, AtlasArpeggiator::kLoopInfinite)));
+    settings.octave = static_cast<int>(std::round(value(20, 0)));
     return settings;
   }
 

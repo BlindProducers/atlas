@@ -75,6 +75,7 @@ namespace vital {
       createBaseControl(prefix + "loop");
       createBaseControl(prefix + "offset");
       createBaseControl(prefix + "distance");
+      createBaseControl(prefix + "octave");
       createBaseControl(prefix + "steps");
       createBaseControl(prefix + "velocity");
       createBaseControl(prefix + "velocity_decay");
