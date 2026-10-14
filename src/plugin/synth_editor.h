@@ -313,6 +313,7 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     int oscillatorModeKey(int oscillator) const;
     bool refreshOscillatorModeRowsIfNeeded();
     bool refreshZoneCrossfadeRowIfNeeded();
+    bool refreshEnvelopeAnalogRowsIfNeeded();
     String focusedParameterId() const;
     String focusedAccessibleTitle() const;
     // The SectionName of the focused control or its nearest group, so a rebuild
@@ -987,6 +988,7 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     // An SF2 preset menu lists another SoundFont than its slot plays.
     bool instrument_preset_menu_stale_ = false;
     int last_glide_zones_ = -1;
+    int last_envelope_analog_ = -1;
     int lfo_cycle_index_ = 3;
     int lfo_grid_index_ = 14;
     float lfo_cursor_phase_ = 0.0f;

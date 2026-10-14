@@ -95,7 +95,8 @@ slots of its own.
   Loop Point and Loop Hold loop part of the shape. Fade, delay, smoothing, stereo
   phase, deform and swing shape it further.
 - **10 envelopes** with delay, attack, hold, decay, sustain and release, curve
-  controls and tempo-synced times.
+  controls and tempo-synced times. Envelope 1 also has an analog mode with RC curves
+  and its own Age control for worn timing.
 - **4 random LFOs**: Perlin, Sample & Hold, Sine Interpolate and Lorenz Attractor,
   free or tempo synced, mono or stereo.
 - **16 macros**, plus velocity, aftertouch, mod wheel, pitch bend, note and other
