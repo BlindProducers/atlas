@@ -267,6 +267,26 @@ class SynthBase : public MidiManager::Listener {
     std::unique_ptr<MidiKeyboardState> keyboard_state_;
     std::array<std::array<AtlasArpeggiator, 8>, 2> arpeggiators_;
     std::array<std::array<vital::Value*, 17>, 2> arpeggiator_controls_ {};
+    // What routes a played key to each oscillator slot's arpeggiators: the
+    // slot's switch and key and velocity zones, and each arp's destination
+    // switch for it. Looked up once, as the audio thread reads them per note.
+    struct ArpSlotControls {
+      vital::Value* on = nullptr;
+      vital::Value* key_start = nullptr;
+      vital::Value* key_end = nullptr;
+      vital::Value* velocity_start = nullptr;
+      vital::Value* velocity_end = nullptr;
+      std::array<vital::Value*, 2> destination {};
+    };
+    std::array<ArpSlotControls, 8> arp_slot_controls_ {};
+    // Arp `arp` is on and sends to `slot`.
+    bool arpeggiatorSendsToSlot(int arp, int slot) const;
+    // ...and the slot is on: only then does that arpeggiator play.
+    bool arpeggiatorPlaysSlot(int arp, int slot) const;
+    // Whether some slot that sounds is left to the keyboard by both arps.
+    bool keyboardPlaysSomeSlot() const;
+    bool shouldSendToArpeggiator(int arp, int slot, const MidiMessage& message) const;
+    AtlasArpeggiator::Settings slotArpeggiatorSettings(int arp, int slot, const AtlasArpeggiator::Settings& settings) const;
     MidiSchedulingBuffers midi_scheduling_buffers_;
     std::array<ScheduledMidiEvent, kMaxScheduledMidiEvents> scheduled_midi_events_;
     int scheduled_midi_event_count_ = 0;

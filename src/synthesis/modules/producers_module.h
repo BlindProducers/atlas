@@ -100,6 +100,10 @@ namespace vital {
       // Audio thread, between blocks.
       void addOscillatorRoute(ModulationConnectionProcessor* processor, int source, int destination);
       void removeOscillatorRoute(ModulationConnectionProcessor* processor);
+      // Slots whose playhead a modulation route reads (bit per slot): an
+      // arpeggiator voice renders these even when it doesn't play them.
+      // Audio thread, between blocks.
+      void setPlayheadRoutedSlots(unsigned slots) { *playhead_routed_slots_ = slots; }
       // Each voice runs its own copies of the routes, found in the voice graph
       // copy this handler is processing.
       void setVoiceHandler(const VoiceHandler* voice_handler) { voice_handler_ = voice_handler; }
@@ -124,7 +128,6 @@ namespace vital {
       bool isFilter1On() { return filter1_on_ == nullptr || filter1_on_->value() > 0.5f; }
       bool isFilter2On() { return filter2_on_ == nullptr || filter2_on_->value() > 0.5f; }
       bool arpDestinationOn(int arp, int destination) const;
-      bool anyArpDestinationOn() const;
       bool sourceHasActiveArp(int destination) const;
       poly_float getSourcePlaybackMask(int destination, poly_float zone_mask) const;
       poly_float getZoneMask(Value* key_start, Value* key_end, Value* velocity_start, Value* velocity_end);
@@ -142,8 +145,14 @@ namespace vital {
         int source = -1;
         int destination = -1;
       };
+      // Which slots this voice must render: all of them, except in a voice
+      // only arpeggiator notes use, which needs just the slots it plays and
+      // what they read (FM, RM, sync, audio routes, routed playheads).
+      unsigned slotsToRender(const ZoneGain* zone_gains, const bool* audible, const unsigned* dependencies) const;
+
       // Shared by every voice copy.
       std::shared_ptr<std::vector<OscillatorRoute>> oscillator_routes_;
+      std::shared_ptr<unsigned> playhead_routed_slots_;
       const VoiceHandler* voice_handler_ = nullptr;
 
       SourceSlotModule* slots_[kNumOscillators];

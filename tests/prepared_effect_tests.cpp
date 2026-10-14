@@ -1080,6 +1080,61 @@ void effectCpu(const std::string& only) {
   }
 }
 
+// The arpeggiator's cost in realtime blocks of 512 at 48 kHz: a preset (or the
+// default patch) holding a four-note chord, with and without Arp 1 at 1/16 and
+// a Distortion, Reverb, Chorus and Delay chain. Prints the mean and worst
+// block time against the block's budget, and the most voices at once.
+void arpeggiatorCpu(const std::string& preset_path) {
+  using namespace vital;
+  constexpr int kBlock = 512;
+  constexpr int kBlocks = 1000;
+  struct Result { double mean_us = 0, worst_us = 0; int max_voices = 0; };
+  auto run = [&](bool arp, bool effects) {
+    SynthPlugin plugin;
+    plugin.setPlayConfigDetails(0, 2, 48000, kBlock);
+    plugin.prepareToPlay(48000, kBlock);
+    if (!preset_path.empty()) {
+      std::string error;
+      expect(plugin.loadFromFile(juce::File(preset_path), error), "the preset loads");
+    }
+    if (arp) {
+      plugin.valueChanged("arp_1_on", 1.0f);
+      plugin.valueChanged("arp_1_sync_rate", 13.0f);  // 1/16
+    }
+    if (effects) {
+      const int chain[] = { constants::kDistortion, constants::kReverb, constants::kChorus, constants::kDelay };
+      for (int slot = 0; slot < 4; ++slot)
+        selectEffect(plugin, "fx_slot_" + std::to_string(slot + 1) + "_", chain[slot]);
+    }
+    plugin.getEngine()->prepareSelectedEffects();
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(200);
+    juce::AudioBuffer<float> audio(2, kBlock);
+    juce::MidiBuffer midi;
+    for (int note : { 48, 55, 60, 64 })
+      midi.addEvent(juce::MidiMessage::noteOn(1, note, .8f), 0);
+    Result result;
+    for (int block = 0; block < kBlocks; ++block) {
+      audio.clear();
+      const auto start = std::chrono::steady_clock::now();
+      plugin.processBlock(audio, midi);
+      const double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count();
+      midi.clear();
+      result.mean_us += us / kBlocks;
+      result.worst_us = std::max(result.worst_us, us);
+      result.max_voices = std::max(result.max_voices, plugin.getEngine()->getNumActiveVoices());
+    }
+    return result;
+  };
+  std::cout << "block budget us=" << kBlock * 1.0e6 / 48000 << std::endl;
+  for (bool effects : { false, true }) {
+    for (bool arp : { false, true }) {
+      const Result result = run(arp, effects);
+      std::cout << "arp=" << arp << " effects=" << effects << " mean_us=" << result.mean_us
+                << " worst_us=" << result.worst_us << " max_voices=" << result.max_voices << std::endl;
+    }
+  }
+}
+
 // Saving, loading into a fresh instance and saving again gives identical state,
 // including settings of effects a slot no longer selects, routes into them,
 // and FX automation assignments to them.
@@ -1300,6 +1355,10 @@ int main(int argc, char** argv) {
     return compareRenders(argv[2], argv[3]);
   if (argc > 1 && String(argv[1]) == "--effect-cpu") {
     effectCpu(argc > 2 ? argv[2] : "");
+    return failures ? 1 : 0;
+  }
+  if (argc > 1 && String(argv[1]) == "--arp-cpu") {
+    arpeggiatorCpu(argc > 2 ? argv[2] : "");
     return failures ? 1 : 0;
   }
   if (argc > 3 && String(argv[1]) == "--render") {

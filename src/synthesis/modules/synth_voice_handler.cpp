@@ -593,10 +593,26 @@ namespace vital {
 
   void SynthVoiceHandler::enableModulationConnection(ModulationConnectionProcessor* processor) {
     enabled_modulation_processors_.push_back(processor);
+    updatePlayheadRoutes();
   }
 
   void SynthVoiceHandler::disableModulationConnection(ModulationConnectionProcessor* processor) {
     enabled_modulation_processors_.remove(processor);
+    updatePlayheadRoutes();
+  }
+
+  void SynthVoiceHandler::updatePlayheadRoutes() {
+    if (producers_ == nullptr)
+      return;
+    unsigned slots = 0;
+    for (ModulationConnectionProcessor* processor : enabled_modulation_processors_) {
+      const Output* source = processor->input(ModulationConnectionProcessor::kModulationInput)->source;
+      for (int i = 0; i < kNumOscillators; ++i) {
+        if (source == producers_->slotPhaseOutput(i))
+          slots |= 1u << i;
+      }
+    }
+    producers_->setPlayheadRoutedSlots(slots);
   }
 
   void SynthVoiceHandler::addOscillatorRoute(ModulationConnectionProcessor* processor, int source, int destination) {

@@ -93,94 +93,28 @@ namespace {
     return settings;
   }
 
-  bool arpeggiatorDestinationEnabled(vital::control_map& controls, int index, const std::string& destination) {
-    const std::string prefix = "arp_" + std::to_string(index + 1) + "_";
-    return controlValue(controls, prefix + "on", 0.0f) >= 0.5f &&
-           controlValue(controls, prefix + destination, 1.0f) >= 0.5f;
-  }
-
-  bool sourceNeedsOriginalKeyboardPath(vital::control_map& controls, const std::string& destination) {
-    return !arpeggiatorDestinationEnabled(controls, 0, destination) &&
-           !arpeggiatorDestinationEnabled(controls, 1, destination);
-  }
-
-  bool anySourceNeedsOriginalKeyboardPath(vital::control_map& controls) {
-    static const char* kDestinations[] = {
-      "destination_osc_1", "destination_osc_2", "destination_osc_3", "destination_osc_4",
-      "destination_osc_5", "destination_osc_6", "destination_osc_7", "destination_osc_8",
-    };
-
-    for (const char* destination : kDestinations) {
-      if (sourceNeedsOriginalKeyboardPath(controls, destination))
-        return true;
-    }
-    return false;
-  }
-
-  struct ArpDestinationZone {
-    const char* destination;
+  // Each oscillator slot's arpeggiator controls, by name.
+  struct ArpSlotNames {
+    const char* on;
     const char* key_start;
     const char* key_end;
     const char* velocity_start;
     const char* velocity_end;
   };
 
-  const ArpDestinationZone kArpDestinationZones[] = {
-    { "destination_osc_1", "osc_1_key_zone_start", "osc_1_key_zone_end",
-      "osc_1_velocity_zone_start", "osc_1_velocity_zone_end" },
-    { "destination_osc_2", "osc_2_key_zone_start", "osc_2_key_zone_end",
-      "osc_2_velocity_zone_start", "osc_2_velocity_zone_end" },
-    { "destination_osc_3", "osc_3_key_zone_start", "osc_3_key_zone_end",
-      "osc_3_velocity_zone_start", "osc_3_velocity_zone_end" },
-    { "destination_osc_4", "osc_4_key_zone_start", "osc_4_key_zone_end",
-      "osc_4_velocity_zone_start", "osc_4_velocity_zone_end" },
-    { "destination_osc_5", "osc_5_key_zone_start", "osc_5_key_zone_end",
-      "osc_5_velocity_zone_start", "osc_5_velocity_zone_end" },
-    { "destination_osc_6", "osc_6_key_zone_start", "osc_6_key_zone_end",
-      "osc_6_velocity_zone_start", "osc_6_velocity_zone_end" },
-    { "destination_osc_7", "osc_7_key_zone_start", "osc_7_key_zone_end",
-      "osc_7_velocity_zone_start", "osc_7_velocity_zone_end" },
-    { "destination_osc_8", "osc_8_key_zone_start", "osc_8_key_zone_end",
-      "osc_8_velocity_zone_start", "osc_8_velocity_zone_end" },
+  const ArpSlotNames kArpSlotNames[] = {
+    { "osc_1_on", "osc_1_key_zone_start", "osc_1_key_zone_end", "osc_1_velocity_zone_start", "osc_1_velocity_zone_end" },
+    { "osc_2_on", "osc_2_key_zone_start", "osc_2_key_zone_end", "osc_2_velocity_zone_start", "osc_2_velocity_zone_end" },
+    { "osc_3_on", "osc_3_key_zone_start", "osc_3_key_zone_end", "osc_3_velocity_zone_start", "osc_3_velocity_zone_end" },
+    { "osc_4_on", "osc_4_key_zone_start", "osc_4_key_zone_end", "osc_4_velocity_zone_start", "osc_4_velocity_zone_end" },
+    { "osc_5_on", "osc_5_key_zone_start", "osc_5_key_zone_end", "osc_5_velocity_zone_start", "osc_5_velocity_zone_end" },
+    { "osc_6_on", "osc_6_key_zone_start", "osc_6_key_zone_end", "osc_6_velocity_zone_start", "osc_6_velocity_zone_end" },
+    { "osc_7_on", "osc_7_key_zone_start", "osc_7_key_zone_end", "osc_7_velocity_zone_start", "osc_7_velocity_zone_end" },
+    { "osc_8_on", "osc_8_key_zone_start", "osc_8_key_zone_end", "osc_8_velocity_zone_start", "osc_8_velocity_zone_end" },
   };
 
-
-  bool noteIsInArpDestinationZone(vital::control_map& controls, int arp, const ArpDestinationZone& zone,
-                                  int note, float velocity, bool check_velocity) {
-    if (!arpeggiatorDestinationEnabled(controls, arp, zone.destination))
-      return false;
-
-    float key_start = controlValue(controls, zone.key_start, 0.0f);
-    float key_end = controlValue(controls, zone.key_end, 127.0f);
-    const float key_min = std::min(key_start, key_end);
-    const float key_max = std::max(key_start, key_end);
-    if (note < key_min || note > key_max)
-      return false;
-
-    if (!check_velocity)
-      return true;
-
-    float velocity_start = controlValue(controls, zone.velocity_start, 0.0f);
-    float velocity_end = controlValue(controls, zone.velocity_end, 1.0f);
-    const float velocity_min = std::min(velocity_start, velocity_end);
-    const float velocity_max = std::max(velocity_start, velocity_end);
-    return velocity >= velocity_min && velocity <= velocity_max;
-  }
-
-  bool shouldSendMessageToArpeggiator(vital::control_map& controls, int arp, int destination,
-                                      const MidiMessage& message) {
-    if (!isPositiveAndBelow(destination, kNumArpDestinations))
-      return false;
-
-    const auto& zone = kArpDestinationZones[destination];
-    if (message.isNoteOn()) {
-      return noteIsInArpDestinationZone(controls, arp, zone, message.getNoteNumber(),
-                                        message.getFloatVelocity(), true);
-    }
-    if (message.isNoteOff()) {
-      return noteIsInArpDestinationZone(controls, arp, zone, message.getNoteNumber(), 0.0f, false);
-    }
-    return false;
+  float valueOr(const vital::Value* value, float fallback) {
+    return value != nullptr ? value->value() : fallback;
   }
 } // namespace
 
@@ -232,6 +166,22 @@ SynthBase::SynthBase() : expired_(false) {
       if (found != controls_.end()) arpeggiator_controls_[arp][i] = found->second;
     }
   }
+  auto findControl = [this](const std::string& name) -> vital::Value* {
+    const auto found = controls_.find(name);
+    return found != controls_.end() ? found->second : nullptr;
+  };
+  for (int slot = 0; slot < kNumArpDestinations; ++slot) {
+    const ArpSlotNames& names = kArpSlotNames[slot];
+    ArpSlotControls& controls = arp_slot_controls_[slot];
+    controls.on = findControl(names.on);
+    controls.key_start = findControl(names.key_start);
+    controls.key_end = findControl(names.key_end);
+    controls.velocity_start = findControl(names.velocity_start);
+    controls.velocity_end = findControl(names.velocity_end);
+    for (int arp = 0; arp < 2; ++arp)
+      controls.destination[arp] = findControl("arp_" + std::to_string(arp + 1) + "_destination_osc_" +
+                                              std::to_string(slot + 1));
+  }
   const std::string compression_suffix = "spectral_compressor_compression";
   for (const auto& control : controls_) {
     const auto& name = control.first;
@@ -259,6 +209,55 @@ SynthBase::SynthBase() : expired_(false) {
 
 SynthBase::~SynthBase() {
   alive_->store(false);
+}
+
+bool SynthBase::arpeggiatorSendsToSlot(int arp, int slot) const {
+  return valueOr(arpeggiator_controls_[arp][0], 0.0f) >= 0.5f &&
+         valueOr(arp_slot_controls_[slot].destination[arp], 1.0f) >= 0.5f;
+}
+
+bool SynthBase::arpeggiatorPlaysSlot(int arp, int slot) const {
+  // Every note a slot's arpeggiator plays takes a voice of its own. A slot
+  // that is off plays nothing, so its arpeggiator gets no notes: it used to
+  // take as many voices as one that sounds.
+  return valueOr(arp_slot_controls_[slot].on, 1.0f) >= 0.5f && arpeggiatorSendsToSlot(arp, slot);
+}
+
+bool SynthBase::keyboardPlaysSomeSlot() const {
+  for (int slot = 0; slot < kNumArpDestinations; ++slot) {
+    if (valueOr(arp_slot_controls_[slot].on, 1.0f) >= 0.5f &&
+        !arpeggiatorSendsToSlot(0, slot) && !arpeggiatorSendsToSlot(1, slot))
+      return true;
+  }
+  return false;
+}
+
+bool SynthBase::shouldSendToArpeggiator(int arp, int slot, const MidiMessage& message) const {
+  if (!isPositiveAndBelow(slot, kNumArpDestinations) || !message.isNoteOnOrOff() || !arpeggiatorPlaysSlot(arp, slot))
+    return false;
+
+  const ArpSlotControls& controls = arp_slot_controls_[slot];
+  const float key_start = valueOr(controls.key_start, 0.0f);
+  const float key_end = valueOr(controls.key_end, 127.0f);
+  const int note = message.getNoteNumber();
+  if (note < std::min(key_start, key_end) || note > std::max(key_start, key_end))
+    return false;
+  if (!message.isNoteOn())
+    return true;
+
+  const float velocity_start = valueOr(controls.velocity_start, 0.0f);
+  const float velocity_end = valueOr(controls.velocity_end, 1.0f);
+  const float velocity = message.getFloatVelocity();
+  return velocity >= std::min(velocity_start, velocity_end) && velocity <= std::max(velocity_start, velocity_end);
+}
+
+AtlasArpeggiator::Settings SynthBase::slotArpeggiatorSettings(int arp, int slot,
+                                                              const AtlasArpeggiator::Settings& settings) const {
+  // Off for a slot it no longer plays, which also stops the notes it was
+  // playing there.
+  AtlasArpeggiator::Settings result = settings;
+  result.enabled = result.enabled && arpeggiatorPlaysSlot(arp, slot);
+  return result;
 }
 
 bool SynthBase::isSourceTypeControl(const std::string& name) {
@@ -1359,14 +1358,14 @@ void SynthBase::buildScheduledMidiEvents(MidiBuffer& midi_messages, int start_sa
       }
       for (int arp = 0; arp < 2; ++arp) {
         for (int destination = 0; destination < kNumArpDestinations; ++destination) {
-          if (shouldSendMessageToArpeggiator(controls_, arp, destination, midi_message))
+          if (shouldSendToArpeggiator(arp, destination, midi_message))
             midi_scheduling_buffers_.arp_input[arp][destination].addEvent(midi_message, relative_sample);
         }
       }
     }
 
     MidiBuffer& merged_output = midi_scheduling_buffers_.merged_output;
-    const bool keep_original_notes = anySourceNeedsOriginalKeyboardPath(controls_);
+    const bool keep_original_notes = keyboardPlaysSomeSlot();
     for (const MidiMessageMetadata message : input) {
       const MidiMessage midi_message = message.getMessage();
       // Note-offs always pass through so notes that started before an arp
@@ -1381,6 +1380,7 @@ void SynthBase::buildScheduledMidiEvents(MidiBuffer& midi_messages, int start_sa
         const MidiBuffer& destination_input = midi_scheduling_buffers_.arp_input[arp][destination];
         MidiBuffer& segment_input = midi_scheduling_buffers_.arp_segment_input;
         MidiBuffer& arp_output = midi_scheduling_buffers_.arp_output;
+        const AtlasArpeggiator::Settings settings = slotArpeggiatorSettings(arp, destination, arp_settings[arp]);
         int cursor = 0;
         while (cursor < num_samples) {
           int next_event = num_samples;
@@ -1414,7 +1414,7 @@ void SynthBase::buildScheduledMidiEvents(MidiBuffer& midi_messages, int start_sa
           const double quarters_per_sample = has_ppq_position ? bpm / (60.0 * engine_->getSampleRate()) : 0.0;
           arpeggiators_[arp][destination].process(segment_input, arp_output, segment_samples, bpm,
                                                   ppq_position + cursor * quarters_per_sample,
-                                                  has_ppq_position, arp_settings[arp]);
+                                                  has_ppq_position, settings);
           for (const MidiMessageMetadata message : arp_output) {
             const MidiMessage midi_message = message.getMessage();
             const int event_sample = cursor + message.samplePosition;
@@ -1544,7 +1544,7 @@ void SynthBase::processMidi(MidiBuffer& midi_messages, int start_sample, int end
           input.addEvent(midi_message, relative_sample);
           for (int arp = 0; arp < 2; ++arp) {
             for (int destination = 0; destination < kNumArpDestinations; ++destination) {
-              if (shouldSendMessageToArpeggiator(controls_, arp, destination, midi_message))
+              if (shouldSendToArpeggiator(arp, destination, midi_message))
                 arp_input[arp][destination].addEvent(midi_message, relative_sample);
             }
           }
@@ -1553,7 +1553,7 @@ void SynthBase::processMidi(MidiBuffer& midi_messages, int start_sample, int end
 
       MidiBuffer merged_output;
       const int num_samples = end_sample - start_sample;
-      const bool keep_original_notes = anySourceNeedsOriginalKeyboardPath(controls_);
+      const bool keep_original_notes = keyboardPlaysSomeSlot();
       for (const MidiMessageMetadata message : input) {
         const MidiMessage midi_message = message.getMessage();
         // Note-offs always pass through so notes that started before an arp
@@ -1566,7 +1566,8 @@ void SynthBase::processMidi(MidiBuffer& midi_messages, int start_sample, int end
         for (int destination = 0; destination < kNumArpDestinations; ++destination) {
           MidiBuffer arp_output;
           arpeggiators_[arp][destination].process(arp_input[arp][destination], arp_output, num_samples,
-                                                  bpm, ppq_position, has_ppq_position, arp_settings[arp]);
+                                                  bpm, ppq_position, has_ppq_position,
+                                                  slotArpeggiatorSettings(arp, destination, arp_settings[arp]));
           for (const MidiMessageMetadata message : arp_output) {
             const MidiMessage midi_message = message.getMessage();
             const int voice_channel = kFirstAtlasArpDestinationVoiceChannel + destination;

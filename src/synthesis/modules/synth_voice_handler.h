@@ -90,6 +90,8 @@ namespace vital {
     private:
       // Filter 1 (0) or 2 (1); null before init().
       FilterModule* voiceFilter(int index);
+      // Tells the producers which slots' playheads the enabled routes read.
+      void updatePlayheadRoutes();
       void createNoteArticulation();
       void createProducers();
       void createModulators();

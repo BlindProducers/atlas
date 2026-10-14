@@ -288,6 +288,87 @@ namespace {
            "Switching the arpeggiator off must release the step note it was playing");
   }
 
+  // Each oscillator slot has its own arpeggiator, and every note one plays
+  // takes a voice. With all eight destinations on by default, a step used to
+  // start eight voices however few slots sounded, each rendering every slot,
+  // and arpeggiated patches ran out of CPU.
+  void testArpeggiatorVoicesFollowSoundingSlots() {
+    SynthPlugin synth;
+    prepare(synth);
+    auto& controls = synth.getControls();
+    for (int slot = 1; slot <= vital::kNumOscillators; ++slot)
+      controls.at("osc_" + std::to_string(slot) + "_on")->set(slot <= 2 ? 1.0f : 0.0f);
+    controls.at("env_1_release")->set(std::pow(0.01f, 0.25f));
+    controls.at("arp_1_on")->set(1.0f);
+    controls.at("arp_1_time_mode")->set(1.0f);
+    controls.at("arp_1_free_rate")->set(2.0f);  // a step every half second
+    MidiBuffer hold;
+    hold.addEvent(MidiMessage::noteOn(1, 60, 1.0f), 0);
+    renderMidi(synth, hold);
+    MidiBuffer empty;
+    renderMidi(synth, empty);
+    expect(synth.getEngine()->getNumActiveVoices() == 2, "An arpeggiator step takes one voice per sounding slot");
+
+    controls.at("osc_2_on")->set(0.0f);
+    for (int i = 0; i < 40; ++i)
+      renderMidi(synth, empty);
+    expect(synth.getEngine()->getNumActiveVoices() == 1,
+           "Switching a slot off stops the note its arpeggiator was playing");
+
+    MidiBuffer release;
+    release.addEvent(MidiMessage::noteOff(1, 60), 0);
+    renderMidi(synth, release);
+    for (int i = 0; i < 200; ++i)
+      renderMidi(synth, empty);
+    expect(synth.getEngine()->getNumActiveVoices() == 0, "Arpeggiator voices end after the key is released");
+  }
+
+  // A step's voices each play one slot. Switching the arpeggiator off while
+  // they rang out used to give each of them every slot at once, so the tails
+  // jumped in level.
+  void testArpeggiatorTailsKeepTheirSlot() {
+    SynthPlugin synth;
+    prepare(synth);
+    auto& controls = synth.getControls();
+    for (int slot = 1; slot <= vital::kNumOscillators; ++slot)
+      controls.at("osc_" + std::to_string(slot) + "_on")->set(slot <= 4 ? 1.0f : 0.0f);
+    controls.at("env_1_release")->set(1.0f);  // one second
+    controls.at("arp_1_on")->set(1.0f);
+    controls.at("arp_1_time_mode")->set(1.0f);
+    controls.at("arp_1_free_rate")->set(2.0f);
+    controls.at("arp_1_gate")->set(10.0f);  // the step's note ends after 50 ms
+    // The engine's output, as these tests set up no host channels.
+    auto blockPeak = [&synth](MidiBuffer midi) {
+      AudioBuffer<float> audio(2, 128);
+      synth.processBlock(audio, midi);
+      float peak = 0.0f;
+      for (int i = 0; i < 128; ++i)
+        for (int lane = 0; lane < 2; ++lane)
+          peak = std::max(peak, std::abs(synth.getEngine()->output()->buffer[i][lane]));
+      return peak;
+    };
+    MidiBuffer hold;
+    hold.addEvent(MidiMessage::noteOn(1, 60, 1.0f), 0);
+    blockPeak(hold);
+    MidiBuffer release;
+    release.addEvent(MidiMessage::noteOff(1, 60), 0);
+    blockPeak(release);
+    for (int i = 0; i < 30; ++i)
+      blockPeak({});
+    const float ringing = blockPeak({});
+    controls.at("arp_1_on")->set(0.0f);
+    float after = 0.0f;
+    for (int i = 0; i < 4; ++i)
+      after = std::max(after, blockPeak({}));
+    // The engine clamps its output to +-2.1, so a NaN reads as 2.1 here; the
+    // meter before the clamp shows it.
+    const float meter = synth.getStatusOutput("peak_meter")->value()[0];
+    expect(ringing > 0.01f, "The arpeggiator's step rings out (peak " + std::to_string(ringing) + ")");
+    expect(after <= ringing * 1.05f && std::isfinite(meter),
+           "Switching the arpeggiator off leaves its ringing notes as they were (peak " +
+           std::to_string(ringing) + " then " + std::to_string(after) + ", meter " + std::to_string(meter) + ")");
+  }
+
 
   void testGranularGridFollowsPluginClock() {
     SynthPlugin synth;
@@ -752,6 +833,8 @@ int main(int argc, char** argv) {
   testMacroLevelMatchesDirectLevel();
   testSameSampleNoteOnOffDoesNotStick();
   testArpeggiatorEnableAndDisableReleaseNotes();
+  testArpeggiatorVoicesFollowSoundingSlots();
+  testArpeggiatorTailsKeepTheirSlot();
   testGranularGridFollowsPluginClock();
   testSyncedLfoNotesWithTransportStoppedAndPlaying();
   testLfoTempoModulatedByAnotherLfo();
