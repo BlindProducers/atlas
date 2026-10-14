@@ -30,6 +30,7 @@ namespace vital {
         kMidi,
         kActiveVoices,
         kNotePressed,
+        kSoundingVoices,
         kNumInputs
       };
 

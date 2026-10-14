@@ -494,7 +494,197 @@ namespace analog_oscillator_tests {
     expect(maximumDifference(noise.lane(2048), synced_noise.lane(2048)) == 0.0, "Hard Sync is off for Pitched Noise");
   }
 
+  // Average frequency from interpolated rising zero crossings.
+  double crossingFrequency(const std::vector<float>& samples, int rate) {
+    double first = -1.0, last = -1.0;
+    int cycles = 0;
+    for (size_t i = 1; i < samples.size(); ++i) {
+      if (samples[i - 1] < 0.0f && samples[i] >= 0.0f) {
+        const double t = double(i - 1) + samples[i - 1] / double(samples[i - 1] - samples[i]);
+        if (first < 0.0)
+          first = t;
+        else
+          ++cycles;
+        last = t;
+      }
+    }
+    return cycles > 0 ? cycles * rate / (last - first) : 0.0;
+  }
+
+  double centsBetween(double frequency, double reference) { return 1200.0 * std::log2(frequency / reference); }
+
+  // Amplitude of one frequency, by Goertzel over a whole number of its cycles.
+  double amplitudeAt(const std::vector<float>& samples, double frequency, int rate) {
+    const double w = 2.0 * juce::MathConstants<double>::pi * frequency / rate;
+    double s1 = 0.0, s2 = 0.0;
+    for (float sample : samples) {
+      const double s0 = sample + 2.0 * std::cos(w) * s1 - s2;
+      s2 = s1;
+      s1 = s0;
+    }
+    const double power = s1 * s1 + s2 * s2 - 2.0 * std::cos(w) * s1 * s2;
+    return 2.0 * std::sqrt(std::max(0.0, power)) / samples.size();
+  }
+
+  void testAging() {
+    constexpr int rate = 48000, samples = 9600;
+    auto make = [rate](int note, float age, float drift, float spread, float tracking, const std::string& salt = "osc_1") {
+      auto f = std::make_unique<AnalogFixture>(rate, A::kSine);
+      f->oscillator->setVoiceCardSalt(salt);
+      f->set(O::kMidiNote, note);
+      f->set(O::kAnalogAge, age);
+      f->set(O::kAnalogDrift, drift);
+      f->set(O::kAnalogVoiceSpread, spread);
+      f->set(O::kAnalogTracking, tracking);
+      return f;
+    };
+
+    // Age 0 leaves the oscillator exactly as it was, whatever the other amounts.
+    const auto plain = make(60, 0.0f, 0.0f, 0.0f, 0.0f)->lane(samples);
+    auto unaged = make(60, 0.0f, 1.0f, 1.0f, 1.0f);
+    for (int input : {O::kAnalogWear, O::kAnalogNoise, O::kAnalogSag})
+      unaged->set(input, 1.0f);
+    unaged->set(O::kSoundingVoices, 16.0f);
+    expect(unaged->lane(samples) == plain, "Age 0 output is unchanged");
+    const double plain_frequency = crossingFrequency(plain, rate);
+
+    // Tracking Error leaves middle C alone and makes high notes flat.
+    const double centre = centsBetween(crossingFrequency(make(60, 1.0f, 0.0f, 0.0f, 1.0f)->lane(samples), rate),
+                                       plain_frequency);
+    const double high_plain = crossingFrequency(make(96, 0.0f, 0.0f, 0.0f, 0.0f)->lane(samples), rate);
+    const double high = centsBetween(crossingFrequency(make(96, 1.0f, 0.0f, 0.0f, 1.0f)->lane(samples), rate),
+                                     high_plain);
+    std::cout << "Tracking Error at middle C " << centre << " cents, three octaves up " << high << " cents\n";
+    expect(std::abs(centre) < 0.1, "Tracking Error leaves middle C in tune");
+    expect(high < -75.0 && high > -380.0, "Tracking Error makes high notes flat");
+
+    // Voice Spread offsets a voice by a fixed amount, the same for every load,
+    // and different for another oscillator.
+    const auto spread = make(60, 1.0f, 0.0f, 1.0f, 0.0f)->lane(samples);
+    const double spread_cents = centsBetween(crossingFrequency(spread, rate), plain_frequency);
+    const double spread_db = 20.0 * std::log10(rms(spread) / rms(plain));
+    std::cout << "Voice Spread offset " << spread_cents << " cents, " << spread_db << " dB\n";
+    expect(std::abs(spread_cents) <= 100.5 && std::abs(spread_cents) > 0.01, "Voice Spread offsets the pitch");
+    expect(std::abs(spread_db) <= 8.05 && std::abs(spread_db) > 0.001, "Voice Spread offsets the level");
+    expect(make(60, 1.0f, 0.0f, 1.0f, 0.0f)->lane(samples) == spread, "Voice Spread is the same every load");
+    expect(make(60, 1.0f, 0.0f, 1.0f, 0.0f, "osc_2")->lane(samples) != spread,
+           "Each oscillator has its own voice cards");
+
+    // Drift wanders over seconds and stays within a sensible range.
+    auto drifting = make(60, 1.0f, 1.0f, 0.0f, 0.0f);
+    const auto drifted = drifting->lane(rate * 8);
+    double lowest = 1.0e9, highest = -1.0e9;
+    for (int start = 0; start + rate / 4 <= static_cast<int>(drifted.size()); start += rate / 4) {
+      const std::vector<float> window(drifted.begin() + start, drifted.begin() + start + rate / 4);
+      const double offset = centsBetween(crossingFrequency(window, rate), plain_frequency);
+      lowest = std::min(lowest, offset);
+      highest = std::max(highest, offset);
+    }
+    std::cout << "Drift range " << lowest << " to " << highest << " cents\n";
+    expect(highest - lowest > 10.0, "Drift moves the pitch over time");
+    expect(lowest > -400.0 && highest < 400.0, "Drift stays within range");
+
+    // Each unison oscillator drifts on its own as well.
+    auto unison = [](float drift) {
+      AnalogFixture f(rate, A::kSaw, 0.0f, 4);
+      f.oscillator->setVoiceCardSalt("osc_1");
+      f.set(O::kAnalogAge, 1.0f);
+      f.set(O::kAnalogDrift, drift);
+      return f.lane(rate);
+    };
+    const auto unison_drifted = unison(1.0f);
+    bool finite = true;
+    for (float sample : unison_drifted)
+      finite = finite && std::isfinite(sample);
+    expect(finite && unison_drifted != unison(0.0f), "Drift moves unison oscillators");
+
+    // Supply Sag: many sounding voices pull the pitch and level down.
+    auto sagging = make(60, 1.0f, 0.0f, 0.0f, 0.0f);
+    sagging->set(O::kAnalogSag, 1.0f);
+    sagging->set(O::kSoundingVoices, 16.0f);
+    const auto sagged = sagging->lane(samples);
+    const double sag_cents = centsBetween(crossingFrequency(sagged, rate), plain_frequency);
+    const double sag_db = 20.0 * std::log10(rms(sagged) / rms(plain));
+    std::cout << "Supply Sag with 16 voices " << sag_cents << " cents, " << sag_db << " dB\n";
+    // 16 voices load the supply to 1 - e^(-15 / 6), about 0.918.
+    expect(std::abs(sag_cents + 73.5) < 2.0, "Supply Sag flattens big chords");
+    expect(std::abs(sag_db + 3.97) < 0.3, "Supply Sag lowers the level");
+    auto lone = make(60, 1.0f, 0.0f, 0.0f, 0.0f);
+    lone->set(O::kAnalogSag, 1.0f);
+    lone->set(O::kSoundingVoices, 1.0f);
+    expect(std::abs(centsBetween(crossingFrequency(lone->lane(samples), rate), plain_frequency)) < 0.1,
+           "One voice doesn't sag");
+
+    // Wear moves the pulse width, softens edges on high notes and adds even harmonics.
+    auto worn = [](int waveform, int note, float wear) {
+      AnalogFixture f(rate, waveform);
+      f.oscillator->setVoiceCardSalt("osc_1");
+      f.set(O::kMidiNote, note);
+      f.set(O::kAnalogAge, wear > 0.0f ? 1.0f : 0.0f);
+      f.set(O::kAnalogDrift, 0.0f);
+      f.set(O::kAnalogVoiceSpread, 0.0f);
+      f.set(O::kAnalogTracking, 0.0f);
+      f.set(O::kAnalogWear, wear);
+      return f.lane(samples);
+    };
+    auto positiveFraction = [](const std::vector<float>& x) {
+      int positive = 0;
+      for (float sample : x) positive += sample > 0.0f;
+      return double(positive) / x.size();
+    };
+    auto roughness = [](const std::vector<float>& x) {
+      std::vector<float> difference(x.size() - 1);
+      for (size_t i = 1; i < x.size(); ++i) difference[i - 1] = x[i] - x[i - 1];
+      return rms(difference) / rms(x);
+    };
+    const double duty = positiveFraction(worn(A::kSquare, 60, 1.0f));
+    const double edge_ratio = roughness(worn(A::kSaw, 96, 1.0f)) / roughness(worn(A::kSaw, 96, 0.0f));
+    const double plain_duty = positiveFraction(worn(A::kSquare, 60, 0.0f));
+    const auto worn_sine = worn(A::kSine, 60, 1.0f);
+    const double second = amplitudeAt(worn_sine, plain_frequency * 2.0, rate) /
+                          amplitudeAt(worn_sine, plain_frequency, rate);
+    std::cout << "Wear: square duty " << duty << " (was " << plain_duty << "), high saw edges x" << edge_ratio
+              << ", sine second harmonic " << 20.0 * std::log10(second) << " dB\n";
+    expect(std::abs(duty - plain_duty) > 0.01 && std::abs(duty - plain_duty) < 0.3, "Wear moves the pulse width");
+    expect(edge_ratio < 0.9, "Wear softens edges on high notes");
+    expect(second > 0.01 && second < 0.5, "Wear adds even harmonics");
+
+    // Noise: hiss and hum at the chosen mains frequency, crackle only near the top.
+    // Hum is measured under a 1 kHz tone, a whole number of cycles per window.
+    auto noisy = [](float noise, float hum_frequency, bool fixed_tone = true) {
+      AnalogFixture f(rate, A::kSine);
+      f.oscillator->setVoiceCardSalt("osc_1");
+      f.set(O::kMidiNote, 60);
+      if (fixed_tone)
+        f.fixedFrequency(1000.0f);
+      f.set(O::kAnalogAge, 1.0f);
+      f.set(O::kAnalogDrift, 0.0f);
+      f.set(O::kAnalogVoiceSpread, 0.0f);
+      f.set(O::kAnalogTracking, 0.0f);
+      f.set(O::kAnalogNoise, noise);
+      f.set(O::kAnalogHumFrequency, hum_frequency);
+      return f.lane(rate);
+    };
+    const auto sixty = noisy(0.5f, 1.0f), fifty = noisy(0.5f, 0.0f);
+    const double hum_120 = amplitudeAt(sixty, 120.0, rate), hum_100 = amplitudeAt(sixty, 100.0, rate);
+    std::cout << "Hum at 60 Hz mains: 120 Hz " << hum_120 << ", 100 Hz " << hum_100
+              << "; at 50 Hz mains: 100 Hz " << amplitudeAt(fifty, 100.0, rate) << '\n';
+    expect(std::abs(hum_120 / 0.01 - 1.0) < 0.2, "Hum is at the expected level");
+    expect(hum_100 < hum_120 * 0.2, "60 Hz mains hums at 120 Hz");
+    expect(std::abs(amplitudeAt(fifty, 100.0, rate) / 0.01 - 1.0) < 0.2, "50 Hz mains hums at 100 Hz");
+    const auto crackling = noisy(1.0f, 1.0f, false), quiet = noisy(0.5f, 1.0f, false);
+    int pops = 0;
+    for (size_t i = 1; i < crackling.size(); ++i)
+      pops += std::abs(crackling[i] - crackling[i - 1]) > 0.12f;
+    int quiet_pops = 0;
+    for (size_t i = 1; i < quiet.size(); ++i)
+      quiet_pops += std::abs(quiet[i] - quiet[i - 1]) > 0.12f;
+    std::cout << "Crackle: " << pops << " sharp jumps at 100% Noise, " << quiet_pops << " at 50%\n";
+    expect(pops > 0 && quiet_pops == 0, "Crackle only in the top half of Noise");
+  }
+
   int runDsp() {
+    testAging();
     testHardSync();
     testFmAndRingMod();
     testLevelMatchesDefaultWavetable();
@@ -576,7 +766,9 @@ namespace analog_oscillator_tests {
     const auto controls = plugin.getControls();
     const std::pair<const char*, float> defaults[] = {
       { "type", O::kWavetableType }, { "analog_waveform", A::kSaw }, { "analog_shape", 0.0f },
-      { "sub_level", 0.0f }, { "sub_octave", A::kSubOctaveDown1 }, { "sub_waveform", A::kSubSquare }
+      { "sub_level", 0.0f }, { "sub_octave", A::kSubOctaveDown1 }, { "sub_waveform", A::kSubSquare },
+      { "analog_age", 0.0f }, { "analog_drift", 0.5f }, { "analog_voice_spread", 0.5f }, { "analog_tracking", 0.5f },
+      { "analog_wear", 0.5f }, { "analog_noise", 0.5f }, { "analog_hum_frequency", 1.0f }, { "analog_sag", 0.5f }
     };
     // Slots 5-8 default to the Sample, Granular, Spectral and Noise types they replaced.
     auto defaultFor = [](int osc, const std::pair<const char*, float>& entry) {
@@ -634,7 +826,9 @@ namespace analog_oscillator_tests {
     plugin.parameterChanged("osc_1_pan", 0.0f);
 
     // Modulation reaches the new destinations.
-    for (const char* id : {"osc_1_analog_shape", "osc_1_sub_level"})
+    for (const char* id : {"osc_1_analog_shape", "osc_1_sub_level", "osc_1_analog_age", "osc_1_analog_drift",
+                           "osc_1_analog_voice_spread", "osc_1_analog_tracking", "osc_1_analog_wear",
+                           "osc_1_analog_noise", "osc_1_analog_sag"})
       expect(plugin.connectModulation("macro_control_1", id), std::string("Modulation route to ") + id);
 
     // State round trip, and old presets load as wavetables.

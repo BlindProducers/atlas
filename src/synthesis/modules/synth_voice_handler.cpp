@@ -225,6 +225,7 @@ namespace vital {
     producers_->plug(channel(), ProducersModule::kChannel);
     producers_->plug(active_mask(), ProducersModule::kActiveVoices);
     producers_->plug(midi_key(), ProducersModule::kMidiKey);
+    producers_->plug(&num_voices_, ProducersModule::kSoundingVoices);
     addSubmodule(producers_);
     addProcessor(producers_);
   }

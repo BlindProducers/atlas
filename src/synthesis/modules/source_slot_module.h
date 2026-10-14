@@ -51,6 +51,7 @@ namespace vital {
         // The tuned note and the played MIDI key (Multi-sample region lookup).
         kNote,
         kMidiKey,
+        kSoundingVoices,
         kNumInputs
       };
 

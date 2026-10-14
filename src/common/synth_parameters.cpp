@@ -1601,6 +1601,23 @@ namespace vital {
       ValueDetails::kIndexed, false, "", "Sub Octave", strings::kSubOctaveNames },
     { "sub_waveform", 0x020113, 0.0, analog::kNumSubWaveforms - 1, analog::kSubSquare, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Sub Waveform", strings::kSubWaveformNames },
+    // Analog aging, appended by version. Age 0 leaves the oscillator exactly as before.
+    { "analog_age", 0x020124, 0.0, 1.0, 0.0, 0.0, 100.0,
+      ValueDetails::kLinear, false, "%", "Analog Age", nullptr },
+    { "analog_drift", 0x020124, 0.0, 1.0, 0.5, 0.0, 100.0,
+      ValueDetails::kLinear, false, "%", "Analog Drift", nullptr },
+    { "analog_voice_spread", 0x020124, 0.0, 1.0, 0.5, 0.0, 100.0,
+      ValueDetails::kLinear, false, "%", "Analog Voice Spread", nullptr },
+    { "analog_tracking", 0x020124, 0.0, 1.0, 0.5, 0.0, 100.0,
+      ValueDetails::kLinear, false, "%", "Analog Tracking Error", nullptr },
+    { "analog_wear", 0x020124, 0.0, 1.0, 0.5, 0.0, 100.0,
+      ValueDetails::kLinear, false, "%", "Analog Wear", nullptr },
+    { "analog_noise", 0x020124, 0.0, 1.0, 0.5, 0.0, 100.0,
+      ValueDetails::kLinear, false, "%", "Analog Noise", nullptr },
+    { "analog_hum_frequency", 0x020124, 0.0, 1.0, 1.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Analog Hum Frequency", strings::kHumFrequencyNames },
+    { "analog_sag", 0x020124, 0.0, 1.0, 0.5, 0.0, 100.0,
+      ValueDetails::kLinear, false, "%", "Analog Supply Sag", nullptr },
   };
 
   // Sample oscillator type: registered once per oscillator slot as osc_N_sample_*.
