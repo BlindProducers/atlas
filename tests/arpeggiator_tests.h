@@ -412,6 +412,38 @@ namespace {
            "Loop values read from 1 to Infinite");
   }
 
+  // Chord Trigger plays each held note on its own voice for every destination
+  // oscillator. Destinations whose oscillator is off must not take voices, or
+  // a chord of more than four notes ran out of the 32 voices with only
+  // Oscillator 1 sounding and dropped notes.
+  void testArpChordUsesVoicesOnlyForOscillatorsThatAreOn() {
+    SynthPlugin synth;
+    prepare(synth);
+    auto& controls = synth.getControls();
+    controls.at("polyphony")->set(32.0f);
+    for (int osc = 1; osc <= vital::kNumOscillators; ++osc)
+      controls.at("osc_" + std::to_string(osc) + "_on")->set(osc == 1 ? 1.0f : 0.0f);
+    controls.at("arp_1_on")->set(1.0f);
+    controls.at("arp_1_style")->set(static_cast<float>(AtlasArpeggiator::kChordTrigger));
+    controls.at("arp_1_time_mode")->set(1.0f);
+    // Two steps a second: the blocks below stay inside the first step.
+    controls.at("arp_1_free_rate")->set(2.0f);
+
+    const int chord[] = { 48, 52, 55, 59, 60, 64, 67, 71 };
+    MidiBuffer midi;
+    for (int note : chord)
+      midi.addEvent(MidiMessage::noteOn(1, note, 1.0f), 0);
+    renderMidi(synth, midi);
+    MidiBuffer empty;
+    int most_voices = 0;
+    for (int i = 0; i < 40; ++i) {
+      renderMidi(synth, empty);
+      most_voices = std::max(most_voices, synth.getEngine()->getNumActiveVoices());
+    }
+    expect(most_voices == 8, "An eight-note chord on one oscillator uses one voice per note, got " +
+           std::to_string(most_voices));
+  }
+
   // Arpeggiators 3 to 8 have every Arpeggiator 1 control, with the same range
   // and default, and each one plays its notes through the synth.
   void testArpeggiatorsBeyondTwo() {

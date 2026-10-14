@@ -647,6 +647,7 @@ int main(int argc, char** argv) {
     testArpOctave();
     testArpRetriggerDivisionParameter();
     testArpeggiatorsBeyondTwo();
+    testArpChordUsesVoicesOnlyForOscillatorsThatAreOn();
     if (failures == 0)
       std::cout << "Atlas arpeggiator tests passed\n";
     return failures == 0 ? 0 : 1;
