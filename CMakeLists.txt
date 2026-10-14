@@ -280,8 +280,11 @@ elseif(WIN32)
       "${ATLAS_NVDA_DIR}/generate_stub.cmake"
     COMMENT "Generating the NVDA controller client stub"
     VERBATIM)
+  # Zeroed buffers come straight from VirtualAlloc; kept out of the unity
+  # files so <windows.h> never reaches the DSP code.
   target_sources(Atlas PRIVATE
     src/plugin/windows_screen_reader.cpp
+    src/synthesis/framework/zeroed_buffer.cpp
     "${ATLAS_NVDA_STUB_DIR}/nvdaController_c.c")
   target_include_directories(Atlas PRIVATE "${ATLAS_NVDA_STUB_DIR}")
   target_link_libraries(Atlas PRIVATE rpcrt4)

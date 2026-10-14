@@ -120,8 +120,6 @@ PreparedEffectModule::PreparedEffectModule(int type, std::string prefix, Factory
                       type_ == constants::kSpectralLock ? SpectralLockModule::kMaxSpectralLatencySamples :
                       type_ == constants::kFilterFx ? filterFxLatency(atlas::filter_table::kLinear) :
                       description_.latency;
-  if (pending_capacity_ > 0)
-    pending_history_.reset(new float[size_t(pending_capacity_) * poly_float::kSize]);
   if (type_ == constants::kConvolutionReverb)
     convolution_state_ = std::make_unique<ConvolutionReverbModule>(prefix_, std::move(ir_worker), true);
 }
@@ -364,6 +362,10 @@ void PreparedEffectModule::reserveControls() {
   // A parked effect's controls missed quality changes; this stays within
   // their reserved capacity.
   SynthModule::setOversampleAmount(amount);
+  if (pending_capacity_ > 0 && pending_history_ == nullptr) {
+    pending_history_.reset(new float[size_t(pending_capacity_) * poly_float::kSize]);
+    pending_position_ = pending_valid_ = 0;
+  }
   controls_reserved_.store(true, std::memory_order_release);
 }
 void PreparedEffectModule::park() {
@@ -373,6 +375,7 @@ void PreparedEffectModule::park() {
     // preparation already under way publishes for an older configuration.
     restart();
   }
+  pending_history_.reset();
   std::lock_guard<std::mutex> lock(wiring_mutex_);
   std::vector<std::string> unrouted;
   for (const auto& destination : data_->mono_mod_destinations)
@@ -395,7 +398,9 @@ void PreparedEffectModule::prepareForPlayback() {
 void PreparedEffectModule::renderPending(const poly_float* input, int samples) {
   // Never index past the reserved history, whatever a latency query returns.
   const int latency = std::min(getLatencySamples(), pending_capacity_);
-  if (latency <= 0) {
+  // A parked effect has no history: selected in realtime, it passes audio
+  // through undelayed until the message thread makes it live.
+  if (latency <= 0 || pending_history_ == nullptr) {
     utils::copyBuffer(output()->buffer, input, samples);
     return;
   }

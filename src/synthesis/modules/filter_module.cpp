@@ -86,6 +86,17 @@ namespace vital {
     return table_filter_->getLatencySamples();
   }
 
+  void FilterModule::setReverbMemory(bool reserve) {
+    if (reserve)
+      reverb_filter_->reserveMemory();
+    else
+      reverb_filter_->releaseMemory();
+  }
+
+  bool FilterModule::takeReverbMemoryRequest() {
+    return reverb_filter_->takeMemoryRequest();
+  }
+
   void FilterModule::init() {
     Output* keytrack_amount = createModControl(prefix_ + "_keytrack");
     cr::Multiply* current_keytrack = new cr::Multiply();

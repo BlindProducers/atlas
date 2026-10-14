@@ -343,9 +343,29 @@ void SynthBase::scheduleSourcePreparation() {
   });
 }
 
+void SynthBase::setVoiceReverbMemory(int filter, bool reserve) {
+  // Allocation belongs on the message thread. From another thread (host
+  // automation, MIDI learn) the voices pass audio through until it has run.
+  if (MessageManager::getInstance()->isThisTheMessageThread()) {
+    const ScopedLock lock(getCriticalSection());
+    engine_->setVoiceReverbMemory(filter, reserve);
+    return;
+  }
+  scheduleEffectControlReservation();
+}
+
 void SynthBase::valueChanged(const std::string& name, vital::mono_float value) {
   const bool changed = controls_[name]->value() != value;
+  // The voice filters hold Reverb memory only while that model is selected:
+  // selecting it reserves the memory before the audio thread can see the new
+  // model, and leaving it frees the memory afterwards.
+  const int voice_filter = !changed ? -1 : name == "filter_1_model" ? 0 : name == "filter_2_model" ? 1 : -1;
+  const bool reverb = static_cast<int>(value + 0.5f) == vital::constants::kReverbFilter;
+  if (voice_filter >= 0 && reverb)
+    setVoiceReverbMemory(voice_filter, true);
   controls_[name]->set(value);
+  if (voice_filter >= 0 && !reverb)
+    setVoiceReverbMemory(voice_filter, false);
   if (changed && isSourceTypeControl(name))
     scheduleSourcePreparation();
   if (changed && isEffectSlotTypeControl(name))

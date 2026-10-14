@@ -21,9 +21,17 @@ void ReverbFilterCore::reserve(double maximum_rate) {
     // Deliberately uninitialised: valid_ guards every read. Unused models do
     // not touch megabytes of delay pages, and a note reset is constant time.
     memory_.reset(new float[required]);
+    if (history_ == nullptr)
+      history_.reset(new double[384 * kMaximumOversampling]);
     capacity_ = required;
     reset();
   }
+}
+void ReverbFilterCore::release() {
+  memory_.reset();
+  history_.reset();
+  capacity_ = 0;
+  reset();
 }
 void ReverbFilterCore::setSampleRate(double rate, int oversampling) {
   assert(oversampling >= 1 && oversampling <= kMaximumOversampling);
