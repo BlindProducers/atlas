@@ -1349,6 +1349,8 @@ namespace {
         "Oscillator 8",
         "Arpeggiator 1",
         "Arpeggiator 2",
+        "Arpeggiator 3",
+        "Arpeggiator 4",
         "Filter 1",
         "Filter 2",
         kEffectsChainSection,
@@ -2216,7 +2218,7 @@ namespace {
       return 7200 + lfo * 100 + 90;
     }
 
-    for (int arp = 1; arp <= 2; ++arp) {
+    for (int arp = 1; arp <= vital::kNumArpeggiators; ++arp) {
       const String prefix = "arp_" + String(arp) + "_";
       if (!id.startsWith(prefix))
         continue;
@@ -2510,6 +2512,15 @@ namespace {
     return indexOfPathPart(parts, folder_name) >= 0;
   }
 
+  // The arpeggiator (1-based) an "arp_N_" control belongs to, or 0.
+  int arpeggiatorForId(const String& id) {
+    for (int arp = 1; arp <= vital::kNumArpeggiators; ++arp) {
+      if (id.startsWith("arp_" + String(arp) + "_"))
+        return arp;
+    }
+    return 0;
+  }
+
   String sectionForParameter(const String& id) {
     const String bus_section = busEffectSectionForParameter(id);
     if (bus_section.isNotEmpty())
@@ -2551,8 +2562,7 @@ namespace {
     if (id.startsWith("scanner_vibrato_")) return "Scanner Vibrato";
     if (id.startsWith("spectral_compressor_")) return "Spectral Compressor";
     if (id.startsWith("spectral_gate_")) return "Spectral Gate";
-    if (id.startsWith("arp_1_")) return "Arpeggiator 1";
-    if (id.startsWith("arp_2_")) return "Arpeggiator 2";
+    if (const int arp = arpeggiatorForId(id); arp > 0) return "Arpeggiator " + String(arp);
     if (id.startsWith("filter_1")) return "Filter 1";
     if (id.startsWith("filter_2")) return "Filter 2";
     if (id.startsWith("env_")) {
@@ -2621,13 +2631,10 @@ namespace {
   }
 
   String arpeggiatorControlTitle(const String& id) {
-    String suffix;
-    if (id.startsWith("arp_1_"))
-      suffix = id.fromFirstOccurrenceOf("arp_1_", false, false);
-    else if (id.startsWith("arp_2_"))
-      suffix = id.fromFirstOccurrenceOf("arp_2_", false, false);
-    else
+    const int arp = arpeggiatorForId(id);
+    if (arp == 0)
       return {};
+    const String suffix = id.fromFirstOccurrenceOf("arp_" + String(arp) + "_", false, false);
 
     if (suffix == "on") return "Switch";
     if (suffix == "time_mode") return "Time mode";
@@ -2656,8 +2663,9 @@ namespace {
   }
 
   bool isArpeggiatorDestination(const String& section, const String& id) {
-    return (section == "Arpeggiator 1" && id.startsWith("arp_1_destination_")) ||
-           (section == "Arpeggiator 2" && id.startsWith("arp_2_destination_"));
+    const int arp = arpeggiatorForId(id);
+    return arp > 0 && section == "Arpeggiator " + String(arp) &&
+           id.startsWith("arp_" + String(arp) + "_destination_");
   }
 
   String midiControlName(int midi_id) {
@@ -7001,7 +7009,7 @@ std::unique_ptr<AccessibleParameterRow> SynthEditor::createAccessibleParameterRo
   if (parameter_id == "volume")
     return std::make_unique<AccessibleParameterRow>(parameter, "Global Gain");
   const String suffix = filterSuffixForParameter(parameter_id);
-  if (parameter_id.startsWith("arp_1_") || parameter_id.startsWith("arp_2_")) {
+  if (arpeggiatorForId(parameter_id) > 0) {
     String title = arpeggiatorControlTitle(parameter_id);
     if (title.isNotEmpty()) {
       // "Destination oscillator 5, sample": the slot's type says what the arp plays.

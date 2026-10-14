@@ -105,8 +105,11 @@ namespace {
   }
 
   bool sourceNeedsOriginalKeyboardPath(vital::control_map& controls, const std::string& destination) {
-    return !arpeggiatorDestinationEnabled(controls, 0, destination) &&
-           !arpeggiatorDestinationEnabled(controls, 1, destination);
+    for (int arp = 0; arp < vital::kNumArpeggiators; ++arp) {
+      if (arpeggiatorDestinationEnabled(controls, arp, destination))
+        return false;
+    }
+    return true;
   }
 
   bool anySourceNeedsOriginalKeyboardPath(vital::control_map& controls) {
@@ -230,7 +233,7 @@ SynthBase::SynthBase() : expired_(false) {
   // (one-frame) tables are already rendered, so only the flags need setting.
   for (int i = 0; i < vital::kNumOscillators; ++i)
     wavetable_render_pending_[i] = !slotUsesWavetable(i);
-  for (int arp = 0; arp < 2; ++arp) {
+  for (int arp = 0; arp < vital::kNumArpeggiators; ++arp) {
     const std::string prefix = "arp_" + std::to_string(arp + 1) + "_";
     for (size_t i = 0; i < kArpeggiatorControlNames.size(); ++i) {
       const auto found = controls_.find(prefix + kArpeggiatorControlNames[i]);
@@ -249,7 +252,7 @@ SynthBase::SynthBase() : expired_(false) {
   for (const auto& control : controls_)
     if (!isEffectParameter(control.first))
       pending_gui_updates_.try_emplace(control.first);
-  for (int arp = 0; arp < 2; ++arp) {
+  for (int arp = 0; arp < vital::kNumArpeggiators; ++arp) {
     for (int destination = 0; destination < kNumArpDestinations; ++destination) {
       const int64 seed = 0x41544c4153415250ll + arp * kNumArpDestinations + destination;
       arpeggiators_[arp][destination].prepare(engine_->getSampleRate(), seed);
@@ -1275,22 +1278,22 @@ void SynthBase::buildScheduledMidiEvents(MidiBuffer& midi_messages, int start_sa
   scheduled_midi_sequence_ = 0;
   clearMidiSchedulingBuffers();
 
-  const bool arpeggiator_enabled =
-      (arpeggiator_controls_[0][0] && arpeggiator_controls_[0][0]->value() >= 0.5f) ||
-      (arpeggiator_controls_[1][0] && arpeggiator_controls_[1][0]->value() >= 0.5f);
+  bool arpeggiator_enabled = false;
+  for (const auto& controls : arpeggiator_controls_)
+    arpeggiator_enabled = arpeggiator_enabled || (controls[0] && controls[0]->value() >= 0.5f);
   const bool arpeggiators_were_enabled = arpeggiators_were_enabled_;
   arpeggiators_were_enabled_ = arpeggiator_enabled;
   if (!arpeggiator_enabled) {
     if (arpeggiators_were_enabled) {
-      // Both arps were just switched off: let each run once disabled so it
+      // Every arp was just switched off: let each run once disabled so it
       // releases any generated note still waiting for its note-off.
-      const AtlasArpeggiator::Settings disabled_settings[2] = {
-        arpeggiatorSettings(arpeggiator_controls_[0]), arpeggiatorSettings(arpeggiator_controls_[1])
-      };
+      AtlasArpeggiator::Settings disabled_settings[vital::kNumArpeggiators];
+      for (int arp = 0; arp < vital::kNumArpeggiators; ++arp)
+        disabled_settings[arp] = arpeggiatorSettings(arpeggiator_controls_[arp]);
       MidiBuffer& empty_input = midi_scheduling_buffers_.arp_segment_input;
       MidiBuffer& arp_output = midi_scheduling_buffers_.arp_output;
       empty_input.clear();
-      for (int arp = 0; arp < 2; ++arp) {
+      for (int arp = 0; arp < vital::kNumArpeggiators; ++arp) {
         for (int destination = 0; destination < kNumArpDestinations; ++destination) {
           arp_output.clear();
           arpeggiators_[arp][destination].process(empty_input, arp_output, end_sample - start_sample,
@@ -1311,9 +1314,9 @@ void SynthBase::buildScheduledMidiEvents(MidiBuffer& midi_messages, int start_sa
     }
   }
   else {
-    const AtlasArpeggiator::Settings arp_settings[2] = {
-      arpeggiatorSettings(arpeggiator_controls_[0]), arpeggiatorSettings(arpeggiator_controls_[1])
-    };
+    AtlasArpeggiator::Settings arp_settings[vital::kNumArpeggiators];
+    for (int arp = 0; arp < vital::kNumArpeggiators; ++arp)
+      arp_settings[arp] = arpeggiatorSettings(arpeggiator_controls_[arp]);
     const double bpm = host_bpm > 0.0 ? host_bpm :
         60.0 * controlValue(controls_, "beats_per_minute", 2.0f);
     for (auto& arp_group : arpeggiators_) {
@@ -1332,7 +1335,7 @@ void SynthBase::buildScheduledMidiEvents(MidiBuffer& midi_messages, int start_sa
       input.addEvent(midi_message, relative_sample);
       if (midi_message.isAllNotesOff() || midi_message.isAllSoundOff()) {
         MidiBuffer& arp_output = midi_scheduling_buffers_.arp_output;
-        for (int arp = 0; arp < 2; ++arp) {
+        for (int arp = 0; arp < vital::kNumArpeggiators; ++arp) {
           for (int destination = 0; destination < kNumArpDestinations; ++destination) {
             arp_output.clear();
             arpeggiators_[arp][destination].panic(arp_output, relative_sample);
@@ -1342,7 +1345,7 @@ void SynthBase::buildScheduledMidiEvents(MidiBuffer& midi_messages, int start_sa
           }
         }
       }
-      for (int arp = 0; arp < 2; ++arp) {
+      for (int arp = 0; arp < vital::kNumArpeggiators; ++arp) {
         for (int destination = 0; destination < kNumArpDestinations; ++destination) {
           if (shouldSendMessageToArpeggiator(controls_, arp, destination, midi_message))
             midi_scheduling_buffers_.arp_input[arp][destination].addEvent(midi_message, relative_sample);
@@ -1361,7 +1364,7 @@ void SynthBase::buildScheduledMidiEvents(MidiBuffer& midi_messages, int start_sa
     }
 
     const int num_samples = end_sample - start_sample;
-    for (int arp = 0; arp < 2; ++arp) {
+    for (int arp = 0; arp < vital::kNumArpeggiators; ++arp) {
       for (int destination = 0; destination < kNumArpDestinations; ++destination) {
         const MidiBuffer& destination_input = midi_scheduling_buffers_.arp_input[arp][destination];
         MidiBuffer& segment_input = midi_scheduling_buffers_.arp_segment_input;
@@ -1508,11 +1511,13 @@ void SynthBase::processMidi(MidiBuffer& midi_messages, int start_sample, int end
                             double host_bpm, double ppq_position, bool has_ppq_position) {
   bool process_all = end_sample == 0;
   if (!process_all && start_sample < end_sample) {
-    AtlasArpeggiator::Settings arp_settings[2] = {
-      arpeggiatorSettings(arpeggiator_controls_[0]),
-      arpeggiatorSettings(arpeggiator_controls_[1])
-    };
-    if (arp_settings[0].enabled || arp_settings[1].enabled) {
+    AtlasArpeggiator::Settings arp_settings[vital::kNumArpeggiators];
+    bool any_arp_enabled = false;
+    for (int arp = 0; arp < vital::kNumArpeggiators; ++arp) {
+      arp_settings[arp] = arpeggiatorSettings(arpeggiator_controls_[arp]);
+      any_arp_enabled = any_arp_enabled || arp_settings[arp].enabled;
+    }
+    if (any_arp_enabled) {
       const double bpm = host_bpm > 0.0 ? host_bpm : 60.0 * controlValue(controls_, "beats_per_minute", 2.0f);
       for (auto& arp_group : arpeggiators_) {
         for (auto& arp : arp_group)
@@ -1520,14 +1525,14 @@ void SynthBase::processMidi(MidiBuffer& midi_messages, int start_sample, int end
       }
 
       MidiBuffer input;
-      MidiBuffer arp_input[2][kNumArpDestinations];
+      MidiBuffer arp_input[vital::kNumArpeggiators][kNumArpDestinations];
       for (const MidiMessageMetadata message : midi_messages) {
         int midi_sample = message.samplePosition;
         if (midi_sample >= start_sample && midi_sample < end_sample) {
           const int relative_sample = midi_sample - start_sample;
           const MidiMessage midi_message = message.getMessage();
           input.addEvent(midi_message, relative_sample);
-          for (int arp = 0; arp < 2; ++arp) {
+          for (int arp = 0; arp < vital::kNumArpeggiators; ++arp) {
             for (int destination = 0; destination < kNumArpDestinations; ++destination) {
               if (shouldSendMessageToArpeggiator(controls_, arp, destination, midi_message))
                 arp_input[arp][destination].addEvent(midi_message, relative_sample);
@@ -1547,7 +1552,7 @@ void SynthBase::processMidi(MidiBuffer& midi_messages, int start_sample, int end
           merged_output.addEvent(midi_message, message.samplePosition);
       }
 
-      for (int arp = 0; arp < 2; ++arp) {
+      for (int arp = 0; arp < vital::kNumArpeggiators; ++arp) {
         for (int destination = 0; destination < kNumArpDestinations; ++destination) {
           MidiBuffer arp_output;
           arpeggiators_[arp][destination].process(arp_input[arp][destination], arp_output, num_samples,
