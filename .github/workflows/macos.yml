@@ -1,0 +1,63 @@
+# Builds the macOS VST3 and AU on every push to main and keeps the VST3 as a
+# downloadable artifact on the run's page. "Run workflow" on the Actions tab
+# builds any branch by hand.
+name: macOS build
+
+on:
+  push:
+    branches:
+      - main
+      # Test branch for this workflow. Remove it before merging into main.
+      - ci-macos-build
+    # A push that only changes documentation does not need a new build.
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+  workflow_dispatch:
+
+# A newer push to the same branch cancels the build still running for an older one.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: macOS arm64
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      # .gitmodules marks the reference-test submodules update = none, so this
+      # fetches only the four the plugin needs (JUCE, nlohmann json,
+      # concurrentqueue and KISS FFT), shallow.
+      - name: Fetch submodules
+        run: git submodule update --init --jobs 4
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      # The runner has 3 cores and 7 GB of RAM, and one compile job can use
+      # several GB (see CLAUDE.md), so build with 2 jobs.
+      - name: Build
+        run: cmake --build build --config Release --parallel 2 --target Atlas_VST3 Atlas_AU
+
+      # ditto keeps the bundle's symlinks, permissions and signature, which the
+      # artifact upload's own zip would lose.
+      - name: Package
+        run: |
+          version=$(sed -n 's/^project(Atlas VERSION \([^ ]*\).*/\1/p' CMakeLists.txt)
+          bundle=build/Atlas_artefacts/Release/VST3/Atlas.vst3
+          codesign --verify --deep --strict "$bundle"
+          mkdir dist
+          ditto -c -k --sequesterRsrc --keepParent "$bundle" "dist/Atlas-${version}-macOS-VST3-${GITHUB_SHA::7}.zip"
+
+      # Each build is about 160 MB, mostly the Tape samples, and the Free plan
+      # stores 500 MB of artifacts in all, so builds are kept for 7 days.
+      - name: Upload VST3
+        uses: actions/upload-artifact@v7
+        with:
+          path: dist/*.zip
+          archive: false
+          retention-days: 7
+          if-no-files-found: error
