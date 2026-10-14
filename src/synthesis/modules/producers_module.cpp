@@ -68,6 +68,7 @@ namespace vital {
       createBaseControl(prefix + "sync_rate");
       createBaseControl(prefix + "free_rate");
       createBaseControl(prefix + "style");
+      createBaseControl(prefix + "play_order");
       createBaseControl(prefix + "gate");
       createBaseControl(prefix + "random_gate");
       createBaseControl(prefix + "repeats");
@@ -79,6 +80,7 @@ namespace vital {
       createBaseControl(prefix + "random_velocity");
       createBaseControl(prefix + "hold");
       createBaseControl(prefix + "retrigger");
+      createBaseControl(prefix + "retrigger_division");
       createBaseControl(prefix + "channel");
       for (int destination = 0; destination < kNumArpDestinations; ++destination) {
         arp_destinations_[arp][destination] =

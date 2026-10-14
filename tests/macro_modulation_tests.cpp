@@ -593,6 +593,7 @@ namespace {
 
 #include "editor_accessibility_tests.h"
 #include "oscillator_modulation_tests.h"
+#include "arpeggiator_tests.h"
 
 int main(int argc, char** argv) {
   ScopedJuceInitialiser_GUI juce;
@@ -636,6 +637,17 @@ int main(int argc, char** argv) {
                 << " ms, editor refresh " << int(refreshed - loaded) << " ms\n";
     }
     return 0;
+  }
+  if (argc > 1 && String(argv[1]) == "--arpeggiator") {
+    testArpNoteOffKeepsGate();
+    testArpOffStartsAtTheNote();
+    testArpBeatRetriggerFollowsTransport();
+    testArpBeatRetriggerWithTransportStopped();
+    testArpPlayOrder();
+    testArpRetriggerDivisionParameter();
+    if (failures == 0)
+      std::cout << "Atlas arpeggiator tests passed\n";
+    return failures == 0 ? 0 : 1;
   }
   if (argc > 1 && String(argv[1]) == "--oscillator-modulation") {
     testOscillatorSourcesReachOnlyAudioRateControls();

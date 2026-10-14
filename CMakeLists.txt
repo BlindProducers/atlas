@@ -413,6 +413,7 @@ if(ATLAS_BUILD_TIMING_TESTS)
   add_test(NAME atlas_editor_accessibility COMMAND AtlasMacroTests --editor-accessibility)
   add_test(NAME atlas_editor_rebuild_focus COMMAND AtlasMacroTests --editor-rebuild-focus)
   add_test(NAME atlas_oscillator_modulation COMMAND AtlasMacroTests --oscillator-modulation)
+  add_test(NAME atlas_arpeggiator COMMAND AtlasMacroTests --arpeggiator)
 
   juce_add_console_app(AtlasDefuseTests PRODUCT_NAME "Atlas Defuse Tests")
   juce_generate_juce_header(AtlasDefuseTests)
