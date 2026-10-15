@@ -53,9 +53,18 @@ Kept in this repository:
   `scream/LICENSE`. This JUCE version of the DSP is not published upstream (the
   released Scream at https://github.com/Cure-Audio/Scream is a separate C
   codebase), so it stays here. Only the DSP and what the regression test needs
-  are kept.
+  are kept. `LFO/LFOProcessor.h` gains the `<algorithm>` and `<cmath>` includes
+  it relied on transitively, which MSVC does not provide.
+- `nvda_controller/`: NVDA's controller interface definition
+  (`nvdaController.idl` and `.acf`, LGPL 2.1, NV Access,
+  https://github.com/nvaccess/nvda). On Windows, MIDL turns it into the RPC
+  client Atlas speaks through NVDA with; see `nvda_controller/README.atlas.md`.
 - `licenses/WolfShaper.LICENSE`: Atlas's Waveshaper adapts Wolf Shaper by
   Patrick Desaulniers (GPL v3 or later).
+- `pffft/`: PFFFT by Julien Pommier (FFTPACK licence, BSD style), unchanged
+  from https://bitbucket.org/jpommier/pffft. The oscillators' FFT
+  (`vital::FourierTransform`) uses it on Windows, where JUCE has only a scalar
+  fallback; see `pffft/README.atlas.md`.
 
 The Suppressor and Spectral Compressor effects are Atlas's own code under
 `src/synthesis/effects`. The JSFX oracle inputs are in `tests/jsfx/fixtures`.

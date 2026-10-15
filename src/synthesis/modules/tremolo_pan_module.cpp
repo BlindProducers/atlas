@@ -104,8 +104,10 @@ namespace vital {
     for (int sample = 0; sample < num_samples; ++sample) {
       for (int index = 0; index < kNumShapes; ++index)
         shape_weights_[index] += ((index == shape ? 1.0 : 0.0) - shape_weights_[index]) * control_step;
+      // The voice handler sums both voices into both SIMD pairs, so lanes 2-3
+      // repeat lanes 0-1: only lanes 0-1 are computed, and lanes 2-3 copy them.
       poly_float gains;
-      for (int lane = 0; lane < poly_float::kSize; ++lane) {
+      for (int lane = 0; lane < 2; ++lane) {
         auto& state = lanes_[lane];
         const auto& target = targets[lane];
         // Sync adopts live tempo immediately; free-rate edits slew without
@@ -122,7 +124,9 @@ namespace vital {
             wave += shape_weights_[index] * waveform(index, phase);
         }
         state.wave += (wave - state.wave) * wave_steps[lane];
-        gains.set(lane, static_cast<float>(1.0 - state.mix * state.depth * (1.0 - state.wave)));
+        const float gain = static_cast<float>(1.0 - state.mix * state.depth * (1.0 - state.wave));
+        gains.set(lane, gain);
+        gains.set(lane + 2, gain);
         state.phase += state.frequency * tick;
         state.phase -= std::floor(state.phase);
       }

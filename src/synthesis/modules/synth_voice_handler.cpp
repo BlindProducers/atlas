@@ -133,6 +133,10 @@ namespace vital {
     }
 
     VoiceHandler::init();
+    // The filters exist now. Voices hold Reverb memory only while a filter
+    // selects that model, including the copies prepareToPlay makes.
+    for (int i = 0; i < 2; ++i)
+      setReverbMemory(i, false);
     producers_->setFilter1On(filters_module_->getFilter1OnValue());
     producers_->setFilter2On(filters_module_->getFilter2OnValue());
     producers_->setFilterInputs(filters_module_->getFilter1InputValue(), filters_module_->getFilter2InputValue());
@@ -590,10 +594,26 @@ namespace vital {
 
   void SynthVoiceHandler::enableModulationConnection(ModulationConnectionProcessor* processor) {
     enabled_modulation_processors_.push_back(processor);
+    updatePlayheadRoutes();
   }
 
   void SynthVoiceHandler::disableModulationConnection(ModulationConnectionProcessor* processor) {
     enabled_modulation_processors_.remove(processor);
+    updatePlayheadRoutes();
+  }
+
+  void SynthVoiceHandler::updatePlayheadRoutes() {
+    if (producers_ == nullptr)
+      return;
+    unsigned slots = 0;
+    for (ModulationConnectionProcessor* processor : enabled_modulation_processors_) {
+      const Output* source = processor->input(ModulationConnectionProcessor::kModulationInput)->source;
+      for (int i = 0; i < kNumOscillators; ++i) {
+        if (source == producers_->slotPhaseOutput(i))
+          slots |= 1u << i;
+      }
+    }
+    producers_->setPlayheadRoutedSlots(slots);
   }
 
   void SynthVoiceHandler::addOscillatorRoute(ModulationConnectionProcessor* processor, int source, int destination) {
@@ -617,5 +637,34 @@ namespace vital {
   void SynthVoiceHandler::setFilterTable(int index, Wavetable* table) {
     if (filters_module_ != nullptr && index >= 0 && index < 2)
       filters_module_->getFilterModule(index)->setTableWavetable(table);
+  }
+
+  FilterModule* SynthVoiceHandler::voiceFilter(int index) {
+    if (filters_module_ == nullptr || index < 0 || index > 1)
+      return nullptr;
+    return filters_module_->getFilterModule(index);
+  }
+
+  void SynthVoiceHandler::updateReverbMemory() {
+    for (int i = 0; i < 2; ++i) {
+      FilterModule* filter = voiceFilter(i);
+      const Value* model = filter ? filter->getModelValue() : nullptr;
+      if (model != nullptr)
+        filter->setReverbMemory(static_cast<int>(roundf(model->value())) == constants::kReverbFilter);
+    }
+  }
+
+  void SynthVoiceHandler::setReverbMemory(int index, bool reserve) {
+    if (FilterModule* filter = voiceFilter(index))
+      filter->setReverbMemory(reserve);
+  }
+
+  bool SynthVoiceHandler::takeReverbMemoryRequest() {
+    // Take both, so neither request waits for a later call.
+    FilterModule* first = voiceFilter(0);
+    FilterModule* second = voiceFilter(1);
+    const bool first_requested = first != nullptr && first->takeReverbMemoryRequest();
+    const bool second_requested = second != nullptr && second->takeReverbMemoryRequest();
+    return first_requested || second_requested;
   }
 } // namespace vital

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "screen_reader_speech.h"
+
 #if JUCE_MAC
 void focusNativeAccessibilityElement(juce::AccessibilityHandler& handler);
 juce::StringArray nativeAccessibilityChildTitles(juce::AccessibilityHandler& handler);
@@ -7,6 +9,25 @@ bool nativeAccessibilityFocusSettles(juce::AccessibilityHandler& handler);
 #endif
 
 namespace {
+  // The editor keeps a stepped choice's control through the rebuild on Windows only.
+#if JUCE_WINDOWS
+  constexpr bool kWindowsKeepsSwitchingFocus = true;
+#else
+  constexpr bool kWindowsKeepsSwitchingFocus = false;
+#endif
+  // Comma and period step through an effects chain's slots on Windows only.
+#if JUCE_WINDOWS
+  constexpr bool kWindowsStepsThroughEffectSlots = true;
+#else
+  constexpr bool kWindowsStepsThroughEffectSlots = false;
+#endif
+  // The right bracket opens menus on the Mac only; elsewhere the brackets only move effects.
+#if JUCE_MAC
+  constexpr bool kRightBracketOpensMenus = true;
+#else
+  constexpr bool kRightBracketOpensMenus = false;
+#endif
+
   void pumpEditorEvents() {
     MessageManager::getInstance()->runDispatchLoopUntil(150);
   }
@@ -840,6 +861,7 @@ namespace {
     expect(type->getText() == "Spectral", "the Type menu shows the slot's type");
     const int spectral_index = type->getSelectedItemIndex();
     Component::SafePointer<Component> stepped_type(type);
+    Component::SafePointer<Component> level(editor.controlForParameter("osc_7_level"));
     type->keyPressed(KeyPress(KeyPress::leftKey));
     expect(!type->isPopupActive(), "an arrow does not open the Type menu");
     expect(type->getSelectedItemIndex() == spectral_index - 1, "an arrow steps to the previous type");
@@ -847,11 +869,14 @@ namespace {
            "an arrow changes the type");
     pumpUntil([&] {
       auto* focused = Component::getCurrentlyFocusedComponent();
-      return stepped_type == nullptr && focused != nullptr && focused->getTitle() == "7 Type";
+      return level == nullptr && focused != nullptr && focused->getTitle() == "7 Type";
     });
     type = dynamic_cast<ComboBox*>(Component::getCurrentlyFocusedComponent());
-    expect(type != nullptr && type->getTitle() == "7 Type",
-           "after an arrow step rebuilds the rows, focus is on the new Type menu");
+    expect(level == nullptr && type != nullptr && type->getTitle() == "7 Type",
+           "after an arrow step rebuilds the rows, focus is on the Type menu");
+    // Windows keeps the menu itself through the rebuild (see testSwitchingChoiceKeepsItsControl).
+    expect(!kWindowsKeepsSwitchingFocus || type == stepped_type.getComponent(),
+           "on Windows the rebuild keeps the Type menu that was stepped");
     if (type == nullptr) {
       editor.removeFromDesktop();
       return;
@@ -898,6 +923,147 @@ namespace {
     editor.removeFromDesktop();
   }
 
+  // Stepping a choice that decides which rows show (an oscillator's Type, a
+  // filter's Model, an effect's mode) rebuilds the rows around it. The rebuild
+  // used to replace the focused menu and every group around it, so NVDA read
+  // the groups again ("Oscillators grouping...") on each step and the next step
+  // cut it off before the new value. On Windows the rebuild now keeps the menu
+  // and its groups: NVDA stays on the menu and reads only the new value.
+  void testSwitchingChoiceKeepsItsControl() {
+    SynthPlugin synth;
+    synth.parameterChanged("fx_slot_1_type", vital::constants::kDimensionExpander + 1);
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    editor.toFront(true);
+    pumpEditorEvents();
+
+    struct Choice {
+      const char* id;
+      const char* neighbour;  // a row of the same section, which the rebuild replaces
+    };
+    for (const Choice choice : { Choice { "osc_7_type", "osc_7_level" },
+                                 Choice { "filter_1_model", "filter_1_cutoff" },
+                                 Choice { "fx_slot_1_dimension_expander_mode", "fx_slot_1_enabled" } }) {
+      const std::string id = choice.id;
+      auto* menu = dynamic_cast<ComboBox*>(editor.controlForParameter(choice.id));
+      expect(menu != nullptr, id + " is a menu");
+      if (menu == nullptr)
+        continue;
+      std::vector<Component::SafePointer<Component>> groups;
+      for (auto* parent = menu->getParentComponent(); parent != nullptr && parent != &editor;
+           parent = parent->getParentComponent()) {
+        if (parent->isFocusContainer())
+          groups.emplace_back(parent);
+      }
+      expect(!groups.empty(), id + " sits in groups");
+      editor.ensureComponentVisible(menu);
+      menu->grabKeyboardFocus();
+      Component::SafePointer<Component> stepped(menu);
+      Component::SafePointer<Component> neighbour(editor.controlForParameter(choice.neighbour));
+      expect(neighbour != nullptr, id + "'s section has " + choice.neighbour);
+      const String title = menu->getTitle();
+      const String next = menu->getItemText(menu->getSelectedItemIndex() + 1);
+
+      menu->keyPressed(KeyPress(KeyPress::downKey));
+      editor.pollStateNow();
+      pumpUntil([&] { return neighbour == nullptr && Component::getCurrentlyFocusedComponent() != nullptr; });
+
+      auto* focused = Component::getCurrentlyFocusedComponent();
+      auto* now = dynamic_cast<ComboBox*>(editor.controlForParameter(choice.id));
+      expect(neighbour == nullptr, "stepping " + id + " rebuilds its rows");
+      expect(now != nullptr && focused == now && now->getText() == next && now->getTitle() == title,
+             "focus stays on " + title.toStdString() + " (" + id + "), which reads " + next.toStdString() +
+             " (reads " + (now != nullptr ? (now->getTitle() + ", " + now->getText()).toStdString() : "nothing") + ")");
+      auto* handler = focused != nullptr ? focused->getAccessibilityHandler() : nullptr;
+      expect(handler != nullptr && handler->hasFocus(false), "the screen reader stays on " + id);
+      if (kWindowsKeepsSwitchingFocus) {
+        expect(stepped != nullptr && focused == stepped.getComponent(), "the rebuild keeps " + id + "'s menu");
+        bool kept_groups = true;
+        for (auto& group : groups)
+          kept_groups = kept_groups && group != nullptr && group->isParentOf(focused);
+        expect(kept_groups, "the rebuild keeps the groups around " + id);
+      }
+      // The rebuilt view is whole: Tab reaches only live controls, the kept menu among them.
+      const auto controls = editor.createKeyboardFocusTraverser()->getAllComponents(&editor);
+      bool live = !controls.empty();
+      for (auto* control : controls)
+        live = live && editor.isParentOf(control);
+      expect(live && std::find(controls.begin(), controls.end(), focused) != controls.end(),
+             "after stepping " + id + ", Tab reaches the menu and only live controls");
+    }
+    editor.removeFromDesktop();
+  }
+
+  // Envelope 1's Analog switch swaps its Power rows for Analog Age, which
+  // rebuilds the rows. Focus stays on the switch, and on Windows the rebuild
+  // keeps the switch itself and its groups, as for the menus above.
+  void testAnalogSwitchKeepsItsControl() {
+    // Announcements go nowhere rather than to the screen reader.
+    atlas::speech::setObserverForTesting([](const String&) {});
+    SynthPlugin synth;
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    editor.toFront(true);
+    pumpEditorEvents();
+
+    auto* analog = dynamic_cast<Button*>(editor.controlForParameter("env_1_analog"));
+    expect(analog != nullptr && !analog->getToggleState(), "Envelope 1 has an Analog switch, off");
+    expect(editor.controlForParameter("env_1_analog_age") == nullptr, "Analog Age shows only in analog mode");
+    if (analog == nullptr) {
+      atlas::speech::setObserverForTesting(nullptr);
+      editor.removeFromDesktop();
+      return;
+    }
+    std::vector<Component::SafePointer<Component>> groups;
+    for (auto* parent = analog->getParentComponent(); parent != nullptr && parent != &editor;
+         parent = parent->getParentComponent()) {
+      if (parent->isFocusContainer())
+        groups.emplace_back(parent);
+    }
+    expect(!groups.empty(), "the Analog switch sits in groups");
+    editor.ensureComponentVisible(analog);
+    analog->grabKeyboardFocus();
+    Component::SafePointer<Component> flipped(analog);
+    Component::SafePointer<Component> power(editor.controlForParameter("env_1_attack_power"));
+    expect(power != nullptr, "Envelope 1 shows its Attack Power row");
+    const String title = analog->getTitle();
+
+    // Enter reaches the focused switch, as a typed key does; the click and the
+    // timer tick that rebuilds the rows follow on the message thread.
+    if (auto* peer = editor.getPeer())
+      peer->handleKeyPress(KeyPress(KeyPress::returnKey));
+    pumpUntil([&] { return power == nullptr && Component::getCurrentlyFocusedComponent() != nullptr; });
+
+    auto* focused = Component::getCurrentlyFocusedComponent();
+    auto* now = dynamic_cast<Button*>(editor.controlForParameter("env_1_analog"));
+    expect(power == nullptr && editor.controlForParameter("env_1_analog_age") != nullptr,
+           "analog mode swaps the Power rows for Analog Age");
+    expect(now != nullptr && focused == now && now->getToggleState() && now->getTitle() == title,
+           "focus stays on the Analog switch, which is on");
+    auto* handler = focused != nullptr ? focused->getAccessibilityHandler() : nullptr;
+    expect(handler != nullptr && handler->hasFocus(false), "the screen reader stays on the Analog switch");
+    if (kWindowsKeepsSwitchingFocus) {
+      expect(flipped != nullptr && focused == flipped.getComponent(), "the rebuild keeps the Analog switch");
+      bool kept_groups = true;
+      for (auto& group : groups)
+        kept_groups = kept_groups && group != nullptr && group->isParentOf(focused);
+      expect(kept_groups, "the rebuild keeps the groups around the Analog switch");
+    }
+    const auto controls = editor.createKeyboardFocusTraverser()->getAllComponents(&editor);
+    bool live = !controls.empty();
+    for (auto* control : controls)
+      live = live && editor.isParentOf(control);
+    expect(live && std::find(controls.begin(), controls.end(), focused) != controls.end(),
+           "after the Analog switch, Tab reaches the switch and only live controls");
+    pumpEditorEvents();
+    atlas::speech::setObserverForTesting(nullptr);
+    editor.removeFromDesktop();
+  }
+
   // Moving a slot whose rows depend on a variant (Dimension Expander mode) used
   // to race the 20 Hz timer: the tick saw the swapped mode, queued its own
   // rebuild with the stale title and the moved slot lost focus to the Editor menu.
@@ -939,6 +1105,305 @@ namespace {
              "accessibility focus follows the moved slot too");
       expect(focused == nullptr || focused->getTitle() != "Editor menu", "focus must not fall back to the Editor menu");
     }
+    editor.removeFromDesktop();
+  }
+
+  // Comma and period step from element to element. On an effects chain they
+  // also step through the slots that hold an effect: the chain, Slot 1, Slot 2,
+  // then the next element, and back the same way. A bus's chain is reached at
+  // its Bus heading and says only the bus (Windows only).
+  void testSectionKeysStepThroughEffectSlots() {
+    // Announcements are kept here rather than sent to the screen reader, with
+    // the navigation ones, which say where a step landed, switched on.
+    StringArray spoken;
+    atlas::speech::setObserverForTesting([&spoken](const String& message) { spoken.add(message); });
+    auto& speech = atlas::speech::settings();
+    const auto saved_speech = speech;
+    speech.speech_feedback = speech.navigation = true;
+
+    SynthPlugin synth;
+    // The main chain has Delay and Utility with an empty slot between them,
+    // Bus 1 has Reverb and Bus 2 nothing.
+    synth.parameterChanged("fx_slot_1_type", vital::constants::kDelay + 1);
+    synth.parameterChanged("fx_slot_3_type", vital::constants::kUtility + 1);
+    synth.parameterChanged("bus_1_fx_slot_2_type", vital::constants::kReverb + 1);
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    editor.toFront(true);
+    pumpEditorEvents();
+
+    // Keys reach the focused control first and the editor only if it passes them on, as typed keys do.
+    auto press = [&](const KeyPress& key) {
+      if (auto* peer = editor.getPeer())
+        peer->handleKeyPress(key);
+    };
+    const KeyPress comma(',', ModifierKeys(), ','), period('.', ModifierKeys(), '.');
+    auto focused_title = [] {
+      auto* focused = Component::getCurrentlyFocusedComponent();
+      return focused != nullptr ? focused->getTitle() : String();
+    };
+    // The element the focused control belongs to: its own or its nearest group's.
+    auto focused_section = [] {
+      for (auto* component = Component::getCurrentlyFocusedComponent(); component != nullptr;
+           component = component->getParentComponent()) {
+        if (component->getProperties().contains("SectionName"))
+          return component->getProperties()["SectionName"].toString();
+      }
+      return String();
+    };
+    // On a chain, outside its slots (Bus controls, as period from the element before it leaves it).
+    auto on_chain = [&](const String& section) {
+      auto* focused = Component::getCurrentlyFocusedComponent();
+      for (auto* component = focused; component != nullptr; component = component->getParentComponent())
+        if (component->getProperties().contains("FxSlot"))
+          return false;
+      return focused != nullptr && focused_section() == section;
+    };
+    auto on_slot = [&](const String& section, const String& title) {
+      return focused_title() == title && focused_section() == section;
+    };
+    // The last step said `expected` and nothing else.
+    auto heard = [&](const String& expected, const std::string& what) {
+      expect(spoken.size() == 1 && spoken[0] == expected,
+             what + " says " + expected.toStdString() + " (heard: " + spoken.joinIntoString(" | ").toStdString() + ")");
+      spoken.clear();
+    };
+    // Reach an element as a keyboard user does: F for the Filters group, then
+    // the number that chooses the element in it.
+    auto start_on_filter = [&](const String& section) {
+      press(KeyPress('f', ModifierKeys(), 'f'));
+      for (int digit = 1; digit <= 9 && focused_section() != section; ++digit)
+        press(KeyPress('0' + digit, ModifierKeys(), static_cast<juce_wchar>('0' + digit)));
+      return focused_section() == section;
+    };
+
+    const String chain = "Chain and routing", bus_1 = "Bus 1 - Chain and routing";
+    expect(start_on_filter("Filter 2"), "the walk starts on Filter 2");
+    spoken.clear();
+    press(period);
+    expect(on_chain(chain), "period from Filter 2 reaches the effects chain");
+    heard("Chain and routing", "the step to the effects chain");
+    press(period);
+    if (!kWindowsStepsThroughEffectSlots) {
+      expect(focused_section() == "Envelope 1", "off Windows, period goes from the chain to the next element");
+      atlas::speech::setObserverForTesting(nullptr);
+      speech = saved_speech;
+      editor.removeFromDesktop();
+      return;
+    }
+
+    expect(on_slot(chain, "Slot 1 (Delay)"), "period from the chain goes to Slot 1");
+    press(period);
+    expect(on_slot(chain, "Slot 2 (Utility)"), "period goes on to Slot 2, past the empty slot between them");
+    press(period);
+    expect(focused_section() == "Envelope 1", "period after the last slot goes on to the next element");
+    press(comma);
+    expect(on_slot(chain, "Slot 2 (Utility)"), "comma from the next element comes back to the last slot");
+    press(comma);
+    expect(on_slot(chain, "Slot 1 (Delay)"), "comma steps back a slot");
+    press(comma);
+    expect(on_chain(chain), "comma from Slot 1 goes back to the chain, where period arrives from Filter 2");
+    press(comma);
+    expect(focused_section() == "Filter 2", "comma from the chain goes back to the element before it");
+
+    // From a control inside a slot the steps start at that slot.
+    if (auto* control = editor.controlForParameter("fx_slot_1_enabled")) {
+      editor.ensureComponentVisible(control);
+      control->grabKeyboardFocus();
+      press(period);
+      expect(on_slot(chain, "Slot 2 (Utility)"), "period from a control in Slot 1 goes to Slot 2");
+      control = editor.controlForParameter("fx_slot_3_enabled");
+      if (control != nullptr) {
+        editor.ensureComponentVisible(control);
+        control->grabKeyboardFocus();
+      }
+      press(comma);
+      expect(on_slot(chain, "Slot 1 (Delay)"), "comma from a control in Slot 2 goes to Slot 1");
+    }
+    else {
+      expect(false, "Slot 1 shows its Enabled control");
+    }
+
+    // The P shortcut leaves focus on the Effects group heading.
+    press(KeyPress('p', ModifierKeys(), 'p'));
+    expect(focused_title() == "Effects", "P focuses the Effects group");
+    press(period);
+    expect(on_slot(chain, "Slot 1 (Delay)"), "period from the Effects heading goes to Slot 1");
+
+    // Each bus chain has its own slots; an empty chain is a single step. A
+    // step to a bus's chain lands on its Bus heading, where Ctrl 1 to 3 go,
+    // and says only the bus: "Chain and routing" is every bus chain's name.
+    auto on_bus = [&](int bus) { return focused_title() == "Bus " + String(bus); };
+    press(KeyPress('1', ModifierKeys::ctrlModifier, 0));
+    expect(on_bus(1), "Ctrl 1 focuses the Bus 1 group");
+    press(comma);
+    expect(!on_bus(1) && !focused_section().startsWith("Bus "), "comma from the Bus 1 heading goes to the element before it");
+    spoken.clear();
+    press(period);
+    expect(on_bus(1), "period from the element before Bus 1 lands on the Bus 1 heading");
+    heard("Bus 1", "the step to Bus 1");
+    press(period);
+    expect(on_slot(bus_1, "Slot 1 (Reverb)"), "period from the Bus 1 heading goes to its Slot 1");
+    spoken.clear();
+    press(period);
+    expect(on_bus(2), "period after Bus 1's last slot reaches the empty Bus 2 chain, at its heading");
+    heard("Bus 2", "the step to Bus 2");
+    press(period);
+    expect(on_bus(3), "period from the empty Bus 2 chain goes on to Bus 3");
+    heard("Bus 3", "the step to Bus 3");
+    press(comma);
+    expect(on_bus(2), "comma goes back to the empty Bus 2 chain");
+    heard("Bus 2", "the step back to Bus 2");
+    press(comma);
+    expect(on_slot(bus_1, "Slot 1 (Reverb)"), "comma from Bus 2 comes back to Bus 1's last slot");
+    spoken.clear();
+    press(comma);
+    expect(on_bus(1), "comma from Bus 1's Slot 1 goes back to the Bus 1 heading");
+    heard("Bus 1", "the step back to Bus 1");
+
+    atlas::speech::setObserverForTesting(nullptr);
+    speech = saved_speech;
+    editor.removeFromDesktop();
+  }
+
+  // Shift M opens a menu wherever Shift F10 does: on a parameter (modulation,
+  // MIDI learn and the rest), on an effect slot's heading (copy, paste, replace,
+  // remove) and on an oscillator's heading (copy, paste). Off the Mac the right
+  // bracket opens none of them.
+  void testShiftMOpensEveryContextMenu() {
+    // Announcements go nowhere rather than to the screen reader.
+    atlas::speech::setObserverForTesting([](const String&) {});
+
+    SynthPlugin synth;
+    synth.parameterChanged("fx_slot_1_type", vital::constants::kDelay + 1);
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    editor.toFront(true);
+    pumpEditorEvents();
+
+    // Presses `key` on `control` as a typed key arrives, through the focused
+    // control first, and closes the menu it opened.
+    auto opens_menu = [&](Component* control, const KeyPress& key) {
+      PopupMenu::dismissAllActiveMenus();
+      if (control == nullptr)
+        return false;
+      editor.ensureComponentVisible(control);
+      control->grabKeyboardFocus();
+      if (auto* peer = editor.getPeer())
+        peer->handleKeyPress(key);
+      const bool opened = PopupMenu::dismissAllActiveMenus();
+      pumpEditorEvents();
+      return opened;
+    };
+    const KeyPress shift_m('M', ModifierKeys::shiftModifier, 'M');
+    const KeyPress shift_f10(KeyPress::F10Key, ModifierKeys::shiftModifier, 0);
+    // With one effect in the chain, the right bracket cannot move it on a slot.
+    const KeyPress right_bracket(']', ModifierKeys(), ']');
+
+    // Looked up before each key: a rebuild replaces the editor's components.
+    struct Target {
+      const char* what;
+      std::function<Component*()> find;
+      std::function<bool(Component&)> is_kind;
+    };
+    const Target targets[] = {
+      { "an effect slot heading", [&] { return editorSection(editor, "Chain and routing", 0); },
+        [](Component& c) { return c.getTitle() == "Slot 1 (Delay)"; } },
+      { "an oscillator heading", [&] { return editorSection(editor, "Oscillator 1"); },
+        [](Component& c) { return c.getTitle().startsWith("Oscillator 1"); } },
+      { "a slider", [&] { return editor.controlForParameter("fx_slot_1_delay_feedback"); },
+        [](Component& c) { return dynamic_cast<Slider*>(&c) != nullptr; } },
+      { "a toggle", [&] { return editor.controlForParameter("fx_slot_1_enabled"); },
+        [](Component& c) { return dynamic_cast<ToggleButton*>(&c) != nullptr; } },
+      { "a choice", [&] { return editor.controlForParameter("filter_1_model"); },
+        [](Component& c) { return dynamic_cast<ComboBox*>(&c) != nullptr; } },
+    };
+    for (const auto& target : targets) {
+      const std::string what = target.what;
+      auto* control = target.find();
+      expect(control != nullptr && target.is_kind(*control), "the editor has " + what);
+      if (control == nullptr)
+        continue;
+      expect(opens_menu(control, shift_m), "Shift M opens the menu on " + what);
+      expect(opens_menu(target.find(), shift_f10), "Shift F10 still opens the menu on " + what);
+      if (!kRightBracketOpensMenus)
+        expect(!opens_menu(target.find(), right_bracket), "the right bracket opens no menu on " + what);
+    }
+
+    atlas::speech::setObserverForTesting(nullptr);
+    editor.removeFromDesktop();
+  }
+
+  // Ctrl S (Command S on the Mac) with no user preset loaded opens the save
+  // form. Escape closes it from its text boxes and its buttons, as Cancel
+  // does, and focus goes back to the control it was opened from.
+  void testSaveFormClosesWithEscape() {
+    // Announcements go nowhere rather than to the screen reader.
+    atlas::speech::setObserverForTesting([](const String&) {});
+
+    SynthPlugin synth;
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    editor.toFront(true);
+    pumpEditorEvents();
+
+    auto press = [&](const KeyPress& key) {
+      if (auto* peer = editor.getPeer())
+        peer->handleKeyPress(key);
+    };
+    Component::SafePointer<Component> start(editor.controlForParameter("filter_1_model"));
+    auto* name = titled(editor, "Patch name");
+    auto* cancel = titled(editor, "Cancel save patch");
+    // With a preset file loaded, Ctrl S would save over it instead.
+    const bool can_open = !synth.getActiveFile().existsAsFile();
+    expect(start != nullptr && name != nullptr && cancel != nullptr && can_open,
+           "the editor has the save form, a control to open it from and no preset file loaded");
+    if (start == nullptr || name == nullptr || cancel == nullptr || !can_open) {
+      atlas::speech::setObserverForTesting(nullptr);
+      editor.removeFromDesktop();
+      return;
+    }
+
+    auto open_form = [&] {
+      editor.ensureComponentVisible(start);
+      start->grabKeyboardFocus();
+      press(KeyPress('s', ModifierKeys::commandModifier, 0));
+      pumpEditorEvents();
+      return name->isShowing() && Component::getCurrentlyFocusedComponent() == name;
+    };
+    auto closed_back_on_start = [&] {
+      return !name->isShowing() && !cancel->isShowing() && start != nullptr &&
+             Component::getCurrentlyFocusedComponent() == start.getComponent();
+    };
+
+    // A text box reports Escape through a message, so the form closes once it is handled.
+    expect(open_form(), "Ctrl S opens the save form on the patch name");
+    press(KeyPress(KeyPress::escapeKey));
+    pumpEditorEvents();
+    expect(closed_back_on_start(), "Escape in the patch name closes the form and goes back to the control");
+
+    expect(open_form(), "Ctrl S opens the save form again");
+    expect(cancel->isShowing(), "the form shows its Cancel button");
+    cancel->grabKeyboardFocus();
+    press(KeyPress(KeyPress::escapeKey));
+    pumpEditorEvents();
+    expect(closed_back_on_start(), "Escape on Cancel closes the form and goes back to the control");
+
+    expect(open_form(), "Ctrl S opens the save form once more");
+    expect(cancel->isShowing(), "the form shows its Cancel button again");
+    cancel->grabKeyboardFocus();
+    press(KeyPress(KeyPress::returnKey));
+    pumpEditorEvents();
+    expect(closed_back_on_start(), "Cancel closes the form and goes back to the control");
+    expect(!synth.getActiveFile().existsAsFile(), "closing the form saves nothing");
+
+    atlas::speech::setObserverForTesting(nullptr);
     editor.removeFromDesktop();
   }
 
@@ -1058,6 +1523,27 @@ namespace {
       expect(find(editor, "Flatten wavetable to editable frames") != nullptr, "flattening is an explicit action");
       editor.removeFromDesktop();
     }
+  }
+
+  // Each Atlas instance remembers its own section (and preset browser filters):
+  // a host loads every instance into one process, and they used to share it.
+  void testEditorStateIsPerInstance() {
+    SynthPlugin first, second;
+    {
+      SynthEditor first_editor(first);
+      SynthEditor second_editor(second);
+      first_editor.updateFullGui();
+      second_editor.updateFullGui();
+      const String untouched = second.getEditorMemory().section_name;
+      expect(first_editor.keyPressed(KeyPress('m', ModifierKeys(), 'm')), "M moves to Modulation routing");
+      expect(first.getEditorMemory().section_name == "Modulation routing",
+             "the first instance remembers the section it moved to");
+      expect(second.getEditorMemory().section_name == untouched,
+             "the second instance keeps its own section");
+    }
+    SynthEditor reopened(first);
+    expect(first.getEditorMemory().section_name == "Modulation routing",
+           "reopening an instance's window returns to its section");
   }
 
   // Autoload waits for the arrows to stop and loads the preset the selection

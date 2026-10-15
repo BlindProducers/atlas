@@ -1225,6 +1225,61 @@ namespace {
     }
   }
 
+  // Converting a fraction to an integer truncates on every platform. x86 used
+  // to round to nearest while the arm64 macOS build truncated, so the same
+  // preset picked other values on Windows.
+  void testFloatToIntTruncatesOnEveryPlatform() {
+    const vital::poly_float values(2.7f, -2.7f, 0.5f, 1.5f);
+    const vital::poly_int integers = vital::utils::toInt(values);
+    const std::array<int, 4> truncated { 2, -2, 0, 1 };
+    const std::array<float, 4> floored { 2.0f, -3.0f, 0.0f, 1.0f };
+    const std::array<float, 4> ceiled { 3.0f, -2.0f, 1.0f, 2.0f };
+    for (int i = 0; i < 4; ++i) {
+      const std::string value = std::to_string(values[i]);
+      expect(static_cast<int>(integers[i]) == truncated[i],
+             "toInt(" + value + ") truncates to " + std::to_string(truncated[i]) +
+             " (actual=" + std::to_string(static_cast<int>(integers[i])) + ")");
+      expectClose(vital::utils::trunc(values)[i], static_cast<float>(truncated[i]), 0.0f, "trunc(" + value + ")");
+      expectClose(vital::utils::floor(values)[i], floored[i], 0.0f, "floor(" + value + ")");
+      expectClose(vital::utils::ceil(values)[i], ceiled[i], 0.0f, "ceil(" + value + ")");
+    }
+  }
+
+  // A modulated LFO Tempo moves to the next division once it passes 0.7 of a
+  // step, as on the arm64 macOS build. x86 builds moved at 0.2, so an LFO at
+  // 1/8 modulated by half a step ran at 1/16 on Windows only.
+  void testModulatedTempoPicksTheSameDivisionOnEveryPlatform() {
+    vital::TempoChooser chooser;
+    vital::cr::Value frequency(1.0f);
+    vital::cr::Value tempo(9.0f);
+    vital::cr::Value beats_per_second(2.0f);
+    vital::cr::Value sync(vital::TempoChooser::kTempoMode);
+    vital::cr::Value midi(60.0f);
+    vital::cr::Value transpose(0.0f);
+    vital::cr::Value tune(0.0f);
+    chooser.plug(&frequency, vital::TempoChooser::kFrequency);
+    chooser.plug(&tempo, vital::TempoChooser::kTempoIndex);
+    chooser.plug(&beats_per_second, vital::TempoChooser::kBeatsPerSecond);
+    chooser.plug(&sync, vital::TempoChooser::kSync);
+    chooser.plug(&midi, vital::TempoChooser::kMidi);
+    chooser.plug(&transpose, vital::TempoChooser::kKeytrackTranspose);
+    chooser.plug(&tune, vital::TempoChooser::kKeytrackTune);
+
+    // Tempo 9 is 1/8 and 10 is 1/16; at 120 BPM they run at 4 Hz and 8 Hz.
+    const float eighth = vital::constants::kSyncedFrequencyRatios[9] * 2.0f;
+    const float sixteenth = vital::constants::kSyncedFrequencyRatios[10] * 2.0f;
+    const std::array<std::pair<float, float>, 6> cases {{
+      { 9.0f, eighth }, { 9.25f, eighth }, { 9.5f, eighth }, { 9.65f, eighth },
+      { 9.75f, sixteenth }, { 10.0f, sixteenth }
+    }};
+    for (const auto& [modulated_tempo, expected] : cases) {
+      tempo.set(modulated_tempo);
+      chooser.process(1);
+      expectClose(chooser.output()->buffer[0][0], expected, 1.0e-4f,
+                  "Tempo modulated to " + std::to_string(modulated_tempo) + " picks the arm64 division");
+    }
+  }
+
   struct EnvelopeFixture {
     vital::Envelope envelope;
     std::array<vital::Value, vital::Envelope::kNumInputs> controls;
@@ -2817,10 +2872,13 @@ namespace {
 #include "release_velocity_glide_tests.h"
 #include "analog_oscillator_tests.h"
 #include "distortion_filter_tests.h"
+#include "fourier_transform_tests.h"
 
 int main(int argc, char** argv) {
   if (argc > 1 && std::string(argv[1]) == "--distortion-filter")
     return distortion_filter_tests::run();
+  if (argc > 1 && std::string(argv[1]) == "--fourier-transform")
+    return fourier_transform_tests::run();
   if (argc > 1 && std::string(argv[1]) == "--analog-oscillator")
     return analog_oscillator_tests::runDsp();
   if (argc > 1 && std::string(argv[1]) == "--analog-oscillator-controls")
@@ -2944,6 +3002,8 @@ int main(int argc, char** argv) {
   testModWheelUsesAudioRateSmoothingForAudioDestinations();
   testModWheelUsesAudioRateSmoothingForLfoSpeed();
   testTempoChooserPreservesAudioRateFreeFrequency();
+  testFloatToIntTruncatesOnEveryPlatform();
+  testModulatedTempoPicksTheSameDivisionOnEveryPlatform();
   testEnvelopeShortStages();
   testEnvelopeRetriggerStartsFromCurrentValue();
   testForcedVoiceReleaseMatchesShortProfessionalHandoff();

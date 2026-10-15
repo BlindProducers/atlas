@@ -75,6 +75,10 @@ class LoadSave {
     static void convertBufferToPcm(json& data, const std::string& field);
     static void convertPcmToFloatBuffer(json& data, const std::string& field);
     static json stateToJson(SynthBase* synth, const CriticalSection& critical_section);
+    // Text of saved state. The JSON writer refuses a string that is not UTF-8;
+    // rather than fail the save (and throw into the host), such a string is
+    // read as Windows-1252.
+    static std::string dumpState(json& data);
 
     static void loadControls(SynthBase* synth, const json& data);
     static void loadModulations(SynthBase* synth, const json& modulations);
@@ -90,7 +94,7 @@ class LoadSave {
     static void loadWavetables(SynthBase* synth, const json& wavetables);
     static void loadFilterTables(SynthBase* synth, const json& filter_tables);
     static void loadLfos(SynthBase* synth, const json& lfos);
-    static void loadSaveState(std::map<std::string, String>& save_info, json data);
+    static void loadSaveState(std::map<std::string, String>& save_info, const json& data);
 
     static void initSaveInfo(std::map<std::string, String>& save_info);
     static json updateFromOldVersion(json state);
@@ -103,6 +107,8 @@ class LoadSave {
     static std::string getLicense(json state);
 
     static File getConfigFile();
+    // Tests point the config somewhere else, leaving the user's file alone.
+    static void setConfigFileForTesting(const File& file);
     static void writeCrashLog(String crash_log);
     static void writeErrorLog(String error_log);
     static json getConfigJson();

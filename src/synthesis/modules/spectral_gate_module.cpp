@@ -36,7 +36,10 @@ namespace vital {
     const poly_float tilt = tilt_enabled_->value() ?
         utils::clamp(tilt_->buffer[0], -1.0f, 1.0f) : poly_float(0.0f);
 
-    for (int lane = 0; lane < poly_float::kSize; ++lane) {
+    // The voice handler sums both voices into both SIMD pairs, so lanes 2-3
+    // repeat lanes 0-1: only lanes 0-1 are transformed, and processWithInput
+    // copies their output to lanes 2-3.
+    for (int lane = 0; lane < 2; ++lane) {
       for (int i = 0; i < fft_size_; ++i)
         fft_buffer_[i] = input_buffer_[(position_ + i) & (fft_size_ - 1)][lane] * windows_[fft_index_][i];
       ffts_[fft_index_]->performRealOnlyForwardTransform(fft_buffer_.data(), true);
@@ -122,7 +125,7 @@ namespace vital {
         if (fade_in >= 1.0f)
           size_transition_ = false;
       }
-      audio_out[i] = result;
+      audio_out[i] = poly_float(result[0], result[1], result[0], result[1]);
       last_output_ = result;
       // Only startup/transition needs a count; keep it bounded during long runs.
       samples_since_reset_ = std::min(samples_since_reset_ + 1, fft_size_ + getSampleRate());

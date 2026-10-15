@@ -222,8 +222,46 @@ int main(int argc, char** argv) {
     return 2;
   }
 
+  const auto ms = [](auto&& function) {
+    const double start = juce::Time::getMillisecondCounterHiRes();
+    function();
+    return juce::Time::getMillisecondCounterHiRes() - start;
+  };
   juce::OwnedArray<juce::PluginDescription> descriptions;
-  vst3->findAllTypesForFile(descriptions, bundle.getFullPathName());
+  const double scan_ms = ms([&] { vst3->findAllTypesForFile(descriptions, bundle.getFullPathName()); });
+  if (argc == 3 && juce::String(argv[2]) == "--load-timing" && !descriptions.isEmpty()) {
+    // Timing only: what a host pays to load the bundle, make instances and open the editor.
+    std::cout << "bundle scan (DLL load, factory) ms=" << scan_ms << std::endl;
+    for (int index = 0; index < 3; ++index) {
+      juce::String error;
+      std::unique_ptr<juce::AudioPluginInstance> instance;
+      std::cout << "instance " << index + 1 << " created ms="
+                << ms([&] { instance = manager.createPluginInstance(*descriptions[0], 48000.0, 512, error); });
+      if (instance == nullptr) {
+        std::cerr << " failed: " << error << '\n';
+        return 1;
+      }
+      std::cout << " prepared ms=" << ms([&] {
+        instance->setRateAndBufferSizeDetails(48000.0, 512);
+        instance->prepareToPlay(48000.0, 512);
+      });
+      juce::MemoryBlock state;
+      std::cout << " state saved ms=" << ms([&] { instance->getStateInformation(state); })
+                << " (" << state.getSize() / 1024 << " KiB)";
+      std::cout << " restored ms=" << ms([&] { instance->setStateInformation(state.getData(), int(state.getSize())); });
+      std::unique_ptr<juce::AudioProcessorEditor> editor;
+      std::cout << " editor ms=" << ms([&] {
+        editor.reset(instance->createEditorIfNeeded());
+        if (editor != nullptr) {
+          editor->addToDesktop(juce::ComponentPeer::windowHasTitleBar);
+          editor->setVisible(true);
+        }
+      });
+      std::cout << " editor closed ms=" << ms([&] { editor.reset(); });
+      std::cout << " destroyed ms=" << ms([&] { instance.reset(); }) << std::endl;
+    }
+    return 0;
+  }
   if (descriptions.isEmpty()) {
     std::cerr << "No VST3 types found in " << bundle.getFullPathName() << '\n';
     return 2;

@@ -485,9 +485,13 @@ int main() {
       if (restored.getControls().at(sync_id)->value() != 18)
         return fail("Floaty Page Up must move ten duration steps");
       tempo->keyPressed(KeyPress(KeyPress::pageDownKey));
-      auto handler = tempo->createAccessibilityHandler();
-      if (!handler || !handler->getValueInterface() || handler->getValueInterface()->getCurrentValueAsString() != "1/4")
-        return fail("Floaty accessibility must announce musical duration values");
+      {
+        // The handler must go before updateFullGui below rebuilds the slot: on
+        // Windows its destructor reports the removal to the slider's parent.
+        auto handler = tempo->createAccessibilityHandler();
+        if (!handler || !handler->getValueInterface() || handler->getValueInterface()->getCurrentValueAsString() != "1/4")
+          return fail("Floaty accessibility must announce musical duration values");
+      }
       for (int value = 0; value <= 64; ++value) {
         tempo->setValue(value / 64.0, sendNotificationSync);
         const auto label = tempo->getTextFromValue(tempo->getValue());

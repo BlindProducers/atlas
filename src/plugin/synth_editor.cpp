@@ -20,6 +20,7 @@
 #include "delay.h"
 
 #include "synth_plugin.h"
+#include "screen_reader_speech.h"
 #include "value_bridge.h"
 #include "tape_controls.h"
 #include "resonator/resonator_engine.h"
@@ -90,6 +91,41 @@ namespace {
   constexpr int kScreenReaderRefocusDelayMs = 250;
   // How long the inline prompt stays on screen after focus has left it.
   constexpr int kInlinePromptHideDelayMs = 600;
+  // Whether a rebuild keeps the focused choice that started it and its groups
+  // (SynthEditor::keepFocusedSwitchingRow). NVDA reads every group around a
+  // control it is moved to; VoiceOver's behaviour stays as it was.
+#if JUCE_WINDOWS
+  constexpr bool kKeepSwitchingFocus = true;
+#else
+  constexpr bool kKeepSwitchingFocus = false;
+#endif
+  // Whether comma and period, which step from element to element, also step
+  // through the effect slots of an effects chain on the way
+  // (SynthEditor::moveThroughEffectSlots). Asked for on Windows; on the Mac
+  // they still go straight from the chain to the next element.
+#if JUCE_WINDOWS
+  constexpr bool kSectionKeysStepThroughEffectSlots = true;
+#else
+  constexpr bool kSectionKeysStepThroughEffectSlots = false;
+#endif
+  // Whether a step to a bus's effects chain (comma, period, a number key)
+  // lands on its Bus heading, as Ctrl 1 to 3 do, and says the bus ("Bus 2").
+  // Otherwise it lands on the chain's Bus controls and says "Chain and
+  // routing", the name of every bus's chain (SynthEditor::selectSectionByName).
+  // Asked for on Windows.
+#if JUCE_WINDOWS
+  constexpr bool kBusChainsStepToTheirHeading = true;
+#else
+  constexpr bool kBusChainsStepToTheirHeading = false;
+#endif
+  // Whether the right bracket key opens a control's menu, as Shift M does
+  // (isContextMenuKey). Off the Mac the brackets only move effects in a chain,
+  // as asked, and menus open with Shift M or Shift F10.
+#if JUCE_MAC
+  constexpr bool kRightBracketOpensMenus = true;
+#else
+  constexpr bool kRightBracketOpensMenus = false;
+#endif
 
   enum PresetFacetKind {
     kLibraryFacet = 1,
@@ -110,61 +146,14 @@ namespace {
     kPresetModifiedColumn,
   };
 
-  struct AccessibilitySpeechSettings {
-    bool speech_feedback = true;
-    bool navigation = false;
-    bool presets = false;
-    bool lfo_editor = true;
-    bool wavetable_editor = false;
-    bool sample_browser = false;
-    bool modulation = true;
-    bool parameters = false;
-    bool other = false;
-    bool frequency_values_in_hz = false;
-  };
+  using AccessibilitySpeechSettings = atlas::speech::Settings;
 
   AccessibilitySpeechSettings& accessibilitySpeechSettings() {
-    static AccessibilitySpeechSettings settings;
-    static bool loaded = false;
-    if (!loaded) {
-      loaded = true;
-      json config = LoadSave::getConfigJson();
-      if (config.count("accessibility_speech") && config["accessibility_speech"].is_object()) {
-        const json& data = config["accessibility_speech"];
-        auto loadBool = [&data](const char* name, bool fallback) {
-          return data.count(name) && data[name].is_boolean() ? data[name].get<bool>() : fallback;
-        };
-        settings.speech_feedback = loadBool("speech_feedback", settings.speech_feedback);
-        settings.navigation = loadBool("navigation", settings.navigation);
-        settings.presets = loadBool("presets", settings.presets);
-        settings.lfo_editor = loadBool("lfo_editor", settings.lfo_editor);
-        settings.wavetable_editor = loadBool("wavetable_editor", settings.wavetable_editor);
-        settings.sample_browser = loadBool("sample_browser", settings.sample_browser);
-        settings.modulation = loadBool("modulation", settings.modulation);
-        settings.parameters = loadBool("parameters", settings.parameters);
-        settings.other = loadBool("other", settings.other);
-        settings.frequency_values_in_hz = loadBool("frequency_values_in_hz", settings.frequency_values_in_hz);
-      }
-    }
-    return settings;
+    return atlas::speech::settings();
   }
 
   void saveAccessibilitySpeechSettings() {
-    const auto& settings = accessibilitySpeechSettings();
-    json config = LoadSave::getConfigJson();
-    json data;
-    data["speech_feedback"] = settings.speech_feedback;
-    data["navigation"] = settings.navigation;
-    data["presets"] = settings.presets;
-    data["lfo_editor"] = settings.lfo_editor;
-    data["wavetable_editor"] = settings.wavetable_editor;
-    data["sample_browser"] = settings.sample_browser;
-    data["modulation"] = settings.modulation;
-    data["parameters"] = settings.parameters;
-    data["other"] = settings.other;
-    data["frequency_values_in_hz"] = settings.frequency_values_in_hz;
-    config["accessibility_speech"] = data;
-    LoadSave::saveJsonToConfig(config);
+    atlas::speech::saveSettings();
   }
 
   String onOff(bool enabled) {
@@ -412,7 +401,7 @@ namespace {
   void postAnnouncement(const String& message, AccessibilityHandler::AnnouncementPriority priority) {
     auto& held = heldAnnouncements();
     if (held.holds == 0) {
-      AccessibilityHandler::postAnnouncement(message, priority);
+      atlas::speech::announce(message, priority);
       return;
     }
     held.messages.add(message);
@@ -431,7 +420,7 @@ namespace {
     const auto priority = held.priority;
     held.messages.clear();
     held.priority = AccessibilityHandler::AnnouncementPriority::low;
-    AccessibilityHandler::postAnnouncement(message, priority);
+    atlas::speech::announce(message, priority);
   }
 
   struct ScopedAnnouncementHold {
@@ -446,6 +435,14 @@ namespace {
       postAnnouncement(message, priority);
   }
 
+  // Where a step landed, for a name that holds none of the navigation words
+  // above ("Bus 2"), so that the Navigation setting still decides.
+  void postNavigationAnnouncement(const String& message) {
+    const auto& settings = accessibilitySpeechSettings();
+    if (settings.speech_feedback && settings.navigation)
+      postAnnouncement(message, AccessibilityHandler::AnnouncementPriority::high);
+  }
+
   // Direct responses to a preset-browser command must not disappear when the
   // optional background preset-announcement category is disabled. These are
   // confirmations of an action the user just performed, not browser chatter.
@@ -455,10 +452,57 @@ namespace {
       postAnnouncement(message, priority);
   }
 
+  // What the screen reader would read from a control where JUCE gives NVDA
+  // nothing to read: the row a list's selection keys landed on (see
+  // SelectionKeyList) and a toggle's new state (see SpokenToggleButton).
+  // VoiceOver reads these itself, so Windows says them here, and no optional
+  // category silences them.
+  void postWindowsReadout(const String& message) {
+#if JUCE_WINDOWS
+    if (accessibilitySpeechSettings().speech_feedback)
+      postAnnouncement(message, AccessibilityHandler::AnnouncementPriority::high);
+#else
+    ignoreUnused(message);
+#endif
+  }
+
+  // JUCE moves accessibility focus onto a popup menu's items and drops it when
+  // the menu closes, while the control that opened the menu keeps the keyboard
+  // focus, so Windows gets no focus event and NVDA stays on the closed menu.
+  // Opens `menu`, then hands the focus back to whichever control has it.
+  void showAccessibleMenuAsync(PopupMenu& menu, const PopupMenu::Options& options,
+                               std::function<void(int)> callback = {}) {
+    menu.showMenuAsync(options, [callback = std::move(callback)](int result) {
+      if (callback)
+        callback(result);
+#if JUCE_WINDOWS
+      MessageManager::callAsync([] {
+        if (auto* focused = Component::getCurrentlyFocusedComponent())
+          if (auto* handler = focused->getAccessibilityHandler())
+            handler->grabFocus();
+      });
+#endif
+    });
+  }
+
+  String listRowText(const String& name, int row, int rows) {
+    return name + ", " + String(row + 1) + " of " + String(rows);
+  }
+
   void postLfoAnnouncement(const String& message) {
     const auto& settings = accessibilitySpeechSettings();
     if (settings.speech_feedback && settings.lfo_editor)
       postAnnouncement(message, AccessibilityHandler::AnnouncementPriority::high);
+  }
+
+  // The wavetable keyboard editor's frames, harmonics, layers, keyframes and
+  // lines. Its messages ("Layer 2", "Point removed") do not all name the
+  // editor, so they skip postPluginAnnouncement's guess from the wording.
+  void postWavetableEditorAnnouncement(const String& message,
+                                       AccessibilityHandler::AnnouncementPriority priority) {
+    const auto& settings = accessibilitySpeechSettings();
+    if (settings.speech_feedback && settings.wavetable_editor)
+      postAnnouncement(message, priority);
   }
 
   void postModulationRemapAnnouncement(const String& message) {
@@ -806,13 +850,8 @@ namespace {
     return "Between band pass and high pass, " + String(engine_value, 2);
   }
 
-  String last_section_name;
-  String last_preset_path;
-  String last_preset_search;
-  String last_preset_library = kAllLibraries;
-  String last_preset_bank = kAllBanks;
-  String last_preset_category = kAllCategories;
-  String last_preset_tag = kAllTags;
+  // A preference, so shared by every Atlas instance. The section and preset
+  // browser state are per instance: SynthPlugin::EditorMemory.
   bool last_preset_preview = false;
 
   force_inline int chunkNameToData(const char* chunk_name) {
@@ -1780,6 +1819,12 @@ namespace {
         return true;
     }
     return false;
+  }
+
+  // Switches that change which rows the editor shows, so flipping one
+  // rebuilds it: Envelope 1's analog mode swaps its Power rows for Analog Age.
+  bool isRowSwitchingToggle(const String& id) {
+    return id == "env_1_analog";
   }
 
   // Convolution Reverb: free predelay in milliseconds, or a synced division.
@@ -3669,12 +3714,39 @@ namespace {
            CharacterFunctions::toLowerCase(key.getTextCharacter()) == 'c';
   }
 
-  // The right bracket key acts as a "context menu" modifier on every platform so
-  // that Windows screen reader users (and anyone without VoiceOver) can open the
-  // same menu that VoiceOver exposes through VO+Shift+M (the showMenu action).
+  // Shift M, and Shift F10 as in other Windows programs, open the same menu
+  // that VoiceOver exposes through VO+Shift+M (the showMenu action), for
+  // Windows screen reader users and anyone without VoiceOver, on every control
+  // and heading with a menu. On the Mac the right bracket key does too
+  // (kRightBracketOpensMenus); atlas::keys::contextMenuKeys names them.
   bool isContextMenuKey(const KeyPress& key) {
-    return !key.getModifiers().isAnyModifierKeyDown() &&
+    if (isModulationMenuKey(key))
+      return true;
+    const ModifierKeys modifiers = key.getModifiers();
+    if (key.getKeyCode() == KeyPress::F10Key)
+      return modifiers.isShiftDown() && !modifiers.isCommandDown() && !modifiers.isCtrlDown() &&
+             !modifiers.isAltDown();
+    return kRightBracketOpensMenus && !modifiers.isAnyModifierKeyDown() &&
            (key.getKeyCode() == ']' || key.getTextCharacter() == ']');
+  }
+
+  // Command chords: Command on macOS, Ctrl elsewhere. Off the Mac JUCE reports
+  // Ctrl as the command modifier, so "Command without Ctrl" never matches there.
+  bool isCommandChord(const ModifierKeys& modifiers) {
+#if JUCE_MAC
+    return modifiers.isCommandDown() && !modifiers.isCtrlDown() && !modifiers.isAltDown();
+#else
+    return modifiers.isCtrlDown() && !modifiers.isAltDown();
+#endif
+  }
+
+  // Control chords: Control without Command, a separate key only on macOS.
+  bool isControlChord(const ModifierKeys& modifiers) {
+#if JUCE_MAC
+    return modifiers.isCtrlDown() && !modifiers.isCommandDown() && !modifiers.isAltDown();
+#else
+    return modifiers.isCtrlDown() && !modifiers.isAltDown();
+#endif
   }
 
   bool isEffectMoveEarlierKey(const KeyPress& key) {
@@ -4138,8 +4210,8 @@ namespace {
   };
 
   // Implemented by the offscreen controls so that the accessibility handlers
-  // (VoiceOver VO+Shift+M -> showMenu) and the key handlers (the right bracket
-  // key) can trigger the control's context menu through a common entry point.
+  // (VoiceOver VO+Shift+M -> showMenu) and the key handlers (isContextMenuKey)
+  // can trigger the control's context menu through a common entry point.
   struct AccessibleContextMenuTarget {
     virtual ~AccessibleContextMenuTarget() = default;
     virtual void showAccessibleContextMenu() = 0;
@@ -4426,7 +4498,7 @@ namespace {
       }
   };
 
-  class OffscreenToggleButton : public ToggleButton, public AccessibleContextMenuTarget {
+  class OffscreenToggleButton : public SpokenToggleButton, public AccessibleContextMenuTarget {
     public:
       std::function<bool(const KeyPress&, Component&)> onAccessibleCommand;
       std::function<void()> onContextMenuCommand;
@@ -4450,6 +4522,19 @@ namespace {
         return std::make_unique<OffscreenButtonAccessibilityHandler>(*this, AccessibilityRole::toggleButton);
       }
   };
+}
+
+void SpokenToggleButton::clicked() {
+  ToggleButton::clicked();
+#if JUCE_WINDOWS
+  // The words a screen reader reads for the state: a row's own names, such as
+  // Enabled and Bypassed, or On and Off.
+  const bool on = getToggleState();
+  const String custom = getProperties()[on ? "accessibleOnText" : "accessibleOffText"].toString();
+  const String state = custom.isNotEmpty() ? custom : String(on ? "On" : "Off");
+  // After the click's own handlers, which may change the speech settings.
+  MessageManager::callAsync([state] { postWindowsReadout(state); });
+#endif
 }
 
 std::unique_ptr<AccessibilityHandler> AccessibleTextButton::createAccessibilityHandler() {
@@ -4527,7 +4612,7 @@ namespace {
       std::function<void(Component&)> onContextMenu;
 
       bool keyPressed(const KeyPress& key) override {
-        if (onContextMenu && (isContextMenuKey(key) || isModulationMenuKey(key))) {
+        if (onContextMenu && isContextMenuKey(key)) {
           onContextMenu(*this);
           return true;
         }
@@ -4705,8 +4790,10 @@ class CpuUsageMeter final : public Component {
       displayed_percentage_ = next_percentage;
       if (value_changed) {
         repaint();
+#if ! JUCE_WINDOWS
         if (auto* handler = getAccessibilityHandler())
           handler->notifyAccessibilityEvent(AccessibilityEvent::valueChanged);
+#endif
       }
     }
 
@@ -4738,8 +4825,16 @@ class CpuUsageMeter final : public Component {
       class Handler final : public AccessibilityHandler {
         public:
           explicit Handler(CpuUsageMeter& meter) :
+#if JUCE_WINDOWS
+              // NVDA beeps at every change of a progress bar's value. A plain
+              // readout instead: the title gives the percentage when the meter
+              // is reached, and nothing is announced while it changes.
+              AccessibilityHandler(meter, AccessibilityRole::staticText),
+#else
               AccessibilityHandler(meter, AccessibilityRole::progressBar, {},
-                                   Interfaces{ std::make_unique<Value>(meter) }), meter_(meter) { }
+                                   Interfaces{ std::make_unique<Value>(meter) }),
+#endif
+              meter_(meter) { }
           String getTitle() const override {
             // JUCE's macOS bridge exposes AXValue as text. VoiceOver can omit
             // that text for a progress indicator, so include the current
@@ -4812,6 +4907,8 @@ class AccessibleParameterRow : public Component {
       const String parameter_description = accessibleDescription.isNotEmpty()
           ? accessibleDescription
           : accessibleParameterHelpText(parameter_id, accessible_name, use_toggle_control_);
+      built_name_ = accessible_name;
+      built_description_ = parameter_description;
       label_.setText(accessible_name, dontSendNotification);
       label_.setTitle(accessible_name + " label");
       label_.setColour(Label::textColourId, Colours::white);
@@ -4856,7 +4953,8 @@ class AccessibleParameterRow : public Component {
           toggle_.getProperties().set("accessibleOffText", accessibleOffText);
         if (accessibleOnText.isNotEmpty())
           toggle_.getProperties().set("accessibleOnText", accessibleOnText);
-        toggle_.setHelpText("Press Space to toggle. Press Shift M, the right bracket key, or VoiceOver Shift M for the context menu. Press Shift L for MIDI learn, or Shift C to clear MIDI learn.");
+        toggle_.setHelpText("Press Enter to toggle. Press " + atlas::keys::contextMenuKeys() +
+                            " for the context menu. Press Shift L for MIDI learn, or Shift C to clear MIDI learn.");
         toggle_.setWantsKeyboardFocus(true);
         toggle_.onClick = [this] {
           beginParameterChange();
@@ -5068,7 +5166,9 @@ class AccessibleParameterRow : public Component {
                                         : glitch_delay_control ? "Use arrows for changes, Shift arrows for a tenth of the step, and Page keys for ten times the step. Tap times, Glide and tape times move 10 ms; Buffer and Smear Size 5 ms; slice and grain sizes 1 ms; High Cut 100 Hz; Low Cut and ring frequencies 10 Hz; pitch ranges one semitone; sweep speeds and formant shifts 0.1 semitone; FM ratios 0.05; FM index and rate reduction 0.1; densities one grain a second; Volume 0.5 dB and Output Gain 0.1 dB; percentages one percent. Home for maximum, End for minimum, Enter to type a value, Backspace to reset to default. Press Shift M for the context menu, Shift L for MIDI learn, and Shift C to clear MIDI learn."
                                         : resonator_control ? "Use arrows for changes, Shift arrows for finer changes, and Page keys for ten times the step. Tune moves one semitone; Decay, rates and Filter Frequency move in even ratio steps; percentages, degrees, cents and Glide milliseconds move by one; decibels, LFO Amount and Filter Bandwidth by 0.1; Ratio by 0.01. Named choices move one item at a time. Home for maximum, End for minimum, Enter to type a value, Backspace to reset to default. Press Shift M for the context menu, Shift L for MIDI learn, and Shift C to clear MIDI learn."
                                         : tremolo_control ? "Use arrows for changes, Shift arrows for finer changes, and Page keys for larger changes. Free Rate uses 0.1 Hz steps, Stereo Phase and Offset use one degree, Depth and Mix use one percent, and Smoothing uses 0.1 ms. Named choices move one item at a time. Home for maximum, End for minimum, Enter to type a value, Backspace to reset to default. Press Shift M for the context menu, Shift L for MIDI learn, and Shift C to clear MIDI learn."
-                                        : "Use arrows for changes, hold Shift with the arrows for finer changes, Page Up and Page Down for larger changes. For frequencies displayed in Hz, arrows change 10 Hz, Shift arrows 1 Hz, and Page keys 100 Hz. Home for maximum, End for minimum, Enter to type a value, Backspace to reset to default. Press Shift M, the right bracket key, or VoiceOver Shift M for the context menu. Press Shift L for MIDI learn, and Shift C to clear MIDI learn.");
+                                        : "Use arrows for changes, hold Shift with the arrows for finer changes, Page Up and Page Down for larger changes. For frequencies displayed in Hz, arrows change 10 Hz, Shift arrows 1 Hz, and Page keys 100 Hz. Home for maximum, End for minimum, Enter to type a value, Backspace to reset to default. Press " +
+                                          atlas::keys::contextMenuKeys() +
+                                          " for the context menu. Press Shift L for MIDI learn, and Shift C to clear MIDI learn.");
         slider_.setWantsKeyboardFocus(true);
         slider_.textFromValueFunction = [this](double value) {
           const double parameter_value = parameterValueForSliderValue(value);
@@ -5186,7 +5286,8 @@ class AccessibleParameterRow : public Component {
       indexed_value_fallback_ = fallbackIndex < static_cast<int>(engineValueOrder.size()) ? fallbackIndex : -1;
       indexed_value_order_ = std::move(engineValueOrder);
       slider_.setRange(0.0, static_cast<double>(indexed_value_order_.size() - 1), 1.0);
-      slider_.setHelpText("Use arrow keys to move through the choices in their logical display order. Enter types a value and Backspace resets to default. Press Shift M, the right bracket key, or VoiceOver Shift M for the context menu.");
+      slider_.setHelpText("Use arrow keys to move through the choices in their logical display order. Enter types a value and Backspace resets to default. Press " +
+                          atlas::keys::contextMenuKeys() + " for the context menu.");
       refresh();
     }
 
@@ -5273,6 +5374,40 @@ class AccessibleParameterRow : public Component {
       if (auto* bridge = dynamic_cast<ValueBridge*>(&parameter_))
         return bridge->getParameterId();
       return {};
+    }
+
+    const AudioProcessorParameter& parameter() const { return parameter_; }
+
+    // Whether `fresh`, built just now for the same parameter, is the same
+    // choice menu as this row, so a rebuild can keep this row in its place.
+    // Compares the parameter by address only: this row's may be gone.
+    bool readsLike(const AccessibleParameterRow& fresh) const {
+      if (&parameter_ != &fresh.parameter_ || built_name_ != fresh.built_name_ ||
+          built_description_ != fresh.built_description_)
+        return false;
+      if (use_toggle_control_ || fresh.use_toggle_control_)
+        return use_toggle_control_ && fresh.use_toggle_control_;
+      if (!use_combo_control_ || !fresh.use_combo_control_ || combo_values_ != fresh.combo_values_ ||
+          combo_.getNumItems() != fresh.combo_.getNumItems())
+        return false;
+      for (int i = 0; i < combo_.getNumItems(); ++i) {
+        if (combo_.getItemText(i) != fresh.combo_.getItemText(i))
+          return false;
+      }
+      return true;
+    }
+
+    // Named as it was built, for a rebuild that keeps this row and names it
+    // as it names a fresh one.
+    void restoreBuiltName() {
+      label_.setText(built_name_, dontSendNotification);
+      label_.setTitle(built_name_ + " label");
+      focusableControl()->setTitle(built_name_);
+      focusableControl()->setDescription(built_description_);
+      if (auto* tooltip = dynamic_cast<SettableTooltipClient*>(focusableControl()))
+        tooltip->setTooltip(built_description_);
+      if (use_toggle_control_)
+        toggle_.setButtonText(built_name_);
     }
 
     void setControlFocusOrder(int order) {
@@ -5363,7 +5498,7 @@ class AccessibleParameterRow : public Component {
       }
 
       Component::SafePointer<Component> safe_target(&target);
-      menu.showMenuAsync(PopupMenu::Options().withTargetComponent(&target),
+      showAccessibleMenuAsync(menu, PopupMenu::Options().withTargetComponent(&target),
                          [this, parameter_id, removable_modulations, add_modulation_choices, safe_target](int result) {
         Component* invoked = safe_target.getComponent();
         if (invoked == nullptr)
@@ -5478,6 +5613,9 @@ class AccessibleParameterRow : public Component {
     std::vector<int> indexed_value_order_;
     int indexed_value_fallback_ = -1;
     std::vector<float> combo_values_;   // the parameter value of each menu item
+    // The name and description the row was built with, before any rename.
+    String built_name_;
+    String built_description_;
     double min_normalized_value_ = 0.0;
     double max_normalized_value_ = 1.0;
     bool use_toggle_control_ = false;
@@ -5584,17 +5722,26 @@ class AccessibleSectionHeader : public Component, public AccessibleContextMenuTa
     std::function<void(Component&)> onContextMenuCommand;
     std::function<void()> onAccessibilityFocus;
 
-    AccessibleSectionHeader(const String& title, int groupRank, bool topLevel, const String& sectionKey = {}) :
-        title_(title), top_level_(topLevel) {
-      setTitle(title_);
-      setDescription(top_level_ ? "Control group " + title_ : "Control section " + title_);
-      setHelpText(top_level_ ? "Group heading" : "Section heading");
-      setAccessible(true);
-      setWantsKeyboardFocus(true);
-      setFocusContainerType(Component::FocusContainerType::focusContainer);
-      getProperties().set("ControlGroup", groupRank);
-      if (sectionKey.isNotEmpty())
-        getProperties().set("SectionName", sectionKey);
+    AccessibleSectionHeader(const String& title, int groupRank, bool topLevel, const String& sectionKey = {}) {
+      configure(title, groupRank, topLevel, sectionKey);
+    }
+
+    // Whether a rebuild asking for this group can have this header back.
+    bool isSameGroup(const String& title, bool topLevel, const String& sectionKey) const {
+      return top_level_ == topLevel && section_key_ == sectionKey && (sectionKey.isNotEmpty() || title_ == title);
+    }
+
+    // As the constructor leaves it, for a rebuild that takes it back: no
+    // children, callbacks or other properties.
+    void reuse(const String& title, int groupRank, bool topLevel, const String& sectionKey) {
+      removeAllChildren();
+      child_focus_order_.clear();
+      onKeyCommand = nullptr;
+      onContextMenuCommand = nullptr;
+      onAccessibilityFocus = nullptr;
+      getProperties().clear();   // the explicit focus order too
+      configure(title, groupRank, topLevel, sectionKey);
+      repaint();
     }
 
     void paint(Graphics& g) override {
@@ -5678,8 +5825,24 @@ class AccessibleSectionHeader : public Component, public AccessibleContextMenuTa
     int headerHeight() const { return top_level_ ? 42 : 34; }
 
   private:
+    void configure(const String& title, int groupRank, bool topLevel, const String& sectionKey) {
+      title_ = title;
+      top_level_ = topLevel;
+      section_key_ = sectionKey;
+      setTitle(title_);
+      setDescription(top_level_ ? "Control group " + title_ : "Control section " + title_);
+      setHelpText(top_level_ ? "Group heading" : "Section heading");
+      setAccessible(true);
+      setWantsKeyboardFocus(true);
+      setFocusContainerType(Component::FocusContainerType::focusContainer);
+      getProperties().set("ControlGroup", groupRank);
+      if (sectionKey.isNotEmpty())
+        getProperties().set("SectionName", sectionKey);
+    }
+
     String title_;
     bool top_level_ = false;
+    String section_key_;
     std::vector<Component*> child_focus_order_;
 };
 
@@ -5697,7 +5860,19 @@ void SynthEditor::addCpuMeter(Component& parent, int x, int& y, int width, int& 
 }
 
 SynthEditor::SynthEditor(SynthPlugin& synth) :
-    AudioProcessorEditor(&synth), SynthGuiInterface(&synth, false), synth_(synth) {
+    AudioProcessorEditor(&synth), SynthGuiInterface(&synth, false), synth_(synth),
+    last_section_name_(synth.getEditorMemory().section_name),
+    last_preset_path_(synth.getEditorMemory().preset_path),
+    last_preset_search_(synth.getEditorMemory().preset_search),
+    last_preset_library_(synth.getEditorMemory().preset_library),
+    last_preset_bank_(synth.getEditorMemory().preset_bank),
+    last_preset_category_(synth.getEditorMemory().preset_category),
+    last_preset_tag_(synth.getEditorMemory().preset_tag) {
+  // A new instance's preset browser starts unfiltered.
+  if (last_preset_library_.isEmpty()) last_preset_library_ = kAllLibraries;
+  if (last_preset_bank_.isEmpty()) last_preset_bank_ = kAllBanks;
+  if (last_preset_category_.isEmpty()) last_preset_category_ = kAllCategories;
+  if (last_preset_tag_.isEmpty()) last_preset_tag_ = kAllTags;
   setTitle("Atlas");
   setDescription("Keyboard and VoiceOver accessible editor for Atlas");
   setWantsKeyboardFocus(true);
@@ -5751,6 +5926,12 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
       }
       return false;
     };
+    table.onSelectionKey = [this, table_pointer = &table, kind] {
+      const int row = table_pointer->getSelectedRow();
+      const int rows = presetFacetRowCount(kind);
+      if (isPositiveAndBelow(row, rows))
+        postWindowsReadout(listRowText(presetFacetCellText(kind, row), row, rows));
+    };
     addChildComponent(table);
   };
   configureFacetTable(preset_collection_table_, preset_collection_model_, kCollectionFacet, "Collection");
@@ -5764,9 +5945,9 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   preset_search_.setHelpText("Type text to narrow the preset list");
   preset_search_.setTextToShowWhenEmpty("Search presets", Colours::grey);
   preset_search_.setWantsKeyboardFocus(true);
-  preset_search_.setText(last_preset_search, false);
+  preset_search_.setText(last_preset_search_, false);
   preset_search_.onTextChange = [this] {
-    last_preset_search = preset_search_.getText();
+    last_preset_search_ = preset_search_.getText();
     if (!preset_list_loaded_) {
       ensurePresetListLoaded();
       return;
@@ -5778,8 +5959,11 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   preset_table_model_ = std::make_unique<PresetResultsTableModel>(*this);
   preset_table_.setModel(preset_table_model_.get());
   preset_table_.setTitle("Preset results table");
-  preset_table_.setDescription("Sortable preset results with Name first. Press Return to load, F to change favourite, R to rename, E to edit metadata, S to choose the next sort column, Shift S to reverse the sort, or Delete to move an editable preset to Trash. Command S saves the patch, Shift Command S saves it as a new preset.");
-  preset_table_.setHelpText("Use arrow keys to select a preset. Return loads, F toggles favourite, R renames, E edits metadata, S chooses the next sort column, Shift S reverses the sort, and column headers can also be pressed to sort. Command S saves the patch and Shift Command S saves it as a new preset.");
+  const String command = atlas::keys::commandName();
+  preset_table_.setDescription("Sortable preset results with Name first. Press Return to load, F to change favourite, R to rename, E to edit metadata, S to choose the next sort column, Shift S to reverse the sort, or Delete to move an editable preset to Trash. " +
+                               command + " S saves the patch, Shift " + command + " S saves it as a new preset.");
+  preset_table_.setHelpText("Use arrow keys to select a preset. Return loads, F toggles favourite, R renames, E edits metadata, S chooses the next sort column, Shift S reverses the sort, and column headers can also be pressed to sort. " +
+                            command + " S saves the patch and Shift " + command + " S saves it as a new preset.");
   preset_table_.setWantsKeyboardFocus(true);
   preset_table_.setRowHeight(30);
   preset_table_.setHeaderHeight(32);
@@ -5822,7 +6006,7 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
       deleteSelectedPreset();
       return true;
     }
-    if (isContextMenuKey(key) || isModulationMenuKey(key)) {
+    if (isContextMenuKey(key)) {
       showSelectedPresetMenu(preset_table_);
       return true;
     }
@@ -5840,6 +6024,13 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
     }
     return false;
   };
+  preset_table_.onSelectionKey = [this] {
+    const int row = preset_table_.getSelectedRow();
+    if (isPositiveAndBelow(row, filtered_presets_.size()))
+      postWindowsReadout(listRowText(presetTableCellText(row, kPresetNameColumn), row, filtered_presets_.size()));
+    else
+      postWindowsReadout(preset_list_loaded_ ? "No matching presets" : "Preset list loading");
+  };
   addChildComponent(preset_table_);
 
   preset_preview_.setTitle("Autoload preset when scrolling");
@@ -5849,8 +6040,15 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   preset_preview_.setToggleState(last_preset_preview, dontSendNotification);
   preset_preview_.onClick = [this] {
     last_preset_preview = preset_preview_.getToggleState();
+#if JUCE_WINDOWS
+    // NVDA says nothing when a check box changes (see SpokenToggleButton), so
+    // this is the only answer to the key press.
+    postPresetActionAnnouncement(last_preset_preview ? "Preset autoload enabled" : "Preset autoload disabled",
+                                 AccessibilityHandler::AnnouncementPriority::medium);
+#else
     postPluginAnnouncement(last_preset_preview ? "Preset autoload enabled" : "Preset autoload disabled",
                                            AccessibilityHandler::AnnouncementPriority::medium);
+#endif
   };
   addChildComponent(preset_preview_);
 
@@ -5877,6 +6075,12 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
     editor.setTextToShowWhenEmpty(empty_text, Colours::grey);
     editor.setSelectAllWhenFocused(true);
     editor.setWantsKeyboardFocus(true);
+    // Escape closes the form, as Cancel does; the text box keeps the key
+    // from reaching SynthEditor::keyPressed and reports it a moment later.
+    editor.onEscapeKey = [this] {
+      if (save_patch_dialog_visible_)
+        hideSavePresetDialog();
+    };
     addChildComponent(editor);
   };
   configureSaveEditor(save_patch_name_, "Patch name", "Name");
@@ -5893,7 +6097,7 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   addChildComponent(save_patch_ok_);
   save_patch_cancel_.setTitle("Cancel save patch");
   save_patch_cancel_.setDescription("Close the save patch form without saving");
-  save_patch_cancel_.setHelpText("Press Enter to cancel");
+  save_patch_cancel_.setHelpText("Press Enter or Escape to cancel");
   save_patch_cancel_.setWantsKeyboardFocus(true);
   save_patch_cancel_.onClick = [this] { hideSavePresetDialog(); };
   addChildComponent(save_patch_cancel_);
@@ -5992,8 +6196,8 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   if (imported > 0)
     postPluginAnnouncement("Imported " + String(imported) + " new presets from Downloads folder",
                            AccessibilityHandler::AnnouncementPriority::high);
-  if (section_names_.indexOf(last_section_name) < 0 && section_names_.size() > 0)
-    last_section_name = section_names_[0];
+  if (section_names_.indexOf(last_section_name_) < 0 && section_names_.size() > 0)
+    last_section_name_ = section_names_[0];
   showAllSections(false);
   rebuildFocusOrder();
   setResizable(true, true);
@@ -6068,6 +6272,13 @@ void SynthEditor::buildSections() {
   section_names_.clear();
   group_sections_.clear();
   group_names_.clear();
+  // A row a rebuild keeps (keepFocusedSwitchingRow) still uses its bridge, so
+  // a control that is still listed keeps the bridge it had.
+  std::map<String, std::unique_ptr<ValueBridge>> previous_bridges;
+  if (kKeepSwitchingFocus) {
+    for (auto& bridge : internal_fx_bridges_)
+      previous_bridges[bridge->getParameterId()] = std::move(bridge);
+  }
   internal_fx_bridges_.clear();
   parameters_by_id_.clear();
 
@@ -6083,16 +6294,22 @@ void SynthEditor::buildSections() {
   }
 
 
-  auto addInternalFxBridge = [this](const String& id, const String& section) {
+  auto addInternalFxBridge = [this, &previous_bridges](const String& id, const String& section) {
     auto& controls = synth_.getControls();
     auto found = controls.find(id.toStdString());
     if (found == controls.end() || found->second == nullptr || !vital::Parameters::isParameter(id.toStdString()))
       return;
 
-    auto bridge = std::make_unique<ValueBridge>(id.toStdString(), found->second);
-    bridge->setListener(&synth_);
-    if (vital::suppressor::isFrequency(id.toStdString()))
-      bridge->suppressorSampleRate = [this] { return synth_.getFxSampleRate(); };
+    std::unique_ptr<ValueBridge> bridge;
+    if (const auto previous = previous_bridges.find(id); previous != previous_bridges.end() &&
+        previous->second != nullptr && previous->second->engineControl() == found->second)
+      bridge = std::move(previous->second);
+    else {
+      bridge = std::make_unique<ValueBridge>(id.toStdString(), found->second);
+      bridge->setListener(&synth_);
+      if (vital::suppressor::isFrequency(id.toStdString()))
+        bridge->suppressorSampleRate = [this] { return synth_.getFxSampleRate(); };
+    }
     auto* bridge_ptr = bridge.get();
     parameters_by_id_[id] = bridge_ptr;
     sections_[section].push_back(bridge_ptr);
@@ -6233,7 +6450,7 @@ void SynthEditor::buildGroups() {
 
   // Rebuilding (after a preset load or an effect change) keeps the group the
   // user is in instead of jumping back to the first group.
-  current_group_ = groupForSection(last_section_name);
+  current_group_ = groupForSection(last_section_name_);
   if (!group_names_.contains(current_group_))
     current_group_ = group_names_.isEmpty() ? String() : group_names_[0];
 }
@@ -6242,17 +6459,24 @@ void SynthEditor::selectSectionByName(const String& section, bool announce) {
   if (!section_names_.contains(section))
     return;
 
-  last_section_name = section;
+  last_section_name_ = section;
   if (row_focus_order_.empty())
     showAllSections(false);
+  // On Windows a bus's chain is reached at its Bus heading (the group search
+  // below) and called by the bus: the chain is all the Bus group holds, and
+  // its own name, "Chain and routing", is the same on every bus.
+  const bool bus_heading = kBusChainsStepToTheirHeading && isEffectChainSection(section) &&
+                           fxBusForSection(section) > 0;
   Component* target = nullptr;
-  for (auto* component : row_focus_order_) {
-    if (component != nullptr && component->getProperties()["SectionName"].toString() == section) {
-      target = component;
-      break;
+  if (!bus_heading) {
+    for (auto* component : row_focus_order_) {
+      if (component != nullptr && component->getProperties()["SectionName"].toString() == section) {
+        target = component;
+        break;
+      }
     }
   }
-  if (target == nullptr) {
+  if (target == nullptr && !bus_heading) {
     const String title = accessibleSectionTitle(section);
     for (auto* component : row_focus_order_) {
       if (component != nullptr && component->getTitle() == title) {
@@ -6274,13 +6498,36 @@ void SynthEditor::selectSectionByName(const String& section, bool announce) {
     ensureComponentVisible(target);
     target->grabKeyboardFocus();
   }
-  if (announce)
-    postPluginAnnouncement(accessibleSectionTitle(section),
-                                           AccessibilityHandler::AnnouncementPriority::high);
+  if (announce) {
+    if (bus_heading)
+      postNavigationAnnouncement(fxBusNameForSection(section));
+    else
+      postPluginAnnouncement(accessibleSectionTitle(section), AccessibilityHandler::AnnouncementPriority::high);
+  }
 }
 
 std::unique_ptr<AccessibleParameterRow> SynthEditor::createAccessibleParameterRow(AudioProcessorParameter& parameter,
                                                                                   const String& sectionName) {
+  // Built even when a kept row takes its place, for what building records
+  // (the choices the editor watches for changes).
+  auto row = buildAccessibleParameterRow(parameter, sectionName);
+  if (kept_switching_row_ == nullptr || row == nullptr || &row->parameter() != kept_switching_parameter_ ||
+      row->parameterId() != kept_switching_parameter_id_)
+    return row;
+  if (!kept_switching_row_->readsLike(*row)) {
+    // The choice reads differently now: its fresh row replaces it.
+    kept_switching_control_ = nullptr;
+    kept_switching_row_.reset();
+    return row;
+  }
+  kept_switching_row_->onValueChange = row->onValueChange;
+  kept_switching_row_->restoreBuiltName();
+  kept_switching_row_->refresh();
+  return std::move(kept_switching_row_);
+}
+
+std::unique_ptr<AccessibleParameterRow> SynthEditor::buildAccessibleParameterRow(AudioProcessorParameter& parameter,
+                                                                                 const String& sectionName) {
   auto* bridge = dynamic_cast<ValueBridge*>(&parameter);
   if (bridge == nullptr)
     return std::make_unique<AccessibleParameterRow>(parameter);
@@ -7117,8 +7364,7 @@ void SynthEditor::addOscillatorSectionContent(int oscillator, const String& sect
 
   auto open_group = [&](const String& title, const String& key, const String& description, Component& group_parent,
                         AccessibleSectionHeader* parent_group, int& parent_y, int group_x, int group_width) {
-    auto group = std::make_unique<AccessibleSectionHeader>(title, groupRank("Oscillators"), false,
-                                                           section_name + " " + key);
+    auto group = makeSectionHeader(title, groupRank("Oscillators"), false, section_name + " " + key);
     auto* group_ptr = group.get();
     group_ptr->setDescription(description);
     group_ptr->setExplicitFocusOrder(focus_order++);
@@ -7240,6 +7486,10 @@ bool SynthEditor::restoreFocusAfterRebuild(const String& parameterId, Component*
   Component* initial = findRebuildFocusTarget(parameterId, persistentComponent, accessibleTitle, preferredSection);
   if (initial == nullptr)
     return false;
+  // The rebuild kept this control (keepFocusedSwitchingRow): the screen
+  // reader never left it.
+  if (initial == kept_switching_control_)
+    refocusScreenReader = false;
 
   // Focus the new control now, so keys pressed while a choice is stepped
   // (an arrow held on a Type menu) keep reaching it rather than the window.
@@ -7426,6 +7676,76 @@ void SynthEditor::focusGained(FocusChangeType) {
   restoreFocusAfterRebuild(focus.parameter_id, focus.component.getComponent(), focus.title, focus.section, true);
 }
 
+void SynthEditor::keepFocusedSwitchingRow() {
+  releaseKeptFocus();
+  if (!kKeepSwitchingFocus)
+    return;
+  const auto found = std::find_if(rows_.begin(), rows_.end(), [this](const auto& row) {
+    return row != nullptr && row->focusableControl()->hasKeyboardFocus(true) &&
+           (isRowSwitchingChoice(row->parameterId()) || isRowSwitchingToggle(row->parameterId())) &&
+           rows_container_.isParentOf(row.get());
+  });
+  if (found == rows_.end())
+    return;
+
+  // The groups around it, outermost first, leave the old view with it.
+  std::vector<std::unique_ptr<AccessibleSectionHeader>> groups;
+  for (auto* parent = (*found)->getParentComponent(); parent != nullptr && parent != &rows_container_;
+       parent = parent->getParentComponent()) {
+    auto* header = dynamic_cast<AccessibleSectionHeader*>(parent);
+    const auto owned = std::find_if(section_headers_.begin(), section_headers_.end(),
+                                    [parent](const auto& component) { return component.get() == parent; });
+    if (header == nullptr || owned == section_headers_.end())
+      continue;
+    owned->release();
+    section_headers_.erase(owned);
+    groups.insert(groups.begin(), std::unique_ptr<AccessibleSectionHeader>(header));
+  }
+
+  // Focus goes first, so that taking the row out moves it nowhere else.
+  if (rows_container_.hasKeyboardFocus(true))
+    rows_container_.giveAwayKeyboardFocus();
+  kept_switching_parameter_id_ = (*found)->parameterId();
+  kept_switching_parameter_ = &(*found)->parameter();
+  kept_switching_control_ = (*found)->focusableControl();
+  kept_switching_row_ = std::move(*found);
+  rows_.erase(found);
+  if (auto* parent = kept_switching_row_->getParentComponent())
+    parent->removeChildComponent(kept_switching_row_.get());
+  // Innermost first. Their other children are about to be deleted.
+  for (auto group = groups.rbegin(); group != groups.rend(); ++group) {
+    (*group)->clearAccessibleChildren();
+    if (auto* parent = (*group)->getParentComponent())
+      parent->removeChildComponent(group->get());
+  }
+  kept_switching_groups_ = std::move(groups);
+  kept_switching_groups_taken_ = 0;
+}
+
+void SynthEditor::releaseKeptFocus() {
+  // Whatever the rebuild did not take back.
+  kept_switching_control_ = nullptr;
+  kept_switching_parameter_ = nullptr;
+  kept_switching_parameter_id_.clear();
+  kept_switching_row_.reset();
+  kept_switching_groups_.clear();
+  kept_switching_groups_taken_ = 0;
+}
+
+std::unique_ptr<AccessibleSectionHeader> SynthEditor::makeSectionHeader(const String& title, int groupRank,
+                                                                       bool topLevel, const String& sectionKey) {
+  // The rebuild meets the kept groups in order, outermost first.
+  if (kept_switching_groups_taken_ < kept_switching_groups_.size()) {
+    auto& kept = kept_switching_groups_[kept_switching_groups_taken_];
+    if (kept->isSameGroup(title, topLevel, sectionKey)) {
+      ++kept_switching_groups_taken_;
+      kept->reuse(title, groupRank, topLevel, sectionKey);
+      return std::move(kept);
+    }
+  }
+  return std::make_unique<AccessibleSectionHeader>(title, groupRank, topLevel, sectionKey);
+}
+
 bool SynthEditor::refreshFilterRowsIfNeeded() {
   bool changed = false;
   for (auto& filter : last_filter_states_) {
@@ -7451,9 +7771,11 @@ bool SynthEditor::refreshFilterRowsIfNeeded() {
   const String accessible_title = focusedAccessibleTitle();
   auto* persistent_focus = persistentFocusedComponent();
 
+  keepFocusedSwitchingRow();
   showAllSections(false);
 
   restoreFocusAfterRebuild(parameter_id, persistent_focus, accessible_title, {}, true);
+  releaseKeptFocus();
 
   return true;
 }
@@ -7472,8 +7794,10 @@ bool SynthEditor::refreshRandomAmplitudeRowsIfNeeded() {
   const String parameter_id = focusedParameterId();
   const String accessible_title = focusedAccessibleTitle();
   auto* persistent_focus = persistentFocusedComponent();
+  keepFocusedSwitchingRow();
   showAllSections(false);
   restoreFocusAfterRebuild(parameter_id, persistent_focus, accessible_title, {}, true);
+  releaseKeptFocus();
   return true;
 }
 
@@ -7540,8 +7864,10 @@ bool SynthEditor::refreshOscillatorModeRowsIfNeeded() {
   // Every Multi-sample slot has a Load instrument button: stay in this one.
   const String section_key = focusedSectionKey();
   auto* persistent_focus = persistentFocusedComponent();
+  keepFocusedSwitchingRow();
   showAllSections(false);
   restoreFocusAfterRebuild(parameter_id, persistent_focus, accessible_title, section_key, true);
+  releaseKeptFocus();
   return true;
 }
 
@@ -7563,18 +7889,23 @@ bool SynthEditor::refreshEnvelopeAnalogRowsIfNeeded() {
   const String accessible_title = focusedAccessibleTitle();
   auto* persistent_focus = persistentFocusedComponent();
 
+  keepFocusedSwitchingRow();
   showAllSections(false);
 
   restoreFocusAfterRebuild(parameter_id, persistent_focus, accessible_title, {}, true);
+  releaseKeptFocus();
 
   return true;
 }
 
-bool SynthEditor::refreshZoneCrossfadeRowIfNeeded() {
-  int glide_zones = 0;
+int SynthEditor::currentGlideZones() const {
   if (auto* bridge = parameterBridge("portamento_glide_zones"))
-    glide_zones = static_cast<int>(std::round(bridge->convertToEngineValue(bridge->getValue())));
+    return static_cast<int>(std::round(bridge->convertToEngineValue(bridge->getValue())));
+  return 0;
+}
 
+bool SynthEditor::refreshZoneCrossfadeRowIfNeeded() {
+  const int glide_zones = currentGlideZones();
   if (last_glide_zones_ == glide_zones)
     return false;
   last_glide_zones_ = glide_zones;
@@ -7615,6 +7946,10 @@ void SynthEditor::clearSectionComponents() {
 
 void SynthEditor::showAllSections(bool announce) {
   clearSectionComponents();
+  // The rows built here already follow the glide setting; the timer rebuilds
+  // only when it changes. Never recorded, it rebuilt every row on the
+  // editor's first tick.
+  last_glide_zones_ = currentGlideZones();
 
   showPresetControls();
   active_oscillator_ = -1;
@@ -7626,7 +7961,7 @@ void SynthEditor::showAllSections(bool announce) {
   int focus_order = 10;
 
   for (const auto& group : group_names_) {
-    auto group_component = std::make_unique<AccessibleSectionHeader>(group, groupRank(group), true);
+    auto group_component = makeSectionHeader(group, groupRank(group), true);
     auto* group_ptr = group_component.get();
     group_ptr->setExplicitFocusOrder(focus_order++);
     rows_container_.addAndMakeVisible(group_ptr);
@@ -7706,8 +8041,8 @@ void SynthEditor::showAllSections(bool announce) {
       int section_y = flatten_section ? group_y : 0;
 
       if (!flatten_section) {
-        auto section_component = std::make_unique<AccessibleSectionHeader>(sourceStatusTitleForSection(section_name),
-                                                                           groupRank(group), false, section_name);
+        auto section_component = makeSectionHeader(sourceStatusTitleForSection(section_name), groupRank(group),
+                                                   false, section_name);
         section_ptr = section_component.get();
         if (effectIdForSection(section_name).isNotEmpty()) {
           section_ptr->onKeyCommand = [this, section_name](const KeyPress& key, Component& target) {
@@ -7739,7 +8074,7 @@ void SynthEditor::showAllSections(bool announce) {
         for (int slot = 1; slot <= vital::kMaxModulationConnections; ++slot) {
           const String title = modulationSlotTitle(slot);
 
-          auto slot_component = std::make_unique<AccessibleSectionHeader>(title, groupRank(group), false);
+          auto slot_component = makeSectionHeader(title, groupRank(group), false);
           auto* slot_ptr = slot_component.get();
           slot_ptr->getProperties().set("ModulationSlot", slot);
           slot_ptr->setExplicitFocusOrder(focus_order++);
@@ -8023,8 +8358,7 @@ void SynthEditor::showAllSections(bool announce) {
         if (!isArpeggiatorDestination(section_name, parameter_id))
           close_arp_destinations();
         else if (arp_destinations == nullptr) {
-          auto header = std::make_unique<AccessibleSectionHeader>("Destinations", groupRank(group), false,
-                                                                  section_name + " destinations");
+          auto header = makeSectionHeader("Destinations", groupRank(group), false, section_name + " destinations");
           arp_destinations = header.get();
           arp_destinations->setDescription("Oscillators " + section_name + " plays");
           arp_destinations->setExplicitFocusOrder(focus_order++);
@@ -8184,7 +8518,7 @@ void SynthEditor::showNavigationMenu() {
   menu.addItem(4, "Accessibility settings");
   menu.addItem(8, "Keyboard help");
 
-  menu.showMenuAsync(PopupMenu::Options().withTargetComponent(menu_button_),
+  showAccessibleMenuAsync(menu, PopupMenu::Options().withTargetComponent(menu_button_),
                      [this](int result) {
     if (result == 6)
       loadTuningFile();
@@ -8221,7 +8555,7 @@ void SynthEditor::showAccessibilitySettingsMenu() {
     DialogContent() {
       auto& settings = accessibilitySpeechSettings();
       for (const auto& e : kEntries) {
-        auto btn = std::make_unique<ToggleButton>(e.label);
+        auto btn = std::make_unique<SpokenToggleButton>(e.label);
         btn->setToggleState(settings.*(e.field), dontSendNotification);
         auto* btn_ptr = btn.get();
         auto field = e.field;
@@ -8266,6 +8600,26 @@ void SynthEditor::showAccessibilitySettingsMenu() {
   }
 }
 
+namespace {
+  // The keyboard help with this platform's key names: {Cmd} is Command on
+  // macOS and Ctrl elsewhere. Windows opens context menus with Shift F10 as
+  // well as Shift M, and not with the right bracket (kRightBracketOpensMenus),
+  // and adds comma and period stepping through effect slots.
+  String keyboardHelpForPlatform(const char* text) {
+#if JUCE_MAC
+    const String command = "Cmd", context_menu = "Right bracket ( ] ) or Shift+M", heading_menu = "Shift+M";
+#else
+    const String command = "Ctrl", context_menu = "Shift+M or Shift+F10", heading_menu = context_menu;
+#endif
+    const String effect_slot_steps = kSectionKeysStepThroughEffectSlots
+        ? "  On an effects chain, Comma / Period also step through its effects (Slot 1, Slot 2 and so on)\n"
+        : "";
+    return String(text).replace("{Cmd}", command).replace("{ContextMenuKeys}", context_menu)
+                       .replace("{HeadingMenuKeys}", heading_menu)
+                       .replace("{EffectSlotSteps}", effect_slot_steps);
+  }
+}
+
 void SynthEditor::showKeyboardHelp() {
   // NOTE: This text is the single source of on-screen keyboard help. Whenever a keyboard shortcut
   // is added or changed anywhere in the plugin (focusShortcutTarget, OffscreenSlider::keyPressed,
@@ -8299,6 +8653,11 @@ void SynthEditor::showKeyboardHelp() {
       "  1 to 9 - Jump to subsection within the current group\n"
       "  Comma ( , ) - Previous section\n"
       "  Period ( . ) - Next section\n"
+      "{EffectSlotSteps}"
+      "\n"
+      "Headings with a menu\n"
+      "  {HeadingMenuKeys} on an oscillator heading - Copy an oscillator or paste one into this one\n"
+      "  {HeadingMenuKeys} on an effect slot heading - Copy the effect, paste it to another bus, replace or remove it\n"
       "\n"
       "Adjusting a parameter (when a slider has focus)\n"
       "  Up / Right / Page Up - Increase value\n"
@@ -8309,7 +8668,7 @@ void SynthEditor::showKeyboardHelp() {
       "  End - Minimum value\n"
       "  Enter - Type a value\n"
       "  Backspace / Delete - Reset to default\n"
-      "  Right bracket ( ] ) or Shift+M - Open context menu\n"
+      "  {ContextMenuKeys} - Open context menu\n"
       "  Shift+L - MIDI learn: the next MIDI control moved is mapped; Shift+L again cancels\n"
       "  Shift+C - Clear MIDI learn (Editor menu, MIDI learn mappings, lists and removes them all)\n"
       "  Levels and modulation amounts read and accept percentages: 0% to 100%, or -100% to 100%\n"
@@ -8321,7 +8680,7 @@ void SynthEditor::showKeyboardHelp() {
       "  Enter / Space - Open the list of choices; arrows move, Enter chooses\n"
       "  Escape - Close the list and keep the current choice\n"
       "  Backspace / Delete - Reset to default\n"
-      "  Right bracket ( ] ) or Shift+M - Open context menu\n"
+      "  {ContextMenuKeys} - Open context menu\n"
       "\n"
       "Virtual musical keyboard\n"
       "  Alt+K - Toggle the computer-keyboard piano on or off\n"
@@ -8358,7 +8717,7 @@ void SynthEditor::showKeyboardHelp() {
       "  R - Clear all selections\n"
       "  E or Delete - Delete the current point, complete performer shape, or step\n"
       "  I / K - Cycle curve type in LFO/Performer; ignored in Step Sequencer\n"
-      "  Cmd + Up / Down - Cycle curve type up / down\n"
+      "  {Cmd} + Up / Down - Cycle curve type up / down\n"
       "  J / L - Move point in time left / right\n"
       "  G / H - Cycle shape presets backward / forward\n"
       "  Shift+A - Apply selected shape preset\n"
@@ -8386,7 +8745,7 @@ void SynthEditor::showKeyboardHelp() {
       "  Home / End - First / last frame\n"
       "  S - Toggle current frame selection\n"
       "  R - Clear frame selection\n"
-      "  Cmd+A or Shift+A - Select all frames\n"
+      "  {Cmd}+A or Shift+A - Select all frames\n"
       "  Comma ( , ) / Period ( . ) - Previous / next harmonic\n"
       "  Page Up / Page Down - Move by ten harmonics\n"
       "  Up / Down - Change harmonic level by 1% (Shift for 5%)\n"
@@ -8411,8 +8770,8 @@ void SynthEditor::showKeyboardHelp() {
       "  Shift+S - Reverse the preset table sort direction\n"
       "  R - Rename the selected editable user preset\n"
       "  E - Edit the selected editable preset's metadata\n"
-      "  Cmd+S - Save the patch over the loaded user preset, or ask where to save it\n"
-      "  Shift+Cmd+S - Save the patch as a new preset\n"
+      "  {Cmd}+S - Save the patch over the loaded user preset, or ask where to save it\n"
+      "  Shift+{Cmd}+S - Save the patch as a new preset\n"
       "  Delete - Ask before moving the selected editable user preset to Trash\n"
       "  Esc - Close the browser\n"
       "\n"
@@ -8438,7 +8797,7 @@ void SynthEditor::showKeyboardHelp() {
       text_.setWantsKeyboardFocus(true);
       text_.setExplicitFocusOrder(1);
       text_.setTitle("Keyboard shortcuts");
-      text_.setText(kHelpText, dontSendNotification);
+      text_.setText(keyboardHelpForPlatform(kHelpText), dontSendNotification);
       // The editable TextEditor swallows Escape, so it never reaches the DialogWindow's
       // escapeKeyTriggersCloseButton. Catch it here and close ourselves.
       text_.addListener(this);
@@ -8513,7 +8872,7 @@ void SynthEditor::initializePatch() {
   const File default_file = defaultPatchFile();
   std::string error;
   if (default_file.existsAsFile() && synth_.loadFromFile(default_file, error)) {
-    last_preset_path = default_file.getFullPathName();
+    last_preset_path_ = default_file.getFullPathName();
     synth_.updateHostDisplay();
     updateFullGui();
     selectPresetFile(default_file);
@@ -9011,14 +9370,14 @@ void SynthEditor::populatePresetFilters() {
     if (library != kAllLibraries)
       preset_libraries_.add(library);
   }
-  if (!preset_libraries_.contains(last_preset_library))
-    last_preset_library = kAllLibraries;
+  if (!preset_libraries_.contains(last_preset_library_))
+    last_preset_library_ = kAllLibraries;
 
   preset_banks_.clear();
   preset_banks_.add(kAllBanks);
   std::set<String> banks;
   for (const auto& item : preset_index_) {
-    if (last_preset_library != kAllLibraries && item.library != last_preset_library)
+    if (last_preset_library_ != kAllLibraries && item.library != last_preset_library_)
       continue;
     if (item.bank.isNotEmpty())
       banks.insert(item.bank);
@@ -9027,16 +9386,16 @@ void SynthEditor::populatePresetFilters() {
     if (bank != kAllBanks)
       preset_banks_.add(bank);
   }
-  if (!preset_banks_.contains(last_preset_bank))
-    last_preset_bank = kAllBanks;
+  if (!preset_banks_.contains(last_preset_bank_))
+    last_preset_bank_ = kAllBanks;
 
   preset_categories_.clear();
   preset_categories_.add(kAllCategories);
   std::set<String> categories;
   for (const auto& item : preset_index_) {
-    if (last_preset_library != kAllLibraries && item.library != last_preset_library)
+    if (last_preset_library_ != kAllLibraries && item.library != last_preset_library_)
       continue;
-    if (last_preset_bank != kAllBanks && item.bank != last_preset_bank)
+    if (last_preset_bank_ != kAllBanks && item.bank != last_preset_bank_)
       continue;
     if (item.category.isNotEmpty())
       categories.insert(item.category);
@@ -9045,18 +9404,18 @@ void SynthEditor::populatePresetFilters() {
     if (category != kAllCategories)
       preset_categories_.add(category);
   }
-  if (!preset_categories_.contains(last_preset_category))
-    last_preset_category = kAllCategories;
+  if (!preset_categories_.contains(last_preset_category_))
+    last_preset_category_ = kAllCategories;
 
   preset_tags_.clear();
   preset_tags_.add(kAllTags);
   std::set<String> tags;
   for (const auto& item : preset_index_) {
-    if (last_preset_library != kAllLibraries && item.library != last_preset_library)
+    if (last_preset_library_ != kAllLibraries && item.library != last_preset_library_)
       continue;
-    if (last_preset_bank != kAllBanks && item.bank != last_preset_bank)
+    if (last_preset_bank_ != kAllBanks && item.bank != last_preset_bank_)
       continue;
-    if (last_preset_category != kAllCategories && item.category != last_preset_category)
+    if (last_preset_category_ != kAllCategories && item.category != last_preset_category_)
       continue;
     for (const auto& tag : item.tags) {
       if (tag.isNotEmpty())
@@ -9067,8 +9426,8 @@ void SynthEditor::populatePresetFilters() {
     if (tag != kAllTags)
       preset_tags_.add(tag);
   }
-  if (!preset_tags_.contains(last_preset_tag))
-    last_preset_tag = kAllTags;
+  if (!preset_tags_.contains(last_preset_tag_))
+    last_preset_tag_ = kAllTags;
 
   auto matchesLibrary = [](const PresetBrowserItem& item, const String& library) {
     return library == kAllLibraries || item.library == library;
@@ -9095,12 +9454,12 @@ void SynthEditor::populatePresetFilters() {
   };
 
   const int all_matching_count = countMatching([&](const PresetBrowserItem& item) {
-    return matchesLibrary(item, last_preset_library) && matchesBank(item, last_preset_bank) &&
-           matchesCategory(item, last_preset_category) && matchesTag(item, last_preset_tag);
+    return matchesLibrary(item, last_preset_library_) && matchesBank(item, last_preset_bank_) &&
+           matchesCategory(item, last_preset_category_) && matchesTag(item, last_preset_tag_);
   });
   const int favorite_matching_count = countMatching([&](const PresetBrowserItem& item) {
-    return matchesLibrary(item, last_preset_library) && matchesBank(item, last_preset_bank) &&
-           matchesCategory(item, last_preset_category) && matchesTag(item, last_preset_tag) &&
+    return matchesLibrary(item, last_preset_library_) && matchesBank(item, last_preset_bank_) &&
+           matchesCategory(item, last_preset_category_) && matchesTag(item, last_preset_tag_) &&
            preset_favorites_.count(item.file.getFullPathName().toStdString()) != 0;
   });
 
@@ -9111,27 +9470,27 @@ void SynthEditor::populatePresetFilters() {
     const int count = countMatching([&](const PresetBrowserItem& item) {
       return matchesLibrary(item, library);
     });
-    addFacet(kLibraryFacet, "Library", library, count, library == last_preset_library);
+    addFacet(kLibraryFacet, "Library", library, count, library == last_preset_library_);
   }
   for (const auto& bank : preset_banks_) {
     const int count = countMatching([&](const PresetBrowserItem& item) {
-      return matchesLibrary(item, last_preset_library) && matchesBank(item, bank);
+      return matchesLibrary(item, last_preset_library_) && matchesBank(item, bank);
     });
-    addFacet(kBankFacet, "Bank", bank, count, bank == last_preset_bank);
+    addFacet(kBankFacet, "Bank", bank, count, bank == last_preset_bank_);
   }
   for (const auto& category : preset_categories_) {
     const int count = countMatching([&](const PresetBrowserItem& item) {
-      return matchesLibrary(item, last_preset_library) && matchesBank(item, last_preset_bank) &&
+      return matchesLibrary(item, last_preset_library_) && matchesBank(item, last_preset_bank_) &&
              matchesCategory(item, category);
     });
-    addFacet(kCategoryFacet, "Category", category, count, category == last_preset_category);
+    addFacet(kCategoryFacet, "Category", category, count, category == last_preset_category_);
   }
   for (const auto& tag : preset_tags_) {
     const int count = countMatching([&](const PresetBrowserItem& item) {
-      return matchesLibrary(item, last_preset_library) && matchesBank(item, last_preset_bank) &&
-             matchesCategory(item, last_preset_category) && matchesTag(item, tag);
+      return matchesLibrary(item, last_preset_library_) && matchesBank(item, last_preset_bank_) &&
+             matchesCategory(item, last_preset_category_) && matchesTag(item, tag);
     });
-    addFacet(kTagFacet, "Tag", tag, count, tag == last_preset_tag);
+    addFacet(kTagFacet, "Tag", tag, count, tag == last_preset_tag_);
   }
 
   for (int kind = kLibraryFacet; kind <= kCollectionFacet; ++kind) {
@@ -9168,13 +9527,13 @@ void SynthEditor::filterPresetList() {
   const String filter = preset_search_.getText().trim().toLowerCase();
   std::vector<File> matches;
   for (const auto& item : preset_index_) {
-    if (last_preset_library != kAllLibraries && item.library != last_preset_library)
+    if (last_preset_library_ != kAllLibraries && item.library != last_preset_library_)
       continue;
-    if (last_preset_bank != kAllBanks && item.bank != last_preset_bank)
+    if (last_preset_bank_ != kAllBanks && item.bank != last_preset_bank_)
       continue;
-    if (last_preset_category != kAllCategories && item.category != last_preset_category)
+    if (last_preset_category_ != kAllCategories && item.category != last_preset_category_)
       continue;
-    if (last_preset_tag != kAllTags && !item.tags.contains(last_preset_tag))
+    if (last_preset_tag_ != kAllTags && !item.tags.contains(last_preset_tag_))
       continue;
     if (preset_favorites_only_ && !isPresetFavorite(item.file))
       continue;
@@ -9217,7 +9576,7 @@ void SynthEditor::filterPresetList() {
   for (const auto& match : matches)
     filtered_presets_.add(match);
 
-  const String previous_path = last_preset_path.isNotEmpty() ? last_preset_path
+  const String previous_path = last_preset_path_.isNotEmpty() ? last_preset_path_
                              : synth_.getActiveFile().existsAsFile() ? synth_.getActiveFile().getFullPathName()
                              : String();
   preset_table_.updateContent();
@@ -9230,7 +9589,7 @@ void SynthEditor::filterPresetList() {
       }
     }
     preset_table_.selectRow(selected, false, true);
-    last_preset_path = filtered_presets_[selected].getFullPathName();
+    last_preset_path_ = filtered_presets_[selected].getFullPathName();
   }
   else {
     preset_table_.deselectAllRows();
@@ -9281,22 +9640,22 @@ void SynthEditor::activatePresetFacet(int kind, int row) {
   const auto facet = *selected_facet;
   switch (kind) {
     case kLibraryFacet:
-      last_preset_library = facet.value;
-      last_preset_bank = kAllBanks;
-      last_preset_category = kAllCategories;
-      last_preset_tag = kAllTags;
+      last_preset_library_ = facet.value;
+      last_preset_bank_ = kAllBanks;
+      last_preset_category_ = kAllCategories;
+      last_preset_tag_ = kAllTags;
       break;
     case kBankFacet:
-      last_preset_bank = facet.value;
-      last_preset_category = kAllCategories;
-      last_preset_tag = kAllTags;
+      last_preset_bank_ = facet.value;
+      last_preset_category_ = kAllCategories;
+      last_preset_tag_ = kAllTags;
       break;
     case kCategoryFacet:
-      last_preset_category = facet.value;
-      last_preset_tag = kAllTags;
+      last_preset_category_ = facet.value;
+      last_preset_tag_ = kAllTags;
       break;
     case kTagFacet:
-      last_preset_tag = facet.value;
+      last_preset_tag_ = facet.value;
       break;
     case kCollectionFacet:
       preset_favorites_only_ = facet.value == "Favourites";
@@ -9356,7 +9715,7 @@ void SynthEditor::presetSelectionChanged(int row, bool allowAutoload) {
     return;
   }
 
-  last_preset_path = filtered_presets_[row].getFullPathName();
+  last_preset_path_ = filtered_presets_[row].getFullPathName();
   updatePresetManagementControls();
   if (!allowAutoload || !preset_preview_.getToggleState())
     return;
@@ -9499,7 +9858,7 @@ void SynthEditor::renameSelectedPreset() {
     }
     if (safe_this->synth_.getActiveFile() == file)
       safe_this->synth_.setActiveFile(destination);
-    last_preset_path = destination.getFullPathName();
+    safe_this->last_preset_path_ = destination.getFullPathName();
     safe_this->refreshPresetList(false);
     postPresetActionAnnouncement("Renamed preset to " + name, AccessibilityHandler::AnnouncementPriority::high);
   });
@@ -9513,6 +9872,8 @@ void SynthEditor::showPresetMetadataDialog() {
     return;
   }
 
+  if (!save_patch_dialog_visible_)
+    save_patch_return_focus_ = Component::getCurrentlyFocusedComponent();
   const auto* item = presetItemForFile(file);
   preset_metadata_edit_mode_ = true;
   preset_metadata_file_ = file;
@@ -9636,9 +9997,9 @@ void SynthEditor::updatePresetSummary() {
                          ". Atlas resources path: " + LoadSave::getDataDirectory().getFullPathName() +
                          ". " + String(all_presets_.size()) + " presets found, " +
                          String(filtered_presets_.size()) + " shown. Library: " +
-                         last_preset_library + ". Bank: " + last_preset_bank +
-                         ". Category: " + last_preset_category +
-                         ". Tag: " + last_preset_tag +
+                         last_preset_library_ + ". Bank: " + last_preset_bank_ +
+                         ". Category: " + last_preset_category_ +
+                         ". Tag: " + last_preset_tag_ +
                          ". Collection: " + (preset_favorites_only_ ? String("Favourites") : String("All presets")) +
                          (preset_list_loading_ ? ". Refreshing the preset list" +
                             (preset_index_progress_.isNotEmpty() ? ", " + preset_index_progress_.toLowerCase() : String()) :
@@ -9660,8 +10021,8 @@ void SynthEditor::showPresetMenu() {
               kExportPreset, kReveal, kRefresh, kScanDownloads };
   const bool has_selection = selectedPresetFile().existsAsFile();
   PopupMenu menu;
-  menu.addItem(kSave, "Save patch (Command S)");
-  menu.addItem(kSaveAs, "Save patch as... (Shift Command S)");
+  menu.addItem(kSave, "Save patch (" + atlas::keys::commandName() + " S)");
+  menu.addItem(kSaveAs, "Save patch as... (Shift " + atlas::keys::commandName() + " S)");
   menu.addItem(kSaveDefault, "Save patch as default");
   menu.addItem(kInitialize, "Initialize patch");
   menu.addSeparator();
@@ -9675,7 +10036,7 @@ void SynthEditor::showPresetMenu() {
   menu.addItem(kScanDownloads, LoadSave::shouldScanDownloads() ? "Turn scan Downloads folder on startup off"
                                                               : "Turn scan Downloads folder on startup on");
 
-  menu.showMenuAsync(PopupMenu::Options().withTargetComponent(preset_menu_), [this](int result) {
+  showAccessibleMenuAsync(menu, PopupMenu::Options().withTargetComponent(preset_menu_), [this](int result) {
     switch (result) {
       case kSave: savePatch(); break;
       case kSaveAs: savePresetAs(); break;
@@ -9710,7 +10071,7 @@ void SynthEditor::showSelectedPresetMenu(Component& target) {
   menu.addItem(6, "Move preset to Trash... (Delete)", editable);
 
   Component::SafePointer<SynthEditor> safe_this(this);
-  menu.showMenuAsync(PopupMenu::Options().withTargetComponent(&target),
+  showAccessibleMenuAsync(menu, PopupMenu::Options().withTargetComponent(&target),
                      [safe_this](int result) {
     if (safe_this == nullptr)
       return;
@@ -9752,7 +10113,7 @@ void SynthEditor::toggleScanDownloads() {
 void SynthEditor::selectPresetFile(const File& file) {
   if (!file.existsAsFile())
     return;
-  last_preset_path = file.getFullPathName();
+  last_preset_path_ = file.getFullPathName();
   if (!preset_list_loaded_) {
     updatePresetSummary();
     return;
@@ -9761,18 +10122,18 @@ void SynthEditor::selectPresetFile(const File& file) {
   const auto* item = presetItemForFile(file);
   const String library = item != nullptr ? item->library : presetLibraryName(file);
   if (preset_libraries_.contains(library)) {
-    last_preset_library = library;
+    last_preset_library_ = library;
     populatePresetFilters();
   }
   const String bank = item != nullptr ? item->bank : presetBankName(file);
   if (preset_banks_.contains(bank)) {
-    last_preset_bank = bank;
+    last_preset_bank_ = bank;
     populatePresetFilters();
   }
   const String category = item != nullptr ? item->category : presetCategoryName(file);
   if (preset_categories_.contains(category))
-    last_preset_category = category;
-  last_preset_tag = kAllTags;
+    last_preset_category_ = category;
+  last_preset_tag_ = kAllTags;
   preset_favorites_only_ = false;
   populatePresetFilters();
   filterPresetList();
@@ -9812,7 +10173,7 @@ void SynthEditor::loadPresetFile(const File& file, bool preview, bool updateBrow
     postPluginAnnouncement("Unable to load preset", AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
-  last_preset_path = file.getFullPathName();
+  last_preset_path_ = file.getFullPathName();
   synth_.updateHostDisplay();
   // When this editor is the plugin's active editor, loading already refreshed it.
   if (synth_.getGuiInterface() != this)
@@ -10009,6 +10370,7 @@ void SynthEditor::loadTuningFile() {
 
 void SynthEditor::clearTuning() {
   synth_.getTuning()->setDefaultTuning();
+  synth_.markStateChanged();
   postPluginAnnouncement("Tuning cleared", AccessibilityHandler::AnnouncementPriority::high);
 }
 
@@ -10063,14 +10425,16 @@ void SynthEditor::savePatch() {
 }
 
 void SynthEditor::showSavePresetDialog() {
+  if (!save_patch_dialog_visible_)
+    save_patch_return_focus_ = Component::getCurrentlyFocusedComponent();
   preset_metadata_edit_mode_ = false;
   preset_metadata_file_ = File();
   String preset_name = synth_.getPresetName().isEmpty() ? "Untitled" : synth_.getPresetName();
   save_patch_name_.setText(preset_name, false);
   save_patch_author_.setText(synth_.getAuthor().isNotEmpty() ? synth_.getAuthor() : String(LoadSave::getAuthor()), false);
-  save_patch_bank_.setText(last_preset_bank != kAllBanks ? last_preset_bank : "User", false);
+  save_patch_bank_.setText(last_preset_bank_ != kAllBanks ? last_preset_bank_ : "User", false);
   save_patch_category_.setText(synth_.getStyle().isNotEmpty() ? synth_.getStyle() :
-                               (last_preset_category != kAllCategories ? last_preset_category : ""), false);
+                               (last_preset_category_ != kAllCategories ? last_preset_category_ : ""), false);
   save_patch_tags_.setText(synth_.getTags(), false);
   save_patch_comments_.setText(synth_.getComments(), false);
   save_patch_prompt_.setText("Save patch", dontSendNotification);
@@ -10098,6 +10462,11 @@ void SynthEditor::showSavePresetDialog() {
 }
 
 void SynthEditor::hideSavePresetDialog() {
+  // Back to the control the form was opened from, before the form's own
+  // controls hide and hand the focus to the editor itself.
+  if (auto* target = save_patch_return_focus_.getComponent(); target != nullptr && target->isShowing())
+    target->grabKeyboardFocus();
+  save_patch_return_focus_ = nullptr;
   save_patch_dialog_visible_ = false;
   save_patch_prompt_.setVisible(false);
   save_patch_name_.setVisible(false);
@@ -10176,7 +10545,7 @@ void SynthEditor::commitSavePresetDialog() {
       synth_.setComments(comments);
       synth_.setActiveFile(destination);
     }
-    last_preset_path = destination.getFullPathName();
+    last_preset_path_ = destination.getFullPathName();
     hideSavePresetDialog();
     refreshPresetList(false);
     postPluginAnnouncement("Saved metadata for " + preset_name,
@@ -10204,7 +10573,7 @@ void SynthEditor::savePresetFile(const File& file) {
     postPluginAnnouncement("Unable to save preset", AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
-  last_preset_path = synth_.getActiveFile().getFullPathName();
+  last_preset_path_ = synth_.getActiveFile().getFullPathName();
   refreshPresetList();
   selectPresetFile(synth_.getActiveFile());
   updatePresetSummary();
@@ -10415,6 +10784,7 @@ void SynthEditor::writeLfoPoints(LineGenerator* generator, std::vector<CopiedLfo
   }
   generator->setSmooth(smooth);
   generator->render();
+  synth_.markStateChanged();
 }
 
 void SynthEditor::replaceLfoEditorBlock(const std::vector<CopiedLfoPoint>& replacement,
@@ -10910,6 +11280,7 @@ void SynthEditor::stepLfoCurve(int direction) {
       generator->setPower(index, powerForCurveIndex(next_curve));
   }
   generator->render();
+  synth_.markStateChanged();
 
   if (mode == LineGenerator::kModePerformer)
     postLfoAnnouncement("Performer shape curve " + curveNameForIndex(next_curve) + ", " +
@@ -10974,6 +11345,7 @@ void SynthEditor::clearLfoShape() {
   generator->setPower(1, power);
   generator->setSmooth(false);
   generator->render();
+  synth_.markStateChanged();
   lfo_cursor_phase_ = 0.0f;
   selected_lfo_point_phases_.clear();
   syncLfoEditorState();
@@ -10995,7 +11367,7 @@ bool SynthEditor::handleLfoMsegShortcut(const KeyPress& key) {
     return true;
   }
 
-  if (command && (code == KeyPress::upKey || code == KeyPress::downKey)) {
+  if (isCommandChord(key.getModifiers()) && !shift && (code == KeyPress::upKey || code == KeyPress::downKey)) {
     if (auto* generator = activeLfoGenerator()) {
       // Step from the curve after the current point, or before it for the last point.
       const int point_index = currentLfoPointIndex();
@@ -11244,6 +11616,7 @@ void SynthEditor::pasteLfoPoints() {
     generator->setPower(i, points[static_cast<size_t>(i)].power);
   }
   generator->render();
+  synth_.markStateChanged();
 
   lfo_cursor_phase_ = paste_start;
   syncLfoEditorState();
@@ -11278,6 +11651,7 @@ void SynthEditor::pasteLfoShape() {
     generator->setPower(i, copied_lfo_shape_[static_cast<size_t>(i)].power);
   }
   generator->render();
+  synth_.markStateChanged();
 
   lfo_cursor_phase_ = 0.0f;
   selected_lfo_point_phases_.clear();
@@ -11558,7 +11932,7 @@ void SynthEditor::applyLfoShapePreset() {
       return points;
     };
 
-    auto setPoints = [generator](std::vector<ShapePoint> points) {
+    auto setPoints = [this, generator](std::vector<ShapePoint> points) {
       constexpr float tolerance = 0.0005f;
       for (auto& point : points) {
         point.phase = jlimit(0.0f, 1.0f, point.phase);
@@ -11618,6 +11992,7 @@ void SynthEditor::applyLfoShapePreset() {
       }
       generator->setSmooth(false);
       generator->render();
+      synth_.markStateChanged();
     };
 
     auto insertPoints = [this, generator](const std::vector<ShapePoint>& source) {
@@ -11668,6 +12043,7 @@ void SynthEditor::applyLfoShapePreset() {
     if (mode == LineGenerator::kModeLfo && (shape == 1 || shape == 18 || shape == 19)) {
       generator->setSmooth(true);
       generator->render();
+      synth_.markStateChanged();
     }
   }
   generator->setShapeMode(mode);
@@ -11700,6 +12076,7 @@ void SynthEditor::addLfoPoint() {
   const float output_value = generator->valueAtPhase(lfo_cursor_phase_);
   generator->addPoint(insert_index, { lfo_cursor_phase_, 1.0f - output_value });
   generator->render();
+  synth_.markStateChanged();
   syncLfoEditorState();
   setLfoEditorItem(insert_index, false);
   selected_lfo_point_phases_.clear();
@@ -11735,6 +12112,7 @@ void SynthEditor::deleteLfoPoint() {
     generator->removePoint(index);
   }
   generator->render();
+  synth_.markStateChanged();
   selected_lfo_point_phases_.clear();
   syncLfoEditorState();
   if (indices.size() == 1)
@@ -11812,6 +12190,7 @@ void SynthEditor::moveLfoPointTime(float delta) {
     generator->setPower(i, points[static_cast<size_t>(i)].power);
   }
   generator->render();
+  synth_.markStateChanged();
   lfo_cursor_phase_ = selected_lfo_point_phases_.empty() ? lfo_cursor_phase_ : selected_lfo_point_phases_.front();
   syncLfoEditorState();
   const int moved_index = lfoPointIndexAtPhase(lfo_cursor_phase_);
@@ -11872,6 +12251,7 @@ void SynthEditor::moveLfoPointValue(float delta) {
       selected_lfo_point_phases_.push_back(point.first);
     }
     generator->render();
+    synth_.markStateChanged();
     lfo_cursor_phase_ = start;
     syncLfoEditorState();
     postLfoAnnouncement("Performer shape range " + percentString(minimum + applied_delta) + " to " +
@@ -11895,6 +12275,7 @@ void SynthEditor::moveLfoPointValue(float delta) {
     generator->setPoint(index, { point.first, 1.0f - output_value });
   }
   generator->render();
+  synth_.markStateChanged();
   syncLfoEditorState();
   if (indices.size() == 1)
     postLfoAnnouncement("Value " + percentString(output_value) + ", " + lfoPointDescription(indices.front()));
@@ -11934,6 +12315,7 @@ void SynthEditor::setLfoPointCurve(int curve_index) {
       generator->setPower(index, powerForCurveIndex(curve_index));
   }
   generator->render();
+  synth_.markStateChanged();
   if (mode == LineGenerator::kModePerformer)
     postLfoAnnouncement("Performer shape curve " + curveNameForIndex(curve_index) + ", " +
                         lfoTimeDescription(lfoEditorBlockStart(lfo_cursor_phase_)));
@@ -12018,7 +12400,7 @@ void SynthEditor::showOscillatorContextMenu(int targetOscillator, Component& tar
   }
 
   Component::SafePointer<Component> target_pointer(&target);
-  menu.showMenuAsync(PopupMenu::Options().withTargetComponent(&target),
+  showAccessibleMenuAsync(menu, PopupMenu::Options().withTargetComponent(&target),
                      [this, targetOscillator, target_pointer](int result) {
     if (result == kPasteItem) {
       if (target_pointer != nullptr)
@@ -12121,6 +12503,7 @@ void SynthEditor::pasteOscillatorClipboard(int targetOscillator, Component& targ
     if (auto* creator = synth_.getWavetableCreator(targetOscillator)) {
       creator->jsonToState(copied_oscillator_.wavetable);
       creator->render();
+      synth_.markStateChanged();
     }
   }
   for (const auto& parameter : copied_oscillator_.parameters)
@@ -12552,7 +12935,7 @@ void SynthEditor::showEffectSlotContextMenu(const String& sectionName, int slot,
   PopupMenu menu = createEffectSlotContextMenu(sectionName, slot, target.getTitle());
   if (menu.getNumItems() == 0)
     return;
-  menu.showMenuAsync(PopupMenu::Options().withTargetComponent(&target));
+  showAccessibleMenuAsync(menu, PopupMenu::Options().withTargetComponent(&target));
 }
 
 void SynthEditor::copyEffectSlotToClipboard(const String& sectionName, int slot, bool includeModulations) {
@@ -12644,8 +13027,9 @@ void SynthEditor::pasteEffectSlotClipboard(const String& targetSection, const St
   for (const auto& parameter : copied_effect_slot_.parameters)
     setInternalParameterEngineValue(slot_prefix + parameter.first, parameter.second);
   if (type - 1 == vital::constants::kConvolutionReverb) {
+    // Processing is paused, so no callback lock: the host's audio thread
+    // would wait while the impulse response decodes.
     if (auto* module = convolutionModuleForPrefix(slot_prefix)) {
-      const ScopedLock lock(synth_.getCallbackLock());
       if (!copied_effect_slot_.impulse_response.is_null())
         module->irStateFromJson(copied_effect_slot_.impulse_response);
       else if (module->hasCustomIr())
@@ -12764,7 +13148,7 @@ void SynthEditor::showAddEffectMenu(const String& sectionName, Component& target
 
   Component::SafePointer<Component> safe_target(&target);
   Component::SafePointer<SynthEditor> safe_this(this);
-  menu.showMenuAsync(PopupMenu::Options().withTargetComponent(target),
+  showAccessibleMenuAsync(menu, PopupMenu::Options().withTargetComponent(target),
                      [safe_this, safe_target, sectionName](int result) {
     if (safe_this == nullptr || safe_target == nullptr || result <= 0)
       return;
@@ -12779,8 +13163,7 @@ bool SynthEditor::isEffectSlotParameter(const String& sectionName, const String&
 
 void SynthEditor::addFxBusControlsGroup(const String& sectionName, Component& parent, int& y, int x,
                                        int width, int& focusOrder) {
-  auto group = std::make_unique<AccessibleSectionHeader>("Bus controls", groupRank(sectionName), false,
-                                                        sectionName);
+  auto group = makeSectionHeader("Bus controls", groupRank(sectionName), false, sectionName);
   auto* group_ptr = group.get();
   group_ptr->setDescription("Effects bus actions for " + fxBusNameForSection(sectionName));
   group_ptr->setExplicitFocusOrder(focusOrder++);
@@ -12870,7 +13253,7 @@ void SynthEditor::addEffectSlotGroups(const String& sectionName, Component& pare
       continue;
 
     const String title = "Slot " + String(position + 1) + " (" + effectName(type - 1) + ")";
-    auto slot_component = std::make_unique<AccessibleSectionHeader>(title, groupRank(sectionName), false);
+    auto slot_component = makeSectionHeader(title, groupRank(sectionName), false);
     auto* slot_ptr = slot_component.get();
     slot_ptr->getProperties().set("SectionName", sectionName);
     slot_ptr->getProperties().set("FxSlot", slot);
@@ -13135,7 +13518,7 @@ void SynthEditor::addEffectSlotGroups(const String& sectionName, Component& pare
           ? "Browse impulse response folders, current: " + String(module->irName())
           : "Browse impulse response folders";
 
-      auto ir_group = std::make_unique<AccessibleSectionHeader>(
+      auto ir_group = makeSectionHeader(
           "Impulse response controls", groupRank(sectionName), false,
           sectionName + " slot " + String(slot + 1) + " impulse response controls");
       auto* ir_group_ptr = ir_group.get();
@@ -13230,7 +13613,7 @@ void SynthEditor::addEffectSlotGroups(const String& sectionName, Component& pare
       if (!has_rows(group, has_rows))
         return;
       const String group_id = key + group.title.toLowerCase();
-      auto header = std::make_unique<AccessibleSectionHeader>(group.title, groupRank(sectionName), false, group_id);
+      auto header = makeSectionHeader(group.title, groupRank(sectionName), false, group_id);
       auto* header_ptr = header.get();
       header_ptr->setDescription(group.description);
       header_ptr->setExplicitFocusOrder(focusOrder++);
@@ -13549,7 +13932,7 @@ void SynthEditor::scheduleEffectChainRebuild(const String& preferredSection, con
 
 void SynthEditor::rebuildSectionsAfterEffectOrderChange(const String& preferredSection, const String& focusedTitle,
                                                         const String& focusedParameter) {
-  const String section = preferredSection.isNotEmpty() ? preferredSection : last_section_name;
+  const String section = preferredSection.isNotEmpty() ? preferredSection : last_section_name_;
   // An explicit title names the control that must end up focused (a button
   // whose action caused the rebuild); only without one do we fall back to
   // whatever is focused now, which may be the window itself mid-action.
@@ -13558,11 +13941,15 @@ void SynthEditor::rebuildSectionsAfterEffectOrderChange(const String& preferredS
   const String parameter_id = focusedParameter.isNotEmpty() ? focusedParameter
                             : (focusedTitle.isNotEmpty() ? String() : focusedParameterId());
   auto* persistent_focus = explicit_target ? nullptr : persistentFocusedComponent();
+  // An effect's mode changed: keep its focused choice through the rebuild.
+  if (std::exchange(keep_switching_row_on_rebuild_, false))
+    keepFocusedSwitchingRow();
   buildSections();
 
   showAllSections(false);
 
   restoreFocusAfterRebuild(parameter_id, persistent_focus, accessible_title, section);
+  releaseKeptFocus();
 }
 
 void SynthEditor::connectModulationAndPromptForAmount(const String& sourceId, const String& destinationId,
@@ -14406,6 +14793,7 @@ void SynthEditor::addModulationRemapPoint() {
 
   generator->addMiddlePoint(insertion_index);
   generator->render();
+  synth_.markStateChanged();
   modulation_remap_point_index_ = insertion_index;
   finishModulationRemapEdit("Added " + modulationRemapPointDescription(insertion_index));
 }
@@ -14421,6 +14809,7 @@ void SynthEditor::deleteModulationRemapPoint() {
 
   generator->removePoint(point_index);
   generator->render();
+  synth_.markStateChanged();
   modulation_remap_point_index_ = jmin(point_index, generator->getNumPoints() - 1);
   finishModulationRemapEdit("Deleted point. " + modulationRemapPointDescription(modulation_remap_point_index_));
 }
@@ -14438,6 +14827,7 @@ void SynthEditor::moveModulationRemapPointInput(float delta) {
                        generator->getPoint(point_index + 1).first, point.first + delta);
   generator->setPoint(point_index, point);
   generator->render();
+  synth_.markStateChanged();
   finishModulationRemapEdit("Input " + compactFloat(point.first * 100.0f, 1) + "%");
 }
 
@@ -14452,6 +14842,7 @@ void SynthEditor::moveModulationRemapPointOutput(float delta) {
   point.second = 1.0f - output;
   generator->setPoint(point_index, point);
   generator->render();
+  synth_.markStateChanged();
   finishModulationRemapEdit("Output " + compactFloat(output * 100.0f, 1) + "%");
 }
 
@@ -14465,6 +14856,7 @@ void SynthEditor::setModulationRemapCurve(int curve) {
   generator->setSmooth(smoothForCurveIndex(curve));
   generator->setPower(point_index, powerForCurveIndex(curve));
   generator->render();
+  synth_.markStateChanged();
   finishModulationRemapEdit(curveNameForIndex(curve));
 }
 
@@ -14685,6 +15077,7 @@ bool SynthEditor::loadWavetableIntoCreator(WavetableCreator& creator, const File
     }
     creator.setFileLoaded(file.getFullPathName().toStdString());
     creator.render();
+    synth_.markStateChanged();
     return true;
   }
   catch (const std::exception& e) {
@@ -14779,6 +15172,7 @@ void SynthEditor::synthesizePresetToWavetable(int oscillator) {
       if (file_source != nullptr) {
         file_source->setWindowSize(sample_rate / vital::utils::midiNoteToFrequency(kCaptureNote));
         creator->render();
+        safe_this->synth_.markStateChanged();
       }
 
       auto& state = safe_this->wavetable_keyboard_state_[oscillator];
@@ -14897,7 +15291,7 @@ void SynthEditor::addFilterTableControlsGroup(const String& filter_prefix, Compo
                                               int width, int& focus_order, const String& section_name) {
   WavetableCreator* creator = synth_.getFilterTableCreator(filter_prefix.toStdString(), false);
   const String table_name = creator != nullptr ? String(creator->getName()) : String("Default low-pass");
-  auto group = std::make_unique<AccessibleSectionHeader>(
+  auto group = makeSectionHeader(
       "Filter wavetable controls", groupRank("Filters"), false, section_name + " filter wavetable controls");
   auto* group_ptr = group.get();
   group_ptr->setDescription("Load, browse, cycle and reset the wavetable this filter reads. Current wavetable: " + table_name);
@@ -15034,7 +15428,7 @@ void SynthEditor::showFilterTableBrowserMenu(const String& filter_prefix, Compon
   menu.addSeparator();
   menu.addItem(kBrowserRescanMenuId, "Rescan wavetable folders");
   Component::SafePointer<Component> target_pointer(&target);
-  menu.showMenuAsync(PopupMenu::Options().withTargetComponent(&target),
+  showAccessibleMenuAsync(menu, PopupMenu::Options().withTargetComponent(&target),
                      [this, filter_prefix, choices, target_pointer](int result) {
     if (result == kBrowserRescanMenuId) {
       cached_wavetable_browser_files_.clear();
@@ -15056,7 +15450,7 @@ void SynthEditor::addWavetableControlsGroup(int oscillator, Component& parent, i
     return;
 
   const int outer_y = y;
-  auto controls_group = std::make_unique<AccessibleSectionHeader>(
+  auto controls_group = makeSectionHeader(
       "Wavetable controls", groupRank("Oscillators"), false,
       section_name + " wavetable controls");
   auto* controls_group_ptr = controls_group.get();
@@ -15135,7 +15529,7 @@ int SynthEditor::addAccessibleWavetableEditorControls(int oscillator, Component&
   const int editor_outer_y = y;
   const int editor_outer_x = x;
   const int editor_outer_width = width;
-  auto editor_group = std::make_unique<AccessibleSectionHeader>(
+  auto editor_group = makeSectionHeader(
       "Wavetable editor", groupRank("Oscillators"), false,
       "Oscillator " + String(oscillator + 1) + " wavetable editor");
   auto* editor_group_ptr = editor_group.get();
@@ -15238,7 +15632,7 @@ int SynthEditor::addAccessibleWavetableEditorControls(int oscillator, Component&
   AccessibleSectionHeader* open_group = nullptr;
   auto beginGroup = [&](const String& title, const String& description) {
     group_outer_y = control_y;
-    auto group = std::make_unique<AccessibleSectionHeader>(title, groupRank("Oscillators"), false);
+    auto group = makeSectionHeader(title, groupRank("Oscillators"), false);
     auto* group_ptr = group.get();
     group_ptr->setDescription(description);
     group_ptr->setExplicitFocusOrder(focus_order++);
@@ -15819,8 +16213,8 @@ void SynthEditor::moveWavetableFrameCursor(int oscillator, int direction, bool e
     for (int frame = first; frame <= last; ++frame)
       state.selected_frames.insert(frame);
   }
-  postPluginAnnouncement(wavetableFrameStatusText(oscillator),
-                         AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement(wavetableFrameStatusText(oscillator),
+                                  AccessibilityHandler::AnnouncementPriority::high);
 }
 
 void SynthEditor::moveWavetableHarmonicCursor(int oscillator, int direction) {
@@ -15828,8 +16222,8 @@ void SynthEditor::moveWavetableHarmonicCursor(int oscillator, int direction) {
     return;
   auto& state = wavetable_keyboard_state_[oscillator];
   state.harmonic = jlimit(1, vital::WaveFrame::kNumRealComplex - 2, state.harmonic + direction);
-  postPluginAnnouncement(wavetableHarmonicStatusText(oscillator, true, true),
-                         AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement(wavetableHarmonicStatusText(oscillator, true, true),
+                                  AccessibilityHandler::AnnouncementPriority::high);
 }
 
 void SynthEditor::toggleWavetableFrameSelection(int oscillator) {
@@ -15843,17 +16237,17 @@ void SynthEditor::toggleWavetableFrameSelection(int oscillator) {
   const bool selected = state.selected_frames.erase(state.frame) == 0;
   if (selected)
     state.selected_frames.insert(state.frame);
-  postPluginAnnouncement("Frame " + String(state.frame + 1) + (selected ? " selected, " : " unselected, ") +
-                             String(state.selected_frames.size()) + " selected",
-                         AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement("Frame " + String(state.frame + 1) + (selected ? " selected, " : " unselected, ") +
+                                      String(state.selected_frames.size()) + " selected",
+                                  AccessibilityHandler::AnnouncementPriority::high);
 }
 
 void SynthEditor::clearWavetableFrameSelection(int oscillator) {
   if (!isPositiveAndBelow(oscillator, vital::kNumOscillators))
     return;
   wavetable_keyboard_state_[oscillator].selected_frames.clear();
-  postPluginAnnouncement("Frame selection cleared",
-                         AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement("Frame selection cleared",
+                                  AccessibilityHandler::AnnouncementPriority::high);
 }
 
 void SynthEditor::selectAllWavetableFrames(int oscillator) {
@@ -15866,8 +16260,8 @@ void SynthEditor::selectAllWavetableFrames(int oscillator) {
   selected.clear();
   for (int frame = 0; frame < source->numFrames(); ++frame)
     selected.insert(frame);
-  postPluginAnnouncement("Selected all " + String(source->numFrames()) + " wavetable frames",
-                         AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement("Selected all " + String(source->numFrames()) + " wavetable frames",
+                                  AccessibilityHandler::AnnouncementPriority::high);
 }
 
 void SynthEditor::adjustWavetableHarmonicLevel(int oscillator, float deltaPercent) {
@@ -15893,9 +16287,10 @@ void SynthEditor::adjustWavetableHarmonicLevel(int oscillator, float deltaPercen
     wave_frame->toFrequencyDomain();
   }
   creator->render();
-  postPluginAnnouncement(wavetableHarmonicStatusText(oscillator, true, false) +
-                             (targets.size() > 1 ? ", " + String(targets.size()) + " frames" : ""),
-                         AccessibilityHandler::AnnouncementPriority::high);
+  synth_.markStateChanged();
+  postWavetableEditorAnnouncement(wavetableHarmonicStatusText(oscillator, true, false) +
+                                      (targets.size() > 1 ? ", " + String(targets.size()) + " frames" : ""),
+                                  AccessibilityHandler::AnnouncementPriority::high);
 }
 
 void SynthEditor::adjustWavetableHarmonicPhase(int oscillator, float deltaDegrees) {
@@ -15919,9 +16314,10 @@ void SynthEditor::adjustWavetableHarmonicPhase(int oscillator, float deltaDegree
     wave_frame->toFrequencyDomain();
   }
   creator->render();
-  postPluginAnnouncement(wavetableHarmonicStatusText(oscillator, false, true) +
-                             (targets.size() > 1 ? ", " + String(targets.size()) + " frames" : ""),
-                         AccessibilityHandler::AnnouncementPriority::high);
+  synth_.markStateChanged();
+  postWavetableEditorAnnouncement(wavetableHarmonicStatusText(oscillator, false, true) +
+                                      (targets.size() > 1 ? ", " + String(targets.size()) + " frames" : ""),
+                                  AccessibilityHandler::AnnouncementPriority::high);
 }
 
 void SynthEditor::copyWavetableFrames(int oscillator) {
@@ -15942,14 +16338,14 @@ void SynthEditor::copyWavetableFrames(int oscillator) {
     copy.sample_rate = wave_frame->sample_rate;
     copied_wavetable_frames_.push_back(std::move(copy));
   }
-  postPluginAnnouncement("Copied " + String(copied_wavetable_frames_.size()) + " wavetable frame" +
-                         (copied_wavetable_frames_.size() == 1 ? String() : String("s")),
-                         AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement("Copied " + String(copied_wavetable_frames_.size()) + " wavetable frame" +
+                                  (copied_wavetable_frames_.size() == 1 ? String() : String("s")),
+                                  AccessibilityHandler::AnnouncementPriority::high);
 }
 
 void SynthEditor::pasteWavetableFrames(int oscillator) {
   if (copied_wavetable_frames_.empty()) {
-    postPluginAnnouncement("No wavetable frames copied", AccessibilityHandler::AnnouncementPriority::high);
+    postWavetableEditorAnnouncement("No wavetable frames copied", AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
 
@@ -15978,9 +16374,10 @@ void SynthEditor::pasteWavetableFrames(int oscillator) {
     }
   }
   creator->render();
-  postPluginAnnouncement("Pasted into " + String(targets.size()) + " wavetable frame" +
-                         (targets.size() == 1 ? String() : String("s")),
-                         AccessibilityHandler::AnnouncementPriority::high);
+  synth_.markStateChanged();
+  postWavetableEditorAnnouncement("Pasted into " + String(targets.size()) + " wavetable frame" +
+                                  (targets.size() == 1 ? String() : String("s")),
+                                  AccessibilityHandler::AnnouncementPriority::high);
 }
 
 void SynthEditor::addWavetableFrame(int oscillator) {
@@ -15989,8 +16386,8 @@ void SynthEditor::addWavetableFrame(int oscillator) {
   if (creator == nullptr || source == nullptr || source->numFrames() == 0)
     return;
   if (source->numFrames() >= vital::kNumOscillatorWaveFrames) {
-    postPluginAnnouncement("Wavetable already has the maximum number of frames",
-                           AccessibilityHandler::AnnouncementPriority::high);
+    postWavetableEditorAnnouncement("Wavetable already has the maximum number of frames",
+                                    AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
 
@@ -16001,8 +16398,8 @@ void SynthEditor::addWavetableFrame(int oscillator) {
   // so interpolation has positions to fill between the frames.
   const int position = atlas::wavetable_edit::suggestKeyframePosition(source, state.frame);
   if (position < 0) {
-    postPluginAnnouncement("No free timeline position is available for another frame",
-                           AccessibilityHandler::AnnouncementPriority::high);
+    postWavetableEditorAnnouncement("No free timeline position is available for another frame",
+                                    AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
   auto* inserted = source->insertNewKeyframe(position);
@@ -16014,8 +16411,9 @@ void SynthEditor::addWavetableFrame(int oscillator) {
   state.frame = source->indexOf(inserted);
   state.selected_frames.clear();
   creator->render();
-  postPluginAnnouncement("Frame added, " + wavetableFrameStatusText(oscillator),
-                         AccessibilityHandler::AnnouncementPriority::high);
+  synth_.markStateChanged();
+  postWavetableEditorAnnouncement("Frame added, " + wavetableFrameStatusText(oscillator),
+                                  AccessibilityHandler::AnnouncementPriority::high);
 }
 
 void SynthEditor::deleteWavetableFrames(int oscillator) {
@@ -16027,8 +16425,8 @@ void SynthEditor::deleteWavetableFrames(int oscillator) {
   pruneWavetableFrameSelection(oscillator, source->numFrames());
   auto targets = wavetableTargetFrameIndices(oscillator, source->numFrames());
   if (static_cast<int>(targets.size()) >= source->numFrames()) {
-    postPluginAnnouncement("A wavetable must keep at least one frame",
-                           AccessibilityHandler::AnnouncementPriority::high);
+    postWavetableEditorAnnouncement("A wavetable must keep at least one frame",
+                                    AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
   std::sort(targets.rbegin(), targets.rend());
@@ -16040,10 +16438,11 @@ void SynthEditor::deleteWavetableFrames(int oscillator) {
   state.frame = jlimit(0, source->numFrames() - 1, next_cursor);
   state.selected_frames.clear();
   creator->render();
-  postPluginAnnouncement("Deleted " + String(targets.size()) + " wavetable frame" +
-                         (targets.size() == 1 ? String() : String("s")) + ", " +
-                         wavetableFrameStatusText(oscillator),
-                         AccessibilityHandler::AnnouncementPriority::high);
+  synth_.markStateChanged();
+  postWavetableEditorAnnouncement("Deleted " + String(targets.size()) + " wavetable frame" +
+                                  (targets.size() == 1 ? String() : String("s")) + ", " +
+                                  wavetableFrameStatusText(oscillator),
+                                  AccessibilityHandler::AnnouncementPriority::high);
 }
 
 void SynthEditor::setWavetableFramePosition(int oscillator, int frame, int position) {
@@ -16063,8 +16462,8 @@ void SynthEditor::setWavetableFramePosition(int oscillator, int frame, int posit
   const int target = jlimit(minimum, maximum, position);
   if (target == keyframe->position()) {
     if (target != position)
-      postPluginAnnouncement("Frame cannot cross the adjacent source frame",
-                             AccessibilityHandler::AnnouncementPriority::medium);
+      postWavetableEditorAnnouncement("Frame cannot cross the adjacent source frame",
+                                      AccessibilityHandler::AnnouncementPriority::medium);
     return;
   }
 
@@ -16072,6 +16471,7 @@ void SynthEditor::setWavetableFramePosition(int oscillator, int frame, int posit
   source->reposition(keyframe);
   wavetable_keyboard_state_[oscillator].frame = source->indexOf(keyframe);
   creator->render();
+  synth_.markStateChanged();
 }
 
 void SynthEditor::clearWavetableDc(int oscillator) {
@@ -16089,9 +16489,10 @@ void SynthEditor::clearWavetableDc(int oscillator) {
     wave_frame->toFrequencyDomain();
   }
   creator->render();
-  postPluginAnnouncement("Removed DC offset from " + String(targets.size()) + " wavetable frame" +
-                         (targets.size() == 1 ? String() : String("s")),
-                         AccessibilityHandler::AnnouncementPriority::high);
+  synth_.markStateChanged();
+  postWavetableEditorAnnouncement("Removed DC offset from " + String(targets.size()) + " wavetable frame" +
+                                  (targets.size() == 1 ? String() : String("s")),
+                                  AccessibilityHandler::AnnouncementPriority::high);
 }
 
 void SynthEditor::setWavetableInterpolation(int oscillator, int interpolation) {
@@ -16104,9 +16505,9 @@ void SynthEditor::setWavetableInterpolation(int oscillator, int interpolation) {
   atlas::wavetable_edit::setValue(source, "interpolation", 0, jlimit(0, 4, interpolation));
   synth_.getWavetableCreator(oscillator)->render();
   if (atlas::wavetable_edit::interpolatedPositions(source) == 0 && source->numFrames() > 1)
-    postPluginAnnouncement("The frames sit on neighbouring positions, so there is nothing between them to interpolate. "
-                           "Use Spread frames evenly or move a frame's timeline position",
-                           AccessibilityHandler::AnnouncementPriority::medium);
+    postWavetableEditorAnnouncement("The frames sit on neighbouring positions, so there is nothing between them to interpolate. "
+                                    "Use Spread frames evenly or move a frame's timeline position",
+                                    AccessibilityHandler::AnnouncementPriority::medium);
 }
 
 void SynthEditor::cycleWavetableInterpolation(int oscillator, int direction) {
@@ -16115,8 +16516,8 @@ void SynthEditor::cycleWavetableInterpolation(int oscillator, int direction) {
     return;
   const int current = int(atlas::wavetable_edit::getValue(source, "interpolation", 0));
   setWavetableInterpolation(oscillator, (current + direction + 5) % 5);
-  postPluginAnnouncement("Interpolation: " + wavetableInterpolationName(oscillator),
-                         AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement("Interpolation: " + wavetableInterpolationName(oscillator),
+                                  AccessibilityHandler::AnnouncementPriority::high);
 }
 
 void SynthEditor::rebuildWavetableEditor(int oscillator, const String& focus_title) {
@@ -16138,16 +16539,17 @@ void SynthEditor::addWavetableModifier(int oscillator, int modifier_type) {
   const int layer = isPositiveAndBelow(oscillator, vital::kNumOscillators) ? wavetable_keyboard_state_[oscillator].layer : 0;
   auto* group = creator != nullptr && isPositiveAndBelow(layer, creator->numGroups()) ? creator->getGroup(layer) : nullptr;
   if (group == nullptr) {
-    postPluginAnnouncement("No wavetable layer is available", AccessibilityHandler::AnnouncementPriority::high);
+    postWavetableEditorAnnouncement("No wavetable layer is available", AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
   auto* component = atlas::wavetable_edit::addModifier(*group, modifier_type);
   if (component == nullptr)
     return;
   creator->render();
+  synth_.markStateChanged();
   const int component_index = group->numComponents() - 1;
   const String name = atlas::wavetable_edit::componentName(component);
-  postPluginAnnouncement(name + " added to layer " + String(layer + 1), AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement(name + " added to layer " + String(layer + 1), AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, name + " " + String(component_index) + " keyframe interpolation");
 }
 
@@ -16160,7 +16562,8 @@ void SynthEditor::removeWavetableModifier(int oscillator, int component_index) {
   creator->getGroup(wavetable_keyboard_state_[oscillator].layer)->removeComponent(component_index);
   wavetable_keyboard_state_[oscillator].keyframes.clear();
   creator->render();
-  postPluginAnnouncement(name + " removed", AccessibilityHandler::AnnouncementPriority::high);
+  synth_.markStateChanged();
+  postWavetableEditorAnnouncement(name + " removed", AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, "Add modifier");
 }
 
@@ -16172,7 +16575,7 @@ void SynthEditor::resetWavetableModifier(int oscillator, int component_index) {
   component->reset();
   wavetable_keyboard_state_[oscillator].keyframes[component_index] = 0;
   synth_.getWavetableCreator(oscillator)->render();
-  postPluginAnnouncement(name + " reset", AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement(name + " reset", AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, name + " " + String(component_index) + " reset");
 }
 
@@ -16193,7 +16596,8 @@ void SynthEditor::moveWavetableModifier(int oscillator, int component_index, int
   auto& keyframes = wavetable_keyboard_state_[oscillator].keyframes;
   std::swap(keyframes[component_index], keyframes[destination]);
   creator->render();
-  postPluginAnnouncement(name + (direction < 0 ? " moved up" : " moved down"), AccessibilityHandler::AnnouncementPriority::high);
+  synth_.markStateChanged();
+  postWavetableEditorAnnouncement(name + (direction < 0 ? " moved up" : " moved down"), AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, name + " " + String(destination) + " keyframe interpolation");
 }
 
@@ -16213,11 +16617,11 @@ WaveSource* SynthEditor::editableWaveSource(int oscillator) {
   if (creator != nullptr) {
     const int layer = wavetable_keyboard_state_[oscillator].layer;
     auto* component = wavetableComponent(oscillator, 0);
-    postPluginAnnouncement("Layer " + String(layer + 1) + " is " +
-                           (component != nullptr ? "an " + atlas::wavetable_edit::componentName(component).toLowerCase()
-                                                 : String("empty")) +
-                           ". Frames and harmonics are edited on a wave source layer; add one, or flatten the wavetable to editable frames",
-                           AccessibilityHandler::AnnouncementPriority::high);
+    postWavetableEditorAnnouncement("Layer " + String(layer + 1) + " is " +
+                                    (component != nullptr ? "an " + atlas::wavetable_edit::componentName(component).toLowerCase()
+                                                          : String("empty")) +
+                                    ". Frames and harmonics are edited on a wave source layer; add one, or flatten the wavetable to editable frames",
+                                    AccessibilityHandler::AnnouncementPriority::high);
   }
   return nullptr;
 }
@@ -16270,14 +16674,15 @@ void SynthEditor::addWavetableLayer(int oscillator, int sourceType) {
   if (atlas::wavetable_edit::addLayer(*creator, sourceType) == nullptr)
     return;
   creator->render();
+  synth_.markStateChanged();
   auto& state = wavetable_keyboard_state_[oscillator];
   state.layer = creator->numGroups() - 1;
   state.frame = 0;
   state.selected_frames.clear();
   state.keyframes.clear();
-  postPluginAnnouncement("Added layer " + String(state.layer + 1) + ", " +
-                         atlas::wavetable_edit::sourceTypeNames()[sourceType].toLowerCase(),
-                         AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement("Added layer " + String(state.layer + 1) + ", " +
+                                  atlas::wavetable_edit::sourceTypeNames()[sourceType].toLowerCase(),
+                                  AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, "Layer");
 }
 
@@ -16296,7 +16701,7 @@ void SynthEditor::addWavetableAudioLayer(int oscillator, const File& file) {
   AudioSampleBuffer buffer;
   int sample_rate = 0;
   if (creator == nullptr || !decodeAudioFile(file, buffer, sample_rate)) {
-    postPluginAnnouncement("Unable to load " + file.getFileName(), AccessibilityHandler::AnnouncementPriority::high);
+    postWavetableEditorAnnouncement("Unable to load " + file.getFileName(), AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
   auto* group = atlas::wavetable_edit::addLayer(*creator, WavetableComponentFactory::kFileSource);
@@ -16304,11 +16709,12 @@ void SynthEditor::addWavetableAudioLayer(int oscillator, const File& file) {
     return;
   atlas::wavetable_edit::loadAudioLayer(group->getComponent(0), buffer.getReadPointer(0), buffer.getNumSamples(), sample_rate);
   creator->render();
+  synth_.markStateChanged();
   auto& state = wavetable_keyboard_state_[oscillator];
   state.layer = creator->numGroups() - 1;
   state.keyframes.clear();
-  postPluginAnnouncement("Added layer " + String(state.layer + 1) + " from " + file.getFileNameWithoutExtension(),
-                         AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement("Added layer " + String(state.layer + 1) + " from " + file.getFileNameWithoutExtension(),
+                                  AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, "Layer");
 }
 
@@ -16330,12 +16736,12 @@ void SynthEditor::replaceWavetableLayerAudio(int oscillator, const File& file) {
   int sample_rate = 0;
   if (component == nullptr || !decodeAudioFile(file, buffer, sample_rate) ||
       !atlas::wavetable_edit::replaceFileSourceAudio(component, buffer.getReadPointer(0), buffer.getNumSamples(), sample_rate)) {
-    postPluginAnnouncement("Unable to load " + file.getFileName(), AccessibilityHandler::AnnouncementPriority::high);
+    postWavetableEditorAnnouncement("Unable to load " + file.getFileName(), AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
   synth_.getWavetableCreator(oscillator)->render();
-  postPluginAnnouncement("Layer audio replaced with " + file.getFileNameWithoutExtension(),
-                         AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement("Layer audio replaced with " + file.getFileNameWithoutExtension(),
+                                  AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, "Replace audio");
 }
 
@@ -16346,15 +16752,16 @@ void SynthEditor::removeWavetableLayer(int oscillator) {
   auto& state = wavetable_keyboard_state_[oscillator];
   const int removed = state.layer;
   if (!atlas::wavetable_edit::removeLayer(*creator, removed)) {
-    postPluginAnnouncement("A wavetable keeps at least one layer", AccessibilityHandler::AnnouncementPriority::high);
+    postWavetableEditorAnnouncement("A wavetable keeps at least one layer", AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
   creator->render();
+  synth_.markStateChanged();
   state.layer = jlimit(0, creator->numGroups() - 1, removed);
   state.frame = 0;
   state.selected_frames.clear();
   state.keyframes.clear();
-  postPluginAnnouncement("Removed layer " + String(removed + 1), AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement("Removed layer " + String(removed + 1), AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, "Layer");
 }
 
@@ -16367,7 +16774,8 @@ void SynthEditor::moveWavetableLayer(int oscillator, int direction) {
     return;
   state.layer += direction < 0 ? -1 : 1;
   creator->render();
-  postPluginAnnouncement("Layer moved to position " + String(state.layer + 1), AccessibilityHandler::AnnouncementPriority::high);
+  synth_.markStateChanged();
+  postWavetableEditorAnnouncement("Layer moved to position " + String(state.layer + 1), AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, direction < 0 ? "Move layer earlier" : "Move layer later");
 }
 
@@ -16393,7 +16801,7 @@ void SynthEditor::moveWavetableKeyframe(int oscillator, int componentIndex, int 
   if (moved < 0)
     return;
   if (moved != position)
-    postPluginAnnouncement("Keyframes cannot cross their neighbours", AccessibilityHandler::AnnouncementPriority::medium);
+    postWavetableEditorAnnouncement("Keyframes cannot cross their neighbours", AccessibilityHandler::AnnouncementPriority::medium);
   if (moved != previous)
     synth_.getWavetableCreator(oscillator)->render();
 }
@@ -16407,13 +16815,13 @@ void SynthEditor::addWavetableKeyframe(int oscillator, int componentIndex, const
   const int position = atlas::wavetable_edit::suggestKeyframePosition(component, after);
   const int added = position >= 0 ? atlas::wavetable_edit::addKeyframe(component, position) : -1;
   if (added < 0) {
-    postPluginAnnouncement("No free timeline position for another keyframe", AccessibilityHandler::AnnouncementPriority::high);
+    postWavetableEditorAnnouncement("No free timeline position for another keyframe", AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
   state.keyframes[componentIndex] = added;
   synth_.getWavetableCreator(oscillator)->render();
-  postPluginAnnouncement("Added " + atlas::wavetable_edit::describeKeyframe(component, added).toLowerCase(),
-                         AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement("Added " + atlas::wavetable_edit::describeKeyframe(component, added).toLowerCase(),
+                                  AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, focusPrefix + " keyframe");
 }
 
@@ -16424,13 +16832,13 @@ void SynthEditor::removeWavetableKeyframe(int oscillator, int componentIndex, co
   auto& state = wavetable_keyboard_state_[oscillator];
   const int keyframe = jlimit(0, jmax(0, component->numFrames() - 1), state.keyframes[componentIndex]);
   if (!atlas::wavetable_edit::removeKeyframe(component, keyframe)) {
-    postPluginAnnouncement("The last keyframe stays", AccessibilityHandler::AnnouncementPriority::high);
+    postWavetableEditorAnnouncement("The last keyframe stays", AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
   state.keyframes[componentIndex] = jlimit(0, component->numFrames() - 1, keyframe);
   synth_.getWavetableCreator(oscillator)->render();
-  postPluginAnnouncement("Keyframe removed, " + atlas::wavetable_edit::describeKeyframe(component, state.keyframes[componentIndex]),
-                         AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement("Keyframe removed, " + atlas::wavetable_edit::describeKeyframe(component, state.keyframes[componentIndex]),
+                                  AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, focusPrefix + " keyframe");
 }
 
@@ -16440,8 +16848,8 @@ void SynthEditor::spreadWavetableKeyframes(int oscillator, int componentIndex, c
     return;
   synth_.getWavetableCreator(oscillator)->render();
   const bool frames = component->getType() == WavetableComponentFactory::kWaveSource;
-  postPluginAnnouncement(String(component->numFrames()) + (frames ? " frames" : " keyframes") +
-                         " spread across the timeline", AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement(String(component->numFrames()) + (frames ? " frames" : " keyframes") +
+                                  " spread across the timeline", AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, frames ? String("Spread frames evenly") : focusPrefix + " spread keyframes evenly");
 }
 
@@ -16461,13 +16869,13 @@ void SynthEditor::addWavetableLinePoint(int oscillator, int componentIndex, cons
   auto& state = wavetable_keyboard_state_[oscillator];
   const int added = atlas::wavetable_edit::addLinePoint(line, state.line_point);
   if (added < 0) {
-    postPluginAnnouncement("The line has the most points it can hold", AccessibilityHandler::AnnouncementPriority::high);
+    postWavetableEditorAnnouncement("The line has the most points it can hold", AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
   state.line_point = added;
   synth_.getWavetableCreator(oscillator)->render();
-  postPluginAnnouncement("Added point " + String(added + 1) + " of " + String(atlas::wavetable_edit::numLinePoints(line)),
-                         AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement("Added point " + String(added + 1) + " of " + String(atlas::wavetable_edit::numLinePoints(line)),
+                                  AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, focusPrefix + " line point");
 }
 
@@ -16477,13 +16885,13 @@ void SynthEditor::removeWavetableLinePoint(int oscillator, int componentIndex, c
     return;
   auto& state = wavetable_keyboard_state_[oscillator];
   if (!atlas::wavetable_edit::removeLinePoint(line, state.line_point)) {
-    postPluginAnnouncement("A line keeps at least two points", AccessibilityHandler::AnnouncementPriority::high);
+    postWavetableEditorAnnouncement("A line keeps at least two points", AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
   state.line_point = jlimit(0, atlas::wavetable_edit::numLinePoints(line) - 1, state.line_point);
   synth_.getWavetableCreator(oscillator)->render();
-  postPluginAnnouncement("Point removed, " + String(atlas::wavetable_edit::numLinePoints(line)) + " points",
-                         AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement("Point removed, " + String(atlas::wavetable_edit::numLinePoints(line)) + " points",
+                                  AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, focusPrefix + " line point");
 }
 
@@ -16497,8 +16905,8 @@ void SynthEditor::flattenWavetableToFrames(int oscillator) {
   state.frame = 0;
   state.selected_frames.clear();
   state.keyframes.clear();
-  postPluginAnnouncement("Wavetable flattened to " + String(source->numFrames()) + " editable frames",
-                         AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement("Wavetable flattened to " + String(source->numFrames()) + " editable frames",
+                                  AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, "Layer");
 }
 
@@ -16527,8 +16935,8 @@ bool SynthEditor::handleWavetableShortcut(int oscillator, const KeyPress& key, C
       for (int frame = jmin(previous, state.frame); frame <= jmax(previous, state.frame); ++frame)
         state.selected_frames.insert(frame);
     }
-    postPluginAnnouncement(wavetableFrameStatusText(oscillator),
-                           AccessibilityHandler::AnnouncementPriority::high);
+    postWavetableEditorAnnouncement(wavetableFrameStatusText(oscillator),
+                                    AccessibilityHandler::AnnouncementPriority::high);
     return true;
   }
   if (key_code == KeyPress::pageUpKey || key_code == KeyPress::pageDownKey) {
@@ -16545,7 +16953,8 @@ bool SynthEditor::handleWavetableShortcut(int oscillator, const KeyPress& key, C
     clearWavetableHarmonic(oscillator, state.frame, false, state.harmonic);
     return true;
   }
-  if ((command || shift) && character == 'a') {
+  // Windows sends Ctrl and a letter with no text character, so test the key code too.
+  if ((command || shift) && (character == 'a' || key_code == 'A')) {
     selectAllWavetableFrames(oscillator);
     return true;
   }
@@ -16633,8 +17042,8 @@ void SynthEditor::setWavetableEditorVisible(int oscillator, bool visible) {
     safe_this->showAllSections(false);
     safe_this->restoreFocusAfterRebuild({}, nullptr, restore_title, section, true);
 
-    postPluginAnnouncement(visible ? "Wavetable editor shown" : "Wavetable editor hidden",
-                                           AccessibilityHandler::AnnouncementPriority::medium);
+    postWavetableEditorAnnouncement(visible ? "Wavetable editor shown" : "Wavetable editor hidden",
+                                    AccessibilityHandler::AnnouncementPriority::medium);
   });
 }
 
@@ -16672,11 +17081,12 @@ void SynthEditor::applyWavetableHarmonicEdit(int oscillator, int frame, bool all
     wave_frame->toFrequencyDomain();
   }
   creator->render();
+  synth_.markStateChanged();
 
-  postPluginAnnouncement("Set harmonic " + String(harmonic) +
-                                         (targets.size() == 1 ? " on frame " + String(targets.front() + 1) :
-                                          " on " + String(static_cast<int>(targets.size())) + " frames"),
-                                         AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement("Set harmonic " + String(harmonic) +
+                                  (targets.size() == 1 ? " on frame " + String(targets.front() + 1) :
+                                   " on " + String(static_cast<int>(targets.size())) + " frames"),
+                                  AccessibilityHandler::AnnouncementPriority::high);
 }
 
 void SynthEditor::applyWavetableStartingShape(int oscillator, int frame, bool allFrames, int shape) {
@@ -16707,14 +17117,15 @@ void SynthEditor::applyWavetableStartingShape(int oscillator, int frame, bool al
   for (int index : targets)
     source->getKeyframe(index)->wave_frame()->copy(starting_frame);
   creator->render();
+  synth_.markStateChanged();
 
   static const char* const kShapeNames[] = {
     "Sine", "Saturated sine", "Triangle", "Square", "Pulse 25 percent", "Saw"
   };
-  postPluginAnnouncement(String(kShapeNames[shape]) + " waveform applied to " +
-                             String(static_cast<int>(targets.size())) + " wavetable frame" +
-                             (targets.size() == 1 ? String() : String("s")),
-                         AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement(String(kShapeNames[shape]) + " waveform applied to " +
+                                      String(static_cast<int>(targets.size())) + " wavetable frame" +
+                                      (targets.size() == 1 ? String() : String("s")),
+                                  AccessibilityHandler::AnnouncementPriority::high);
 }
 
 void SynthEditor::clearWavetableHarmonic(int oscillator, int frame, bool allFrames, int harmonic) {
@@ -16746,11 +17157,12 @@ void SynthEditor::clearWavetableHarmonic(int oscillator, int frame, bool allFram
     wave_frame->toFrequencyDomain();
   }
   creator->render();
+  synth_.markStateChanged();
 
-  postPluginAnnouncement("Cleared harmonic " + String(harmonic) +
-                                         (targets.size() == 1 ? " on frame " + String(targets.front() + 1) :
-                                          " on " + String(static_cast<int>(targets.size())) + " frames"),
-                                         AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement("Cleared harmonic " + String(harmonic) +
+                                  (targets.size() == 1 ? " on frame " + String(targets.front() + 1) :
+                                   " on " + String(static_cast<int>(targets.size())) + " frames"),
+                                  AccessibilityHandler::AnnouncementPriority::high);
 }
 
 void SynthEditor::normalizeWavetableFrame(int oscillator, int frame, bool allFrames) {
@@ -16780,11 +17192,12 @@ void SynthEditor::normalizeWavetableFrame(int oscillator, int frame, bool allFra
     wave_frame->toFrequencyDomain();
   }
   creator->render();
+  synth_.markStateChanged();
 
-  postPluginAnnouncement(targets.size() == 1 ? "Normalized wavetable frame " + String(targets.front() + 1) :
-                                               "Normalized " + String(static_cast<int>(targets.size())) +
-                                               " wavetable frames",
-                                         AccessibilityHandler::AnnouncementPriority::high);
+  postWavetableEditorAnnouncement(targets.size() == 1 ? "Normalized wavetable frame " + String(targets.front() + 1) :
+                                                        "Normalized " + String(static_cast<int>(targets.size())) +
+                                                        " wavetable frames",
+                                  AccessibilityHandler::AnnouncementPriority::high);
 }
 
 void SynthEditor::removeWavetableFundamental(int oscillator, int frame, bool allFrames) {
@@ -16873,7 +17286,7 @@ void SynthEditor::showWavetableActionsMenu(int oscillator, Component& target) {
   menu.addItem(kRename, "Rename wavetable");
   menu.addItem(kReset, "Reset wavetable");
   Component::SafePointer<Component> target_pointer(&target);
-  menu.showMenuAsync(PopupMenu::Options().withTargetComponent(&target),
+  showAccessibleMenuAsync(menu, PopupMenu::Options().withTargetComponent(&target),
                      [this, oscillator, target_pointer](int result) {
     switch (result) {
       case kImportSplice:
@@ -16906,6 +17319,7 @@ void SynthEditor::showWavetableActionsMenu(int oscillator, Component& target) {
         if (auto* creator = synth_.getWavetableCreator(oscillator)) {
           creator->loadDefaultCreator();
           creator->render();
+          synth_.markStateChanged();
           refreshWavetableNameLabel(oscillator);
           wavetable_keyboard_state_[oscillator] = {};
           postPluginAnnouncement("Wavetable reset to the default", AccessibilityHandler::AnnouncementPriority::high);
@@ -16931,7 +17345,7 @@ void SynthEditor::showWavetableBrowserMenu(int oscillator, Component& target) {
   menu.addSeparator();
   menu.addItem(kBrowserRescanMenuId, "Rescan wavetable folders");
   Component::SafePointer<Component> target_pointer(&target);
-  menu.showMenuAsync(PopupMenu::Options().withTargetComponent(&target),
+  showAccessibleMenuAsync(menu, PopupMenu::Options().withTargetComponent(&target),
                      [this, oscillator, choices, target_pointer](int result) {
     if (result == kBrowserRescanMenuId) {
       cached_wavetable_browser_files_.clear();
@@ -16951,7 +17365,7 @@ void SynthEditor::showWavetableBrowserMenu(int oscillator, Component& target) {
 void SynthEditor::addSampleControlsGroup(int sample_target, Component& parent, int& y, int x, int width,
                                          int& focus_order, const String& section_name,
                                          const GroupRowAppender& append_rows) {
-  auto group = std::make_unique<AccessibleSectionHeader>(
+  auto group = makeSectionHeader(
       "Sample controls", groupRank("Oscillators"), false, section_name + " sample controls");
   auto* group_ptr = group.get();
   group_ptr->setDescription("Load, browse, and cycle samples for " + section_name);
@@ -17193,7 +17607,7 @@ String SynthEditor::instrumentDetails(int oscillator) const {
 void SynthEditor::addMultiSampleControlsGroup(int oscillator, Component& parent, int& y, int x, int width,
                                               int& focus_order, const String& section_name,
                                               const GroupRowAppender& append_rows) {
-  auto group = std::make_unique<AccessibleSectionHeader>(
+  auto group = makeSectionHeader(
       "Instrument", groupRank("Oscillators"), false, section_name + " instrument");
   auto* group_ptr = group.get();
   group_ptr->setDescription("Load an SFZ, DecentSampler or SF2 instrument and choose how it plays in " + section_name);
@@ -17266,7 +17680,7 @@ void SynthEditor::addMultiSampleControlsGroup(int oscillator, Component& parent,
       if (safe_combo == nullptr)
         return;
       PopupMenu menu = createInstrumentPresetMenu(*presets, safe_combo->getSelectedId() - 1);
-      menu.showMenuAsync(PopupMenu::Options().withTargetComponent(safe_combo.getComponent()), [safe_combo](int result) {
+      showAccessibleMenuAsync(menu, PopupMenu::Options().withTargetComponent(safe_combo.getComponent()), [safe_combo](int result) {
         if (safe_combo != nullptr && result > 0)
           safe_combo->setSelectedId(result, sendNotificationSync);
       });
@@ -17496,6 +17910,7 @@ void SynthEditor::chooseInstrumentFile(int oscillator) {
     last_instrument_folder_ = file.getParentDirectory();
     setParameterEngineValue(vital::source_types::slotPrefix(oscillator) + "on", 1.0f);
     manager->loadFromUser(oscillator, file);
+    synth_.markStateChanged();
     postPluginAnnouncement("Loading instrument " + file.getFileNameWithoutExtension() + " into Oscillator " +
                                String(oscillator + 1),
                            AccessibilityHandler::AnnouncementPriority::high);
@@ -17701,6 +18116,7 @@ void SynthEditor::loadSampleFile(const File& file, int sample_target) {
     sample->setName(file.getFileNameWithoutExtension().toStdString());
     sample->setLastBrowsedFile(file.getFullPathName().toStdString());
     synth_.pauseProcessing(false);
+    synth_.markStateChanged();
 
     // Granular and spectral oscillators switch on when given material, as the fixed sources did.
     const int type = sourceSlotType(sample_target);
@@ -17748,7 +18164,7 @@ void SynthEditor::showSampleBrowserMenu(Component& target, int sample_target) {
   menu.addSeparator();
   menu.addItem(kBrowserRescanMenuId, "Rescan sample folders");
   Component::SafePointer<Component> target_pointer(&target);
-  menu.showMenuAsync(PopupMenu::Options().withTargetComponent(&target),
+  showAccessibleMenuAsync(menu, PopupMenu::Options().withTargetComponent(&target),
                      [this, choices, sample_target, target_pointer](int result) {
     if (result == kBrowserRescanMenuId) {
       cached_sample_browser_files_.clear();
@@ -17885,7 +18301,7 @@ void SynthEditor::showConvolutionIrBrowserMenu(const String& modulePrefix, Compo
   menu.addSeparator();
   menu.addItem(kBrowserRescanMenuId, "Rescan impulse response folders");
   Component::SafePointer<Component> target_pointer(&target);
-  menu.showMenuAsync(PopupMenu::Options().withTargetComponent(&target),
+  showAccessibleMenuAsync(menu, PopupMenu::Options().withTargetComponent(&target),
                      [safe_this = Component::SafePointer<SynthEditor>(this), choices, modulePrefix, target_pointer](int result) {
     if (!safe_this) return;
     if (result == kBrowserRescanMenuId) {
@@ -18209,11 +18625,93 @@ void SynthEditor::moveToSection(int direction) {
   const int count = section_names_.size();
   if (count == 0)
     return;
-  int current = section_names_.indexOf(last_section_name);
+  if (kSectionKeysStepThroughEffectSlots && moveThroughEffectSlots(direction))
+    return;
+  int current = section_names_.indexOf(last_section_name_);
   if (current < 0)
     current = 0;
-  const int next = (current + direction + count) % count;
-  selectSectionByName(section_names_[next], true);
+  const String next = section_names_[(current + direction + count) % count];
+  // Back onto an effects chain, the step before the element after it is the
+  // chain's last slot.
+  if (kSectionKeysStepThroughEffectSlots && direction < 0 && isEffectChainSection(next)) {
+    const int slots = static_cast<int>(activeEffectSlots(next).size());
+    if (slots > 0) {
+      selectSectionByName(next, false);
+      if (focusEffectSlotHeader(next, slots - 1))
+        return;
+    }
+  }
+  selectSectionByName(next, true);
+}
+
+bool SynthEditor::moveThroughEffectSlots(int direction) {
+  // The chain focus is on: a slot (its header or a control inside it), the
+  // chain's other controls, or the group the chain is laid out in (Effects,
+  // Bus 1 to 3).
+  String section, section_key, group;
+  int slot = -1;
+  for (auto* component = Component::getCurrentlyFocusedComponent();
+       component != nullptr && component != &rows_container_; component = component->getParentComponent()) {
+    const auto& properties = component->getProperties();
+    if (properties.contains("FxSlot")) {
+      section = properties["SectionName"].toString();
+      slot = static_cast<int>(properties["FxSlot"]);
+      break;
+    }
+    if (section_key.isEmpty())
+      section_key = properties["SectionName"].toString();
+    if (component->getParentComponent() == &rows_container_)
+      group = component->getTitle();
+  }
+  if (section.isEmpty()) {
+    if (isEffectChainSection(section_key))
+      section = section_key;
+    else if (section_key.isEmpty()) {
+      const auto found = group_sections_.find(group);
+      if (found != group_sections_.end() && found->second.size() == 1 && isEffectChainSection(found->second[0]))
+        section = found->second[0];
+    }
+  }
+  if (!isEffectChainSection(section) || !section_names_.contains(section))
+    return false;
+
+  // The chain is the current element now; leaving it steps on from there.
+  last_section_name_ = section;
+  const auto slots = activeEffectSlots(section);
+  const auto found = std::find(slots.begin(), slots.end(), slot);
+  // Elsewhere on the chain, period goes into its first slot.
+  if (found == slots.end())
+    return direction > 0 && focusEffectSlotHeader(section, 0);
+
+  const int next = static_cast<int>(std::distance(slots.begin(), found)) + direction;
+  if (next >= static_cast<int>(slots.size()))
+    return false;
+  if (next >= 0)
+    return focusEffectSlotHeader(section, next);
+  // Back from the first slot to the chain itself, as period from the element
+  // before it arrives.
+  selectSectionByName(section, true);
+  return true;
+}
+
+bool SynthEditor::focusEffectSlotHeader(const String& sectionName, int position) {
+  const auto slots = activeEffectSlots(sectionName);
+  if (!isPositiveAndBelow(position, static_cast<int>(slots.size())))
+    return false;
+
+  const int slot = slots[static_cast<size_t>(position)];
+  for (auto* component : row_focus_order_) {
+    if (component == nullptr || !component->isShowing())
+      continue;
+    const auto& properties = component->getProperties();
+    if (properties.contains("FxSlot") && static_cast<int>(properties["FxSlot"]) == slot &&
+        properties["SectionName"].toString() == sectionName) {
+      ensureComponentVisible(component);
+      component->grabKeyboardFocus();
+      return true;
+    }
+  }
+  return false;
 }
 
 bool SynthEditor::focusSectionShortcut(const String& section) {
@@ -18258,7 +18756,7 @@ bool SynthEditor::focusShortcutTarget(const KeyPress& key) {
   const juce_wchar character = CharacterFunctions::toLowerCase(key.getTextCharacter());
   const ModifierKeys modifiers = key.getModifiers();
 
-  if (modifiers.isCtrlDown() && !modifiers.isCommandDown() && !modifiers.isAltDown()) {
+  if (isControlChord(modifiers)) {
     if (key.getKeyCode() == '1') return focusGroupShortcut("Bus 1");
     if (key.getKeyCode() == '2') return focusGroupShortcut("Bus 2");
     if (key.getKeyCode() == '3') return focusGroupShortcut("Bus 3");
@@ -18438,6 +18936,12 @@ bool SynthEditor::keyPressed(const KeyPress& key) {
     cancelInlineTextPrompt();
     return true;
   }
+  // Escape on the save form's Save or Cancel button closes it, as in its text boxes.
+  if (save_patch_dialog_visible_ && key.getKeyCode() == KeyPress::escapeKey &&
+      (save_patch_ok_.hasKeyboardFocus(false) || save_patch_cancel_.hasKeyboardFocus(false))) {
+    hideSavePresetDialog();
+    return true;
+  }
   {
     const ModifierKeys modifiers = key.getModifiers();
     if (modifiers.isAltDown() && !modifiers.isCommandDown() && !modifiers.isCtrlDown() &&
@@ -18478,7 +18982,7 @@ bool SynthEditor::keyPressed(const KeyPress& key) {
   }
   {
     const ModifierKeys modifiers = key.getModifiers();
-    if (modifiers.isCommandDown() && !modifiers.isAltDown() && !modifiers.isCtrlDown() &&
+    if (isCommandChord(modifiers) &&
         CharacterFunctions::toLowerCase(static_cast<juce_wchar>(key.getKeyCode())) == 's') {
       if (modifiers.isShiftDown())
         savePresetAs();
@@ -18531,7 +19035,8 @@ void SynthEditor::timerCallback() {
       if (current != mode.second) {
         mode.second = current;
         screen_reader_refocus_requested_ = true;
-        scheduleEffectChainRebuild(last_section_name, focusedAccessibleTitle(), focusedParameterId());
+        keep_switching_row_on_rebuild_ = true;
+        scheduleEffectChainRebuild(last_section_name_, focusedAccessibleTitle(), focusedParameterId());
         return;
       }
     }
@@ -18563,7 +19068,7 @@ void SynthEditor::updateFullGui() {
   // effects in every slot and the oscillator types. Rebuild the section
   // parameter lists too, not just the view: otherwise an effect slot whose type
   // changed shows up as an empty group until the editor is reopened.
-  rebuildSectionsAfterEffectOrderChange(last_section_name);
+  rebuildSectionsAfterEffectOrderChange(last_section_name_);
   timerCallback();
   synth_.updateHostDisplay();
 }

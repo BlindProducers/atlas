@@ -197,6 +197,13 @@ class SynthBase : public MidiManager::Listener {
     void clearArpeggiators();
     virtual const CriticalSection& getCriticalSection() = 0;
     virtual void pauseProcessing(bool pause) = 0;
+    // True while processing is paused and the host hears silence from this
+    // instance: no audio callback is inside the engine then, so changing its
+    // graph needs no lock (holding it would only make the host's audio thread
+    // wait).
+    virtual bool isProcessingPaused() const { return false; }
+    // The state changed in a way no host parameter reports (see SynthPlugin).
+    virtual void markStateChanged() { }
     Tuning* getTuning() { return &tuning_; }
     uint64_t getScheduledMidiOverflowCount() const { return scheduled_midi_overflow_count_; }
 
@@ -210,7 +217,7 @@ class SynthBase : public MidiManager::Listener {
     bool isInvalidConnection(const vital::modulation_change& change);
     virtual SynthGuiInterface* getGuiInterface() = 0;
     json saveToJson();
-    bool loadFromJson(const json& state);
+    bool loadFromJson(json state);
     vital::ModulationConnection* getConnection(const std::string& source, const std::string& destination);
 
     inline bool getNextModulationChange(vital::modulation_change& change) {
@@ -272,8 +279,26 @@ class SynthBase : public MidiManager::Listener {
     std::unique_ptr<MidiKeyboardState> keyboard_state_;
     std::array<std::array<AtlasArpeggiator, 8>, vital::kNumArpeggiators> arpeggiators_;
     std::array<std::array<vital::Value*, 21>, vital::kNumArpeggiators> arpeggiator_controls_ {};
-    std::array<vital::Value*, 8> arp_destination_osc_on_ {};
-    bool arpDestinationSounds(int destination) const;
+    // What routes a played key to each oscillator slot's arpeggiators: the
+    // slot's switch and key and velocity zones, and each arp's destination
+    // switch for it. Looked up once, as the audio thread reads them per note.
+    struct ArpSlotControls {
+      vital::Value* on = nullptr;
+      vital::Value* key_start = nullptr;
+      vital::Value* key_end = nullptr;
+      vital::Value* velocity_start = nullptr;
+      vital::Value* velocity_end = nullptr;
+      std::array<vital::Value*, vital::kNumArpeggiators> destination {};
+    };
+    std::array<ArpSlotControls, 8> arp_slot_controls_ {};
+    // Arp `arp` is on and sends to `slot`.
+    bool arpeggiatorSendsToSlot(int arp, int slot) const;
+    // ...and the slot is on: only then does that arpeggiator play.
+    bool arpeggiatorPlaysSlot(int arp, int slot) const;
+    // Whether some slot that sounds is left to the keyboard by every arp.
+    bool keyboardPlaysSomeSlot() const;
+    bool shouldSendToArpeggiator(int arp, int slot, const MidiMessage& message) const;
+    AtlasArpeggiator::Settings slotArpeggiatorSettings(int arp, int slot, const AtlasArpeggiator::Settings& settings) const;
     MidiSchedulingBuffers midi_scheduling_buffers_;
     std::array<ScheduledMidiEvent, kMaxScheduledMidiEvents> scheduled_midi_events_;
     int scheduled_midi_event_count_ = 0;
@@ -294,6 +319,9 @@ class SynthBase : public MidiManager::Listener {
     // point at wiring that parking may remove, so they are applied first.
     // Processing stopped or the callback lock held.
     void updateEffectShells();
+    // Reserves or frees voice filter 0 or 1's Reverb memory: at once on the
+    // message thread, otherwise through scheduleEffectControlReservation.
+    void setVoiceReverbMemory(int filter, bool reserve);
 
     File active_file_;
     vital::poly_float oscilloscope_memory_[2 * vital::kOscilloscopeMemoryResolution];

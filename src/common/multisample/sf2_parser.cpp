@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "sf2_parser.h"
+#include "utf8_text.h"
 
 #include <algorithm>
 #include <array>
@@ -117,7 +118,9 @@ namespace multisample {
       name.resize(std::strlen(name.c_str()));
       while (!name.empty() && (name.back() == ' ' || name.back() == '\0'))
         name.pop_back();
-      return name;
+      // Saved state is JSON, which must be UTF-8: a name in a Windows code
+      // page made every save of a patch using the font throw.
+      return vital::text::utf8FromLegacyText(name);
     }
 
     std::string readId(juce::InputStream& stream) {

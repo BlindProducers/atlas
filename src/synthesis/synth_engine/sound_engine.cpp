@@ -126,17 +126,26 @@ namespace vital {
   }
 
   void SoundEngine::prepareSelectedEffects() {
+    voice_handler_->updateReverbMemory();
     for (auto* chain : bus_effect_chains_) chain->prepareSelectedEffects();
     effect_chain_->prepareSelectedEffects();
   }
 
   bool SoundEngine::takeEffectControlReservationRequest() {
-    return preparation_worker_->takeControlReservationRequest();
+    const bool reverb = voice_handler_->takeReverbMemoryRequest();
+    const bool latency = latency_history_requested_.exchange(false, std::memory_order_acq_rel);
+    return preparation_worker_->takeControlReservationRequest() || reverb || latency;
   }
 
   void SoundEngine::reserveSelectedEffectControls() {
+    voice_handler_->updateReverbMemory();
     for (auto* chain : bus_effect_chains_) chain->reserveSelectedControls();
     effect_chain_->reserveSelectedControls();
+    reserveLatencyHistory();
+  }
+
+  void SoundEngine::setVoiceReverbMemory(int filter, bool reserve) {
+    voice_handler_->setReverbMemory(filter, reserve);
   }
 
   void SoundEngine::parkUnselectedEffects() {
@@ -188,7 +197,7 @@ namespace vital {
       Value* bus_effect_chain_order = createBaseControl(bus_prefix + "effect_chain_order");
 
       bus_chain_inputs_[i] = new LatencyCompensatedSum(i + 1,
-          i * ReorderableEffectChain::kMaxLatencySamples);
+          i * ReorderableEffectChain::kMaxLatencySamples, false);
       bus_chain_inputs_[i]->plug(voice_handler_->getBusOutput(i), 0);
       for (int previous_bus = 0; previous_bus < i; ++previous_bus)
         bus_chain_inputs_[i]->plug(bus_routers_[previous_bus]->output(BusRouter::kBus1Out + i), previous_bus + 1);
@@ -209,7 +218,7 @@ namespace vital {
     }
 
     main_chain_input_ = new LatencyCompensatedSum(kNumBuses + 1,
-        kNumBuses * ReorderableEffectChain::kMaxLatencySamples);
+        kNumBuses * ReorderableEffectChain::kMaxLatencySamples, false);
     main_chain_input_->plug(voice_handler_, 0);
     for (int i = 0; i < kNumBuses; ++i)
       main_chain_input_->plug(bus_routers_[i]->output(BusRouter::kMainOut), i + 1);
@@ -242,7 +251,7 @@ namespace vital {
     createStatusOutput("flanger_delay_frequency", flanger->output(FlangerModule::kFrequencyOutput));
 
     output_total_ = new LatencyCompensatedSum(kNumBuses + 2,
-        (kNumBuses + 1) * ReorderableEffectChain::kMaxLatencySamples);
+        (kNumBuses + 1) * ReorderableEffectChain::kMaxLatencySamples, false);
     output_total_->plug(effect_chain_, 0);
     output_total_->plug(voice_handler_->getDirectOutput(), 1);
     for (int i = 0; i < kNumBuses; ++i)
@@ -365,14 +374,19 @@ namespace vital {
     change.modulation_processor->setCollapsePolyphonicSource(false);
     change.modulation_processor->setRefreshSourceWhenIdle(false);
 
-    Processor* destination = change.mono_destination;
-    if (change.source->owner->isPolyphonic() && change.poly_destination)
-      destination = change.poly_destination;
+    // A route kept while its slot plays a type without that destination was
+    // never plugged in; there is nothing to unplug.
+    if (change.mono_destination != nullptr && change.source != nullptr) {
+      Processor* destination = change.mono_destination;
+      if (change.source->owner->isPolyphonic() && change.poly_destination)
+        destination = change.poly_destination;
 
-    destination->unplug(change.modulation_processor);
+      destination->unplug(change.modulation_processor);
+    }
     voice_handler_->disableModulationConnection(change.modulation_processor);
 
-    if (change.mono_destination->connectedInputs() == 1 &&
+    if (change.mono_destination != nullptr && change.mono_modulation_switch != nullptr &&
+        change.mono_destination->connectedInputs() == 1 &&
         (change.poly_destination == nullptr || change.poly_destination->connectedInputs() == 0)) {
       change.mono_modulation_switch->set(0);
 
@@ -384,7 +398,7 @@ namespace vital {
 
     change.modulation_processor->enable(false);
     change.modulation_processor->setControlRate(true);
-    if (change.num_audio_rate == 0)
+    if (change.num_audio_rate == 0 && change.source != nullptr)
       change.source->owner->setControlRate(true);
 
     modulation_processors_.remove(change.modulation_processor);
@@ -447,6 +461,35 @@ namespace vital {
   }
 
   void SoundEngine::updateEffectLatency() {
+    applyEffectLatency();
+    if (!latencyHistoryNeeded())
+      return;
+    // A compensation line meets its first delay. In realtime it passes audio
+    // through undelayed until the message thread gives it history.
+    if (RealtimeEffectScope::active())
+      latency_history_requested_.store(true, std::memory_order_release);
+    else
+      reserveLatencyHistory();
+  }
+
+  bool SoundEngine::latencyHistoryNeeded() const {
+    for (auto* input : bus_chain_inputs_)
+      if (input->needsHistory()) return true;
+    return main_chain_input_->needsHistory() || output_total_->needsHistory();
+  }
+
+  void SoundEngine::reserveLatencyHistory() {
+    applyEffectLatency();
+    if (!latencyHistoryNeeded())
+      return;
+    for (auto* input : bus_chain_inputs_)
+      input->reserveNeededHistory();
+    main_chain_input_->reserveNeededHistory();
+    output_total_->reserveNeededHistory();
+    applyEffectLatency();
+  }
+
+  void SoundEngine::applyEffectLatency() {
     int bus_latencies[kNumBuses] = {};
     int routes[kNumBuses] = {};
     int main_inputs[kNumBuses + 1] = {};

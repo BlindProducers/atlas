@@ -16,6 +16,7 @@
 
 #include "synth_plugin.h"
 #include "source_types.h"
+#include "legacy_source_aliases.h"
 #include "synth_editor.h"
 #include "sound_engine.h"
 #include "prepared_effect_module.h"
@@ -115,42 +116,9 @@ namespace {
     return -1;
   }
 
-  // The fixed Sample, Granular, Spectral and Noise sources became oscillator
-  // slots 5-8. Their old parameter names stay in the parameter list as host
-  // aliases so numbering is stable; this maps an alias to the slot control.
-  std::string legacySourceAliasTarget(const std::string& name) {
-    struct Legacy { const char* prefix; int slot; };
-    static const Legacy kLegacy[] = { { "sample", 4 }, { "granular", 5 }, { "spectral", 6 }, { "noise", 7 } };
-    static const char* kSlotLevel[] = {
-      "on", "solo", "destination", "key_zone_start", "key_zone_end", "velocity_zone_start", "velocity_zone_end",
-      "level", "pan"
-    };
-    for (const Legacy& legacy : kLegacy) {
-      for (int arp = 1; arp <= 2; ++arp) {
-        if (name == "arp_" + std::to_string(arp) + "_destination_" + legacy.prefix)
-          return "arp_" + std::to_string(arp) + "_destination_osc_" + std::to_string(legacy.slot + 1);
-      }
-      const std::string legacy_prefix = std::string(legacy.prefix) + "_";
-      if (name.rfind(legacy_prefix, 0) != 0)
-        continue;
-      const std::string suffix = name.substr(legacy_prefix.size());
-      const std::string slot_prefix = vital::source_types::slotPrefix(legacy.slot);
-      for (const char* slot_level : kSlotLevel) {
-        if (suffix == slot_level)
-          return slot_prefix + suffix;
-      }
-      const std::string target = slot_prefix + legacy_prefix + suffix;
-      // Only a type-group parameter is an alias target; the oscillator's own
-      // spectral morph controls merely share the Spectral prefix.
-      const int legacy_type =
-          vital::source_types::kLegacySourceTypes[legacy.slot - vital::source_types::kFirstLegacySourceSlot];
-      if (vital::source_types::typeForParameterSuffix(legacy_prefix + suffix) != legacy_type ||
-          !vital::Parameters::isParameter(target))
-        return {};
-      return target;
-    }
-    return {};
-  }
+  // Old fixed-source host parameters drive their slot controls
+  // (legacy_source_aliases.h; MIDI-learn mappings use the same table).
+  using vital::source_types::legacySourceAliasTarget;
 
   // New arp destinations for slots 5-8 are reached through the legacy aliases above.
   bool isAliasedArpDestination(const std::string& name) {
@@ -223,6 +191,8 @@ SynthPlugin::SynthPlugin() {
 
 SynthPlugin::~SynthPlugin() {
   clearFxAutomationAssignments(false);
+  // A MIDI learn completed while the editor was closed is saved now.
+  midi_manager_->commitPendingMidiLearn();
   midi_manager_ = nullptr;
   keyboard_state_ = nullptr;
 }
@@ -267,10 +237,29 @@ const CriticalSection& SynthPlugin::getCriticalSection() {
   return getCallbackLock();
 }
 
+void SynthPlugin::StateChangeNotifier::handleAsyncUpdate() {
+  // JUCE's VST3 wrapper turns this into IComponentHandler2::setDirty.
+  plugin_.updateHostDisplay(AudioProcessorListener::ChangeDetails().withNonParameterStateChanged(true));
+}
+
+void SynthPlugin::markStateChanged() {
+  if (restoring_state_ || !MessageManager::existsAndIsCurrentThread())
+    return;
+  state_change_notifier_.triggerAsyncUpdate();
+}
+
 void SynthPlugin::pauseProcessing(bool pause) {
   if (!pause) {
-    const ScopedLock lock(getCallbackLock());
-    prepareSelectedEffects();
+    if (isSuspended()) {
+      // JUCE's wrappers check isSuspended() under the callback lock and skip
+      // processBlock, so the effects build without it. Holding the lock made
+      // the host's audio thread wait for the whole build.
+      prepareSelectedEffects();
+    }
+    else {
+      const ScopedLock lock(getCallbackLock());
+      prepareSelectedEffects();
+    }
   }
   suspendProcessing(pause);
 }
@@ -509,6 +498,11 @@ void SynthPlugin::parameterChanged(const std::string& name, vital::mono_float va
       if (!proxy->isApplyingHostValue())
         proxy->setEngineValueNotifyHost(value);
     }
+    else {
+      // An editor control the host does not see (an effect's parameters, an
+      // oscillator type's own controls): the host learns of it no other way.
+      markStateChanged();
+    }
   }
   updateLatencyAfterControlChange(name);
 }
@@ -737,7 +731,8 @@ void SynthPlugin::setFxBusEnabled(int bus, bool enabled) {
   const bool was_suspended = isSuspended();
   pauseProcessing(true);
   {
-    const ScopedLock lock(getCallbackLock());
+    // Paused: no callback lock, which the host's audio thread would wait on
+    // (and which must not be held while notifying the host).
     for (int slot = 1; slot <= vital::constants::kMaxEffectSlots; ++slot) {
       const std::string slot_prefix = prefix + "fx_slot_" + std::to_string(slot) + "_";
       if (getControls().at(slot_prefix + "type")->value() <= 0.0f)
@@ -752,28 +747,34 @@ void SynthPlugin::setFxBusEnabled(int bus, bool enabled) {
     pauseProcessing(false);
     updateLatencyAfterControlChange(prefix + "fx_slot_1_enabled");
   }
+  markStateChanged();
 }
 
 json SynthPlugin::fxBusPreset(int bus) {
   if (!isPositiveAndBelow(bus, vital::kNumBuses + 1))
     return {};
 
-  const ScopedLock lock(getCallbackLock());
+  // This only reads values (an IR has its own lock), so it takes no callback
+  // lock: that stopped the host's audio thread while the bus was written.
   const std::string prefix = fxBusPrefix(bus);
   const auto convolution_modules = getConvolutionReverbModules();
+  const vital::control_map& controls = getControls();
   json slots = json::array();
   for (int slot = 1; slot <= vital::constants::kMaxEffectSlots; ++slot) {
     const std::string slot_prefix = prefix + "fx_slot_" + std::to_string(slot) + "_";
-    const int type = static_cast<int>(getControls().at(slot_prefix + "type")->value());
+    const int type = static_cast<int>(controls.at(slot_prefix + "type")->value());
     json entry = { { "effect", nullptr }, { "enabled", true }, { "parameters", json::object() } };
     if (isPositiveAndBelow(type - 1, vital::constants::kNumEffects)) {
       const std::string effect = strings::kEffectOrder[type - 1];
       entry["effect"] = effect;
-      entry["enabled"] = getControls().at(slot_prefix + "enabled")->value() >= 0.5f;
-      for (const auto& control : getControls()) {
-        if (control.second != nullptr && control.first.rfind(slot_prefix + effect + "_", 0) == 0 &&
-            vital::Parameters::isParameter(control.first))
-          entry["parameters"][control.first.substr(slot_prefix.size())] = control.second->value();
+      entry["enabled"] = controls.at(slot_prefix + "enabled")->value() >= 0.5f;
+      // The effect's parameters sit together in the sorted control map.
+      const std::string effect_prefix = slot_prefix + effect + "_";
+      for (auto control = controls.lower_bound(effect_prefix);
+           control != controls.end() && control->first.compare(0, effect_prefix.size(), effect_prefix) == 0;
+           ++control) {
+        if (control->second != nullptr && vital::Parameters::isParameter(control->first))
+          entry["parameters"][control->first.substr(slot_prefix.size())] = control->second->value();
       }
       if (effect == "convolution_reverb") {
         for (const auto& module : convolution_modules) {
@@ -887,7 +888,8 @@ bool SynthPlugin::loadFxBusPreset(int bus, const json& preset, String& error) {
   // Assignments belong to the replaced modules, never to a portable bus preset.
   clearFxAutomationForPrefix(slots_prefix);
   {
-    const ScopedLock lock(getCallbackLock());
+    // Processing is paused (the host hears silence), so no callback lock: the
+    // host's audio thread would wait for all of this.
     std::vector<vital::ModulationConnection*> routes;
     for (auto* route : getModulationConnections()) {
       if (route != nullptr && route->destination_name.rfind(slots_prefix, 0) == 0)
@@ -944,6 +946,7 @@ bool SynthPlugin::loadFxBusPreset(int bus, const json& preset, String& error) {
     pauseProcessing(false);
     updateLatencyAfterControlChange(prefix + "fx_slot_1_type");
   }
+  markStateChanged();
   error.clear();
   return true;
 }
@@ -953,44 +956,81 @@ void SynthPlugin::getStateInformation(MemoryBlock& dest_data) {
   data["tuning"] = getTuning()->stateToJson();
   data[kFxAutomationStateKey] = fxAutomationAssignmentsToJson();
 
-  String data_string = data.dump();
-  MemoryOutputStream stream;
-  stream.writeString(data_string);
-  dest_data.append(stream.getData(), stream.getDataSize());
+  // The JSON text and a terminating NUL, as MemoryOutputStream::writeString
+  // wrote them, without its copies of the text.
+  const std::string text = LoadSave::dumpState(data);
+  dest_data.append(text.data(), text.size());
+  const char terminator = 0;
+  dest_data.append(&terminator, 1);
 }
 
 void SynthPlugin::setStateInformation(const void* data, int size_in_bytes) {
-  MemoryInputStream stream(data, size_in_bytes, false);
-  String data_string = stream.readEntireStreamAsString();
+  // The host set this state: it is not a change for the host to save.
+  struct Restoring {
+    bool& flag;
+    explicit Restoring(bool& restoring) : flag(restoring) { flag = true; }
+    ~Restoring() { flag = false; }
+  } restoring(restoring_state_);
+
+  // Parse while this instance still plays: only applying the state needs
+  // processing paused. The state is JSON text, normally ending in a NUL.
+  json json_data(json::value_t::discarded);
+  if (data != nullptr && size_in_bytes > 0) {
+    const char* text = static_cast<const char*>(data);
+    size_t size = static_cast<size_t>(size_in_bytes);
+    while (size > 0 && text[size - 1] == '\0')
+      --size;
+    if (size > 0)
+      json_data = json::parse(text, text + size, nullptr, false);
+    if (json_data.is_discarded()) {
+      // Not plain UTF-8: read it the way JUCE reads text.
+      MemoryInputStream stream(data, static_cast<size_t>(size_in_bytes), false);
+      json_data = json::parse(stream.readEntireStreamAsString().toStdString(), nullptr, false);
+    }
+  }
 
   pauseProcessing(true);
-  try {
-    json json_data = json::parse(data_string.toStdString());
-    LoadSave::jsonToState(this, save_info_, json_data);
-    prepareSelectedSources();
+  // Notes held across a restore (a host preset, undo, pasted FX state) are
+  // released: note-offs sent while processing is paused never arrive, so a
+  // note or an arpeggio would hang on into the new patch.
+  engine_->allNotesOff(0);
+  clearArpeggiators();
+  if (json_data.is_discarded()) {
+    NativeMessageBox::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Error opening preset",
+                                          "There was an error open the preset. Preset file is corrupted.");
+  }
+  else {
+    try {
+      // jsonToState takes the state over; read the rest first.
+      const bool has_fx_automation = json_data.is_object() && json_data.count(kFxAutomationStateKey);
+      const bool has_tuning = json_data.is_object() && json_data.count("tuning");
+      const json fx_automation = has_fx_automation ? std::move(json_data[kFxAutomationStateKey]) : json();
+      const json tuning = has_tuning ? std::move(json_data["tuning"]) : json();
+      LoadSave::jsonToState(this, save_info_, std::move(json_data));
+      prepareSelectedSources();
 
-    if (json_data.count(kFxAutomationStateKey))
-      loadFxAutomationAssignments(json_data[kFxAutomationStateKey]);
-    else
-      clearFxAutomationAssignments(false);
+      if (has_fx_automation)
+        loadFxAutomationAssignments(fx_automation);
+      else
+        clearFxAutomationAssignments(false);
 
-    if (json_data.count("tuning"))
-      getTuning()->jsonToState(json_data["tuning"]);
+      if (has_tuning)
+        getTuning()->jsonToState(tuning);
+    }
+    catch (const json::exception& e) {
+      std::string error = "There was an error open the preset. Preset file is corrupted.";
+      NativeMessageBox::showMessageBoxAsync(MessageBoxIconType::WarningIcon,
+                                            "Error opening preset", error);
+    }
   }
-  catch (const json::exception& e) {
-    std::string error = "There was an error open the preset. Preset file is corrupted.";
-    NativeMessageBox::showMessageBoxAsync(MessageBoxIconType::WarningIcon,
-                                          "Error opening preset", error);
-  }
-  {
-    const ScopedLock lock(getCallbackLock());
-    engine_->checkOversampling();
-    prepareSelectedEffects();
-    engine_->updateEffectLatency();
-    updateFxSampleRate();
-  }
+  // Processing is paused, so none of this takes the callback lock, which
+  // would make the host's audio thread wait for the effects to build.
+  engine_->checkOversampling();
+  prepareSelectedEffects();
+  engine_->updateEffectLatency();
+  updateFxSampleRate();
   setLatencySamples(engine_->getLatencySamples());
-  pauseProcessing(false);
+  suspendProcessing(false);
 
   SynthGuiInterface* editor = getGuiInterface();
   if (editor)

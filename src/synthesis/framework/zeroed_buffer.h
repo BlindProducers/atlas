@@ -10,12 +10,30 @@
 #include <type_traits>
 
 namespace vital {
-  // Zero-filled storage from calloc. A large block comes from fresh pages that
-  // the OS has already zeroed, so the parts that are never written stay out of
-  // the process footprint. Value-initialised new[] writes every page instead.
-  // Voice clones and inactive filter models hold many such buffers.
+  // Zero-filled storage whose untouched pages stay out of the process
+  // footprint. Value-initialised new[] writes every page instead. Voice clones
+  // and inactive filter models hold many such buffers.
+  //
+  // On macOS a large calloc comes from fresh pages the OS has already zeroed.
+  // Windows' heap clears every block under about half a megabyte by hand,
+  // which makes all of its pages resident, so there blocks of a page or more
+  // come straight from the OS instead (zeroed_buffer.cpp).
+#if defined(_WIN32)
+  void* allocateZeroedPages(size_t bytes);
+  void freeZeroedPages(void* memory);
+#endif
+
   struct ZeroedBufferDeleter {
-    void operator()(void* memory) const { std::free(memory); }
+    bool pages = false;
+    void operator()(void* memory) const {
+#if defined(_WIN32)
+      if (pages) {
+        freeZeroedPages(memory);
+        return;
+      }
+#endif
+      std::free(memory);
+    }
   };
   template<class T> using ZeroedBuffer = std::unique_ptr<T[], ZeroedBufferDeleter>;
 
@@ -24,6 +42,16 @@ namespace vital {
     // (float, poly_float, whose destructor does nothing) belong here.
     static_assert(std::is_standard_layout_v<T>);
     static_assert(alignof(T) <= 16, "calloc guarantees 16-byte alignment on the supported platforms");
+#if defined(_WIN32)
+    // Smaller blocks would waste most of a 64 KB address range each.
+    constexpr size_t kMinPageBytes = 64 * 1024;
+    if (count * sizeof(T) >= kMinPageBytes) {
+      void* pages = allocateZeroedPages(count * sizeof(T));
+      if (pages == nullptr)
+        throw std::bad_alloc();
+      return ZeroedBuffer<T>(static_cast<T*>(pages), ZeroedBufferDeleter { true });
+    }
+#endif
     void* memory = std::calloc(count, sizeof(T));
     if (memory == nullptr)
       throw std::bad_alloc();

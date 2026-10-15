@@ -91,6 +91,8 @@ namespace multisample {
       // editable working copy of its text first.
       juce::File editableFile(int slot);
 
+      // Loads only: copying a loaded instrument into the cache and pruning the
+      // cache run afterwards on their own thread, and nothing waits for them.
       bool hasPendingLoads() const;
       // Tests and offline rendering: wait for loads, then apply them here.
       // The audio thread passes `blocking` false: if the message thread is
@@ -98,6 +100,8 @@ namespace multisample {
       // thread holds, so this thread must not wait for it in turn.
       bool waitForPendingLoads(int timeout_ms);
       void processPendingResults(bool blocking = true);
+      // Tests: waits for the cache copy and pruning as well.
+      bool waitForCacheWork(int timeout_ms);
 
       // Every cached instrument a slot uses (kept by cache pruning).
       std::set<std::string> hashesInUse() const;
@@ -151,9 +155,13 @@ namespace multisample {
       mutable std::mutex mutex_;
       std::array<Slot, kNumSlots> slots_;
       std::atomic<uint64_t> next_request_ { 1 };
-      std::atomic<int> running_ { 0 };
+      std::atomic<int> loading_ { 0 };
+      std::atomic<int> caching_ { 0 };
       std::atomic<bool> shutting_down_ { false };
       juce::ThreadPool pool_ { 1 };
+      // The cache copy of a loaded instrument (up to 2 GB from another drive)
+      // must not hold up the next load.
+      juce::ThreadPool cache_pool_ { 1 };
       std::mutex apply_mutex_;
 
       JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(Manager)

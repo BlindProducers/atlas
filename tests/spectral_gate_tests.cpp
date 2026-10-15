@@ -93,10 +93,14 @@ namespace {
     gate.init();
     Signal input(6 * N);
     uint32_t noise = 12345;
+    // The voice handler gives both SIMD pairs the same stereo signal; the module
+    // transforms lanes 0/1 and mirrors them into lanes 2/3.
     for (auto& sample : input) {
-      for (int lane = 0; lane < vital::poly_float::kSize; ++lane) {
+      for (int lane = 0; lane < 2; ++lane) {
         noise = noise * 1664525u + 1013904223u;
-        sample.set(lane, static_cast<float>(noise >> 8) / 16777216.0f - 0.5f);
+        const float value = static_cast<float>(noise >> 8) / 16777216.0f - 0.5f;
+        sample.set(lane, value);
+        sample.set(lane + 2, value);
       }
     }
     // Covers all SIMD lanes, startup, exact latency, full dry and mixed output.
@@ -139,7 +143,7 @@ namespace {
       Signal input(6 * size);
       for (int sample = 0; sample < static_cast<int>(input.size()); ++sample) {
         const float value = 0.25f * std::sin(0.037 * sample) + 0.1f * std::cos(0.17 * sample);
-        input[sample] = vital::poly_float(value, -value, value * 0.2f, -value * 0.3f);
+        input[sample] = vital::poly_float(value, -value, value, -value);
       }
       for (int rate : { 44100, 48000, 96000 }) {
         gate.setSampleRate(rate);
@@ -248,7 +252,7 @@ namespace {
       controls.at(prefix + "spectral_gate_balance")->set(1.0f);
     }
     Signal input(4 * N, vital::poly_float(0.0f));
-    input[0] = vital::poly_float(1.0f, -0.5f, 0.25f, -0.125f);
+    input[0] = vital::poly_float(1.0f, -0.5f, 1.0f, -0.5f);
     expect(maximumDifference(render(chain, input, 127), input, 2 * N) < 3.0e-6f,
            "multiple bus slots must have independent spectral buffers");
     Signal loud(N, vital::poly_float(0.5f));
@@ -266,7 +270,7 @@ namespace {
     controls.at("bus_3_fx_slot_2_spectral_gate_fft_size")->set(5.0f);
     chain.hardReset();
     Signal mixed_sizes(3 * (256 + 8192), vital::poly_float(0.0f));
-    mixed_sizes[0] = vital::poly_float(0.5f, -0.25f, 0.1f, -0.05f);
+    mixed_sizes[0] = vital::poly_float(0.5f, -0.25f, 0.5f, -0.25f);
     expect(maximumDifference(render(chain, mixed_sizes, 127), mixed_sizes, 256 + 8192) < 3.0e-6f,
            "different FFT sizes in serial slots must retain independent history and add their exact delays");
   }

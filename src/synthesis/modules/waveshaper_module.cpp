@@ -349,10 +349,14 @@ namespace vital {
                                      current_warp_type_, true);
       }
 
+      // The voice handler sums both voices into both SIMD pairs, so lanes 2-3
+      // repeat lanes 0-1: only lanes 0-1 are shaped, and lanes 2-3 copy them.
       poly_float shaped = 0.0f;
-      for (int lane = 0; lane < poly_float::kSize; ++lane) {
-        shaped.set(lane, shapeSample(vertices_, num_vertices_, sample[lane], tension, warp_amount,
-                                     current_warp_type_, current_bipolar_) - silence_offset);
+      for (int lane = 0; lane < 2; ++lane) {
+        const float value = shapeSample(vertices_, num_vertices_, sample[lane], tension, warp_amount,
+                                        current_warp_type_, current_bipolar_) - silence_offset;
+        shaped.set(lane, value);
+        shaped.set(lane + 2, value);
       }
 
       // Shape, warp type, and mode switch discrete curves: crossfade from the
@@ -365,9 +369,11 @@ namespace vital {
         }
 
         poly_float old_shaped = 0.0f;
-        for (int lane = 0; lane < poly_float::kSize; ++lane) {
-          old_shaped.set(lane, shapeSample(old_vertices_, old_num_vertices_, sample[lane], tension,
-                                           warp_amount, old_warp_type_, old_bipolar_) - old_offset);
+        for (int lane = 0; lane < 2; ++lane) {
+          const float value = shapeSample(old_vertices_, old_num_vertices_, sample[lane], tension,
+                                          warp_amount, old_warp_type_, old_bipolar_) - old_offset;
+          old_shaped.set(lane, value);
+          old_shaped.set(lane + 2, value);
         }
 
         const float fade = 1.0f - crossfade_samples_left_ * (1.0f / kCrossfadeSamples);

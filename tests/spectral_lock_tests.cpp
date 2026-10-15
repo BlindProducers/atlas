@@ -36,15 +36,17 @@ const char* atlasIds[] = { "amount", "isolate", "shimmer", "bend", "bend_range",
     "range_high", "mute_low", "mute_high", "spray", "tilt", "pitch", "root", "mix" };
 const char* sourceIds[] = { "amount", "isolate", "shimmer", "bend", "bendrange", "rangelo",
     "rangehi", "mutelow", "mutehigh", "spray", "tilt", "pitch", "root", "mix" };
+// The voice handler gives both SIMD pairs the same stereo signal, so the module
+// runs one engine on lanes 0/1 and mirrors it into lanes 2/3.
 void compare(vital::SynthModule& module, int rate, int factor, int maxBlock,
              const std::string& prefix = "", bool reset = false) {
-  std::array<SpectralLockAudioProcessor, vital::poly_float::kSize / 2> references;
+  SpectralLockAudioProcessor source;
   std::array<float, 14> p { 1, 0, 0, 0, 2, 65, 2200, 0, 0, 0, 0, 0, 0, 1 };
   auto controls = module.getControls();
   for (int i = 0; i < 14; ++i) controls.at(prefix + "spectral_lock_" + atlasIds[i])->set(p[i]);
   controls.at(prefix + "spectral_lock_scale")->set(0);
   if (reset) module.hardReset();
-  for (auto& source : references) source.prepareToPlay(rate * factor, maxBlock);
+  source.prepareToPlay(rate * factor, maxBlock);
   std::vector<vital::poly_float> input(maxBlock);
   juce::AudioBuffer<float> buffer(2, maxBlock);
   juce::MidiBuffer midi;
@@ -69,11 +71,12 @@ void compare(vital::SynthModule& module, int rate, int factor, int maxBlock,
     for (int i = 0; i < 14; ++i) controls.at(prefix + "spectral_lock_" + atlasIds[i])->set(p[i]);
     controls.at(prefix + "spectral_lock_scale")->set(scale);
     for (int i = 0; i < count; ++i)
-      for (int lane = 0; lane < vital::poly_float::kSize; ++lane) {
-        float x = .25f * std::sin((position + i) * (lane + 1) * .035f) + .1f * (random() - .5f);
+      for (int ch = 0; ch < 2; ++ch) {
+        float x = .25f * std::sin((position + i) * (ch + 1) * .035f) + .1f * (random() - .5f);
         if (block % 53 > 47) x = 0;
         if (block % 31 == 0) x *= 3;
-        input[i].set(lane, x);
+        input[i].set(ch, x);
+        input[i].set(ch + 2, x);
       }
     allocations = 0; tracking = true;
     const auto start = std::chrono::steady_clock::now();
@@ -81,24 +84,21 @@ void compare(vital::SynthModule& module, int rate, int factor, int maxBlock,
     atlasSeconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
     tracking = false;
     expect(allocations == 0, "prepared processing and parameter changes allocate no memory");
-    for (int pair = 0; pair < vital::poly_float::kSize / 2; ++pair) {
-      auto& source = references[pair];
-      for (int i = 0; i < 14; ++i) source.apvts.getRawParameterValue(sourceIds[i])->store(p[i]);
-      for (int i = 0; i < 12; ++i)
-        source.apvts.getRawParameterValue("matrix" + String(i))->store(source.scaleTables[scale][i]);
-      for (int ch = 0; ch < 2; ++ch)
-        for (int i = 0; i < count; ++i) buffer.setSample(ch, i, input[i][pair * 2 + ch]);
-      auto region = juce::AudioBuffer<float>(buffer.getArrayOfWritePointers(), 2, count);
-      const auto before = std::chrono::steady_clock::now();
-      source.processBlock(region, midi);
-      referenceSeconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - before).count();
-      for (int ch = 0; ch < 2; ++ch)
-        for (int i = 0; i < count; ++i) {
-          const float actual = module.output()->buffer[i][pair * 2 + ch], wanted = buffer.getSample(ch, i);
-          if (!std::isfinite(actual)) { expect(false, "finite output on every SIMD lane"); return; }
-          worst = std::max(worst, std::abs(actual - wanted)); peak = std::max(peak, std::abs(wanted));
-        }
-    }
+    for (int i = 0; i < 14; ++i) source.apvts.getRawParameterValue(sourceIds[i])->store(p[i]);
+    for (int i = 0; i < 12; ++i)
+      source.apvts.getRawParameterValue("matrix" + String(i))->store(source.scaleTables[scale][i]);
+    for (int ch = 0; ch < 2; ++ch)
+      for (int i = 0; i < count; ++i) buffer.setSample(ch, i, input[i][ch]);
+    auto region = juce::AudioBuffer<float>(buffer.getArrayOfWritePointers(), 2, count);
+    const auto before = std::chrono::steady_clock::now();
+    source.processBlock(region, midi);
+    referenceSeconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - before).count();
+    for (int lane = 0; lane < vital::poly_float::kSize; ++lane)
+      for (int i = 0; i < count; ++i) {
+        const float actual = module.output()->buffer[i][lane], wanted = buffer.getSample(lane % 2, i);
+        if (!std::isfinite(actual)) { expect(false, "finite output on every SIMD lane"); return; }
+        worst = std::max(worst, std::abs(actual - wanted)); peak = std::max(peak, std::abs(wanted));
+      }
     position += count;
   }
   std::cout << "rate=" << rate << " factor=" << factor << " block=" << maxBlock << " error=" << worst
