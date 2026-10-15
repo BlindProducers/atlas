@@ -47,8 +47,9 @@ namespace {
     editor.setVisible(true);
     pumpEditorEvents();
 
-    // Each LFO section has its own keyboard editor.
-    auto* lfo = titled(editor, "LFO 1 accessible editor");
+    // Each LFO section has its own keyboard editor. Opening the wavetable
+    // editor below rebuilds the rows, so hold it as the others are held.
+    Component::SafePointer<Component> lfo(titled(editor, "LFO 1 accessible editor"));
     expect(lfo != nullptr, "the editor has LFO 1's keyboard editor");
     if (lfo != nullptr) {
       expectNavigationSpoken(*lfo, spoken, KeyPress(KeyPress::rightKey), "Bar 1", "LFO editor");
