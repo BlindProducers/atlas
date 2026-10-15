@@ -1197,6 +1197,125 @@ namespace {
            "Mid Side EQ reads the Mid group's bands, then the Side group's");
   }
 
+  // Return on an oscillator row opens the value field; Return or Escape there
+  // must bring focus back to the row, whatever the oscillator's type, even
+  // when the editor's timer has run while the field was open.
+  void testTypedValueReturnsToOscillatorRows() {
+    SynthPlugin synth;
+    synth.parameterChanged("osc_1_type", float(vital::source_types::kMultiSample));
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    editor.toFront(true);
+    pumpEditorEvents();
+
+    auto focusedName = [&] {
+      auto* focused = Component::getCurrentlyFocusedComponent();
+      if (focused == &editor)
+        return std::string("the editor itself");
+      return focused != nullptr ? focused->getTitle().toStdString() : std::string("nothing");
+    };
+    // Keys go through the window, as typing does: Escape in the field reaches
+    // the editor, which closes the prompt.
+    auto press = [&](int key_code) {
+      if (auto* peer = editor.getPeer())
+        peer->handleKeyPress(KeyPress(key_code));
+    };
+    for (const String id : { "osc_1_multisample_transpose", "osc_1_multisample_tune", "osc_2_transpose" }) {
+      for (const bool cancel : { false, true }) {
+        const std::string what = id.toStdString() + (cancel ? " after Escape" : " after Return");
+        auto* control = editor.controlForParameter(id);
+        expect(control != nullptr, id.toStdString() + " has a row");
+        if (control == nullptr)
+          continue;
+        editor.ensureComponentVisible(control);
+        control->grabKeyboardFocus();
+        press(KeyPress::returnKey);
+        expect(dynamic_cast<TextEditor*>(Component::getCurrentlyFocusedComponent()) != nullptr,
+               "Return on " + id.toStdString() + " opens the value field, focused " + focusedName());
+        // Typing takes a while: the timer refreshes the rows meanwhile.
+        pumpEditorEvents();
+        auto* field = dynamic_cast<TextEditor*>(Component::getCurrentlyFocusedComponent());
+        expect(field != nullptr, "the value field keeps focus while open for " + id.toStdString() +
+               ", focused " + focusedName());
+        if (field == nullptr)
+          continue;
+        if (!cancel)
+          field->setText("3", dontSendNotification);
+        press(cancel ? KeyPress::escapeKey : KeyPress::returnKey);
+        pumpEditorEvents();
+        expect(editor.focusedRowParameterId() == id, "focus is back on " + what + ", focused " + focusedName());
+        auto* row = editor.controlForParameter(id);
+        expect(row != nullptr && row->getAccessibilityHandler() != nullptr &&
+               row->getAccessibilityHandler()->hasFocus(false), "the screen reader is back on " + what);
+        // The field stays a moment, until the screen reader has followed focus off it.
+        pumpUntil([&] { return !field->isVisible(); });
+        expect(!field->isVisible(), "the value field is hidden " + std::string(cancel ? "after Escape" : "after Return"));
+      }
+    }
+    editor.removeFromDesktop();
+  }
+
+  // The window loses focus to a file chooser, a menu or the host. If the rows
+  // are rebuilt before it gets focus back, JUCE has lost the control it was
+  // going to return to and focuses the editor itself, which a screen reader
+  // reads as the top of the window. Focus must land on the control's
+  // replacement instead.
+  void testWindowRefocusFindsTheRebuiltControl() {
+    SynthPlugin synth;
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    editor.toFront(true);
+    pumpEditorEvents();
+
+    auto showButton = [&]() -> Component* {
+      auto* oscillator = editorSection(editor, "Oscillator 2");
+      return oscillator != nullptr ? titled(*oscillator, "Show wavetable editor") : nullptr;
+    };
+    auto focusedName = [&] {
+      auto* focused = Component::getCurrentlyFocusedComponent();
+      if (focused == &editor)
+        return std::string("the editor itself");
+      return focused != nullptr ? focused->getTitle().toStdString() : std::string("nothing");
+    };
+    auto* button = showButton();
+    auto* peer = editor.getPeer();
+    expect(button != nullptr && peer != nullptr, "Oscillator 2 has a Show wavetable editor button on screen");
+    if (button == nullptr || peer == nullptr) {
+      editor.removeFromDesktop();
+      return;
+    }
+    editor.ensureComponentVisible(button);
+    button->grabKeyboardFocus();
+
+    // Nothing rebuilt: focus comes back to the same button.
+    peer->handleFocusLoss();
+    expect(Component::getCurrentlyFocusedComponent() == nullptr, "the window has lost focus");
+    peer->handleFocusGain();
+    pumpEditorEvents();
+    expect(Component::getCurrentlyFocusedComponent() == button,
+           "focus comes back to the button, focused " + focusedName());
+
+    // Rebuilt while the window had no focus: focus finds the new button.
+    Component::SafePointer<Component> old_button(button);
+    peer->handleFocusLoss();
+    editor.updateFullGui();
+    pumpEditorEvents();
+    expect(old_button == nullptr && showButton() != nullptr, "the rebuild replaced the button");
+    peer->handleFocusGain();
+    pumpEditorEvents();
+    auto* replacement = showButton();
+    expect(replacement != nullptr && Component::getCurrentlyFocusedComponent() == replacement,
+           "focus comes back to Oscillator 2's new Show wavetable editor button, focused " + focusedName());
+    expect(replacement != nullptr && replacement->getAccessibilityHandler() != nullptr &&
+           replacement->getAccessibilityHandler()->hasFocus(false),
+           "the screen reader is on the new button too");
+    editor.removeFromDesktop();
+  }
+
   // A modulation amount typed in destination units keeps fractions on stepped
   // controls: 0.5 semitones on Transpose used to round to nothing.
   void testFractionalModulationAmountOnTranspose() {

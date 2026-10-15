@@ -88,6 +88,8 @@ namespace {
   constexpr int kBrowserRescanMenuId = 0x3fff0001;
   // How long after a rebuild the screen reader is moved back to the focused control.
   constexpr int kScreenReaderRefocusDelayMs = 250;
+  // How long the inline prompt stays on screen after focus has left it.
+  constexpr int kInlinePromptHideDelayMs = 600;
 
   enum PresetFacetKind {
     kLibraryFacet = 1,
@@ -392,9 +394,56 @@ namespace {
     return settings.other;
   }
 
+  // While a rebuild waits to move the screen reader back onto its control,
+  // announcements wait with it: the move makes the reader speak the control,
+  // which would cut off whatever it was saying. Held messages are spoken
+  // together, since each new announcement would also cut off the one before.
+  struct HeldAnnouncements {
+    int holds = 0;
+    StringArray messages;
+    AccessibilityHandler::AnnouncementPriority priority = AccessibilityHandler::AnnouncementPriority::low;
+  };
+
+  HeldAnnouncements& heldAnnouncements() {
+    static HeldAnnouncements held;
+    return held;
+  }
+
+  void postAnnouncement(const String& message, AccessibilityHandler::AnnouncementPriority priority) {
+    auto& held = heldAnnouncements();
+    if (held.holds == 0) {
+      AccessibilityHandler::postAnnouncement(message, priority);
+      return;
+    }
+    held.messages.add(message);
+    held.priority = jmax(held.priority, priority);
+  }
+
+  void holdAnnouncements() {
+    ++heldAnnouncements().holds;
+  }
+
+  void releaseAnnouncements() {
+    auto& held = heldAnnouncements();
+    if (held.holds == 0 || --held.holds > 0 || held.messages.isEmpty())
+      return;
+    const String message = held.messages.joinIntoString(". ");
+    const auto priority = held.priority;
+    held.messages.clear();
+    held.priority = AccessibilityHandler::AnnouncementPriority::low;
+    AccessibilityHandler::postAnnouncement(message, priority);
+  }
+
+  struct ScopedAnnouncementHold {
+    ScopedAnnouncementHold() { holdAnnouncements(); }
+    ~ScopedAnnouncementHold() { releaseAnnouncements(); }
+    ScopedAnnouncementHold(const ScopedAnnouncementHold&) = delete;
+    ScopedAnnouncementHold& operator=(const ScopedAnnouncementHold&) = delete;
+  };
+
   void postPluginAnnouncement(const String& message, AccessibilityHandler::AnnouncementPriority priority) {
     if (shouldPostPluginAnnouncement(message))
-      AccessibilityHandler::postAnnouncement(message, priority);
+      postAnnouncement(message, priority);
   }
 
   // Direct responses to a preset-browser command must not disappear when the
@@ -403,13 +452,13 @@ namespace {
   void postPresetActionAnnouncement(const String& message,
                                     AccessibilityHandler::AnnouncementPriority priority) {
     if (accessibilitySpeechSettings().speech_feedback)
-      AccessibilityHandler::postAnnouncement(message, priority);
+      postAnnouncement(message, priority);
   }
 
   void postLfoAnnouncement(const String& message) {
     const auto& settings = accessibilitySpeechSettings();
     if (settings.speech_feedback && settings.lfo_editor)
-      AccessibilityHandler::postAnnouncement(message, AccessibilityHandler::AnnouncementPriority::high);
+      postAnnouncement(message, AccessibilityHandler::AnnouncementPriority::high);
   }
 
   void postModulationRemapAnnouncement(const String& message) {
@@ -417,7 +466,7 @@ namespace {
     // the modulation category without repeating a spoken category prefix.
     const auto& settings = accessibilitySpeechSettings();
     if (settings.speech_feedback && settings.modulation)
-      AccessibilityHandler::postAnnouncement(message, AccessibilityHandler::AnnouncementPriority::high);
+      postAnnouncement(message, AccessibilityHandler::AnnouncementPriority::high);
   }
 
   struct MsegTimeDivision {
@@ -5914,6 +5963,11 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   modulation_amount_editor_.setHelpText("Type a value from minus one to one, then press Return or OK");
   modulation_amount_editor_.setWantsKeyboardFocus(true);
   modulation_amount_editor_.onReturnKey = [this] { applyInlineTextPrompt(); };
+  // The field keeps Escape to itself, so the editor's own Escape key never sees it.
+  modulation_amount_editor_.onEscapeKey = [this] {
+    if (modulation_amount_prompt_visible_ || parameter_value_prompt_visible_)
+      cancelInlineTextPrompt();
+  };
   addChildComponent(modulation_amount_editor_);
 
   modulation_amount_ok_.setTitle("Set modulation amount");
@@ -7217,16 +7271,17 @@ bool SynthEditor::restoreFocusAfterRebuild(const String& parameterId, Component*
   const int generation = ++screen_reader_refocus_generation_;
   if (!refocusScreenReader)
     return true;
+  holdAnnouncements();
   Timer::callAfterDelay(kScreenReaderRefocusDelayMs, [safe_this, generation] {
-    if (safe_this == nullptr || safe_this->screen_reader_refocus_generation_ != generation)
-      return;
     auto* focused = Component::getCurrentlyFocusedComponent();
-    if (focused == nullptr || !safe_this->isParentOf(focused) || !focused->isShowing())
-      return;
-    if (auto* handler = focused->getAccessibilityHandler()) {
-      handler->giveAwayFocus();
-      handler->grabFocus();
+    if (safe_this != nullptr && safe_this->screen_reader_refocus_generation_ == generation &&
+        focused != nullptr && safe_this->isParentOf(focused) && focused->isShowing()) {
+      if (auto* handler = focused->getAccessibilityHandler()) {
+        handler->giveAwayFocus();
+        handler->grabFocus();
+      }
     }
+    releaseAnnouncements();
   });
   return true;
 }
@@ -7274,6 +7329,101 @@ Component* SynthEditor::findRebuildFocusTarget(const String& parameterId, Compon
   }
 
   return target;
+}
+
+SynthEditor::FocusReturn SynthEditor::focusToReturnTo() const {
+  Component* focused = Component::getCurrentlyFocusedComponent();
+  if ((focused == nullptr || !isParentOf(focused)) && getPeer() != nullptr)
+    focused = getPeer()->getLastFocusedSubcomponent();
+  FocusReturn result;
+  if (focused == nullptr || !isParentOf(focused))
+    return result;
+
+  for (const auto& row : rows_) {
+    if (row != nullptr && (row->focusableControl() == focused || row->focusableControl()->isParentOf(focused))) {
+      result.parameter_id = row->parameterId();
+      break;
+    }
+  }
+  result.title = focused->getTitle().isNotEmpty() ? focused->getTitle() : focused->getName();
+  for (auto* component = focused; component != nullptr; component = component->getParentComponent()) {
+    const String key = component->getProperties()["SectionName"].toString();
+    if (key.isNotEmpty()) {
+      result.section = key;
+      break;
+    }
+  }
+  result.component = focused;
+  return result;
+}
+
+void SynthEditor::launchFileChooser(FileChooser& chooser, int flags,
+                                    std::function<void(const FileChooser&)> callback) {
+  // The chooser takes the window's focus, and the host does not always give
+  // it back to the control that opened it; a screen reader can end up at the
+  // top of the window. Rows rebuilt meanwhile (a loaded preset) replace it.
+  const FocusReturn focus = focusToReturnTo();
+  Component::SafePointer<SynthEditor> safe_this(this);
+  // Counts the chooser as open until it calls back, or is deleted without
+  // calling back (replaced by another).
+  struct OpenChooser {
+    Component::SafePointer<SynthEditor> editor;
+    bool open = true;
+    ~OpenChooser() { close(); }
+    void close() {
+      if (std::exchange(open, false) && editor != nullptr)
+        --editor->open_file_choosers_;
+    }
+  };
+  ++open_file_choosers_;
+  auto open = std::make_shared<OpenChooser>();
+  open->editor = safe_this;
+  chooser.launchAsync(flags, [safe_this, focus, open, callback = std::move(callback)](const FileChooser& result) {
+    open->close();
+    const ScopedAnnouncementHold hold;
+    callback(result);
+    // A second chooser the callback opened (a bank export asks for the folder,
+    // then the file) gives focus back when it closes.
+    if (safe_this != nullptr && safe_this->open_file_choosers_ == 0 && !focus.isEmpty()) {
+      // Leave focus alone if the callback moved it on, to a prompt it opened say.
+      auto* focused = Component::getCurrentlyFocusedComponent();
+      auto* target = safe_this->findRebuildFocusTarget(focus.parameter_id, focus.component.getComponent(),
+                                                       focus.title, focus.section);
+      const bool moved_on = focused != nullptr && focused != safe_this.getComponent() && focused != target &&
+                            safe_this->isParentOf(focused);
+      if (!moved_on) {
+        // Back on the control VoiceOver was on before the chooser: it follows
+        // focus to a new element, not back to that one (see returnFocusFromPrompt).
+        if (target != nullptr && target == focus.component.getComponent())
+          target->invalidateAccessibilityHandler();
+        safe_this->restoreFocusAfterRebuild(focus.parameter_id, focus.component.getComponent(), focus.title,
+                                            focus.section, true);
+      }
+    }
+  });
+}
+
+void SynthEditor::focusOfChildComponentChanged(FocusChangeType cause) {
+  // The window losing focus to a file chooser, a menu or the host comes as a
+  // mouse click. Remember the control it had: rows rebuilt before focus comes
+  // back replace it.
+  if (!hasKeyboardFocus(true)) {
+    if (cause == focusChangedByMouseClick)
+      window_focus_return_ = focusToReturnTo();
+    return;
+  }
+  if (!hasKeyboardFocus(false))
+    window_focus_return_ = {};
+}
+
+void SynthEditor::focusGained(FocusChangeType) {
+  // Focus came back to a window whose control was replaced meanwhile, so JUCE
+  // focused the editor itself, which a screen reader reads as the top of the
+  // window. Go to the replacement instead.
+  if (window_focus_return_.isEmpty())
+    return;
+  const FocusReturn focus = std::exchange(window_focus_return_, {});
+  restoreFocusAfterRebuild(focus.parameter_id, focus.component.getComponent(), focus.title, focus.section, true);
 }
 
 bool SynthEditor::refreshFilterRowsIfNeeded() {
@@ -9643,8 +9793,8 @@ void SynthEditor::loadSelectedPreset() {
 void SynthEditor::choosePresetFile() {
   preset_chooser_ = std::make_unique<FileChooser>("Open Atlas preset", LoadSave::getDataDirectory(),
                                                   vital::kPresetExtensionsList);
-  preset_chooser_->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
-                               [this](const FileChooser& chooser) {
+  launchFileChooser(*preset_chooser_, FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
+                                      [this](const FileChooser& chooser) {
     const auto file = chooser.getResult();
     if (file.existsAsFile())
       loadPresetFile(file, false, true);
@@ -9694,8 +9844,8 @@ void SynthEditor::loadPresetFile(const File& file, bool preview, bool updateBrow
 void SynthEditor::chooseBankFile() {
   preset_chooser_ = std::make_unique<FileChooser>("Import Atlas bank", LoadSave::getDataDirectory(),
                                                   vital::kBankExtensionsList);
-  preset_chooser_->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
-                               [this](const FileChooser& chooser) {
+  launchFileChooser(*preset_chooser_, FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
+                                      [this](const FileChooser& chooser) {
     const auto file = chooser.getResult();
     if (file.existsAsFile())
       importBankFile(file);
@@ -9737,8 +9887,8 @@ void SynthEditor::importBankFile(const File& file) {
 void SynthEditor::chooseFolderToExportBank() {
   preset_chooser_ = std::make_unique<FileChooser>("Choose folder to export as an Atlas bank",
                                                   LoadSave::getUserPresetDirectory());
-  preset_chooser_->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectDirectories,
-                               [this](const FileChooser& chooser) {
+  launchFileChooser(*preset_chooser_, FileBrowserComponent::openMode | FileBrowserComponent::canSelectDirectories,
+                                      [this](const FileChooser& chooser) {
     const File source_folder = chooser.getResult();
     preset_chooser_.reset();
     if (!source_folder.isDirectory())
@@ -9750,9 +9900,9 @@ void SynthEditor::chooseFolderToExportBank() {
     const File default_file = source_folder.getSiblingFile(bank_name).withFileExtension(vital::kBankExtension);
     bank_chooser_ = std::make_unique<FileChooser>("Export Atlas bank", default_file,
                                                   String("*.") + vital::kBankExtension);
-    bank_chooser_->launchAsync(FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles |
-                                   FileBrowserComponent::warnAboutOverwriting,
-                               [this, source_folder](const FileChooser& save_chooser) {
+    launchFileChooser(*bank_chooser_, FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles |
+                                          FileBrowserComponent::warnAboutOverwriting,
+                                      [this, source_folder](const FileChooser& save_chooser) {
       const File destination = save_chooser.getResult();
       if (destination != File())
         exportFolderAsBank(source_folder, destination);
@@ -9845,8 +9995,8 @@ void SynthEditor::exportFolderAsBank(const File& sourceFolder, const File& desti
 void SynthEditor::loadTuningFile() {
   tuning_chooser_ = std::make_unique<FileChooser>("Load Tuning", LoadSave::getDataDirectory(),
                                                   Tuning::allFileExtensions());
-  tuning_chooser_->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
-                               [this](const FileChooser& chooser) {
+  launchFileChooser(*tuning_chooser_, FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
+                                      [this](const FileChooser& chooser) {
     const File file = chooser.getResult();
     if (file.existsAsFile()) {
       synth_.loadTuningFile(file);
@@ -9869,9 +10019,9 @@ void SynthEditor::exportPreset() {
                                 .withFileExtension(vital::kPresetExtension);
   export_chooser_ = std::make_unique<FileChooser>("Export Preset", default_file,
                                                   String("*.") + vital::kPresetExtension);
-  export_chooser_->launchAsync(FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles |
-                                   FileBrowserComponent::warnAboutOverwriting,
-                               [this](const FileChooser& chooser) {
+  launchFileChooser(*export_chooser_, FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles |
+                                          FileBrowserComponent::warnAboutOverwriting,
+                                      [this](const FileChooser& chooser) {
     const File destination = chooser.getResult();
     if (destination != File()) {
       const File preset = destination.withFileExtension(vital::kPresetExtension);
@@ -13662,22 +13812,46 @@ void SynthEditor::returnFocusFromPrompt(bool rebuild, const String& fallbackPara
   if (target != nullptr && !rows_container_.isParentOf(target.getComponent()))
     persistent = target.getComponent();
 
-  if (rebuild)
+  if (rebuild) {
     showAllSections(false);
+  }
   else if (target != nullptr && target->isShowing()) {
-    target->grabKeyboardFocus();
-    return;
+    persistent = target.getComponent();
+    // VoiceOver in a plugin host does not follow focus back to the element it
+    // was on before the prompt opened, but does follow it to a new one (as
+    // after a rebuild), so give the control a new accessibility element.
+    target->invalidateAccessibilityHandler();
   }
 
-  // A rebuild, or one while the prompt was open, replaced the control: find
-  // the new one, or else the row the prompt changed.
-  if (restoreFocusAfterRebuild(parameter_id, persistent.getComponent(), title, section))
+  // The control, or after a rebuild (a new route, or one while the prompt was
+  // open) its replacement, or else the row the prompt changed. The caller
+  // hides the field next, and hiding the field the screen reader is on can
+  // send the reader to the top of the window, so move it onto the control
+  // again once things settle.
+  if (restoreFocusAfterRebuild(parameter_id, persistent.getComponent(), title, section, true))
     return;
   if (fallbackParameterId.isNotEmpty() && fallbackParameterId != parameter_id)
-    restoreFocusAfterRebuild(fallbackParameterId, nullptr, {}, sectionForParameter(fallbackParameterId));
+    restoreFocusAfterRebuild(fallbackParameterId, nullptr, {}, sectionForParameter(fallbackParameterId), true);
 }
 
 void SynthEditor::hideInlineTextPrompt() {
+  // Focus has just gone back to the control, but the screen reader is still on
+  // the field and follows only once it catches up. Taking the field away before
+  // then leaves VoiceOver on an element that no longer exists, and in a plugin
+  // host it stays there, saying nothing, until the user moves it from the top
+  // of the window. So the field goes once the reader has moved.
+  const int generation = ++inline_prompt_hide_generation_;
+  Component::SafePointer<SynthEditor> safe_this(this);
+  Timer::callAfterDelay(kInlinePromptHideDelayMs, [safe_this, generation] {
+    if (safe_this != nullptr && safe_this->inline_prompt_hide_generation_ == generation)
+      safe_this->hideInlineTextPromptNow();
+  });
+}
+
+void SynthEditor::hideInlineTextPromptNow() {
+  // A new prompt opened meanwhile.
+  if (modulation_amount_prompt_visible_ || parameter_value_prompt_visible_)
+    return;
   modulation_amount_prompt_.setVisible(false);
   modulation_amount_editor_.setVisible(false);
   modulation_amount_ok_.setVisible(false);
@@ -14454,8 +14628,8 @@ void SynthEditor::chooseWavetableFile(int audioLoadStyle) {
     return;
   wavetable_chooser_ = std::make_unique<FileChooser>("Load wavetable or audio file",
                                                      File(), vital::kWavetableExtensionsList);
-  wavetable_chooser_->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
-                                  [this, audioLoadStyle](const FileChooser& chooser) {
+  launchFileChooser(*wavetable_chooser_, FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
+                                         [this, audioLoadStyle](const FileChooser& chooser) {
     const auto file = chooser.getResult();
     if (file.existsAsFile())
       loadWavetableFile(file, audioLoadStyle);
@@ -14646,9 +14820,9 @@ void SynthEditor::saveWavetableFile(int oscillator) {
   wavetable_chooser_ = std::make_unique<FileChooser>("Export Atlas wavetable",
                                                      LoadSave::getUserWavetableDirectory().getChildFile(name),
                                                      String("*.") + vital::kWavetableExtension);
-  wavetable_chooser_->launchAsync(FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles |
-                                      FileBrowserComponent::warnAboutOverwriting,
-                                  [this, oscillator](const FileChooser& chooser) {
+  launchFileChooser(*wavetable_chooser_, FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles |
+                                             FileBrowserComponent::warnAboutOverwriting,
+                                         [this, oscillator](const FileChooser& chooser) {
     const File file = chooser.getResult();
     if (file != File()) {
       if (auto* creator = synth_.getWavetableCreator(oscillator)) {
@@ -14678,9 +14852,9 @@ void SynthEditor::exportWavetableWav(int oscillator) {
   wavetable_chooser_ = std::make_unique<FileChooser>("Export wavetable as WAV",
                                                      LoadSave::getUserWavetableDirectory().getChildFile(name + ".wav"),
                                                      "*.wav");
-  wavetable_chooser_->launchAsync(FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles |
-                                      FileBrowserComponent::warnAboutOverwriting,
-                                  [this, oscillator](const FileChooser& chooser) {
+  launchFileChooser(*wavetable_chooser_, FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles |
+                                             FileBrowserComponent::warnAboutOverwriting,
+                                         [this, oscillator](const FileChooser& chooser) {
     const File file = chooser.getResult().withFileExtension("wav");
     wavetable_chooser_.reset();
     auto* target = synth_.getWavetableCreator(oscillator);
@@ -14786,8 +14960,8 @@ void SynthEditor::addFilterTableControlsGroup(const String& filter_prefix, Compo
 void SynthEditor::chooseFilterTableFile(const String& filter_prefix) {
   wavetable_chooser_ = std::make_unique<FileChooser>("Load a wavetable or audio file into the filter",
                                                      File(), vital::kWavetableExtensionsList);
-  wavetable_chooser_->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
-                                  [this, filter_prefix](const FileChooser& chooser) {
+  launchFileChooser(*wavetable_chooser_, FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
+                                         [this, filter_prefix](const FileChooser& chooser) {
     const auto file = chooser.getResult();
     if (file.existsAsFile())
       loadFilterTableFile(filter_prefix, file);
@@ -15955,7 +16129,7 @@ void SynthEditor::rebuildWavetableEditor(int oscillator, const String& focus_tit
     if (safe_this == nullptr)
       return;
     safe_this->showAllSections(false);
-    safe_this->restoreFocusAfterRebuild({}, nullptr, focus_title, section);
+    safe_this->restoreFocusAfterRebuild({}, nullptr, focus_title, section, true);
   });
 }
 
@@ -16084,8 +16258,8 @@ void SynthEditor::addWavetableLayer(int oscillator, int sourceType) {
     // An audio layer needs audio: ask for the file first.
     wavetable_chooser_ = std::make_unique<FileChooser>("Add an audio file layer", LoadSave::getUserWavetableDirectory(),
                                                        "*.wav;*.flac;*.aif;*.aiff");
-    wavetable_chooser_->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
-                                    [this, oscillator](const FileChooser& chooser) {
+    launchFileChooser(*wavetable_chooser_, FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
+                                           [this, oscillator](const FileChooser& chooser) {
       const File file = chooser.getResult();
       wavetable_chooser_.reset();
       if (file.existsAsFile())
@@ -16141,8 +16315,8 @@ void SynthEditor::addWavetableAudioLayer(int oscillator, const File& file) {
 void SynthEditor::chooseWavetableLayerAudio(int oscillator) {
   wavetable_chooser_ = std::make_unique<FileChooser>("Replace the layer's audio", LoadSave::getUserWavetableDirectory(),
                                                      "*.wav;*.flac;*.aif;*.aiff");
-  wavetable_chooser_->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
-                                  [this, oscillator](const FileChooser& chooser) {
+  launchFileChooser(*wavetable_chooser_, FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
+                                         [this, oscillator](const FileChooser& chooser) {
     const File file = chooser.getResult();
     wavetable_chooser_.reset();
     if (file.existsAsFile())
@@ -16457,7 +16631,7 @@ void SynthEditor::setWavetableEditorVisible(int oscillator, bool visible) {
       return;
 
     safe_this->showAllSections(false);
-    safe_this->restoreFocusAfterRebuild({}, nullptr, restore_title, section);
+    safe_this->restoreFocusAfterRebuild({}, nullptr, restore_title, section, true);
 
     postPluginAnnouncement(visible ? "Wavetable editor shown" : "Wavetable editor hidden",
                                            AccessibilityHandler::AnnouncementPriority::medium);
@@ -17139,8 +17313,8 @@ void SynthEditor::chooseInstrumentFile(int oscillator) {
   }
   instrument_chooser_ = std::make_unique<FileChooser>("Load instrument for Oscillator " + String(oscillator + 1),
                                                       start, "*.sfz;*.sf2;*.SFZ;*.SF2");
-  instrument_chooser_->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
-                                   [this, oscillator](const FileChooser& chooser) {
+  launchFileChooser(*instrument_chooser_, FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
+                                          [this, oscillator](const FileChooser& chooser) {
     const File file = chooser.getResult();
     instrument_chooser_.reset();
     if (!file.existsAsFile())
@@ -17227,7 +17401,7 @@ void SynthEditor::clearInstrument(int oscillator) {
     if (safe_this == nullptr)
       return;
     safe_this->showAllSections(false);
-    safe_this->restoreFocusAfterRebuild({}, nullptr, "Clear instrument", section_name);
+    safe_this->restoreFocusAfterRebuild({}, nullptr, "Clear instrument", section_name, true);
     postPluginAnnouncement(announcement, AccessibilityHandler::AnnouncementPriority::high);
   });
 }
@@ -17312,8 +17486,8 @@ void SynthEditor::chooseSampleFile(int sample_target) {
   const File current_file(sample != nullptr ? sample->getLastBrowsedFile() : std::string());
   sample_chooser_ = std::make_unique<FileChooser>(title,
                                                   current_file, vital::kSampleExtensionsList);
-  sample_chooser_->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
-                               [this, sample_target](const FileChooser& chooser) {
+  launchFileChooser(*sample_chooser_, FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
+                                      [this, sample_target](const FileChooser& chooser) {
     const auto file = chooser.getResult();
     if (file.existsAsFile())
       loadSampleFile(file, sample_target);
@@ -17436,8 +17610,8 @@ void SynthEditor::refreshIrBrowserCache() {
 void SynthEditor::chooseConvolutionIrFile(const String& modulePrefix) {
   ir_chooser_ = std::make_unique<FileChooser>("Load impulse response",
                                               LoadSave::getUserIrDirectory(), vital::kIrExtensionsList);
-  ir_chooser_->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
-                           [this, modulePrefix](const FileChooser& chooser) {
+  launchFileChooser(*ir_chooser_, FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
+                                  [this, modulePrefix](const FileChooser& chooser) {
     const File file = chooser.getResult();
     if (file.existsAsFile())
       loadConvolutionIrFile(modulePrefix, file);
@@ -17592,9 +17766,9 @@ void SynthEditor::saveConvolutionIrFile(const String& modulePrefix) {
   File start_file = LoadSave::getUserIrDirectory().getChildFile(name + "." + String(vital::kIrExtension));
   ir_chooser_ = std::make_unique<FileChooser>("Save impulse response", start_file,
                                               String("*.") + String(vital::kIrExtension));
-  ir_chooser_->launchAsync(FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles |
-                           FileBrowserComponent::warnAboutOverwriting,
-                           [this, modulePrefix](const FileChooser& chooser) {
+  launchFileChooser(*ir_chooser_, FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles |
+                                  FileBrowserComponent::warnAboutOverwriting,
+                                  [this, modulePrefix](const FileChooser& chooser) {
     const File file = chooser.getResult();
     if (file != File()) {
       auto* module = convolutionModuleForPrefix(modulePrefix);
@@ -17619,8 +17793,8 @@ void SynthEditor::chooseLfoPresetFile(int lfoIndex) {
 
   lfo_chooser_ = std::make_unique<FileChooser>("Import Atlas LFO preset",
                                                LoadSave::getUserLfoDirectory(), vital::kLfoExtensionsList);
-  lfo_chooser_->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
-                            [this, lfoIndex](const FileChooser& chooser) {
+  launchFileChooser(*lfo_chooser_, FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
+                                   [this, lfoIndex](const FileChooser& chooser) {
     const File file = chooser.getResult();
     if (file.existsAsFile())
       loadLfoPresetFile(lfoIndex, file);
@@ -17674,9 +17848,9 @@ void SynthEditor::saveLfoPresetFile(int lfoIndex) {
   lfo_chooser_ = std::make_unique<FileChooser>("Save Atlas LFO preset",
                                                LoadSave::getUserLfoDirectory().getChildFile(name),
                                                String("*.") + vital::kLfoExtension);
-  lfo_chooser_->launchAsync(FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles |
-                                FileBrowserComponent::warnAboutOverwriting,
-                            [this, lfoIndex](const FileChooser& chooser) {
+  launchFileChooser(*lfo_chooser_, FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles |
+                                       FileBrowserComponent::warnAboutOverwriting,
+                                   [this, lfoIndex](const FileChooser& chooser) {
     const File file = chooser.getResult();
     if (file != File()) {
       if (auto* generator = lfoGeneratorForIndex(lfoIndex)) {
@@ -17708,7 +17882,7 @@ void SynthEditor::chooseFxBusPresetFile(const String& sectionName, bool save) {
   Component::SafePointer<SynthEditor> safe_this(this);
   const int flags = FileBrowserComponent::canSelectFiles | (save ? FileBrowserComponent::saveMode |
       FileBrowserComponent::warnAboutOverwriting : FileBrowserComponent::openMode);
-  fx_bus_chooser_->launchAsync(flags, [safe_this, sectionName, bus, bus_name, preset, save](const FileChooser& chooser) {
+  launchFileChooser(*fx_bus_chooser_, flags, [safe_this, sectionName, bus, bus_name, preset, save](const FileChooser& chooser) {
     if (safe_this == nullptr)
       return;
     const File file = chooser.getResult();
@@ -17747,8 +17921,8 @@ void SynthEditor::chooseEffectPresetFile(const String& sectionName) {
   fx_chooser_ = std::make_unique<FileChooser>("Import Atlas FX preset",
                                               LoadSave::getUserFxDirectory(),
                                               String("*.") + vital::kFxExtension);
-  fx_chooser_->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
-                           [this, sectionName](const FileChooser& chooser) {
+  launchFileChooser(*fx_chooser_, FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
+                                  [this, sectionName](const FileChooser& chooser) {
     const File file = chooser.getResult();
     if (file.existsAsFile())
       loadEffectPresetFile(sectionName, file);
@@ -17832,9 +18006,9 @@ void SynthEditor::saveEffectPresetFile(const String& sectionName) {
   fx_chooser_ = std::make_unique<FileChooser>("Save Atlas FX preset",
                                               LoadSave::getUserFxDirectory().getChildFile(name),
                                               String("*.") + vital::kFxExtension);
-  fx_chooser_->launchAsync(FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles |
-                               FileBrowserComponent::warnAboutOverwriting,
-                           [this, effect_id, sectionName, parameters](const FileChooser& chooser) {
+  launchFileChooser(*fx_chooser_, FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles |
+                                      FileBrowserComponent::warnAboutOverwriting,
+                                  [this, effect_id, sectionName, parameters](const FileChooser& chooser) {
     const File file = chooser.getResult();
     if (file != File()) {
       json data;
@@ -18159,6 +18333,9 @@ bool SynthEditor::keyPressed(const KeyPress& key) {
 }
 
 void SynthEditor::timerCallback() {
+  // A rebuild below may move the screen reader back onto its control after a
+  // delay; what the status refreshes announce first waits for that move.
+  const ScopedAnnouncementHold hold;
   // keyStateChanged ignores releases while a text field has focus; release
   // virtual-keyboard notes then instead of leaving them stuck.
   if (!qwerty_notes_down_.empty() && !isQwertyKeyboardActive())

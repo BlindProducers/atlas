@@ -682,6 +682,8 @@ int main(int argc, char** argv) {
     testPresetAutoloadAndRefresh();
     testConvolutionPredelayRows();
     testEqualizerBandGroups();
+    testWindowRefocusFindsTheRebuiltControl();
+    testTypedValueReturnsToOscillatorRows();
     testFractionalModulationAmountOnTranspose();
     testModulationPromptsKeepFocus();
     testFxBusControlsAndFocus();
