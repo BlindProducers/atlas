@@ -2281,13 +2281,12 @@ namespace vital {
     // Wavetable FM offsets the phase by up to 48 / 8 cycles at full amount.
     constexpr mono_float kAnalogFmCycles = 6.0f;
 
-    // Analog aging. Each amount is Age times its own control, and pitch depths
-    // grow with its square, so low settings stay subtle. Depths are at full
+    // Analog aging. Each control sets its own amount, and pitch depths grow
+    // with its square, so low settings stay subtle. Depths are at full
     // amount, in cents. Drift is a slow wander from temperature plus a fast
     // jitter from supply noise, both Ornstein-Uhlenbeck processes with unit
     // variance. Voice Spread gives each voice card fixed pitch and level
-    // offsets. Tracking Error mistunes octaves away from middle C, and high
-    // notes go flat, as a worn exponential converter does.
+    // offsets.
     constexpr mono_float kWanderCents = 80.0f;
     constexpr mono_float kWanderSeconds = 3.0f;
     constexpr mono_float kWanderSmoothSeconds = 0.4f;
@@ -2295,9 +2294,6 @@ namespace vital {
     constexpr mono_float kJitterSeconds = 0.008f;
     constexpr mono_float kSpreadCents = 100.0f;
     constexpr mono_float kSpreadDb = 8.0f;
-    constexpr mono_float kTrackingScaleCents = 50.0f;
-    constexpr mono_float kTrackingDroopCents = 25.0f;
-    constexpr mono_float kTrackingCenterNote = 60.0f;
     // Each unison oscillator wanders on its own by this much more.
     constexpr mono_float kUnisonWanderCents = 30.0f;
     constexpr mono_float kSpreadSubDb = 6.0f;
@@ -2316,8 +2312,8 @@ namespace vital {
     constexpr mono_float kWearAsymmetry = 0.5f;
     constexpr mono_float kWearEdgeSeconds = 0.00015f;
     constexpr mono_float kWearMeanSeconds = 0.05f;
-    // Noise: hiss and mains hum (rectifier ripple, mostly the second harmonic)
-    // as levels at full amount, and crackle from dirty contacts above 50%.
+    // Noise is hiss, with crackle from dirty contacts above 50%. Hum is mains
+    // hum (rectifier ripple, mostly the second harmonic). Levels are at full amount.
     constexpr mono_float kHissLevel = 0.08f;
     constexpr mono_float kHumLevel = 0.05f;
     constexpr mono_float kCrackleStart = 0.5f;
@@ -2729,13 +2725,21 @@ namespace vital {
   }
 
   void SynthOscillator::ageAnalogPitch(int num_samples, poly_mask reset_mask, poly_mask active_mask) {
-    poly_float age = utils::clamp(input(kAnalogAge)->at(0), 0.0f, 1.0f);
-    poly_mask aged = poly_float::greaterThan(age, 0.0f);
-    // Nothing to do at Age 0, once the pitch and level have glided back.
+    poly_float drift = utils::clamp(input(kAnalogDrift)->at(0), 0.0f, 1.0f);
+    poly_float spread = utils::clamp(input(kAnalogVoiceSpread)->at(0), 0.0f, 1.0f);
+    poly_float sag = utils::clamp(input(kAnalogSag)->at(0), 0.0f, 1.0f);
+    poly_float wear = utils::clamp(input(kAnalogWear)->at(0), 0.0f, 1.0f);
+    poly_float noise = utils::clamp(input(kAnalogNoise)->at(0), 0.0f, 1.0f);
+    poly_float hum = utils::clamp(input(kAnalogHum)->at(0), 0.0f, 1.0f);
+    poly_float largest = utils::max(utils::max(utils::max(drift, spread), utils::max(sag, wear)),
+                                    utils::max(noise, hum));
+    poly_mask aged = poly_float::greaterThan(largest, 0.0f);
+    // Nothing to do with every amount at 0, once the pitch and level have glided back.
     poly_mask settled = poly_float::equal(drift_ratio_, 1.0f) & poly_float::equal(drift_target_gain_, 1.0f);
     if (!aged.anyMask() && !(~settled).anyMask()) {
       wear_amount_ = 0.0f;
       noise_amount_ = 0.0f;
+      hum_amount_ = 0.0f;
       wear_shape_ = 0.0f;
       sub_gain_ = 1.0f;
       return;
@@ -2749,7 +2753,6 @@ namespace vital {
           const int lane = 2 * v + side;
           voice_card_.pitch.set(lane, cardBipolar(analog::mixSeed(card + 1)));
           voice_card_.level.set(lane, cardBipolar(analog::mixSeed(card + 2)));
-          voice_card_.tracking.set(lane, cardBipolar(analog::mixSeed(card + 3)));
           drift_random_.set(lane, analog::mixSeed(card + 4));
           noise_random_.set(lane, analog::mixSeed(card + 5));
           voice_card_.sub_level.set(lane, cardBipolar(analog::mixSeed(card + 6)));
@@ -2776,12 +2779,9 @@ namespace vital {
                     (kUniformToUnitVariance * std::sqrt(1.0f - jitter_keep * jitter_keep));
     drift_wander_smooth_ += (drift_wander_ - drift_wander_smooth_) * smooth;
 
-    poly_float drift = age * utils::clamp(input(kAnalogDrift)->at(0), 0.0f, 1.0f);
-    poly_float spread = age * utils::clamp(input(kAnalogVoiceSpread)->at(0), 0.0f, 1.0f);
-    poly_float tracking = age * utils::clamp(input(kAnalogTracking)->at(0), 0.0f, 1.0f);
-    poly_float sag = age * utils::clamp(input(kAnalogSag)->at(0), 0.0f, 1.0f);
-    wear_amount_ = age * utils::clamp(input(kAnalogWear)->at(0), 0.0f, 1.0f);
-    noise_amount_ = age * utils::clamp(input(kAnalogNoise)->at(0), 0.0f, 1.0f);
+    wear_amount_ = wear;
+    noise_amount_ = noise;
+    hum_amount_ = hum;
 
     // The supply load follows the voice count; a new note joins the supply as it is.
     const mono_float voices = utils::max(input(kSoundingVoices)->at(0)[0] - 1.0f, 0.0f);
@@ -2789,12 +2789,8 @@ namespace vital {
     sag_load_ = utils::maskLoad(sag_load_, poly_float(target_load), reset_mask);
     sag_load_ += (poly_float(target_load) - sag_load_) * (1.0f - std::exp(-seconds / kSagSeconds));
 
-    poly_float octaves = (midi_note_ + input(kTranspose)->at(0) - kTrackingCenterNote) * (1.0f / kNotesPerOctave);
-    poly_float sharp_octaves = utils::max(octaves, 0.0f);
     poly_float cents = drift * drift * (drift_wander_smooth_ * kWanderCents + drift_jitter_ * kJitterCents) +
-                       spread * spread * voice_card_.pitch * kSpreadCents +
-                       tracking * tracking * (voice_card_.tracking * octaves * kTrackingScaleCents -
-                                              sharp_octaves * sharp_octaves * kTrackingDroopCents) -
+                       spread * spread * voice_card_.pitch * kSpreadCents -
                        sag * sag * sag_load_ * kSagCents;
     poly_float ratio = utils::maskLoad(poly_float(1.0f), futils::midiOffsetToRatio(cents * 0.01f), aged);
     poly_float gain = futils::dbToMagnitude(spread * voice_card_.level * kSpreadDb) *
@@ -2856,13 +2852,13 @@ namespace vital {
   }
 
   void SynthOscillator::addAnalogNoise(poly_float* audio_out, int num_samples, poly_mask reset_mask) {
-    if (!poly_float::greaterThan(noise_amount_, 0.0f).anyMask())
+    if (!poly_float::greaterThan(utils::max(noise_amount_, hum_amount_), 0.0f).anyMask())
       return;
 
     const mono_float sample_rate = getSampleRate();
-    poly_float noise_squared = noise_amount_ * noise_amount_;
-    poly_float hiss = noise_squared * kHissLevel;
-    poly_float hum = noise_squared * kHumLevel;
+    poly_float hiss = noise_amount_ * noise_amount_ * kHissLevel;
+    poly_float hum = hum_amount_ * hum_amount_ * kHumLevel;
+    const bool humming = poly_float::greaterThan(hum, 0.0f).anyMask();
     poly_float crackle_amount = utils::max(noise_amount_ - kCrackleStart, 0.0f) * (1.0f / (1.0f - kCrackleStart));
     poly_float crackle_chance = crackle_amount * crackle_amount * (kCracklesPerSecond / sample_rate);
     const bool crackles = poly_float::greaterThan(crackle_chance, 0.0f).anyMask() ||
@@ -2884,7 +2880,8 @@ namespace vital {
 
       hum_phase_ += hum_increment;
       hum_phase_ -= std::floor(hum_phase_);
-      value += hum * (analog::sinCycles(utils::mod(harmonics * hum_phase_)) * harmonic_levels).sum();
+      if (humming)
+        value += hum * (analog::sinCycles(utils::mod(harmonics * hum_phase_)) * harmonic_levels).sum();
 
       if (crackles) {
         noise_random_ = analog::nextRandom(noise_random_);

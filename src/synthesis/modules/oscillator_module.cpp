@@ -93,12 +93,11 @@ namespace vital {
     oscillator_->plug(sub_level, SynthOscillator::kSubLevel);
     oscillator_->plug(sub_octave, SynthOscillator::kSubOctave);
     oscillator_->plug(sub_waveform, SynthOscillator::kSubWaveform);
-    oscillator_->plug(createPolyModControl(prefix_ + "_analog_age"), SynthOscillator::kAnalogAge);
     oscillator_->plug(createPolyModControl(prefix_ + "_analog_drift"), SynthOscillator::kAnalogDrift);
     oscillator_->plug(createPolyModControl(prefix_ + "_analog_voice_spread"), SynthOscillator::kAnalogVoiceSpread);
-    oscillator_->plug(createPolyModControl(prefix_ + "_analog_tracking"), SynthOscillator::kAnalogTracking);
     oscillator_->plug(createPolyModControl(prefix_ + "_analog_wear"), SynthOscillator::kAnalogWear);
     oscillator_->plug(createPolyModControl(prefix_ + "_analog_noise"), SynthOscillator::kAnalogNoise);
+    oscillator_->plug(createPolyModControl(prefix_ + "_analog_hum"), SynthOscillator::kAnalogHum);
     oscillator_->plug(createBaseControl(prefix_ + "_analog_hum_frequency"), SynthOscillator::kAnalogHumFrequency);
     oscillator_->plug(createPolyModControl(prefix_ + "_analog_sag"), SynthOscillator::kAnalogSag);
     oscillator_->setVoiceCardSalt(prefix_);

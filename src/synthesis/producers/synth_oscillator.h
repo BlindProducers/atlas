@@ -139,13 +139,12 @@ namespace vital {
         // Unison spread of the secondary warp amounts, like the primary pair's.
         kSecondaryDistortionSpread,
         kSecondarySpectralMorphSpread,
-        // Analog aging: Age scales Drift, Voice Spread and Tracking Error.
-        kAnalogAge,
+        // Analog aging amounts. At 0 they leave the oscillator as it was.
         kAnalogDrift,
         kAnalogVoiceSpread,
-        kAnalogTracking,
         kAnalogWear,
         kAnalogNoise,
+        kAnalogHum,
         kAnalogHumFrequency,
         kAnalogSag,
         kSoundingVoices,
@@ -497,11 +496,10 @@ namespace vital {
         uint32_t salt = 0;
         bool ready = false;
         // Per lane, in [-1, 1]: pitch, level and sub level offsets, the
-        // tracking scale error, the shape offset and the waveform asymmetry.
+        // shape offset and the waveform asymmetry.
         poly_float pitch = 0.0f;
         poly_float level = 0.0f;
         poly_float sub_level = 0.0f;
-        poly_float tracking = 0.0f;
         poly_float shape = 0.0f;
         poly_float asymmetry = 0.0f;
       };
@@ -519,9 +517,10 @@ namespace vital {
       poly_float unison_wander_[kNumPolyPhase] {};
       // Supply load from the number of sounding voices, smoothed like a power supply.
       poly_float sag_load_ = 0.0f;
-      // This block's Wear and Noise amounts, the Wear shape offset and the sub gain.
+      // This block's Wear, Noise and Hum amounts, the Wear shape offset and the sub gain.
       poly_float wear_amount_ = 0.0f;
       poly_float noise_amount_ = 0.0f;
+      poly_float hum_amount_ = 0.0f;
       poly_float wear_shape_ = 0.0f;
       poly_float sub_gain_ = 1.0f;
       // Wear: the slow mean of the squared wave, and the softened edge.

@@ -490,10 +490,9 @@ namespace {
 
   bool isAnalogOnlyOscillatorSuffix(const String& suffix) {
     return suffix == "analog_waveform" || suffix == "analog_shape" || suffix == "sub_level" ||
-           suffix == "sub_octave" || suffix == "sub_waveform" || suffix == "analog_age" ||
-           suffix == "analog_drift" || suffix == "analog_voice_spread" || suffix == "analog_tracking" ||
-           suffix == "analog_wear" || suffix == "analog_noise" || suffix == "analog_hum_frequency" ||
-           suffix == "analog_sag";
+           suffix == "sub_octave" || suffix == "sub_waveform" || suffix == "analog_drift" ||
+           suffix == "analog_voice_spread" || suffix == "analog_wear" || suffix == "analog_noise" ||
+           suffix == "analog_hum" || suffix == "analog_hum_frequency" || suffix == "analog_sag";
   }
 
   bool isWavetableOnlyOscillatorSuffix(const String& suffix) {
@@ -1880,7 +1879,7 @@ namespace {
                                             "transpose_quantize", "level", "pan" });
 
     auto oscillator_suffix_rank = [](const String& suffix) {
-      static const std::array<const char*, 60> oscillator_order = {{
+      static const std::array<const char*, 59> oscillator_order = {{
         "on",
         "type",
         "level",
@@ -1900,13 +1899,12 @@ namespace {
         "sub_level",
         "sub_octave",
         "sub_waveform",
-        "analog_age",
         "analog_drift",
         "analog_voice_spread",
-        "analog_tracking",
         "analog_wear",
         "analog_sag",
         "analog_noise",
+        "analog_hum",
         "analog_hum_frequency",
         "wave_frame",
         "unison_voices",
@@ -7345,46 +7343,44 @@ std::unique_ptr<AccessibleParameterRow> SynthEditor::createAccessibleParameterRo
         return std::make_unique<AccessibleParameterRow>(
             parameter, String(), std::function<String(double)>(), 1.0, 0.0, String(), String(),
             "Choose Sine, Triangle or Square for the sub oscillator.");
-      if (suffix == "analog_age")
-        return std::make_unique<AccessibleParameterRow>(
-            parameter, String(), std::function<String(double)>(), 1.0, 0.0, String(), String(),
-            "How worn this oscillator's circuit is. At 0% it is perfectly in tune. Raising it brings in "
-            "Drift, Voice Spread and Tracking Error, each scaled by its own amount.");
       if (suffix == "analog_drift")
         return std::make_unique<AccessibleParameterRow>(
             parameter, String(), std::function<String(double)>(), 1.0, 0.0, String(), String(),
             "How much the pitch wanders over seconds, with a little fast jitter, as an old oscillator "
-            "does when it warms and cools. Each voice and each unison oscillator drifts on its own. Scaled by Age.");
+            "does when it warms and cools. Each voice and each unison oscillator drifts on its own. "
+            "At 0% the pitch is steady.");
       if (suffix == "analog_voice_spread")
         return std::make_unique<AccessibleParameterRow>(
             parameter, String(), std::function<String(double)>(), 1.0, 0.0, String(), String(),
             "How far each voice is off from the others in pitch, level and sub level, like the voice cards "
-            "of an old polysynth. The offsets stay the same each time the preset loads. Scaled by Age.");
-      if (suffix == "analog_tracking")
-        return std::make_unique<AccessibleParameterRow>(
-            parameter, String(), std::function<String(double)>(), 1.0, 0.0, String(), String(),
-            "How far octaves stray from middle C. Each voice stretches or squeezes octaves a little, and "
-            "high notes go flat. Scaled by Age.");
+            "of an old polysynth. The offsets stay the same each time the preset loads. "
+            "At 0% every voice matches.");
       if (suffix == "analog_wear")
         return std::make_unique<AccessibleParameterRow>(
             parameter, String(), std::function<String(double)>(), 1.0, 0.0, String(), String(),
             "How worn the waveform circuits are. Edges soften, most on high notes, the two halves of the "
             "wave become uneven, and the square's pulse width and the triangle's slopes drift off true. "
-            "Scaled by Age.");
+            "At 0% the waveforms are clean.");
       if (suffix == "analog_sag")
         return std::make_unique<AccessibleParameterRow>(
             parameter, String(), std::function<String(double)>(), 1.0, 0.0, String(), String(),
             "How much a tired power supply droops when many voices play. Big chords go a little flat "
-            "and quiet, then recover as voices end. Scaled by Age.");
+            "and quiet, then recover as voices end. At 0% the supply holds steady.");
       if (suffix == "analog_noise")
         return std::make_unique<AccessibleParameterRow>(
             parameter, String(), std::function<String(double)>(), 1.0, 0.0, String(), String(),
-            "Hiss and mains hum under each note. In the top half, dirty contacts add crackle. "
-            "It follows this oscillator's Level and the note's envelope. Scaled by Age.");
+            "Hiss under each note. In the top half, dirty contacts add crackle. It follows this "
+            "oscillator's Level and the note's envelope. At 0% there is no noise.");
+      if (suffix == "analog_hum")
+        return std::make_unique<AccessibleParameterRow>(
+            parameter, String(), std::function<String(double)>(), 1.0, 0.0, String(), String(),
+            "Mains hum under each note, mostly at twice the Hum Frequency, as from a worn power supply. "
+            "It follows this oscillator's Level and the note's envelope. At 0% there is no hum.");
       if (suffix == "analog_hum_frequency")
         return std::make_unique<AccessibleParameterRow>(
             parameter, String(), std::function<String(double)>(), 1.0, 0.0, String(), String(),
-            "The mains frequency of the hum: 50 Hz as in Europe, or 60 Hz as in North America.", true);
+            "The mains frequency of the hum: 50 Hz as in Europe, or 60 Hz as in North America. "
+            "Hum sets how loud it is.", true);
     }
   }
 

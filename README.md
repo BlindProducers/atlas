@@ -32,8 +32,8 @@ Atlas has eight oscillators. Each one chooses a **Type**:
   sources with modifiers and keyframes, audio import as a splice, vocoded or pitched
   table, and export as a wavetable or WAV file.
 - **Analog**: a virtual analog oscillator with classic waveforms, shape, a sub
-  oscillator, and an Age control for pitch drift, per-voice spread, tracking error,
-  worn waveforms, power supply sag, and hiss, hum and crackle.
+  oscillator, and aging controls for pitch drift, per-voice spread, worn waveforms,
+  power supply sag, hiss and crackle, and mains hum.
 - **Sample**: plays an audio file with start, loop and playback controls.
 - **Granular**: plays a sample as clouds of grains, with density, size and spread.
 - **Spectral**: resynthesises a sample from its spectrum, with shift, stretch, blur,
