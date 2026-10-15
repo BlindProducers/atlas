@@ -78,6 +78,11 @@ namespace {
     if (show != nullptr && show->onClick)
       show->onClick();
     pumpUntil([&] { return editorSection(editor, "Oscillator 1 wavetable editor") != nullptr; });
+    // Showing it rebuilds the rows, and the screen reader is moved back to the
+    // button once they settle (kScreenReaderRefocusDelayMs). Announcements
+    // wait for that move, so let it happen before the keys, as it does before
+    // a person's next key.
+    MessageManager::getInstance()->runDispatchLoopUntil(400);
     auto* wavetable_section = editorSection(editor, "Oscillator 1 wavetable editor");
     Component::SafePointer<Component> wavetable(
         wavetable_section != nullptr ? titled(*wavetable_section, "Wavetable keyboard editor") : nullptr);
