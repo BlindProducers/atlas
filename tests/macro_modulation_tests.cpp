@@ -882,6 +882,7 @@ int main(int argc, char** argv) {
     testEffectMoveKeepsFocusAcrossTimerTick();
     testSectionKeysStepThroughEffectSlots();
     testShiftMOpensEveryContextMenu();
+    testSaveFormClosesWithEscape();
     testOscillatorRowGroups();
     testOscillatorRowsNameTheirOscillatorNumber();
     testArpeggiatorDestinationsAreAGroup();

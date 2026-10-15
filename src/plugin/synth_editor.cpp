@@ -6026,6 +6026,12 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
     editor.setTextToShowWhenEmpty(empty_text, Colours::grey);
     editor.setSelectAllWhenFocused(true);
     editor.setWantsKeyboardFocus(true);
+    // Escape closes the form, as Cancel does; the text box keeps the key
+    // from reaching SynthEditor::keyPressed and reports it a moment later.
+    editor.onEscapeKey = [this] {
+      if (save_patch_dialog_visible_)
+        hideSavePresetDialog();
+    };
     addChildComponent(editor);
   };
   configureSaveEditor(save_patch_name_, "Patch name", "Name");
@@ -6042,7 +6048,7 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   addChildComponent(save_patch_ok_);
   save_patch_cancel_.setTitle("Cancel save patch");
   save_patch_cancel_.setDescription("Close the save patch form without saving");
-  save_patch_cancel_.setHelpText("Press Enter to cancel");
+  save_patch_cancel_.setHelpText("Press Enter or Escape to cancel");
   save_patch_cancel_.setWantsKeyboardFocus(true);
   save_patch_cancel_.onClick = [this] { hideSavePresetDialog(); };
   addChildComponent(save_patch_cancel_);
@@ -9718,6 +9724,8 @@ void SynthEditor::showPresetMetadataDialog() {
     return;
   }
 
+  if (!save_patch_dialog_visible_)
+    save_patch_return_focus_ = Component::getCurrentlyFocusedComponent();
   const auto* item = presetItemForFile(file);
   preset_metadata_edit_mode_ = true;
   preset_metadata_file_ = file;
@@ -10269,6 +10277,8 @@ void SynthEditor::savePatch() {
 }
 
 void SynthEditor::showSavePresetDialog() {
+  if (!save_patch_dialog_visible_)
+    save_patch_return_focus_ = Component::getCurrentlyFocusedComponent();
   preset_metadata_edit_mode_ = false;
   preset_metadata_file_ = File();
   String preset_name = synth_.getPresetName().isEmpty() ? "Untitled" : synth_.getPresetName();
@@ -10304,6 +10314,11 @@ void SynthEditor::showSavePresetDialog() {
 }
 
 void SynthEditor::hideSavePresetDialog() {
+  // Back to the control the form was opened from, before the form's own
+  // controls hide and hand the focus to the editor itself.
+  if (auto* target = save_patch_return_focus_.getComponent(); target != nullptr && target->isShowing())
+    target->grabKeyboardFocus();
+  save_patch_return_focus_ = nullptr;
   save_patch_dialog_visible_ = false;
   save_patch_prompt_.setVisible(false);
   save_patch_name_.setVisible(false);
@@ -18540,6 +18555,12 @@ bool SynthEditor::keyPressed(const KeyPress& key) {
   if ((modulation_amount_prompt_visible_ || parameter_value_prompt_visible_) &&
       key.getKeyCode() == KeyPress::escapeKey) {
     cancelInlineTextPrompt();
+    return true;
+  }
+  // Escape on the save form's Save or Cancel button closes it, as in its text boxes.
+  if (save_patch_dialog_visible_ && key.getKeyCode() == KeyPress::escapeKey &&
+      (save_patch_ok_.hasKeyboardFocus(false) || save_patch_cancel_.hasKeyboardFocus(false))) {
+    hideSavePresetDialog();
     return true;
   }
   {

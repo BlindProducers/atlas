@@ -1338,6 +1338,75 @@ namespace {
     editor.removeFromDesktop();
   }
 
+  // Ctrl S (Command S on the Mac) with no user preset loaded opens the save
+  // form. Escape closes it from its text boxes and its buttons, as Cancel
+  // does, and focus goes back to the control it was opened from.
+  void testSaveFormClosesWithEscape() {
+    // Announcements go nowhere rather than to the screen reader.
+    atlas::speech::setObserverForTesting([](const String&) {});
+
+    SynthPlugin synth;
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    editor.toFront(true);
+    pumpEditorEvents();
+
+    auto press = [&](const KeyPress& key) {
+      if (auto* peer = editor.getPeer())
+        peer->handleKeyPress(key);
+    };
+    Component::SafePointer<Component> start(editor.controlForParameter("filter_1_model"));
+    auto* name = titled(editor, "Patch name");
+    auto* cancel = titled(editor, "Cancel save patch");
+    // With a preset file loaded, Ctrl S would save over it instead.
+    const bool can_open = !synth.getActiveFile().existsAsFile();
+    expect(start != nullptr && name != nullptr && cancel != nullptr && can_open,
+           "the editor has the save form, a control to open it from and no preset file loaded");
+    if (start == nullptr || name == nullptr || cancel == nullptr || !can_open) {
+      atlas::speech::setObserverForTesting(nullptr);
+      editor.removeFromDesktop();
+      return;
+    }
+
+    auto open_form = [&] {
+      editor.ensureComponentVisible(start);
+      start->grabKeyboardFocus();
+      press(KeyPress('s', ModifierKeys::commandModifier, 0));
+      pumpEditorEvents();
+      return name->isShowing() && Component::getCurrentlyFocusedComponent() == name;
+    };
+    auto closed_back_on_start = [&] {
+      return !name->isShowing() && !cancel->isShowing() && start != nullptr &&
+             Component::getCurrentlyFocusedComponent() == start.getComponent();
+    };
+
+    // A text box reports Escape through a message, so the form closes once it is handled.
+    expect(open_form(), "Ctrl S opens the save form on the patch name");
+    press(KeyPress(KeyPress::escapeKey));
+    pumpEditorEvents();
+    expect(closed_back_on_start(), "Escape in the patch name closes the form and goes back to the control");
+
+    expect(open_form(), "Ctrl S opens the save form again");
+    expect(cancel->isShowing(), "the form shows its Cancel button");
+    cancel->grabKeyboardFocus();
+    press(KeyPress(KeyPress::escapeKey));
+    pumpEditorEvents();
+    expect(closed_back_on_start(), "Escape on Cancel closes the form and goes back to the control");
+
+    expect(open_form(), "Ctrl S opens the save form once more");
+    expect(cancel->isShowing(), "the form shows its Cancel button again");
+    cancel->grabKeyboardFocus();
+    press(KeyPress(KeyPress::returnKey));
+    pumpEditorEvents();
+    expect(closed_back_on_start(), "Cancel closes the form and goes back to the control");
+    expect(!synth.getActiveFile().existsAsFile(), "closing the form saves nothing");
+
+    atlas::speech::setObserverForTesting(nullptr);
+    editor.removeFromDesktop();
+  }
+
   // Oscillator sections group their rows: output rows at the top level, then
   // Analog controls, Pitch and unison (with Scale lock inside), Warp and the
   // type's own group, depending on the slot's type.

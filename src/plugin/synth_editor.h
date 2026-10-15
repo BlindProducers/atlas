@@ -1026,6 +1026,8 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     File preset_metadata_file_;
     int preset_list_generation_ = 0;
     bool save_patch_dialog_visible_ = false;
+    // Where focus was when the save or metadata form opened; it goes back there when the form closes.
+    Component::SafePointer<Component> save_patch_return_focus_;
     bool updating_preset_list_ = false;
     bool updating_routing_controls_ = false;
     bool wavetable_browser_cache_valid_ = false;
