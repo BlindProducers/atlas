@@ -222,7 +222,7 @@ namespace multisample {
 }
 
 class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
-                    private Timer, private ListBoxModel {
+                    private Timer {
   public:
     // Loads a wavetable into a filter's table and updates its controls in place (no rebuild).
     void loadFilterTableFile(const String& filter_prefix, const File& file);
@@ -293,15 +293,12 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     std::map<String, float> floaty_sync_durations_;
     void buildSections();
     void buildGroups();
-    void populateGroupSelector(const String& preferredGroup = {});
-    void populateElementSelectorForGroup(const String& group, const String& preferredSection = {});
     void selectSectionByName(const String& section, bool announce);
-    void showSection(int index, bool announce);
     void showAllSections(bool announce);
     void clearSectionComponents();
     std::unique_ptr<AccessibleParameterRow> createAccessibleParameterRow(AudioProcessorParameter& parameter,
                                                                          const String& sectionName);
-    int sampleLoopPointLength() const;
+    int sampleLoopPointLength(const String& parameterId) const;
     void toggleSampleLoopFineTune();
     void wireSampleLoopFineTune(AccessibleParameterRow& row);
     bool shouldShowParameterInSection(const String& sectionName, AudioProcessorParameter* parameter) const;
@@ -329,8 +326,6 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
                                   bool refocusScreenReader = false);
     Component* findRebuildFocusTarget(const String& parameterId, Component* persistentComponent,
                                       const String& accessibleTitle, const String& preferredSection) const;
-    // The active effect slot that holds the focused control, or -1.
-    int focusedEffectSlot(const String& sectionName) const;
     void moveToSection(int direction);
     void showNavigationMenu();
     void armOrCancelMidiLearn(const String& parameterId);
@@ -386,19 +381,12 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void hideSavePresetDialog();
     void commitSavePresetDialog();
     void savePresetFile(const File& file);
-    void setPresetControlsVisible(bool visible);
+    void showPresetControls();
     void updatePresetSummary();
-    void configureWavetableActions(const String& sectionName);
-    void refreshWavetableNameLabel(int oscillator = -1);
-    void configureSampleActions(const String& sectionName);
-    void refreshSampleNameLabel(int sampleTarget = -1);
+    void refreshWavetableNameLabel(int oscillator);
+    void refreshSampleNameLabel(int sampleTarget);
     String sourceStatusTitleForSection(const String& sectionName) const;
-    void refreshOscillatorDirectControls();
-    void refreshOscillatorScaleControls();
-    void setOscillatorTransposeFromDirectControls();
-    void setOscillatorScaleFromDirectControls();
     void loadShiftedWavetable(int oscillator, int direction);
-    void setRoutingControlsVisible(bool visible);
     void updateRoutingSummary();
     int filterRoutingMode(bool activeOnly) const;
     void refreshRoutingControls();
@@ -539,7 +527,6 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void chooseFxBusPresetFile(const String& sectionName, bool save);
     void addFxBusControlsGroup(const String& sectionName, Component& parent, int& y, int x,
                                int width, int& focusOrder);
-    void setEffectChainControlsVisible(bool visible);
     int effectSlotType(const String& sectionName, int slot) const;
     int firstEmptyEffectSlot(const String& sectionName) const;
     std::vector<int> activeEffectSlots(const String& sectionName) const;
@@ -556,20 +543,18 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     std::vector<String> effectChainSectionNames() const;
     bool isFxBusEnabled(const String& sectionName) const;
     void refreshFxBusToggles();
-    void addEffectToCurrentChain();
+    // Text for each effects chain's "Effects chain order" label.
+    String effectChainSummaryText(const String& sectionName) const;
+    void refreshEffectChainSummaries();
     void addEffectToChain(const String& sectionName, int effect, Component& target);
-    void removeSelectedEffectSlot();
     void showAddEffectMenu(const String& sectionName, Component& target);
     bool isEffectSlotParameter(const String& sectionName, const String& parameterId) const;
     void addEffectSlotGroups(const String& sectionName, Component& parent, int& y, int x, int width,
                              int& focusOrder);
     void readEffectChainOrder(const String& sectionName, int* order) const;
     void writeEffectChainOrder(const String& sectionName, const int* order);
-    void populateEffectChainSelector(ComboBox& selector, Label* summary, const String& sectionName) const;
-    void refreshEffectChainControls();
-    void moveSelectedEffect(int direction);
     void scheduleEffectChainRebuild(const String& preferredSection, const String& focusedTitle = {},
-                                    const String& focusedParameter = {}, bool refreshControls = true);
+                                    const String& focusedParameter = {});
     void rebuildSectionsAfterEffectOrderChange(const String& preferredSection, const String& focusedTitle = {},
                                                const String& focusedParameter = {});
     void connectModulationAndPromptForAmount(const String& sourceId, const String& destinationId, Component& target);
@@ -594,37 +579,23 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void setParameterEngineValue(const String& id, float engineValue);
     void randomizeAmplitudeSeed(const String& id);
     void setInternalParameterEngineValue(const String& id, float engineValue);
-    int getNumRows() override;
-    void paintListBoxItem(int row, Graphics& graphics, int width, int height, bool selected) override;
-    String getNameForRow(int row) override;
-    void selectedRowsChanged(int row) override;
-    void refreshModulationRoutes();
     void refreshVisibleModulationLabels();
-    void showSelectedModulationParameters();
     LineGenerator* activeModulationRemapGenerator() const;
     int selectedModulationRemapPointIndex() const;
     bool selectModulationRemapSlot(int slot);
     String modulationRemapPointDescriptionFor(LineGenerator* generator, int pointIndex) const;
     String modulationRemapPointDescription(int pointIndex) const;
     String modulationRemapStatusTextForSlot(int slot) const;
-    String modulationRemapStatusText() const;
-    void refreshModulationRemapControls(const String& announcement = {});
+    void finishModulationRemapEdit(const String& announcement = {});
     void selectModulationRemapPoint(int direction);
     void addModulationRemapPoint();
     void deleteModulationRemapPoint();
     void moveModulationRemapPointInput(float delta);
     void moveModulationRemapPointOutput(float delta);
-    void setModulationRemapCurve();
-    void setModulationRemapSmooth();
-    void applyModulationRemapPreset();
+    void setModulationRemapCurve(int curve);
     void flipModulationRemap(bool horizontal);
     void resetModulationRemap();
     bool handleModulationRemapShortcut(const KeyPress& key);
-    void setModulationControlsVisible(bool visible);
-    void ensureModulationDestinations();
-    bool modulation_destinations_dirty_ = true;
-    void populateModulationDestinations();
-    void updateModulationDestinationList();
     bool isModulationDestinationId(const String& id) const;
     std::vector<std::pair<String, String>> modulationSourcesForDestination(const String& destinationId) const;
     void removeModulationFromParameter(const String& sourceId, const String& destinationId, Component& target);
@@ -632,14 +603,15 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void clearModulationSlot(int slot);
     void addTranceGateEditor(const String& prefix, const String& section, Component& parent,
                              int& y, int x, int width, int& focusOrder);
-    void setLfoMsegControlsVisible(bool visible);
-    void refreshLfoMsegControls();
-    void updateLfoPointSelector();
-    void selectLfoEditorItemAtPhase(float phase, NotificationType notification);
-    void updateLfoMsegSummary();
+    // Re-reads the active LFO's mode, cycle length and points before an edit.
+    void syncLfoEditorState();
+    void rebuildLfoEditorItems();
+    void selectLfoEditorItemAtPhase(float phase, bool notify);
+    void setLfoEditorItem(int index, bool notify);
+    void lfoEditorItemChosen();
     bool handleLfoMsegShortcut(const KeyPress& key);
     String lfoMsegStatusText() const;
-    void applyLfoMode();
+    void applyLfoMode(int mode);
     void applyLfoCycleLength();
     int lfoCycleIndexFromParameters(int lfoIndex) const;
     bool syncLfoCycleLengthFromParameters();
@@ -666,8 +638,7 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void copyLfoShape();
     void pasteLfoShape();
     void duplicateLfoShapeToNextSlot();
-    void setLfoPointCurveFromCombo();
-    void setLfoSmoothFromToggle();
+    void setLfoPointCurve(int curveIndex);
     LineGenerator* lfoGeneratorForIndex(int lfoIndex) const;
     LineGenerator* activeLfoGenerator() const;
     int selectedLfoPointIndex() const;
@@ -727,10 +698,9 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void addCpuMeter(Component& parent, int x, int& y, int width, int& focusOrder);
     std::unique_ptr<CpuUsageMeter> cpu_meter_;
     Label title_;
-    Label instructions_;
     TextButton menu_button_ { "Menu" };
-    ComboBox group_selector_;
-    ComboBox section_selector_;
+    // The group that number keys 1 to 9 choose an element from.
+    String current_group_;
     Label preset_summary_;
     Label preset_details_;
     TextButton preset_menu_ { "Preset menu" };
@@ -751,72 +721,15 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     TextEditor save_patch_comments_;
     TextButton save_patch_ok_ { "Save" };
     TextButton save_patch_cancel_ { "Cancel" };
-    Label wavetable_name_;
-    Label sample_name_;
-    TextButton load_wavetable_ { "Load wavetable" };
-    TextButton reset_wavetable_ { "Reset wavetable" };
-    Label oscillator_summary_;
-    ComboBox oscillator_octave_;
-    ComboBox oscillator_semitone_;
-    ParameterSlider oscillator_fine_tune_;
-    ParameterSlider oscillator_wave_frame_;
-    AccessibleComboBox oscillator_scale_key_;
-    AccessibleComboBox oscillator_scale_type_;
-    AccessibleComboBox oscillator_scale_mode_;
     Label routing_summary_;
     AccessibleComboBox routing_mode_;
     TextButton routing_default_ { "Default routing" };
     TextButton routing_serial_forward_ { "Serial filters 1 into 2" };
     TextButton routing_serial_backward_ { "Serial filters 2 into 1" };
-    Label effect_chain_summary_;
-    AccessibleComboBox effect_chain_selector_;
-    AccessibleComboBox effect_add_selector_;
-    AccessibleComboBox post_effect_order_selector_;
-    AccessibleTextButton effect_add_ { "Add effect" };
-    AccessibleTextButton effect_remove_ { "Remove effect" };
-    AccessibleTextButton effect_move_up_ { "Move effect earlier" };
-    AccessibleTextButton effect_move_down_ { "Move effect later" };
-    ComboBox modulation_source_;
-    ComboBox modulation_destination_group_;
-    ComboBox modulation_destination_;
-    TextButton add_modulation_ { "Connect modulation" };
-    TextButton remove_modulation_ { "Remove selected modulation" };
-    ListBox modulation_list_ { "Modulation routes", this };
-    Label modulation_remap_summary_;
-    AccessibleComboBox modulation_remap_preset_;
-    TextButton modulation_remap_apply_preset_ { "Apply remap preset" };
-    AccessibleComboBox modulation_remap_point_;
-    ParameterSlider modulation_remap_input_;
-    ParameterSlider modulation_remap_output_;
-    AccessibleComboBox modulation_remap_curve_;
-    ToggleButton modulation_remap_smooth_ { "Smooth remap" };
-    TextButton modulation_remap_add_point_ { "Add remap point" };
-    TextButton modulation_remap_delete_point_ { "Delete remap point" };
-    TextButton modulation_remap_flip_horizontal_ { "Flip remap horizontally" };
-    TextButton modulation_remap_flip_vertical_ { "Flip remap vertically" };
-    TextButton modulation_remap_reset_ { "Reset remap to linear" };
-    ModulationRemapKeyboardComponent modulation_remap_keyboard_;
     Label modulation_amount_prompt_;
     TextEditor modulation_amount_editor_;
     TextButton modulation_amount_ok_ { "OK" };
     TextButton modulation_amount_cancel_ { "Cancel" };
-    Label lfo_mseg_summary_;
-    AccessibleComboBox lfo_mseg_lfo_;
-    AccessibleComboBox lfo_mseg_mode_;
-    AccessibleComboBox lfo_mseg_cycle_;
-    AccessibleComboBox lfo_mseg_grid_;
-    AccessibleComboBox lfo_mseg_shape_;
-    TextButton lfo_mseg_apply_shape_ { "Apply shape" };
-    AccessibleComboBox lfo_mseg_point_;
-    TextButton lfo_mseg_add_point_ { "Add point" };
-    TextButton lfo_mseg_delete_point_ { "Delete point" };
-    TextButton lfo_mseg_time_down_ { "Time earlier" };
-    TextButton lfo_mseg_time_up_ { "Time later" };
-    TextButton lfo_mseg_value_down_ { "Value down" };
-    TextButton lfo_mseg_value_up_ { "Value up" };
-    AccessibleComboBox lfo_mseg_curve_;
-    ToggleButton lfo_mseg_smooth_ { "Smooth MSEG" };
-    LfoMsegKeyboardComponent lfo_mseg_keyboard_;
     Viewport viewport_;
     Component rows_container_;
     std::vector<std::unique_ptr<Component>> section_headers_;
@@ -845,11 +758,6 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     std::unique_ptr<PresetFacetTableModel> preset_tag_model_;
     std::unique_ptr<PresetResultsTableModel> preset_table_model_;
     StringArray modulation_source_ids_;
-    StringArray modulation_destination_groups_;
-    StringArray modulation_destination_all_ids_;
-    StringArray modulation_destination_ids_;
-    std::vector<vital::ModulationConnection*> modulation_routes_;
-    StringArray modulation_row_names_;
     struct CopiedOscillatorParameter {
       String suffix;
       float engine_value = 0.0f;
@@ -890,7 +798,11 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     std::vector<CopiedLfoPoint> copied_lfo_points_;
     std::vector<CopiedLfoPoint> copied_lfo_shape_;
     std::vector<float> selected_lfo_point_phases_;
-    std::vector<float> lfo_mseg_selector_phases_;
+    // The keyboard editor's items (points, performer shapes or steps) and the chosen one.
+    std::vector<float> lfo_editor_item_phases_;
+    int lfo_editor_item_index_ = -1;
+    // The shape that Shift A applies and G and H step through, as an index into the preset names.
+    int lfo_shape_preset_index_ = 0;
     struct WavetableKeyboardState {
       int frame = 0;
       int harmonic = 1;
@@ -980,7 +892,6 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     std::function<void(const String&)> pending_custom_value_apply_;
     bool pending_modulation_created_ = false;
     int active_oscillator_ = -1;
-    int active_sample_target_ = -1;
     int active_lfo_index_ = 0;
     std::map<String, std::pair<int, int>> last_filter_states_;
     std::map<String, bool> last_random_amplitude_modes_;
@@ -992,7 +903,6 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     int lfo_cycle_index_ = 3;
     int lfo_grid_index_ = 14;
     float lfo_cursor_phase_ = 0.0f;
-    bool preset_controls_visible_ = false;
     bool preset_list_loaded_ = false;
     bool preset_list_loading_ = false;
     String preset_index_progress_;       // spoken in the summary while a scan indexes files
@@ -1007,27 +917,15 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     File preset_metadata_file_;
     int preset_list_generation_ = 0;
     bool save_patch_dialog_visible_ = false;
-    bool show_all_sections_ = true;
     bool updating_preset_list_ = false;
-    bool updating_navigation_ = false;
-    bool updating_oscillator_controls_ = false;
     bool updating_routing_controls_ = false;
-    bool updating_modulation_destinations_ = false;
-    bool updating_modulation_remap_controls_ = false;
-    bool updating_lfo_mseg_controls_ = false;
     bool wavetable_browser_cache_valid_ = false;
     bool wavetable_editor_visible_[vital::kNumOscillators] = {};
     bool preset_to_wavetable_rendering_ = false;
     bool sample_browser_cache_valid_ = false;
     bool ir_browser_cache_valid_ = false;
-    bool routing_controls_visible_ = false;
-    bool effect_chain_controls_visible_ = false;
-    bool modulation_controls_visible_ = false;
-    bool modulation_remap_controls_visible_ = false;
     int active_modulation_remap_connection_ = -1;
     int modulation_remap_point_index_ = 0;
-    int rows_container_content_height_ = 0;
-    bool lfo_mseg_controls_visible_ = false;
     bool lfo_multi_selection_mode_ = false;
     bool modulation_amount_prompt_visible_ = false;
     bool parameter_value_prompt_visible_ = false;
@@ -1050,8 +948,6 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     };
     QwertyKeyInterceptor qwerty_key_interceptor_ { *this };
     Component::SafePointer<Component> qwerty_key_interceptor_target_;
-    mutable String pending_effect_chain_section_;
-    mutable int pending_effect_chain_selected_index_ = -1;
     bool effect_chain_rebuild_queued_ = false;
     // Bumped by each rebuild so only the last one re-focuses the screen reader.
     int screen_reader_refocus_generation_ = 0;
@@ -1060,7 +956,6 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     String queued_effect_chain_rebuild_section_;
     String queued_effect_chain_rebuild_title_;
     String queued_effect_chain_rebuild_parameter_;
-    bool queued_effect_chain_rebuild_refresh_ = false;
     // A request that arrived while a rebuild was already queued (or running) and
     // may still need a rebuild of its own once the current one has finished.
     bool queued_effect_chain_rebuild_pending_ = false;

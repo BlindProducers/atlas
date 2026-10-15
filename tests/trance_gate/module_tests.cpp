@@ -6,6 +6,7 @@
 #include "sound_engine.h"
 #include "sample_source.h"
 #include "synth_editor.h"
+#include "../editor_navigation.h"
 #include "fx_automation_parameter.h"
 #include "load_save.h"
 #include <atomic>
@@ -74,12 +75,7 @@ Component* titled(Component& parent, const String& title) {
   return nullptr;
 }
 bool select(Component& editor, const String& title, const String& value) {
-  auto* combo = dynamic_cast<ComboBox*>(titled(editor, title));
-  if (!combo) return false;
-  for (int i = 0; i < combo->getNumItems(); ++i) if (combo->getItemText(i) == value) {
-    combo->setSelectedItemIndex(i, sendNotificationSync); return true;
-  }
-  return false;
+  return editor_navigation::focusHeading(editor, title, value);
 }
 void gather(Component& parent, std::vector<TranceGateEditor*>& gates, int& sliders) {
   if (auto* gate = dynamic_cast<TranceGateEditor*>(&parent)) gates.push_back(gate);

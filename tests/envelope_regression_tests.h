@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include "editor_navigation.h"
 #include "../src/plugin/synth_editor.h"
 #include "slot_test_ids.h"
 #include "../src/common/envelope_time_utils.h"
@@ -229,12 +230,7 @@ namespace envelope_regressions {
     return nullptr;
   }
   bool select(Component& c, const String& title, const String& choice) {
-    auto* combo = dynamic_cast<ComboBox*>(withTitle(c, title));
-    if (combo == nullptr) return false;
-    for (int i = 0; i < combo->getNumItems(); ++i) if (combo->getItemText(i) == choice) {
-      combo->setSelectedItemIndex(i, sendNotificationSync); return true;
-    }
-    return false;
+    return editor_navigation::focusHeading(c, title, choice);
   }
   ValueBridge* bridgeFor(SynthPlugin& p, const std::string& name) {
     for (auto* parameter : p.getParameters()) if (auto* bridge = dynamic_cast<ValueBridge*>(parameter))
