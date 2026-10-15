@@ -35,6 +35,8 @@ namespace multisample {
     // library mapped to their place under "_external/".
     std::vector<FileInfo> files;
     std::map<std::string, std::string> path_overrides;
+    // DecentSampler control values the user chose, by Control::index.
+    std::map<int, double> control_values;
 
     bool empty() const { return path.empty() && hash.empty(); }
     nlohmann::json toJson(bool with_files) const;
@@ -59,7 +61,10 @@ namespace multisample {
     public:
       static constexpr int kNumSlots = 8;
       // Message thread (or the audio thread offline): give a slot its instrument.
-      using ApplyCallback = std::function<void(int slot, std::shared_ptr<const Instrument> instrument)>;
+      // `keep_sounding`: the same instrument with other control values, so
+      // notes already playing go on with the previous one.
+      using ApplyCallback = std::function<void(int slot, std::shared_ptr<const Instrument> instrument,
+                                               bool keep_sounding)>;
 
       explicit Manager(ApplyCallback apply);
       ~Manager() override;
@@ -70,6 +75,9 @@ namespace multisample {
       void selectSf2Preset(int slot, int preset_index);
       // Parses the SFZ text again (after editing), reusing decoded audio.
       void reload(int slot);
+      // Sets one of the instrument's controls and rebuilds its regions in the
+      // background, reusing the decoded audio. The status stays as it is.
+      void setControlValue(int slot, int index, double value);
       void clear(int slot);
       void clearAll();
       // A preset or host state names this slot's instrument. `container` is
@@ -106,6 +114,8 @@ namespace multisample {
         std::shared_ptr<const LoadResult> current;
         std::shared_ptr<const LoadResult> pending;
         bool has_pending = false;
+        // The pending result only changes control values.
+        bool pending_rebuild = false;
         uint64_t request = 0;
         SlotStatus status;
         // Where the loaded copy lives, for reloads.
@@ -123,15 +133,20 @@ namespace multisample {
         bool from_cache = false;
         bool check_hash = false;
         bool populate_cache = false;
+        // A control changed: parse the same file again, quietly.
+        bool rebuild = false;
       };
 
       void handleAsyncUpdate() override;
       void start(Job job);
       void run(Job job);
       void finish(int slot, uint64_t request, std::shared_ptr<const LoadResult> result, const std::string& notice,
-                  const juce::File& loaded_file, const SfzParser::Options& options, bool from_cache);
+                  const juce::File& loaded_file, const SfzParser::Options& options, bool from_cache,
+                  bool rebuild = false);
       bool shareLoaded(int slot, const InstrumentSpec& spec);
-      void applyNow(int slot, std::shared_ptr<const LoadResult> result);
+      void applyNow(int slot, std::shared_ptr<const LoadResult> result, bool keep_sounding = false);
+      // Rebuilds a slot whose control values differ from what it plays.
+      void rebuildControls(int slot);
       void setStatus(int slot, SlotStatus::State state, const std::string& phase, float progress,
                      const std::string& error = {});
       SfzParser::Options cacheOptions(const InstrumentSpec& spec, const juce::File& entry) const;

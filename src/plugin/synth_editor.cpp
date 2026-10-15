@@ -17212,7 +17212,9 @@ namespace {
   }
 
   String instrumentFormatName(const std::string& format) {
-    return format == "sf2" ? "SF2" : "SFZ";
+    if (format == "sf2")
+      return "SF2";
+    return format == "dspreset" ? "DecentSampler" : "SFZ";
   }
 
   // Opens the grouped preset menu instead of JUCE's single scrolling column.
@@ -17335,7 +17337,7 @@ int SynthEditor::multiSampleUiState(int oscillator) const {
     return 0;
   if (result->instrument->format == "sf2")
     return result->instrument->preset_names.size() > 1 ? 3 : 2;
-  return 1;
+  return result->instrument->controls.empty() ? 1 : 4;
 }
 
 String SynthEditor::instrumentStatusTitle(int oscillator) const {
@@ -17388,7 +17390,7 @@ String SynthEditor::instrumentDetails(int oscillator) const {
                  String::fromUTF8(instrument.missing_files.front().c_str()) + ".";
     if (!instrument.warnings.empty())
       details += " " + String(static_cast<int>(instrument.warnings.size())) +
-                 " SFZ features are not supported and were ignored.";
+                 " " + instrumentFormatName(instrument.format) + " features are not supported and were ignored.";
     if (!status.notice.empty())
       details += " " + String::fromUTF8(status.notice.c_str());
     const auto spec = manager->spec(oscillator);
@@ -17404,7 +17406,7 @@ void SynthEditor::addMultiSampleControlsGroup(int oscillator, Component& parent,
   auto group = makeSectionHeader(
       "Instrument", groupRank("Oscillators"), false, section_name + " instrument");
   auto* group_ptr = group.get();
-  group_ptr->setDescription("Load an SFZ or SF2 instrument and choose how it plays in " + section_name);
+  group_ptr->setDescription("Load an SFZ, DecentSampler or SF2 instrument and choose how it plays in " + section_name);
   group_ptr->setExplicitFocusOrder(focus_order++);
   parent.addAndMakeVisible(group_ptr);
   if (auto* accessible_parent = dynamic_cast<AccessibleSectionHeader*>(&parent))
@@ -17434,7 +17436,7 @@ void SynthEditor::addMultiSampleControlsGroup(int oscillator, Component& parent,
     return static_cast<OffscreenTextButton*>(place(std::move(button), 38));
   };
 
-  add_button("Load instrument", "Choose an SFZ or SF2 file for " + section_name,
+  add_button("Load instrument", "Choose an SFZ, DecentSampler or SF2 file for " + section_name,
              [this, oscillator] { chooseInstrumentFile(oscillator); });
 
   // The status reads what is loaded; Enter speaks the details.
@@ -17498,17 +17500,186 @@ void SynthEditor::addMultiSampleControlsGroup(int oscillator, Component& parent,
     add_button("Next preset", "Play the next preset of the SoundFont in " + section_name,
                [this, oscillator] { stepInstrumentPreset(oscillator, 1); });
   }
-  if (ui_state == 1) {
-    add_button("Open in text editor", "Open the SFZ file of " + section_name + " in a text editor",
+  if (ui_state == 1 || ui_state == 4) {
+    const String format = instrumentFormatName(result != nullptr && result->instrument != nullptr
+                                                   ? result->instrument->format : std::string("sfz"));
+    add_button("Open in text editor", "Open the " + format + " file of " + section_name + " in a text editor",
                [this, oscillator] { openInstrumentInTextEditor(oscillator); });
-    add_button("Reload SFZ", "Read the SFZ file of " + section_name + " again after editing it",
+    add_button("Reload " + format, "Read the " + format + " file of " + section_name + " again after editing it",
                [this, oscillator] { reloadInstrument(oscillator); });
   }
+  if (ui_state == 4)
+    addInstrumentControlRows(oscillator, *result, place, section_name);
 
   if (append_rows)
     append_rows(*group_ptr, group_y, width);
   group_ptr->setBounds(x, y, width, group_y + 2);
   y += group_y + 10;
+}
+
+namespace {
+  String instrumentControlLabel(const vital::multisample::Control& control) {
+    const String label = String::fromUTF8(control.label.c_str()).trim();
+    if (label.isNotEmpty())
+      return label;
+    using Kind = vital::multisample::Control::Kind;
+    const String kind = control.kind == Kind::kKnob ? "Knob" : control.kind == Kind::kMenu ? "Menu" : "Button";
+    return kind + " " + String(control.index + 1);
+  }
+
+  // A 0 to 1 knob reads as a percentage; any other range as its numbers.
+  bool instrumentControlIsPercent(const vital::multisample::Control& control) {
+    return !control.integer && control.minimum == 0.0 && control.maximum == 1.0;
+  }
+
+  String instrumentControlText(const vital::multisample::Control& control, double value) {
+    if (instrumentControlIsPercent(control))
+      return String(roundToInt(value * 100.0)) + "%";
+    if (control.integer)
+      return String(roundToInt(value));
+    String text = String(value, 2);
+    if (text.containsChar('.'))
+      text = text.trimCharactersAtEnd("0").trimCharactersAtEnd(".");
+    return text == "-0" ? String("0") : text;
+  }
+
+  // The value the slot plays: one the user set, else the file's.
+  double instrumentControlValue(const vital::multisample::InstrumentSpec& spec,
+                                const vital::multisample::Control& control) {
+    const auto found = spec.control_values.find(control.index);
+    return found != spec.control_values.end() ? found->second : control.value;
+  }
+}
+
+void SynthEditor::addInstrumentControlRows(int oscillator, const vital::multisample::LoadResult& result,
+                                           const std::function<Component*(std::unique_ptr<Component>, int)>& place,
+                                           const String& section_name) {
+  auto* manager = synth_.getMultiSampleManager();
+  if (manager == nullptr || result.instrument == nullptr)
+    return;
+  using Kind = vital::multisample::Control::Kind;
+  const auto spec = manager->spec(oscillator);
+  const String format = instrumentFormatName(result.instrument->format);
+  for (const auto& control : result.instrument->controls) {
+    const String label = instrumentControlLabel(control);
+    // "Instrument" keeps a knob called Level apart from the oscillator's own.
+    const String title = String(oscillator + 1) + " Instrument " + label;
+    const int index = control.index;
+    const double value = instrumentControlValue(spec, control);
+    auto mark = [&](Component& component) {
+      component.getProperties().set("InstrumentControl", oscillator);
+      component.getProperties().set("InstrumentControlIndex", index);
+      // Which instrument the rows were built for; another one rebuilds them.
+      component.getProperties().set("InstrumentControlsHash", String(result.hash));
+    };
+
+    if (control.kind == Kind::kKnob) {
+      auto slider = std::make_unique<OffscreenSlider>();
+      auto* slider_ptr = slider.get();
+      mark(*slider_ptr);
+      slider_ptr->setTitle(title);
+      slider_ptr->setName(title);
+      slider_ptr->setDescription(label + ", a control of the " + format + " instrument in " + section_name);
+      slider_ptr->setHelpText("Use arrow keys for small changes, Page Up and Page Down for larger changes, "
+                              "Enter to type a value and Backspace to return to the instrument's setting");
+      slider_ptr->setRange(control.minimum, jmax(control.minimum + 1.0e-6, control.maximum),
+                           control.integer ? 1.0 : 0.0);
+      slider_ptr->setValue(value, dontSendNotification);
+      const vital::multisample::Control described = control;
+      slider_ptr->textFromValueFunction = [described](double slider_value) {
+        return instrumentControlText(described, slider_value);
+      };
+      slider_ptr->valueFromTextFunction = [described](const String& text) {
+        const double number = text.retainCharacters("-0123456789.").getDoubleValue();
+        return instrumentControlIsPercent(described) ? number / 100.0 : number;
+      };
+      slider_ptr->onValueChange = [this, oscillator, index, slider_ptr] {
+        if (auto* multisample = synth_.getMultiSampleManager())
+          multisample->setControlValue(oscillator, index, slider_ptr->getValue());
+      };
+      const double default_value = control.default_value;
+      slider_ptr->onDefaultCommand = [slider_ptr, default_value] {
+        Slider::ScopedDragNotification drag(*slider_ptr);
+        slider_ptr->setValue(default_value, sendNotificationSync);
+      };
+      slider_ptr->onTextEntryCommand = [this, safe_slider = Component::SafePointer<OffscreenSlider>(slider_ptr),
+                                        title](Component& target) {
+        if (safe_slider == nullptr)
+          return;
+        promptForCustomValue(title, safe_slider->getTextFromValue(safe_slider->getValue()), target,
+                             [safe_slider](const String& text) {
+                               if (safe_slider == nullptr)
+                                 return;
+                               Slider::ScopedDragNotification drag(*safe_slider);
+                               safe_slider->setValue(safe_slider->getValueFromText(text), sendNotificationSync);
+                               if (auto* handler = safe_slider->getAccessibilityHandler())
+                                 handler->notifyAccessibilityEvent(AccessibilityEvent::valueChanged);
+                             });
+      };
+      place(std::move(slider), 42);
+      continue;
+    }
+
+    // Menus and buttons choose one of their options.
+    auto combo = std::make_unique<ParameterComboBox>();
+    auto* combo_ptr = combo.get();
+    mark(*combo_ptr);
+    combo_ptr->setTitle(title);
+    combo_ptr->setName(title);
+    combo_ptr->setDescription(label + ", a " + (control.kind == Kind::kMenu ? "menu" : "button") + " of the " +
+                              format + " instrument in " + section_name);
+    combo_ptr->setHelpText("Use the arrow keys or open the menu to choose, and Backspace to return to the "
+                           "instrument's setting");
+    for (size_t i = 0; i < control.choices.size(); ++i)
+      combo_ptr->addItem(String::fromUTF8(control.choices[i].c_str()), static_cast<int>(i) + 1);
+    const int first = roundToInt(control.minimum);
+    combo_ptr->setSelectedId(roundToInt(value) - first + 1, dontSendNotification);
+    combo_ptr->onChange = [this, oscillator, index, first, combo_ptr] {
+      if (combo_ptr->getSelectedId() <= 0)
+        return;
+      if (auto* multisample = synth_.getMultiSampleManager())
+        multisample->setControlValue(oscillator, index, first + combo_ptr->getSelectedId() - 1);
+    };
+    const int default_id = roundToInt(control.default_value) - first + 1;
+    combo_ptr->onDefaultCommand = [combo_ptr, default_id] {
+      combo_ptr->setSelectedId(default_id, sendNotificationSync);
+    };
+    place(std::move(combo), 38);
+  }
+}
+
+void SynthEditor::syncInstrumentControls(int oscillator) {
+  auto* manager = synth_.getMultiSampleManager();
+  const auto result = manager != nullptr ? manager->result(oscillator) : nullptr;
+  const auto spec = manager != nullptr ? manager->spec(oscillator) : vital::multisample::InstrumentSpec();
+  for (auto& component : section_headers_) {
+    if (component == nullptr)
+      continue;
+    const var& property = component->getProperties()["InstrumentControl"];
+    if (property.isVoid() || static_cast<int>(property) != oscillator)
+      continue;
+    if (result == nullptr || result->instrument == nullptr ||
+        component->getProperties()["InstrumentControlsHash"].toString() != String(result->hash)) {
+      instrument_preset_menu_stale_ = true;
+      return;
+    }
+    const int index = component->getProperties()["InstrumentControlIndex"];
+    for (const auto& control : result->instrument->controls) {
+      if (control.index != index)
+        continue;
+      // A preset or the host can set the value as well as these rows.
+      const double value = instrumentControlValue(spec, control);
+      if (auto* slider = dynamic_cast<Slider*>(component.get())) {
+        if (slider->getValue() != value)
+          slider->setValue(value, dontSendNotification);
+      }
+      else if (auto* combo = dynamic_cast<ComboBox*>(component.get())) {
+        const int id = roundToInt(value - control.minimum) + 1;
+        if (combo->getSelectedId() != id)
+          combo->setSelectedId(id, dontSendNotification);
+      }
+    }
+  }
 }
 
 void SynthEditor::chooseInstrumentFile(int oscillator) {
@@ -17522,7 +17693,7 @@ void SynthEditor::chooseInstrumentFile(int oscillator) {
       start = current;
   }
   instrument_chooser_ = std::make_unique<FileChooser>("Load instrument for Oscillator " + String(oscillator + 1),
-                                                      start, "*.sfz;*.sf2;*.SFZ;*.SF2");
+                                                      start, "*.sfz;*.dspreset;*.sf2;*.SFZ;*.DSPRESET;*.SF2");
   instrument_chooser_->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
                                    [this, oscillator](const FileChooser& chooser) {
     const File file = chooser.getResult();
@@ -17546,11 +17717,12 @@ void SynthEditor::openInstrumentInTextEditor(int oscillator) {
   auto* manager = synth_.getMultiSampleManager();
   const File file = manager != nullptr ? manager->editableFile(oscillator) : File();
   if (!file.existsAsFile()) {
-    postPluginAnnouncement("No SFZ instrument file to open", AccessibilityHandler::AnnouncementPriority::high);
+    postPluginAnnouncement("No instrument text file to open", AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
 
-  // Open as text, not with whatever application claims .sfz files.
+  // Open as text, not with whatever application claims .sfz or .dspreset files.
+  const String format = file.hasFileExtension("dspreset") ? "DecentSampler" : "SFZ";
   StringArray command;
 #if JUCE_MAC
   command = { "/usr/bin/open", "-t", file.getFullPathName() };
@@ -17561,12 +17733,12 @@ void SynthEditor::openInstrumentInTextEditor(int oscillator) {
 #endif
   text_editor_process_ = std::make_unique<ChildProcess>();
   if (!text_editor_process_->start(command, 0)) {
-    NativeMessageBox::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Unable to open the SFZ file",
+    NativeMessageBox::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Unable to open the " + format + " file",
                                           "No text editor could be started for " + file.getFullPathName());
-    postPluginAnnouncement("Unable to open the SFZ instrument file", AccessibilityHandler::AnnouncementPriority::high);
+    postPluginAnnouncement("Unable to open the " + format + " instrument file", AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
-  postPluginAnnouncement("Opened " + file.getFileName() + " in the text editor. After saving changes, choose Reload SFZ",
+  postPluginAnnouncement("Opened " + file.getFileName() + " in the text editor. After saving changes, choose Reload " + format,
                          AccessibilityHandler::AnnouncementPriority::high);
 }
 
@@ -17576,8 +17748,10 @@ void SynthEditor::reloadInstrument(int oscillator) {
     postPluginAnnouncement("No instrument to reload", AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
+  const auto loaded = manager->result(oscillator);
+  const String format = loaded->instrument != nullptr ? instrumentFormatName(loaded->instrument->format) : String("SFZ");
   manager->reload(oscillator);
-  postPluginAnnouncement("Reloading SFZ instrument for Oscillator " + String(oscillator + 1),
+  postPluginAnnouncement("Reloading " + format + " instrument for Oscillator " + String(oscillator + 1),
                          AccessibilityHandler::AnnouncementPriority::high);
 }
 
@@ -17605,7 +17779,7 @@ void SynthEditor::clearInstrument(int oscillator) {
     postPluginAnnouncement(announcement, AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
-  // The preset menu or SFZ buttons go away, so rebuild once the click has
+  // The preset menu or text-file buttons go away, so rebuild once the click has
   // returned (before the timer does) and stay on Clear instrument here.
   Component::SafePointer<SynthEditor> safe_this(this);
   MessageManager::callAsync([safe_this, section_name, announcement] {
@@ -17649,6 +17823,7 @@ void SynthEditor::refreshMultiSampleStatus() {
       }
     }
     syncInstrumentPresetMenu(oscillator);
+    syncInstrumentControls(oscillator);
 
     const String prefix = "Oscillator " + String(oscillator + 1) + " instrument";
     if (status.state == vital::multisample::SlotStatus::kLoading) {

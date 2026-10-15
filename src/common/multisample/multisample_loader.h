@@ -3,6 +3,7 @@
 
 #include "JuceHeader.h"
 #include "multisample_instrument.h"
+#include "decentsampler_parser.h"
 #include "sf2_parser.h"
 #include "sfz_parser.h"
 
@@ -81,6 +82,11 @@ namespace multisample {
   std::shared_ptr<LoadResult> withSf2Preset(const LoadResult& base, int preset_index);
 
   bool isSfz(const juce::File& file);
+  bool isDecentSampler(const juce::File& file);
+  // SFZ and DecentSampler: text that names separate sample files.
+  bool isTextInstrument(const juce::File& file);
   bool isSf2(const juce::File& file);
+  // The format a file loads as: "sfz", "dspreset" or "sf2".
+  std::string instrumentFormat(const juce::File& file);
 } // namespace multisample
 } // namespace vital

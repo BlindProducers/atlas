@@ -19,15 +19,23 @@ namespace vital {
     public:
       static constexpr int kNumTailPlayers = 16;
 
-      // Message thread, with processing paused.
-      void setInstrument(std::shared_ptr<const multisample::Instrument> instrument);
+      // Message thread, with processing paused. `keep_sounding` (the same
+      // instrument with other control values) lets notes already playing go
+      // on with the previous instrument, which the slot keeps until the next
+      // change; otherwise they stop.
+      void setInstrument(std::shared_ptr<const multisample::Instrument> instrument, bool keep_sounding = false);
       std::shared_ptr<const multisample::Instrument> instrument() const { return instrument_; }
+      // The previous instrument kept for notes still playing it.
+      std::shared_ptr<const multisample::Instrument> retired() const { return retired_; }
       void setMidiState(MultiSampleMidiState* state) { midi_state_ = state; }
       MultiSampleMidiState* midiState() const { return midi_state_; }
 
       // ---- Audio thread ----
       const multisample::Instrument* get() const { return instrument_.get(); }
       uint32_t generation() const { return generation_; }
+      // Players started at an older generation point into a freed instrument.
+      bool isLive(const MultiSamplePlayer& player) const { return isLiveGeneration(player.generation()); }
+      bool isLiveGeneration(uint32_t generation) const { return generation >= oldest_live_; }
 
       // The current value of a CC: received from MIDI, else the instrument's set_cc default.
       float ccValue(int cc) const;
@@ -59,7 +67,9 @@ namespace vital {
       void startCcRegions(int cc, float previous, float value, int offset, float sample_rate);
 
       std::shared_ptr<const multisample::Instrument> instrument_;
+      std::shared_ptr<const multisample::Instrument> retired_;
       uint32_t generation_ = 0;
+      uint32_t oldest_live_ = 0;
       MultiSampleMidiState* midi_state_ = nullptr;
 
       std::vector<uint32_t> sequence_counters_;
@@ -69,6 +79,5 @@ namespace vital {
       std::mt19937 random_ { 0x5eed };
       std::uniform_real_distribution<float> distribution_ { 0.0f, 1.0f };
       std::array<MultiSamplePlayer, kNumTailPlayers> tails_;
-      uint32_t tails_generation_ = 0;
   };
 } // namespace vital

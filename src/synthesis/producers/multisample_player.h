@@ -24,6 +24,8 @@ namespace vital {
         float gain = 1.0f;
         // Order of the start among every trigger of the slot, for chokes.
         uint64_t serial = 0;
+        // The slot's instrument generation the region belongs to.
+        uint32_t generation = 0;
         bool ignore_note_off = false;
         float sample_rate = 44100.0f;
       };
@@ -41,8 +43,12 @@ namespace vital {
       bool releasing() const { return stage_ >= kRelease; }
       float level() const { return level_ * fade_; }
       uint64_t serial() const { return serial_; }
+      uint32_t generation() const { return generation_; }
       const multisample::Region* region() const { return region_; }
 
+      // ampeg_dynamic: takes the envelope's CC modulation from the CCs now.
+      // Called once a block, before render.
+      void follow(const MultiSampleSlot& slot);
       // Checks for a choke from the slot's group table.
       void checkChoke(const MultiSampleSlot& slot, float sample_rate);
 
@@ -73,6 +79,11 @@ namespace vital {
       bool active_ = false;
       bool ignore_note_off_ = false;
       bool looping_ = false;
+      // Ping-pong loops: the direction of play, and whether the loop has
+      // turned yet (before that, frames below the loop start play as written).
+      bool alternate_ = false;
+      bool turned_ = false;
+      double direction_ = 1.0;
       double position_ = 0.0;
       double last_rate_ = 0.0;
       int64_t end_ = 0;
@@ -100,5 +111,6 @@ namespace vital {
       float last_left_ = 1.0f;
       float last_right_ = 1.0f;
       uint64_t serial_ = 0;
+      uint32_t generation_ = 0;
   };
 } // namespace vital

@@ -143,13 +143,14 @@ SynthBase::SynthBase() : expired_(false) {
   engine_ = std::make_unique<vital::SoundEngine>();
   engine_->setTuning(&tuning_);
   multisample_manager_ = std::make_unique<vital::multisample::Manager>(
-      [this](int slot, std::shared_ptr<const vital::multisample::Instrument> instrument) {
+      [this](int slot, std::shared_ptr<const vital::multisample::Instrument> instrument, bool keep_sounding) {
         vital::MultiSampleSlot* target = engine_->getMultiSample(slot);
         // Freeing an instrument's audio can take a while: keep it out of the lock.
         std::shared_ptr<const vital::multisample::Instrument> previous = target->instrument();
+        std::shared_ptr<const vital::multisample::Instrument> retired = target->retired();
         // A lock, not pauseProcessing: this also runs inside a paused preset load.
         ScopedLock lock(getCriticalSection());
-        target->setInstrument(std::move(instrument));
+        target->setInstrument(std::move(instrument), keep_sounding);
       });
 
   mod_connections_.reserve(vital::kMaxModulationConnections);
