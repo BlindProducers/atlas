@@ -21,6 +21,12 @@ namespace {
 #else
   constexpr bool kWindowsStepsThroughEffectSlots = false;
 #endif
+  // The right bracket opens menus on the Mac only; elsewhere the brackets only move effects.
+#if JUCE_MAC
+  constexpr bool kRightBracketOpensMenus = true;
+#else
+  constexpr bool kRightBracketOpensMenus = false;
+#endif
 
   void pumpEditorEvents() {
     MessageManager::getInstance()->runDispatchLoopUntil(150);
@@ -1264,7 +1270,8 @@ namespace {
 
   // Shift M opens a menu wherever Shift F10 does: on a parameter (modulation,
   // MIDI learn and the rest), on an effect slot's heading (copy, paste, replace,
-  // remove) and on an oscillator's heading (copy, paste).
+  // remove) and on an oscillator's heading (copy, paste). Off the Mac the right
+  // bracket opens none of them.
   void testShiftMOpensEveryContextMenu() {
     // Announcements go nowhere rather than to the screen reader.
     atlas::speech::setObserverForTesting([](const String&) {});
@@ -1294,6 +1301,8 @@ namespace {
     };
     const KeyPress shift_m('M', ModifierKeys::shiftModifier, 'M');
     const KeyPress shift_f10(KeyPress::F10Key, ModifierKeys::shiftModifier, 0);
+    // With one effect in the chain, the right bracket cannot move it on a slot.
+    const KeyPress right_bracket(']', ModifierKeys(), ']');
 
     // Looked up before each key: a rebuild replaces the editor's components.
     struct Target {
@@ -1321,6 +1330,8 @@ namespace {
         continue;
       expect(opens_menu(control, shift_m), "Shift M opens the menu on " + what);
       expect(opens_menu(target.find(), shift_f10), "Shift F10 still opens the menu on " + what);
+      if (!kRightBracketOpensMenus)
+        expect(!opens_menu(target.find(), right_bracket), "the right bracket opens no menu on " + what);
     }
 
     atlas::speech::setObserverForTesting(nullptr);

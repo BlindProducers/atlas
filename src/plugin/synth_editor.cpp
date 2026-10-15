@@ -116,6 +116,14 @@ namespace {
 #else
   constexpr bool kBusChainsStepToTheirHeading = false;
 #endif
+  // Whether the right bracket key opens a control's menu, as Shift M does
+  // (isContextMenuKey). Off the Mac the brackets only move effects in a chain,
+  // as asked, and menus open with Shift M or Shift F10.
+#if JUCE_MAC
+  constexpr bool kRightBracketOpensMenus = true;
+#else
+  constexpr bool kRightBracketOpensMenus = false;
+#endif
 
   enum PresetFacetKind {
     kLibraryFacet = 1,
@@ -3657,10 +3665,11 @@ namespace {
            CharacterFunctions::toLowerCase(key.getTextCharacter()) == 'c';
   }
 
-  // Shift M, the right bracket key, and Shift F10 as in other Windows programs,
-  // open the same menu that VoiceOver exposes through VO+Shift+M (the showMenu
-  // action), for Windows screen reader users and anyone without VoiceOver
-  // (atlas::keys::contextMenuKeys). On every control and heading with a menu.
+  // Shift M, and Shift F10 as in other Windows programs, open the same menu
+  // that VoiceOver exposes through VO+Shift+M (the showMenu action), for
+  // Windows screen reader users and anyone without VoiceOver, on every control
+  // and heading with a menu. On the Mac the right bracket key does too
+  // (kRightBracketOpensMenus); atlas::keys::contextMenuKeys names them.
   bool isContextMenuKey(const KeyPress& key) {
     if (isModulationMenuKey(key))
       return true;
@@ -3668,7 +3677,7 @@ namespace {
     if (key.getKeyCode() == KeyPress::F10Key)
       return modifiers.isShiftDown() && !modifiers.isCommandDown() && !modifiers.isCtrlDown() &&
              !modifiers.isAltDown();
-    return !modifiers.isAnyModifierKeyDown() &&
+    return kRightBracketOpensMenus && !modifiers.isAnyModifierKeyDown() &&
            (key.getKeyCode() == ']' || key.getTextCharacter() == ']');
   }
 
@@ -4152,8 +4161,8 @@ namespace {
   };
 
   // Implemented by the offscreen controls so that the accessibility handlers
-  // (VoiceOver VO+Shift+M -> showMenu) and the key handlers (the right bracket
-  // key) can trigger the control's context menu through a common entry point.
+  // (VoiceOver VO+Shift+M -> showMenu) and the key handlers (isContextMenuKey)
+  // can trigger the control's context menu through a common entry point.
   struct AccessibleContextMenuTarget {
     virtual ~AccessibleContextMenuTarget() = default;
     virtual void showAccessibleContextMenu() = 0;
@@ -8439,14 +8448,14 @@ void SynthEditor::showAccessibilitySettingsMenu() {
 
 namespace {
   // The keyboard help with this platform's key names: {Cmd} is Command on
-  // macOS and Ctrl elsewhere, and Windows adds Shift F10 for context menus
-  // and comma and period stepping through effect slots.
+  // macOS and Ctrl elsewhere. Windows opens context menus with Shift F10 as
+  // well as Shift M, and not with the right bracket (kRightBracketOpensMenus),
+  // and adds comma and period stepping through effect slots.
   String keyboardHelpForPlatform(const char* text) {
 #if JUCE_MAC
     const String command = "Cmd", context_menu = "Right bracket ( ] ) or Shift+M", heading_menu = "Shift+M";
 #else
-    const String command = "Ctrl", context_menu = "Right bracket ( ] ), Shift+M or Shift+F10",
-                 heading_menu = "Shift+M or Shift+F10";
+    const String command = "Ctrl", context_menu = "Shift+M or Shift+F10", heading_menu = context_menu;
 #endif
     const String effect_slot_steps = kSectionKeysStepThroughEffectSlots
         ? "  On an effects chain, Comma / Period also step through its effects (Slot 1, Slot 2 and so on)\n"

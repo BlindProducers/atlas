@@ -60,7 +60,7 @@ namespace atlas::keys {
 #if JUCE_MAC
     return "Shift M, the right bracket key, or VoiceOver Shift M";
 #else
-    return "Shift M, Shift F10, or the right bracket key";
+    return "Shift M or Shift F10";
 #endif
   }
 }
