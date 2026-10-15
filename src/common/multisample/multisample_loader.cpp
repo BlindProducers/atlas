@@ -212,6 +212,18 @@ namespace multisample {
     return file.hasFileExtension("sfz");
   }
 
+  bool isDecentSampler(const juce::File& file) {
+    return file.hasFileExtension("dspreset");
+  }
+
+  bool isTextInstrument(const juce::File& file) {
+    return isSfz(file) || isDecentSampler(file);
+  }
+
+  std::string instrumentFormat(const juce::File& file) {
+    return isSf2(file) ? "sf2" : isDecentSampler(file) ? "dspreset" : "sfz";
+  }
+
   bool isSf2(const juce::File& file) {
     return file.hasFileExtension("sf2");
   }
@@ -285,12 +297,15 @@ namespace multisample {
       return withSf2Preset(*result, preset);
     }
 
-    std::shared_ptr<LoadResult> loadSfz(const LoadRequest& request, const ProgressCallback& progress) {
+    // SFZ and DecentSampler presets: parse the text, then decode the samples it names.
+    std::shared_ptr<LoadResult> loadText(const LoadRequest& request, const ProgressCallback& progress) {
       auto result = std::make_shared<LoadResult>();
-      if (progress && !progress(0.0f, "Reading SFZ"))
+      const bool decent_sampler = isDecentSampler(request.file);
+      if (progress && !progress(0.0f, decent_sampler ? "Reading DecentSampler preset" : "Reading SFZ"))
         return nullptr;
 
-      SfzParser::Result parsed = SfzParser::parse(request.file, request.sfz_options);
+      SfzParser::Result parsed = decent_sampler ? DecentSamplerParser::parse(request.file, request.sfz_options)
+                                                : SfzParser::parse(request.file, request.sfz_options);
       if (!parsed.error.empty()) {
         result->error = parsed.error;
         return result;
@@ -446,17 +461,20 @@ namespace multisample {
                           " samples could be loaded. First problem: " + instrument->missing_files.front();
         }
         else
-          result->error = "The SFZ file has no playable regions.";
+          result->error = decent_sampler ? "The DecentSampler preset has no playable samples."
+                                         : "The SFZ file has no playable regions.";
         return result;
       }
 
-      // The files a container must hold: the SFZ text and every loaded sample.
+      // The files a container must hold: the text and every loaded sample.
       std::vector<juce::File> relative_files;
       for (const juce::File& file : parsed.text_files)
         relative_files.push_back(file);
-      for (const auto& reference : parsed.samples) {
-        if (!reference.absolute)
-          relative_files.push_back(reference.file);
+      // Only samples that loaded: a missing one may resolve anywhere and must
+      // not move the root (or the hash) of the files that are stored.
+      for (size_t i = 0; i < parsed.samples.size(); ++i) {
+        if (!parsed.samples[i].absolute && jobs[i].data)
+          relative_files.push_back(parsed.samples[i].file);
       }
       const juce::File root = commonRoot(relative_files);
 
@@ -519,10 +537,10 @@ namespace multisample {
     }
     if (isSf2(request.file))
       return loadSf2(request, progress);
-    if (isSfz(request.file))
-      return loadSfz(request, progress);
+    if (isTextInstrument(request.file))
+      return loadText(request, progress);
     auto result = std::make_shared<LoadResult>();
-    result->error = "Choose an SFZ or SF2 file.";
+    result->error = "Choose an SFZ, DecentSampler or SF2 file.";
     return result;
   }
 

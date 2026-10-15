@@ -20,6 +20,7 @@
 #include "tuning.cpp"
 #include "multisample_instrument.cpp"
 #include "sfz_parser.cpp"
+#include "decentsampler_parser.cpp"
 #include "sf2_parser.cpp"
 #include "multisample_loader.cpp"
 #include "multisample_container.cpp"

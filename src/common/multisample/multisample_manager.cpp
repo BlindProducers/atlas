@@ -46,6 +46,12 @@ namespace multisample {
       data["sf2_preset"] = { { "index", sf2_index }, { "bank", sf2_bank }, { "program", sf2_program },
                              { "name", sf2_name } };
     }
+    if (!control_values.empty()) {
+      nlohmann::json controls = nlohmann::json::object();
+      for (const auto& control : control_values)
+        controls[std::to_string(control.first)] = control.second;
+      data["controls"] = controls;
+    }
     if (with_files) {
       nlohmann::json list = nlohmann::json::array();
       for (const FileInfo& file : files)
@@ -86,8 +92,17 @@ namespace multisample {
         info.size = size != item.end() && size->is_number() ? size->get<int64_t>() : 0;
         auto crc = item.find("crc");
         info.crc = crc != item.end() && crc->is_number() ? crc->get<uint32_t>() : 0;
-        info.text = juce::String(info.relative).endsWithIgnoreCase(".sfz");
+        info.text = juce::String(info.relative).endsWithIgnoreCase(".sfz") ||
+                    juce::String(info.relative).endsWithIgnoreCase(".dspreset");
         spec.files.push_back(info);
+      }
+    }
+    auto controls = data.find("controls");
+    if (controls != data.end() && controls->is_object()) {
+      for (auto it = controls->begin(); it != controls->end(); ++it) {
+        const juce::String key(it.key());
+        if (it.value().is_number() && key.containsOnly("0123456789") && key.isNotEmpty())
+          spec.control_values[key.getIntValue()] = it.value().get<double>();
       }
     }
     auto overrides = data.find("path_overrides");
@@ -133,7 +148,8 @@ namespace multisample {
       slot.request = job.request;
       slot.has_pending = false;
       slot.pending = nullptr;
-      setStatus(job.slot, SlotStatus::kLoading, "Loading", 0.0f);
+      if (!job.rebuild)
+        setStatus(job.slot, SlotStatus::kLoading, "Loading", 0.0f);
     }
     running_++;
     pool_.addJob([this, job] {
@@ -158,11 +174,13 @@ namespace multisample {
   void Manager::run(Job job) {
     const int slot = job.slot;
     const uint64_t request = job.request;
-    auto progress = [this, slot, request](float amount, const std::string& phase) {
+    auto progress = [this, slot, request, &job](float amount, const std::string& phase) {
       std::lock_guard<std::mutex> lock(mutex_);
       Slot& state = slots_[static_cast<size_t>(slot)];
       if (state.request != request)
         return false;
+      if (job.rebuild)
+        return true;
       if (state.status.phase != phase || amount - state.status.progress >= 0.01f || amount < state.status.progress) {
         state.status.phase = phase;
         state.status.progress = amount;
@@ -191,13 +209,15 @@ namespace multisample {
     }
 
     std::string notice;
-    if (job.from_cache) {
+    if (job.from_cache && !job.rebuild) {
       container::touch(job.spec.hash);
       const juce::File working = container::workingFolder(job.spec.hash).getChildFile(juce::String(job.spec.entry));
       const juce::File cached = container::cacheFolder(job.spec.hash).getChildFile(juce::String(job.spec.entry));
       job.load.file = working.existsAsFile() ? working : cached;
-      if (isSfz(job.load.file))
+      if (isTextInstrument(job.load.file)) {
         job.load.sfz_options = cacheOptions(job.spec, job.load.file);
+        job.load.sfz_options.control_values = job.spec.control_values;
+      }
     }
 
     std::shared_ptr<LoadResult> result = loadInstrument(job.load, progress);
@@ -215,8 +235,10 @@ namespace multisample {
         container::touch(job.spec.hash);
         const juce::File entry = container::cacheFolder(job.spec.hash).getChildFile(juce::String(job.spec.entry));
         cached.load.file = entry;
-        if (isSfz(entry))
+        if (isTextInstrument(entry)) {
           cached.load.sfz_options = cacheOptions(job.spec, entry);
+          cached.load.sfz_options.control_values = job.spec.control_values;
+        }
         std::shared_ptr<LoadResult> cached_result = loadInstrument(cached.load, progress);
         if (cached_result == nullptr)
           return;
@@ -228,7 +250,7 @@ namespace multisample {
       notice = "The instrument file changed since this was saved.";
     }
 
-    finish(slot, request, result, notice, job.load.file, job.load.sfz_options, job.from_cache);
+    finish(slot, request, result, notice, job.load.file, job.load.sfz_options, job.from_cache, job.rebuild);
 
     if (result->error.empty() && job.populate_cache && !job.from_cache) {
       if (shutting_down_)
@@ -241,7 +263,8 @@ namespace multisample {
   }
 
   void Manager::finish(int slot, uint64_t request, std::shared_ptr<const LoadResult> result, const std::string& notice,
-                       const juce::File& loaded_file, const SfzParser::Options& options, bool from_cache) {
+                       const juce::File& loaded_file, const SfzParser::Options& options, bool from_cache,
+                       bool rebuild) {
     {
       std::lock_guard<std::mutex> lock(mutex_);
       Slot& state = slots_[static_cast<size_t>(slot)];
@@ -249,7 +272,9 @@ namespace multisample {
         return;
       state.pending = result;
       state.has_pending = true;
-      state.status.notice = notice;
+      state.pending_rebuild = rebuild;
+      if (!rebuild)
+        state.status.notice = notice;
       if (result && result->error.empty()) {
         state.loaded_file = loaded_file;
         state.sfz_options = options;
@@ -263,13 +288,13 @@ namespace multisample {
     processPendingResults();
   }
 
-  void Manager::applyNow(int slot, std::shared_ptr<const LoadResult> result) {
+  void Manager::applyNow(int slot, std::shared_ptr<const LoadResult> result, bool keep_sounding) {
     {
       std::lock_guard<std::mutex> lock(mutex_);
       slots_[static_cast<size_t>(slot)].current = result;
     }
     if (apply_)
-      apply_(slot, result ? result->instrument : nullptr);
+      apply_(slot, result ? result->instrument : nullptr, keep_sounding);
   }
 
   void Manager::processPendingResults(bool blocking) {
@@ -280,6 +305,8 @@ namespace multisample {
       return;
     for (int slot = 0; slot < kNumSlots; ++slot) {
       std::shared_ptr<const LoadResult> result;
+      bool keep_sounding = false;
+      bool controls_changed = false;
       {
         std::lock_guard<std::mutex> lock(mutex_);
         Slot& state = slots_[static_cast<size_t>(slot)];
@@ -288,6 +315,8 @@ namespace multisample {
         result = state.pending;
         state.pending = nullptr;
         state.has_pending = false;
+        keep_sounding = state.pending_rebuild && state.current != nullptr;
+        state.pending_rebuild = false;
 
         if (result == nullptr || !result->error.empty() || result->instrument == nullptr) {
           const std::string error = result && !result->error.empty() ? result->error : "The instrument did not load.";
@@ -315,9 +344,14 @@ namespace multisample {
           const std::string notice = state.status.notice;
           setStatus(slot, SlotStatus::kLoaded, "Loaded", 1.0f);
           state.status.notice = notice;
+          // Controls moved while it loaded.
+          controls_changed = state.sfz_options.control_values != spec.control_values &&
+                             isTextInstrument(state.loaded_file);
         }
       }
-      applyNow(slot, result);
+      applyNow(slot, result, keep_sounding);
+      if (controls_changed)
+        rebuildControls(slot);
     }
   }
 
@@ -334,7 +368,7 @@ namespace multisample {
       if (state.current && !state.from_cache && state.loaded_file == file)
         job.load.previous = state.current;
       state.spec = InstrumentSpec();
-      state.spec.format = isSf2(file) ? "sf2" : "sfz";
+      state.spec.format = instrumentFormat(file);
       state.spec.name = file.getFileNameWithoutExtension().toStdString();
       state.spec.path = file.getFullPathName().toStdString();
     }
@@ -390,6 +424,43 @@ namespace multisample {
         job.load.previous = nullptr;
       }
       job.populate_cache = true;
+    }
+    start(job);
+  }
+
+  void Manager::setControlValue(int slot, int index, double value) {
+    if (slot < 0 || slot >= kNumSlots)
+      return;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      Slot& state = slots_[static_cast<size_t>(slot)];
+      // While another file loads, the controls on show belong to the old one.
+      if (state.current == nullptr || state.current->instrument == nullptr ||
+          state.status.state == SlotStatus::kLoading)
+        return;
+      state.spec.control_values[index] = value;
+      state.applied_spec.control_values = state.spec.control_values;
+    }
+    rebuildControls(slot);
+  }
+
+  void Manager::rebuildControls(int slot) {
+    Job job;
+    job.slot = slot;
+    job.rebuild = true;
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      Slot& state = slots_[static_cast<size_t>(slot)];
+      if (state.current == nullptr || state.loaded_file == juce::File() || !isTextInstrument(state.loaded_file))
+        return;
+      // A load in progress picks the values up when it finishes.
+      if (state.status.state == SlotStatus::kLoading)
+        return;
+      state.sfz_options.control_values = state.spec.control_values;
+      job.load.file = state.loaded_file;
+      job.load.sfz_options = state.sfz_options;
+      job.load.previous = state.current;
+      job.from_cache = state.from_cache;
     }
     start(job);
   }
@@ -467,6 +538,9 @@ namespace multisample {
       setStatus(slot, SlotStatus::kLoaded, "Loaded", 1.0f);
     }
     applyNow(slot, found);
+    // The other slot may have its controls set differently.
+    if (options.control_values != spec.control_values)
+      rebuildControls(slot);
     return true;
   }
 
@@ -495,6 +569,7 @@ namespace multisample {
     }
     else if (!spec.path.empty() && original.existsAsFile()) {
       job.load.file = original;
+      job.load.sfz_options.control_values = spec.control_values;
       job.check_hash = true;
       job.populate_cache = true;
     }
@@ -527,7 +602,7 @@ namespace multisample {
       state.current = nullptr;
     }
     if (apply_)
-      apply_(slot, nullptr);
+      apply_(slot, nullptr, false);
     start(job);
   }
 
@@ -551,7 +626,7 @@ namespace multisample {
     if (slot < 0 || slot >= kNumSlots)
       return {};
     Slot& state = slots_[static_cast<size_t>(slot)];
-    if (state.current == nullptr || state.spec.format != "sfz" || state.loaded_file == juce::File())
+    if (state.current == nullptr || state.spec.format == "sf2" || state.loaded_file == juce::File())
       return {};
     const juce::File working_root = container::cacheRoot().getChildFile("Working");
     if (!state.from_cache || state.loaded_file.isAChildOf(working_root))

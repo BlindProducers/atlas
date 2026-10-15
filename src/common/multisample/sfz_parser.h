@@ -12,6 +12,13 @@
 namespace vital {
 namespace multisample {
 
+  // Finds a file an instrument names: an override first, then each root in
+  // order, then each root again ignoring case. Missing files resolve
+  // against the first root. Shared by the SFZ and DecentSampler parsers.
+  juce::File resolveInstrumentPath(const std::string& written, const std::vector<juce::File>& roots,
+                                   const std::map<std::string, juce::File>& overrides, bool* absolute = nullptr);
+  bool isAbsoluteInstrumentPath(const std::string& path);
+
   // Parses SFZ text into an Instrument whose regions name their sample files
   // but hold no audio yet (the loader decodes them). Supported opcodes and the
   // deliberate differences from other players are listed in README.atlas.md.
@@ -25,6 +32,9 @@ namespace multisample {
         // Paths as written in the file (after default_path, with forward
         // slashes) mapped to the file that replaces them.
         std::map<std::string, juce::File> path_overrides;
+        // DecentSampler: control values by Control::index, replacing the
+        // file's own (the user turned a knob).
+        std::map<int, double> control_values;
       };
 
       struct SampleReference {
