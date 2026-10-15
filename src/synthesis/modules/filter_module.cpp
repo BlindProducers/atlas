@@ -20,6 +20,7 @@
 #include "digital_svf.h"
 #include "diode_filter.h"
 #include "dirty_filter.h"
+#include "distortion_filter.h"
 #include "formant_module.h"
 #include "ladder_filter.h"
 #include "phaser_filter.h"
@@ -37,7 +38,7 @@ namespace vital {
       SynthModule(kNumInputs, 1), last_model_(-1), was_on_(false), 
       prefix_(std::move(prefix)), create_on_value_(true), mono_(false),
       on_(nullptr), filter_model_(nullptr), mix_(0.0f), filter_mix_(nullptr), keytrack_smoother_(nullptr),
-      comb_filter_(nullptr), digital_svf_(nullptr), dirty_filter_(nullptr),
+      comb_filter_(nullptr), digital_svf_(nullptr), dirty_filter_(nullptr), distortion_filter_(nullptr),
       formant_filter_(nullptr), ladder_filter_(nullptr), phaser_filter_(nullptr),
       sallen_key_filter_(nullptr), ring_mod_filter_(nullptr), sample_hold_filter_(nullptr), table_filter_(nullptr) {
     reverb_filter_ = new ReverbFilter();
@@ -48,6 +49,7 @@ namespace vital {
     digital_svf_ = new DigitalSvf();
     diode_filter_ = new DiodeFilter();
     dirty_filter_ = new DirtyFilter();
+    distortion_filter_ = new DistortionFilter();
     ladder_filter_ = new LadderFilter();
     phaser_filter_ = new PhaserFilter(false);
     sallen_key_filter_ = new SallenKeyFilter();
@@ -56,6 +58,7 @@ namespace vital {
 
     addSubmodule(comb_filter_);
     addSubmodule(formant_filter_);
+    addSubmodule(distortion_filter_);
 
     addProcessor(reverb_filter_);
     addProcessor(scream_filter_);
@@ -65,11 +68,13 @@ namespace vital {
     addProcessor(digital_svf_);
     addProcessor(diode_filter_);
     addProcessor(dirty_filter_);
+    addProcessor(distortion_filter_);
     addProcessor(formant_filter_);
     addProcessor(ladder_filter_);
     addProcessor(phaser_filter_);
     addProcessor(sallen_key_filter_);
     addProcessor(table_filter_);
+    plug(&constants::kValueOne, kAmplitude);
   }
 
   void FilterModule::setTableWavetable(Wavetable* table) {
@@ -195,6 +200,17 @@ namespace vital {
     dirty_filter_->plug(drive, DirtyFilter::kDriveGain);
     dirty_filter_->useOutput(output());
 
+    distortion_filter_->useInput(input(kAudio), DistortionFilter::kAudio);
+    distortion_filter_->useInput(input(kReset), DistortionFilter::kReset);
+    distortion_filter_->useInput(input(kAmplitude), DistortionFilter::kAmplitude);
+    distortion_filter_->plug(filter_style, DistortionFilter::kStyle);
+    distortion_filter_->plug(createModControl(prefix_ + "_distortion_drive", true, true), DistortionFilter::kDrive);
+    distortion_filter_->plug(createBaseControl(prefix_ + "_distortion_filter_order"), DistortionFilter::kFilterOrder);
+    distortion_filter_->plug(midi_cutoff, DistortionFilter::kMidiCutoff);
+    distortion_filter_->plug(resonance, DistortionFilter::kResonance);
+    distortion_filter_->plug(blend, DistortionFilter::kBlend);
+    distortion_filter_->useOutput(output());
+
     formant_filter_->useInput(input(kAudio), FormantModule::kAudio);
     formant_filter_->useInput(input(kReset), FormantModule::kReset);
     formant_filter_->plug(blend, FormantModule::kBlend);
@@ -237,6 +253,7 @@ namespace vital {
     digital_svf_->enable(false);
     diode_filter_->enable(false);
     dirty_filter_->enable(false);
+    distortion_filter_->enable(false);
     formant_filter_->enable(false);
     ladder_filter_->enable(false);
     sallen_key_filter_->enable(false);
@@ -257,6 +274,7 @@ namespace vital {
     digital_svf_->hardReset();
     diode_filter_->hardReset();
     dirty_filter_->hardReset();
+    getLocalProcessor(distortion_filter_)->hardReset();
     formant_filter_->hardReset();
     ladder_filter_->hardReset();
     phaser_filter_->hardReset();
@@ -280,6 +298,7 @@ namespace vital {
     digital_svf_->enable(new_model == constants::kDigital);
     diode_filter_->enable(new_model == constants::kDiode);
     dirty_filter_->enable(new_model == constants::kDirty);
+    distortion_filter_->enable(new_model == constants::kDistortionFilter);
     formant_filter_->enable(new_model == constants::kFormant);
     ladder_filter_->enable(new_model == constants::kLadder);
     phaser_filter_->enable(new_model == constants::kPhase);
@@ -309,6 +328,8 @@ namespace vital {
       to_reset = diode_filter_;
     else if (new_model == constants::kDirty)
       to_reset = dirty_filter_;
+    else if (new_model == constants::kDistortionFilter)
+      to_reset = distortion_filter_;
     else if (new_model == constants::kFormant)
       to_reset = formant_filter_;
     else if (new_model == constants::kLadder)

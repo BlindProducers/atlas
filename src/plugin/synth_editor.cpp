@@ -46,6 +46,7 @@
 #include "formant_filter.h"
 #include "ring_mod_filter.h"
 #include "sample_hold_filter.h"
+#include "distortion.h"
 #include "frequency_filter_modifier.h"
 #include "file_source.h"
 #include "phase_modifier.h"
@@ -627,7 +628,7 @@ namespace {
   }
 
   bool isFilterParameterSuffix(const String& suffix) {
-    static const std::array<const char*, 32> allowed_suffixes = {{
+    static const std::array<const char*, 34> allowed_suffixes = {{
       "destination",
       "table_frame",
       "reverb_cutoff",
@@ -638,6 +639,8 @@ namespace {
       "scream_input_gain",
       "scream_output_gain",
       "scream_autogain",
+      "distortion_drive",
+      "distortion_filter_order",
       "mix",
       "cutoff",
       "resonance",
@@ -687,6 +690,8 @@ namespace {
         return vital::RingModFilter::kNumWaveforms;
       case vital::constants::kSampleHoldFilter:
         return vital::SampleHoldFilter::kNumStyles;
+      case vital::constants::kDistortionFilter:
+        return vital::Distortion::kNumTypes;
       default:
         return 1;
     }
@@ -718,6 +723,8 @@ namespace {
         return strings::kRingModStyleNames[style];
       case vital::constants::kSampleHoldFilter:
         return strings::kSampleHoldStyleNames[style];
+      case vital::constants::kDistortionFilter:
+        return strings::kDistortionTypeNames[style];
       default:
         return {};
     }
@@ -1586,7 +1593,7 @@ namespace {
     if (effect_id == "eq")
       return equalizerParameterRank(suffix);
     if (effect_id == "filter_fx")
-      return rank({ "model", "style", "cutoff", "reverb_cutoff", "scream_amount", "resonance", "reverb_damp", "reverb_bass_preserve", "scream_input_gain", "table_frame", "drive", "blend", "blend_transpose", "keytrack",
+      return rank({ "model", "style", "distortion_drive", "distortion_filter_order", "cutoff", "reverb_cutoff", "scream_amount", "resonance", "reverb_damp", "reverb_bass_preserve", "scream_input_gain", "table_frame", "drive", "blend", "blend_transpose", "keytrack",
                     "formant_x", "formant_y", "formant_transpose", "formant_resonance", "formant_spread", "mix", "reverb_output", "scream_output_gain", "scream_autogain" });
     if (effect_id == "flanger")
       return rank({ "sync", "frequency", "tempo", "center", "mod_depth", "phase_offset", "feedback", "dry_wet" });
@@ -3144,10 +3151,12 @@ namespace {
       if (suffix == "scream_input_gain") return "Drive the Scream filter from minus 72 to plus 24 dB.";
       if (suffix == "scream_output_gain") return "Set Scream's output level after its mix and autogain.";
       if (suffix == "scream_autogain") return "Compensate Scream's output level. Env 1 controls the voice's release; there is no additional resonance tail.";
-      if (suffix == "model") return "Choose the filter model. Wavetable turns a wavetable frame's spectrum into the filter response: harmonic 24 sits at Cutoff, so a saw is flat and a frame's spectral shape becomes the curve.";
+      if (suffix == "distortion_drive") return "Drive the Distortion model from minus 30 to plus 30 dB, as in the Distortion effect. For Bit Crush, more drive leaves fewer levels; for Down Sample, it lowers the sample rate.";
+      if (suffix == "distortion_filter_order") return "Choose where the Distortion model's filter sits: None leaves it out, Pre filters before the distortion and Post after it. Cutoff, Resonance and Blend set the filter.";
+      if (suffix == "model") return "Choose the filter model. Wavetable turns a wavetable frame's spectrum into the filter response: harmonic 24 sits at Cutoff, so a saw is flat and a frame's spectral shape becomes the curve. Distortion is the Distortion effect working on each note on its own, so a chord gains no extra tones between its notes.";
       if (suffix == "table_frame") return "Choose the frame of the filter's wavetable, 0 to 256; scanning frames morphs the response. Load any Atlas wavetable or sample from this filter's wavetable controls.";
-      if (suffix == "style") return "Choose the filter style or slope inside the selected model. For the Wavetable model, choose the phase mode: Minimum is tight and adds no delay, Raw uses the frame waveform itself as the kernel, and in Filter FX Linear keeps every phase aligned and Original keeps the wavetable's phases, both adding 2048 samples of compensated delay. For Ring Mod, choose the carrier waveform: sine, square, saw or triangle. For Sample & Hold, choose Hold for steps, Smooth for ramps between held values, or Inverted, which leaves only the aliasing residue at 50% Mix.";
-      if (suffix == "cutoff") return "Set the main filter cutoff frequency. For Ring Mod, set the carrier frequency that multiplies the input. For Sample & Hold, set the hold rate; with Key Track, aliasing follows the played note.";
+      if (suffix == "style") return "Choose the filter style or slope inside the selected model. For the Wavetable model, choose the phase mode: Minimum is tight and adds no delay, Raw uses the frame waveform itself as the kernel, and in Filter FX Linear keeps every phase aligned and Original keeps the wavetable's phases, both adding 2048 samples of compensated delay. For Ring Mod, choose the carrier waveform: sine, square, saw or triangle. For Sample & Hold, choose Hold for steps, Smooth for ramps between held values, or Inverted, which leaves only the aliasing residue at 50% Mix. For Distortion, choose the type: Soft Clip, Hard Clip, Linear Fold, Sine Fold, Bit Crush or Down Sample.";
+      if (suffix == "cutoff") return "Set the main filter cutoff frequency. For Ring Mod, set the carrier frequency that multiplies the input. For Sample & Hold, set the hold rate; with Key Track, aliasing follows the played note. For Distortion, set the cutoff of its filter.";
       if (suffix == "resonance") return "Boost frequencies around the cutoff point. For the Wavetable model, exaggerate or flatten the frame's peaks and troughs: 50 percent leaves its shape as it is, 100 percent raises it to the fourth power, 0 percent to the fourth root.";
       if (suffix == "drive") return "Drive the filter input for more saturation.";
       if (suffix == "blend") return "Morph between the available responses of the selected filter model. For Sample & Hold, reduce bit depth from off to 1 bit.";
@@ -6671,7 +6680,9 @@ std::unique_ptr<AccessibleParameterRow> SynthEditor::createAccessibleParameterRo
     const bool filter_fx = prefix.contains("filter_fx");
     const int max_style = jmax(0, numFilterStylesForModel(model, filter_fx) - 1);
     const double max_normalized = bridge->convertToPluginValue(static_cast<float>(max_style));
-    const String title = model == vital::constants::kFilterTable ? "Phase mode" : "Filter style";
+    const String title = model == vital::constants::kFilterTable ? "Phase mode"
+                       : model == vital::constants::kDistortionFilter ? "Distortion type"
+                                                                        : "Filter style";
     return std::make_unique<AccessibleParameterRow>(parameter, title,
                                                     [bridge, model, filter_fx](double value) {
                                                       const int style = static_cast<int>(std::round(
@@ -6829,6 +6840,12 @@ bool SynthEditor::shouldShowParameterInSection(const String& sectionName, AudioP
   // Sample & Hold uses Cutoff as its hold rate and Blend as bit crush.
   if (model == vital::constants::kSampleHoldFilter &&
       (suffix == "resonance" || suffix == "drive" || suffix == "blend_transpose"))
+    return false;
+  // Distortion has its own drive; Cutoff, Resonance and Blend set its filter.
+  const bool distortion = model == vital::constants::kDistortionFilter;
+  if (suffix == "distortion_drive" || suffix == "distortion_filter_order")
+    return distortion;
+  if (distortion && (suffix == "drive" || suffix == "blend_transpose"))
     return false;
   const bool formant = model == vital::constants::kFormant;
   const bool vocal_tract = formant && style == vital::FormantFilter::kVocalTract;

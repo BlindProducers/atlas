@@ -24,6 +24,7 @@ namespace vital {
   class DigitalSvf;
   class DiodeFilter;
   class DirtyFilter;
+  class DistortionFilter;
   class Interpolate;
   class LadderFilter;
   class PhaserFilter;
@@ -43,6 +44,8 @@ namespace vital {
         kReset,
         kKeytrack,
         kMidi,
+        // The voice amplitude for the Distortion model; 1 where nothing envelopes the output.
+        kAmplitude,
         kNumInputs
       };
 
@@ -95,6 +98,7 @@ namespace vital {
       DigitalSvf* digital_svf_;
       DiodeFilter* diode_filter_;
       DirtyFilter* dirty_filter_;
+      DistortionFilter* distortion_filter_;
       FormantModule* formant_filter_;
       LadderFilter* ladder_filter_;
       PhaserFilter* phaser_filter_;

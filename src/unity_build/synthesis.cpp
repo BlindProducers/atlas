@@ -28,6 +28,7 @@
 #include "reverb_filter.cpp"
 #include "ring_mod_filter.cpp"
 #include "sample_hold_filter.cpp"
+#include "distortion_filter.cpp"
 #include "vocal_tract.cpp"
 #include "formant_manager.cpp"
 #include "dirty_filter.cpp"

@@ -23,30 +23,6 @@
 namespace vital {
 
   namespace {
-    force_inline poly_float linearFold(poly_float value, poly_float drive) {
-      poly_float adjust = value * drive * 0.25f + 0.75f;
-      poly_float range = utils::mod(adjust);
-      return poly_float::abs(range * -4.0f + 2.0f) - 1.0f;
-    }
-
-    force_inline poly_float sinFold(poly_float value, poly_float drive) {
-      poly_float adjust = value * drive * -0.25f + 0.5f;
-      poly_float range = utils::mod(adjust);
-      return futils::sin1(range);
-    }
-
-    force_inline poly_float softClip(poly_float value, poly_float drive) {
-      return futils::tanh(value * drive);
-    }
-
-    force_inline poly_float hardClip(poly_float value, poly_float drive) {
-      return utils::clamp(value * drive, -1.0f, 1.0f);
-    }
-
-    force_inline poly_float bitCrush(poly_float value, poly_float drive) {
-      return utils::round(value / drive) * drive;
-    }
-
     force_inline int compactAudio(poly_float* audio_out, const poly_float* audio_in, int num_samples) {
       int num_full = num_samples / 2;
       for (int i = 0; i < num_full; ++i) {

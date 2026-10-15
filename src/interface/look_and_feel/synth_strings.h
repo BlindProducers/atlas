@@ -544,6 +544,7 @@ namespace strings {
     "Ring Mod",
     "Sample & Hold",
     "Wavetable",
+    "Distortion",
   };
 
   // Wavetable filter phase modes: Filter FX offers all four, the voice filters

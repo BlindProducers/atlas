@@ -1490,6 +1490,10 @@ namespace vital {
       ValueDetails::kIndexed, false, "", "Autogain", strings::kOffOnNames },
     { "table_frame", 0x020118, 0.0, 256.0, 0.0, 0.0, 1.0,
       ValueDetails::kLinear, false, "", "Wavetable Frame", nullptr },
+    { "distortion_drive", 0x020125, Distortion::kMinDrive, Distortion::kMaxDrive, 0.0, 0.0, 1.0,
+      ValueDetails::kLinear, false, " dB", "Distortion Drive", nullptr },
+    { "distortion_filter_order", 0x020125, 0.0, 2.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Distortion Filter Order", strings::kDistortionFilterOrderNames },
   };
 
   const ValueDetails ValueDetailsLookup::osc_parameter_list[] = {

@@ -47,8 +47,11 @@ warp modes. Oscillators can modulate each other with FM and ring modulation.
 ## Filters
 
 Two filters with Vital's models (Analog, Dirty, Ladder, Digital, Diode, Formant,
-Comb, Phaser) plus Atlas's Reverb, Scream, Ring Mod, Sample & Hold and Wavetable
-models. The Wavetable model filters with any wavetable's frames as a response curve.
+Comb, Phaser) plus Atlas's Reverb, Scream, Ring Mod, Sample & Hold, Wavetable and
+Distortion models. The Wavetable model filters with any wavetable's frames as a
+response curve. The Distortion model is the Distortion effect, with all six types
+and its filter, working on each note on its own, so chords gain no extra tones
+between their notes.
 The filters run in parallel or in series and each sends its output to its own
 destination.
 

@@ -1655,6 +1655,27 @@ namespace {
       }
       expect(!titled(*group, "Gate Release") && !titled(*group, "Damp") && !titled(*group, "Drive"),
              "Scream filter hides effect gate and unrelated filter controls");
+      synth.parameterChanged(filter_prefix + "model", vital::constants::kDistortionFilter);
+      pumpEditorEvents();
+      group = editorSection(editor, section, 19);
+      for (const char* name : { "Distortion Drive", "Distortion Filter Order", "Cutoff", "Resonance",
+                                "Filter blend, low pass to high pass", "Mix" }) {
+        auto* control = group ? titled(*group, name) : nullptr;
+        expect(control && control->isVisible() && control->getWidth() > 0,
+               std::string("Distortion Filter FX exposes its control: ") + name);
+      }
+      expect(group && !titled(*group, "Drive") && !titled(*group, "Comb Blend Offset"),
+             "Distortion Filter FX hides the filter drive it does not use");
+      if (auto* drive = slider(group, "Distortion Drive"))
+        expect(valueText(drive).contains("dB"), "Distortion Filter FX announces its drive in decibels");
+      if (auto* type = menu(group, "Distortion type")) {
+        StringArray items;
+        for (int i = 0; i < type->getNumItems(); ++i)
+          items.add(type->getItemText(i));
+        expect(items == StringArray { "Soft Clip", "Hard Clip", "Linear Fold", "Sine Fold", "Bit Crush", "Down Sample" },
+               "The Distortion model offers every type of the Distortion effect: " +
+                   items.joinIntoString(", ").toStdString());
+      }
       auto* untouched = editorSection(editor, section, 18);
       expect(untouched && !titled(*untouched, "Comb Blend Offset") && !titled(*untouched, "Formant X"),
              "Changing one filter preserves another filter in the same chain");
@@ -1683,6 +1704,18 @@ namespace {
       }
       expect(!titled(*group, "Filter " + String(voice_filter) + " Gate Release"),
              "Voice Scream relies on Env 1, with no gate release control");
+      synth.parameterChanged(prefix + "model", vital::constants::kDistortionFilter);
+      pumpEditorEvents();
+      group = editorSection(editor, "Filter " + String(voice_filter));
+      for (const char* name : { "Distortion Drive", "Distortion Filter Order", "Cutoff", "Resonance", "Mix", "Key Track" }) {
+        auto* control = group ? titled(*group, "Filter " + String(voice_filter) + " " + name) : nullptr;
+        expect(control && control->isVisible() && control->getWidth() > 0 && control->getWantsKeyboardFocus(),
+               std::string("Voice Distortion exposes a keyboard-accessible control: ") + name);
+      }
+      expect(group && !titled(*group, "Filter " + String(voice_filter) + " Drive"),
+             "Voice Distortion hides the filter drive it does not use");
+      expect(group && dynamic_cast<ComboBox*>(titled(*group, "Distortion type")) != nullptr,
+             "Voice Distortion offers its type as a menu");
       synth.parameterChanged(prefix + "model", vital::constants::kAnalog);
       pumpEditorEvents();
       group = editorSection(editor, "Filter " + String(voice_filter));

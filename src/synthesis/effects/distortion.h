@@ -51,6 +51,31 @@ namespace vital {
         kNumTypes
       };
 
+      // The waveshapers. The Distortion voice filter model shares them.
+      static force_inline poly_float softClip(poly_float value, poly_float drive) {
+        return futils::tanh(value * drive);
+      }
+
+      static force_inline poly_float hardClip(poly_float value, poly_float drive) {
+        return utils::clamp(value * drive, -1.0f, 1.0f);
+      }
+
+      static force_inline poly_float linearFold(poly_float value, poly_float drive) {
+        poly_float adjust = value * drive * 0.25f + 0.75f;
+        poly_float range = utils::mod(adjust);
+        return poly_float::abs(range * -4.0f + 2.0f) - 1.0f;
+      }
+
+      static force_inline poly_float sinFold(poly_float value, poly_float drive) {
+        poly_float adjust = value * drive * -0.25f + 0.5f;
+        poly_float range = utils::mod(adjust);
+        return futils::sin1(range);
+      }
+
+      static force_inline poly_float bitCrush(poly_float value, poly_float drive) {
+        return utils::round(value / drive) * drive;
+      }
+
       static force_inline poly_float driveDbScale(poly_float db) {
         return futils::dbToMagnitude(utils::clamp(db, kMinDrive, kMaxDrive));
       }
