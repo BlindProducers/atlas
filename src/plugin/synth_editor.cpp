@@ -96,6 +96,15 @@ namespace {
 #else
   constexpr bool kKeepSwitchingFocus = false;
 #endif
+  // Whether comma and period, which step from element to element, also step
+  // through the effect slots of an effects chain on the way
+  // (SynthEditor::moveThroughEffectSlots). Asked for on Windows; on the Mac
+  // they still go straight from the chain to the next element.
+#if JUCE_WINDOWS
+  constexpr bool kSectionKeysStepThroughEffectSlots = true;
+#else
+  constexpr bool kSectionKeysStepThroughEffectSlots = false;
+#endif
 
   enum PresetFacetKind {
     kLibraryFacet = 1,
@@ -9310,14 +9319,19 @@ void SynthEditor::showAccessibilitySettingsMenu() {
 
 namespace {
   // The keyboard help with this platform's key names: {Cmd} is Command on
-  // macOS and Ctrl elsewhere, and Windows adds Shift F10 for context menus.
+  // macOS and Ctrl elsewhere, and Windows adds Shift F10 for context menus
+  // and comma and period stepping through effect slots.
   String keyboardHelpForPlatform(const char* text) {
 #if JUCE_MAC
     const String command = "Cmd", context_menu = "Right bracket ( ] ) or Shift+M";
 #else
     const String command = "Ctrl", context_menu = "Right bracket ( ] ), Shift+M or Shift+F10";
 #endif
-    return String(text).replace("{Cmd}", command).replace("{ContextMenuKeys}", context_menu);
+    const String effect_slot_steps = kSectionKeysStepThroughEffectSlots
+        ? "  On an effects chain, Comma / Period also step through its effects (Slot 1, Slot 2 and so on)\n"
+        : "";
+    return String(text).replace("{Cmd}", command).replace("{ContextMenuKeys}", context_menu)
+                       .replace("{EffectSlotSteps}", effect_slot_steps);
   }
 }
 
@@ -9354,6 +9368,7 @@ void SynthEditor::showKeyboardHelp() {
       "  1 to 9 - Jump to subsection within the current group\n"
       "  Comma ( , ) - Previous section\n"
       "  Period ( . ) - Next section\n"
+      "{EffectSlotSteps}"
       "\n"
       "Adjusting a parameter (when a slider has focus)\n"
       "  Up / Right / Page Up - Increase value\n"
@@ -20061,12 +20076,97 @@ void SynthEditor::moveToSection(int direction) {
   const int count = section_names_.size();
   if (count == 0)
     return;
+  if (kSectionKeysStepThroughEffectSlots && moveThroughEffectSlots(direction))
+    return;
   int current = section_names_.indexOf(last_section_name_);
   if (current < 0)
     current = 0;
-  const int next = (current + direction + count) % count;
-  selectSectionByName(section_names_[next], true);
+  const String next = section_names_[(current + direction + count) % count];
+  // Back onto an effects chain, the step before the element after it is the
+  // chain's last slot.
+  if (kSectionKeysStepThroughEffectSlots && direction < 0 && isEffectChainSection(next)) {
+    const int slots = static_cast<int>(activeEffectSlots(next).size());
+    if (slots > 0) {
+      selectSectionByName(next, false);
+      if (focusEffectSlotHeader(next, slots - 1))
+        return;
+    }
+  }
+  selectSectionByName(next, true);
   section_selector_.grabKeyboardFocus();
+}
+
+bool SynthEditor::moveThroughEffectSlots(int direction) {
+  // The chain focus is on: a slot (its header or a control inside it), the
+  // chain's other controls, or the group the chain is laid out in (Effects,
+  // Bus 1 to 3); one page at a time, the chain shown.
+  String section, section_key, group;
+  int slot = -1;
+  for (auto* component = Component::getCurrentlyFocusedComponent();
+       component != nullptr && component != &rows_container_; component = component->getParentComponent()) {
+    const auto& properties = component->getProperties();
+    if (properties.contains("FxSlot")) {
+      section = properties["SectionName"].toString();
+      slot = static_cast<int>(properties["FxSlot"]);
+      break;
+    }
+    if (section_key.isEmpty())
+      section_key = properties["SectionName"].toString();
+    if (component->getParentComponent() == &rows_container_)
+      group = component->getTitle();
+  }
+  if (section.isEmpty()) {
+    if (isEffectChainSection(section_key))
+      section = section_key;
+    else if (section_key.isEmpty() && show_all_sections_) {
+      const auto found = group_sections_.find(group);
+      if (found != group_sections_.end() && found->second.size() == 1 && isEffectChainSection(found->second[0]))
+        section = found->second[0];
+    }
+    else if (!show_all_sections_ && effect_chain_controls_visible_)
+      section = last_section_name_;
+  }
+  if (!isEffectChainSection(section) || !section_names_.contains(section))
+    return false;
+
+  // The chain is the current element now; leaving it steps on from there.
+  last_section_name_ = section;
+  const auto slots = activeEffectSlots(section);
+  const auto found = std::find(slots.begin(), slots.end(), slot);
+  // Elsewhere on the chain, period goes into its first slot.
+  if (found == slots.end())
+    return direction > 0 && focusEffectSlotHeader(section, 0);
+
+  const int next = static_cast<int>(std::distance(slots.begin(), found)) + direction;
+  if (next >= static_cast<int>(slots.size()))
+    return false;
+  if (next >= 0)
+    return focusEffectSlotHeader(section, next);
+  // Back from the first slot to the chain itself, as period from the element
+  // before it arrives.
+  selectSectionByName(section, true);
+  section_selector_.grabKeyboardFocus();
+  return true;
+}
+
+bool SynthEditor::focusEffectSlotHeader(const String& sectionName, int position) {
+  const auto slots = activeEffectSlots(sectionName);
+  if (!isPositiveAndBelow(position, static_cast<int>(slots.size())))
+    return false;
+
+  const int slot = slots[static_cast<size_t>(position)];
+  for (auto* component : row_focus_order_) {
+    if (component == nullptr || !component->isShowing())
+      continue;
+    const auto& properties = component->getProperties();
+    if (properties.contains("FxSlot") && static_cast<int>(properties["FxSlot"]) == slot &&
+        properties["SectionName"].toString() == sectionName) {
+      ensureComponentVisible(component);
+      component->grabKeyboardFocus();
+      return true;
+    }
+  }
+  return false;
 }
 
 bool SynthEditor::focusSectionShortcut(const String& section) {

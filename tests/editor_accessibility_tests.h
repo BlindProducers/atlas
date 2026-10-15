@@ -1,5 +1,7 @@
 #pragma once
 
+#include "screen_reader_speech.h"
+
 #if JUCE_MAC
 void focusNativeAccessibilityElement(juce::AccessibilityHandler& handler);
 juce::StringArray nativeAccessibilityChildTitles(juce::AccessibilityHandler& handler);
@@ -12,6 +14,12 @@ namespace {
   constexpr bool kWindowsKeepsSwitchingFocus = true;
 #else
   constexpr bool kWindowsKeepsSwitchingFocus = false;
+#endif
+  // Comma and period step through an effects chain's slots on Windows only.
+#if JUCE_WINDOWS
+  constexpr bool kWindowsStepsThroughEffectSlots = true;
+#else
+  constexpr bool kWindowsStepsThroughEffectSlots = false;
 #endif
 
   void pumpEditorEvents() {
@@ -1021,6 +1029,140 @@ namespace {
              "accessibility focus follows the moved slot too");
       expect(focused == nullptr || focused->getTitle() != "Editor menu", "focus must not fall back to the Editor menu");
     }
+    editor.removeFromDesktop();
+  }
+
+  // Comma and period step from element to element. On an effects chain they
+  // also step through the slots that hold an effect: the chain, Slot 1, Slot 2,
+  // then the next element, and back the same way (Windows only).
+  void testSectionKeysStepThroughEffectSlots() {
+    // Announcements go nowhere rather than to the screen reader.
+    atlas::speech::setObserverForTesting([](const String&) {});
+
+    SynthPlugin synth;
+    // The main chain has Delay and Utility with an empty slot between them,
+    // Bus 1 has Reverb and Bus 2 nothing.
+    synth.parameterChanged("fx_slot_1_type", vital::constants::kDelay + 1);
+    synth.parameterChanged("fx_slot_3_type", vital::constants::kUtility + 1);
+    synth.parameterChanged("bus_1_fx_slot_2_type", vital::constants::kReverb + 1);
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    editor.toFront(true);
+    pumpEditorEvents();
+
+    // Keys reach the focused control first and the editor only if it passes them on, as typed keys do.
+    auto press = [&](const KeyPress& key) {
+      if (auto* peer = editor.getPeer())
+        peer->handleKeyPress(key);
+    };
+    const KeyPress comma(',', ModifierKeys(), ','), period('.', ModifierKeys(), '.');
+    auto focused_title = [] {
+      auto* focused = Component::getCurrentlyFocusedComponent();
+      return focused != nullptr ? focused->getTitle() : String();
+    };
+    // The element the focused control belongs to: its own or its nearest group's.
+    auto focused_section = [] {
+      for (auto* component = Component::getCurrentlyFocusedComponent(); component != nullptr;
+           component = component->getParentComponent()) {
+        if (component->getProperties().contains("SectionName"))
+          return component->getProperties()["SectionName"].toString();
+      }
+      return String();
+    };
+    // On a chain, outside its slots (Bus controls, as period from the element before it leaves it).
+    auto on_chain = [&](const String& section) {
+      auto* focused = Component::getCurrentlyFocusedComponent();
+      for (auto* component = focused; component != nullptr; component = component->getParentComponent())
+        if (component->getProperties().contains("FxSlot"))
+          return false;
+      return focused != nullptr && focused_section() == section;
+    };
+    auto on_slot = [&](const String& section, const String& title) {
+      return focused_title() == title && focused_section() == section;
+    };
+    auto select = [&](const String& title, const String& item) {
+      auto* selector = dynamic_cast<ComboBox*>(titled(editor, title));
+      for (int index = 0; selector != nullptr && index < selector->getNumItems(); ++index) {
+        if (selector->getItemText(index) == item) {
+          selector->setSelectedItemIndex(index, sendNotificationSync);
+          return true;
+        }
+      }
+      return false;
+    };
+
+    const String chain = "Chain and routing", bus_1 = "Bus 1 - Chain and routing",
+                 bus_2 = "Bus 2 - Chain and routing", bus_3 = "Bus 3 - Chain and routing";
+    expect(select("Editor group", "Filters") && select("Editor element", "Filter 2") &&
+               focused_section() == "Filter 2",
+           "the walk starts on Filter 2");
+    press(period);
+    expect(on_chain(chain), "period from Filter 2 reaches the effects chain");
+    press(period);
+    if (!kWindowsStepsThroughEffectSlots) {
+      expect(focused_section() == "Envelope 1", "off Windows, period goes from the chain to the next element");
+      atlas::speech::setObserverForTesting(nullptr);
+      editor.removeFromDesktop();
+      return;
+    }
+
+    expect(on_slot(chain, "Slot 1 (Delay)"), "period from the chain goes to Slot 1");
+    press(period);
+    expect(on_slot(chain, "Slot 2 (Utility)"), "period goes on to Slot 2, past the empty slot between them");
+    press(period);
+    expect(focused_section() == "Envelope 1", "period after the last slot goes on to the next element");
+    press(comma);
+    expect(on_slot(chain, "Slot 2 (Utility)"), "comma from the next element comes back to the last slot");
+    press(comma);
+    expect(on_slot(chain, "Slot 1 (Delay)"), "comma steps back a slot");
+    press(comma);
+    expect(on_chain(chain), "comma from Slot 1 goes back to the chain, where period arrives from Filter 2");
+    press(comma);
+    expect(focused_section() == "Filter 2", "comma from the chain goes back to the element before it");
+
+    // From a control inside a slot the steps start at that slot.
+    if (auto* control = editor.controlForParameter("fx_slot_1_enabled")) {
+      editor.ensureComponentVisible(control);
+      control->grabKeyboardFocus();
+      press(period);
+      expect(on_slot(chain, "Slot 2 (Utility)"), "period from a control in Slot 1 goes to Slot 2");
+      control = editor.controlForParameter("fx_slot_3_enabled");
+      if (control != nullptr) {
+        editor.ensureComponentVisible(control);
+        control->grabKeyboardFocus();
+      }
+      press(comma);
+      expect(on_slot(chain, "Slot 1 (Delay)"), "comma from a control in Slot 2 goes to Slot 1");
+    }
+    else {
+      expect(false, "Slot 1 shows its Enabled control");
+    }
+
+    // The P shortcut leaves focus on the Effects group heading.
+    press(KeyPress('p', ModifierKeys(), 'p'));
+    expect(focused_title() == "Effects", "P focuses the Effects group");
+    press(period);
+    expect(on_slot(chain, "Slot 1 (Delay)"), "period from the Effects heading goes to Slot 1");
+
+    // Each bus chain has its own slots; an empty chain is a single step.
+    press(KeyPress('1', ModifierKeys::ctrlModifier, 0));
+    expect(focused_title() == "Bus 1", "Ctrl 1 focuses the Bus 1 group");
+    press(period);
+    expect(on_slot(bus_1, "Slot 1 (Reverb)"), "period from the Bus 1 heading goes to its Slot 1");
+    press(period);
+    expect(on_chain(bus_2), "period after Bus 1's last slot reaches the empty Bus 2 chain");
+    press(period);
+    expect(on_chain(bus_3), "period from the empty Bus 2 chain goes on to Bus 3");
+    press(comma);
+    expect(on_chain(bus_2), "comma goes back to the empty Bus 2 chain");
+    press(comma);
+    expect(on_slot(bus_1, "Slot 1 (Reverb)"), "comma from Bus 2 comes back to Bus 1's last slot");
+    press(comma);
+    expect(on_chain(bus_1), "comma from Bus 1's Slot 1 goes back to the Bus 1 chain");
+
+    atlas::speech::setObserverForTesting(nullptr);
     editor.removeFromDesktop();
   }
 

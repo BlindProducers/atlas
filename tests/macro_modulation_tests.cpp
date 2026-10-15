@@ -806,6 +806,7 @@ int main(int argc, char** argv) {
     testWavetableEditingOnASlotSwitchedToWavetable();
     testSwitchingChoiceKeepsItsControl();
     testEffectMoveKeepsFocusAcrossTimerTick();
+    testSectionKeysStepThroughEffectSlots();
     testOscillatorRowGroups();
     testOscillatorRowsNameTheirOscillatorNumber();
     testArpeggiatorDestinationsAreAGroup();

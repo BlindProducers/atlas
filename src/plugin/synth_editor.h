@@ -409,6 +409,14 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     // The active effect slot that holds the focused control, or -1.
     int focusedEffectSlot(const String& sectionName) const;
     void moveToSection(int direction);
+    // Comma and period on an effects chain (Windows): from the chain into
+    // Slot 1, Slot 2 and on through the slots that hold an effect, then to the
+    // next element, and back the same way. False when the step leaves the
+    // chain, which is then the element moveToSection steps on from.
+    bool moveThroughEffectSlots(int direction);
+    // Focuses the header of the effect at `position` (0 for Slot 1) in the
+    // chain `sectionName`; false when there is none.
+    bool focusEffectSlotHeader(const String& sectionName, int position);
     void showNavigationMenu();
     void armOrCancelMidiLearn(const String& parameterId);
     void showAccessibilitySettingsMenu();
