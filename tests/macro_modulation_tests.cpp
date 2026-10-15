@@ -681,6 +681,7 @@ int main(int argc, char** argv) {
     testWavetableEditorLayersAndInterpolation();
     testPresetAutoloadAndRefresh();
     testConvolutionPredelayRows();
+    testEqualizerBandGroups();
     testFractionalModulationAmountOnTranspose();
     testModulationPromptsKeepFocus();
     testFxBusControlsAndFocus();

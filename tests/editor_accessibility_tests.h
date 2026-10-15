@@ -1134,6 +1134,69 @@ namespace {
     expect(rows.containsIgnoreCase("Predelay tempo"), ("synced predelay shows the division row: " + rows).toStdString());
   }
 
+  // The EQ gives each band its own group. Mid Side EQ nests the bands of each
+  // channel in a Mid group and a Side group.
+  void testEqualizerBandGroups() {
+    SynthPlugin synth;
+    synth.parameterChanged("fx_slot_1_type", vital::constants::kEq + 1);
+    synth.parameterChanged("fx_slot_2_type", vital::constants::kMidSideEq + 1);
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    pumpEditorEvents();
+
+    // The groups between a row and its effect slot, innermost first.
+    auto groupsOf = [&](const String& id) {
+      auto* control = editor.controlForParameter(id);
+      if (control == nullptr)
+        return String("no row");
+      StringArray titles;
+      for (auto* parent = control->getParentComponent();
+           parent != nullptr && !parent->getProperties().contains("FxSlot"); parent = parent->getParentComponent())
+        if (parent->getProperties().contains("SectionName"))
+          titles.add(parent->getTitle());
+      return titles.joinIntoString(" in ");
+    };
+    auto check = [&](const String& id, const String& expected) {
+      const String found = groupsOf(id);
+      expect(found == expected, (id + " sits in \"" + expected + "\" (found \"" + found + "\")").toStdString());
+    };
+    check("fx_slot_1_enabled", "");
+    check("fx_slot_1_eq_low_mode", "Low band");
+    check("fx_slot_1_eq_low_resonance", "Low band");
+    check("fx_slot_1_eq_band_cutoff", "Band 1");
+    check("fx_slot_1_eq_band_2_mode", "Band 2");
+    check("fx_slot_1_eq_band_3_gain", "Band 3");
+    check("fx_slot_1_eq_band_4_resonance", "Band 4");
+    check("fx_slot_1_eq_high_cutoff", "High band");
+    check("fx_slot_2_enabled", "");
+    check("fx_slot_2_mid_side_eq_mid_eq_low_cutoff", "Low band in Mid");
+    check("fx_slot_2_mid_side_eq_mid_eq_band_mode", "Band 1 in Mid");
+    check("fx_slot_2_mid_side_eq_mid_eq_high_gain", "High band in Mid");
+    check("fx_slot_2_mid_side_eq_side_eq_low_mode", "Low band in Side");
+    check("fx_slot_2_mid_side_eq_side_eq_band_3_resonance", "Band 3 in Side");
+    check("fx_slot_2_mid_side_eq_side_eq_high_resonance", "High band in Side");
+
+    // Keyboard order: each group's heading, then its rows, band after band, Mid before Side.
+    const auto& order = editor.getKeyboardFocusOrder();
+    auto position = [&](Component* control) {
+      const auto found = std::find(order.begin(), order.end(), control);
+      return found == order.end() ? -1 : int(found - order.begin());
+    };
+    auto row = [&](const String& id) { return position(editor.controlForParameter(id)); };
+    auto group = [&](const String& key) { return position(editorSection(editor, "Chain and routing slot " + key)); };
+    expect(group("1 eq low band") >= 0 && group("1 eq low band") < row("fx_slot_1_eq_low_mode") &&
+           row("fx_slot_1_eq_low_resonance") < group("1 eq band 1") &&
+           group("1 eq band 1") < row("fx_slot_1_eq_band_mode") &&
+           row("fx_slot_1_eq_band_4_resonance") < group("1 eq high band") &&
+           group("1 eq high band") < row("fx_slot_1_eq_high_mode"),
+           "the EQ reads each band's heading, then its rows, from low to high");
+    expect(group("2 mid side eq mid") >= 0 && group("2 mid side eq mid") < group("2 mid side eq mid low band") &&
+           row("fx_slot_2_mid_side_eq_mid_eq_high_resonance") < group("2 mid side eq side") &&
+           group("2 mid side eq side") < group("2 mid side eq side low band") &&
+           group("2 mid side eq side low band") < row("fx_slot_2_mid_side_eq_side_eq_low_mode"),
+           "Mid Side EQ reads the Mid group's bands, then the Side group's");
+  }
+
   // A modulation amount typed in destination units keeps fractions on stepped
   // controls: 0.5 semitones on Transpose used to round to nothing.
   void testFractionalModulationAmountOnTranspose() {

@@ -13056,19 +13056,58 @@ void SynthEditor::addEffectSlotGroups(const String& sectionName, Component& pare
       slot_y = group_y;
     }
 
+    // Some effects nest their rows in groups. Each group lists its rows by
+    // suffix, then its subgroups; a group with no rows to show is left out.
+    struct RowGroup {
+      String title, description;
+      StringArray suffixes;
+      std::vector<RowGroup> children;
+    };
+    std::map<String, AudioProcessorParameter*> by_suffix;
+    for (const auto& entry : effect_parameters)
+      by_suffix[entry.suffix] = entry.parameter;
+
+    const String group_key = sectionName + " slot " + String(slot + 1) + " " + effectName(type - 1).toLowerCase() + " ";
+    const auto has_rows = [&by_suffix](const RowGroup& group, const auto& self) -> bool {
+      for (const auto& suffix : group.suffixes)
+        if (by_suffix.count(suffix)) return true;
+      for (const auto& child : group.children)
+        if (self(child, self)) return true;
+      return false;
+    };
+    const auto place_group = [&](const RowGroup& group, AccessibleSectionHeader& parent, int& parent_y,
+                                 int group_width, const String& key, const auto& self) -> void {
+      if (!has_rows(group, has_rows))
+        return;
+      const String group_id = key + group.title.toLowerCase();
+      auto header = std::make_unique<AccessibleSectionHeader>(group.title, groupRank(sectionName), false, group_id);
+      auto* header_ptr = header.get();
+      header_ptr->setDescription(group.description);
+      header_ptr->setExplicitFocusOrder(focusOrder++);
+      header_ptr->setBounds(10, parent_y, group_width, header_ptr->headerHeight());
+      parent.addAndMakeVisible(header_ptr);
+      parent.addAccessibleChild(header_ptr);
+      row_focus_order_.push_back(header_ptr);
+      section_headers_.push_back(std::move(header));
+
+      int inner_y = header_ptr->headerHeight() + 8;
+      for (const auto& suffix : group.suffixes) {
+        const auto found = by_suffix.find(suffix);
+        if (found != by_suffix.end())
+          add_parameter_row(*found->second, *header_ptr, *header_ptr, inner_y, group_width);
+      }
+      for (const auto& child : group.children)
+        self(child, *header_ptr, inner_y, jmax(600, group_width - 20), group_id + " ", self);
+      header_ptr->setBounds(10, parent_y, group_width, inner_y + 2);
+      parent_y += inner_y + 10;
+    };
+    const int group_width = jmax(600, width - 20);
+    bool grouped_rows = false;
+
     // Glitch Delay nests its rows as Astralay groups them: Global (timing, tape
     // stop, glitch engine, output), then the shown tap's delay controls and its
     // glitches, one group per glitch type.
     if (effect_id == "glitch_delay") {
-      std::map<String, AudioProcessorParameter*> by_suffix;
-      for (const auto& entry : effect_parameters)
-        by_suffix[entry.suffix] = entry.parameter;
-
-      struct RowGroup {
-        String title, description;
-        StringArray suffixes;
-        std::vector<RowGroup> children;
-      };
       const String tap = "tap_" + String(glitch_delay_tap + 1) + "_";
       const auto tap_rows = [&tap](std::initializer_list<const char*> controls) {
         StringArray result;
@@ -13102,50 +13141,43 @@ void SynthEditor::addEffectSlotGroups(const String& sectionName, Component& pare
           { "Bit crusher", "Bit depth and sample rate reduction",
             tap_rows({ "crush_prob", "crush_bits_min", "crush_bits_max", "crush_rate_min", "crush_rate_max" }), {} } } } } };
 
-      const String group_key = sectionName + " slot " + String(slot + 1) + " glitch delay ";
-      const auto has_rows = [&by_suffix](const RowGroup& group, const auto& self) -> bool {
-        for (const auto& suffix : group.suffixes)
-          if (by_suffix.count(suffix)) return true;
-        for (const auto& child : group.children)
-          if (self(child, self)) return true;
-        return false;
-      };
-      const auto place_group = [&](const RowGroup& group, AccessibleSectionHeader& parent, int& parent_y,
-                                   int group_width, const String& key, const auto& self) -> void {
-        if (!has_rows(group, has_rows))
-          return;
-        const String group_id = key + group.title.toLowerCase();
-        auto header = std::make_unique<AccessibleSectionHeader>(group.title, groupRank(sectionName), false, group_id);
-        auto* header_ptr = header.get();
-        header_ptr->setDescription(group.description);
-        header_ptr->setExplicitFocusOrder(focusOrder++);
-        header_ptr->setBounds(10, parent_y, group_width, header_ptr->headerHeight());
-        parent.addAndMakeVisible(header_ptr);
-        parent.addAccessibleChild(header_ptr);
-        row_focus_order_.push_back(header_ptr);
-        section_headers_.push_back(std::move(header));
-
-        int inner_y = header_ptr->headerHeight() + 8;
-        for (const auto& suffix : group.suffixes) {
-          const auto found = by_suffix.find(suffix);
-          if (found != by_suffix.end())
-            add_parameter_row(*found->second, *header_ptr, *header_ptr, inner_y, group_width);
-        }
-        for (const auto& child : group.children)
-          self(child, *header_ptr, inner_y, jmax(600, group_width - 20), group_id + " ", self);
-        header_ptr->setBounds(10, parent_y, group_width, inner_y + 2);
-        parent_y += inner_y + 10;
-      };
-
-      const int group_width = jmax(600, width - 20);
       place_group(global, *slot_ptr, slot_y, group_width, group_key, place_group);
       if (const auto view = by_suffix.find("tap_view"); view != by_suffix.end())
         add_parameter_row(*view->second, *slot_ptr, *slot_ptr, slot_y, width);
       place_group(tap_group, *slot_ptr, slot_y, group_width, group_key, place_group);
+      grouped_rows = true;
+    }
+
+    // The EQ gives each band its own group. Mid Side EQ has the same six bands
+    // for each channel, so they sit in a Mid group and a Side group.
+    if (effect_id == "eq" || effect_id == "mid_side_eq") {
+      const auto equalizer_bands = [](const String& channel) {
+        const auto band = [&channel](const String& title, const String& modes, const String& band_prefix) {
+          StringArray suffixes;
+          for (const auto* control : { "mode", "cutoff", "gain", "resonance" })
+            suffixes.add(channel + band_prefix + control);
+          return RowGroup { title, modes + ", with cutoff, gain and resonance", suffixes, {} };
+        };
+        return std::vector<RowGroup> {
+          band("Low band", "Shelf or high pass", "low_"),
+          band("Band 1", "Shelf or notch", "band_"),
+          band("Band 2", "Shelf or notch", "band_2_"),
+          band("Band 3", "Shelf or notch", "band_3_"),
+          band("Band 4", "Shelf or notch", "band_4_"),
+          band("High band", "Shelf or low pass", "high_") };
+      };
+      const std::vector<RowGroup> groups = effect_id == "eq" ? equalizer_bands("") : std::vector<RowGroup> {
+        { "Mid", "The six bands for the mid channel, what the left and right channels share", {},
+          equalizer_bands("mid_eq_") },
+        { "Side", "The six bands for the side channel, the difference between left and right", {},
+          equalizer_bands("side_eq_") } };
+      for (const auto& group : groups)
+        place_group(group, *slot_ptr, slot_y, group_width, group_key, place_group);
+      grouped_rows = true;
     }
 
     for (const auto& entry : effect_parameters) {
-      if (effect_id == "glitch_delay")
+      if (grouped_rows)
         break;
       if (type - 1 == vital::constants::kConvolutionReverb &&
           (entry.suffix.startsWith("ir_") || entry.suffix.startsWith("fade_")))
