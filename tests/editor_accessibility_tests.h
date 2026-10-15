@@ -15,18 +15,6 @@ namespace {
 #else
   constexpr bool kWindowsKeepsSwitchingFocus = false;
 #endif
-  // Comma and period step through an effects chain's slots on Windows only.
-#if JUCE_WINDOWS
-  constexpr bool kWindowsStepsThroughEffectSlots = true;
-#else
-  constexpr bool kWindowsStepsThroughEffectSlots = false;
-#endif
-  // The right bracket opens menus on the Mac only; elsewhere the brackets only move effects.
-#if JUCE_MAC
-  constexpr bool kRightBracketOpensMenus = true;
-#else
-  constexpr bool kRightBracketOpensMenus = false;
-#endif
 
   void pumpEditorEvents() {
     MessageManager::getInstance()->runDispatchLoopUntil(150);
@@ -1111,7 +1099,7 @@ namespace {
   // Comma and period step from element to element. On an effects chain they
   // also step through the slots that hold an effect: the chain, Slot 1, Slot 2,
   // then the next element, and back the same way. A bus's chain is reached at
-  // its Bus heading and says only the bus (Windows only).
+  // its Bus heading and says only the bus.
   void testSectionKeysStepThroughEffectSlots() {
     // Announcements are kept here rather than sent to the screen reader, with
     // the navigation ones, which say where a step landed, switched on.
@@ -1186,14 +1174,6 @@ namespace {
     expect(on_chain(chain), "period from Filter 2 reaches the effects chain");
     heard("Chain and routing", "the step to the effects chain");
     press(period);
-    if (!kWindowsStepsThroughEffectSlots) {
-      expect(focused_section() == "Envelope 1", "off Windows, period goes from the chain to the next element");
-      atlas::speech::setObserverForTesting(nullptr);
-      speech = saved_speech;
-      editor.removeFromDesktop();
-      return;
-    }
-
     expect(on_slot(chain, "Slot 1 (Delay)"), "period from the chain goes to Slot 1");
     press(period);
     expect(on_slot(chain, "Slot 2 (Utility)"), "period goes on to Slot 2, past the empty slot between them");
@@ -1270,8 +1250,8 @@ namespace {
 
   // Shift M opens a menu wherever Shift F10 does: on a parameter (modulation,
   // MIDI learn and the rest), on an effect slot's heading (copy, paste, replace,
-  // remove) and on an oscillator's heading (copy, paste). Off the Mac the right
-  // bracket opens none of them.
+  // remove) and on an oscillator's heading (copy, paste). The right bracket
+  // opens none of them.
   void testShiftMOpensEveryContextMenu() {
     // Announcements go nowhere rather than to the screen reader.
     atlas::speech::setObserverForTesting([](const String&) {});
@@ -1330,8 +1310,7 @@ namespace {
         continue;
       expect(opens_menu(control, shift_m), "Shift M opens the menu on " + what);
       expect(opens_menu(target.find(), shift_f10), "Shift F10 still opens the menu on " + what);
-      if (!kRightBracketOpensMenus)
-        expect(!opens_menu(target.find(), right_bracket), "the right bracket opens no menu on " + what);
+      expect(!opens_menu(target.find(), right_bracket), "the right bracket opens no menu on " + what);
     }
 
     atlas::speech::setObserverForTesting(nullptr);

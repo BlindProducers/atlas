@@ -99,33 +99,6 @@ namespace {
 #else
   constexpr bool kKeepSwitchingFocus = false;
 #endif
-  // Whether comma and period, which step from element to element, also step
-  // through the effect slots of an effects chain on the way
-  // (SynthEditor::moveThroughEffectSlots). Asked for on Windows; on the Mac
-  // they still go straight from the chain to the next element.
-#if JUCE_WINDOWS
-  constexpr bool kSectionKeysStepThroughEffectSlots = true;
-#else
-  constexpr bool kSectionKeysStepThroughEffectSlots = false;
-#endif
-  // Whether a step to a bus's effects chain (comma, period, a number key)
-  // lands on its Bus heading, as Ctrl 1 to 3 do, and says the bus ("Bus 2").
-  // Otherwise it lands on the chain's Bus controls and says "Chain and
-  // routing", the name of every bus's chain (SynthEditor::selectSectionByName).
-  // Asked for on Windows.
-#if JUCE_WINDOWS
-  constexpr bool kBusChainsStepToTheirHeading = true;
-#else
-  constexpr bool kBusChainsStepToTheirHeading = false;
-#endif
-  // Whether the right bracket key opens a control's menu, as Shift M does
-  // (isContextMenuKey). Off the Mac the brackets only move effects in a chain,
-  // as asked, and menus open with Shift M or Shift F10.
-#if JUCE_MAC
-  constexpr bool kRightBracketOpensMenus = true;
-#else
-  constexpr bool kRightBracketOpensMenus = false;
-#endif
 
   enum PresetFacetKind {
     kLibraryFacet = 1,
@@ -3717,17 +3690,14 @@ namespace {
   // Shift M, and Shift F10 as in other Windows programs, open the same menu
   // that VoiceOver exposes through VO+Shift+M (the showMenu action), for
   // Windows screen reader users and anyone without VoiceOver, on every control
-  // and heading with a menu. On the Mac the right bracket key does too
-  // (kRightBracketOpensMenus); atlas::keys::contextMenuKeys names them.
+  // and heading with a menu; atlas::keys::contextMenuKeys names them. The
+  // brackets only move effects in a chain and step values.
   bool isContextMenuKey(const KeyPress& key) {
     if (isModulationMenuKey(key))
       return true;
     const ModifierKeys modifiers = key.getModifiers();
-    if (key.getKeyCode() == KeyPress::F10Key)
-      return modifiers.isShiftDown() && !modifiers.isCommandDown() && !modifiers.isCtrlDown() &&
-             !modifiers.isAltDown();
-    return kRightBracketOpensMenus && !modifiers.isAnyModifierKeyDown() &&
-           (key.getKeyCode() == ']' || key.getTextCharacter() == ']');
+    return key.getKeyCode() == KeyPress::F10Key && modifiers.isShiftDown() && !modifiers.isCommandDown() &&
+           !modifiers.isCtrlDown() && !modifiers.isAltDown();
   }
 
   // Command chords: Command on macOS, Ctrl elsewhere. Off the Mac JUCE reports
@@ -6462,11 +6432,10 @@ void SynthEditor::selectSectionByName(const String& section, bool announce) {
   last_section_name_ = section;
   if (row_focus_order_.empty())
     showAllSections(false);
-  // On Windows a bus's chain is reached at its Bus heading (the group search
-  // below) and called by the bus: the chain is all the Bus group holds, and
-  // its own name, "Chain and routing", is the same on every bus.
-  const bool bus_heading = kBusChainsStepToTheirHeading && isEffectChainSection(section) &&
-                           fxBusForSection(section) > 0;
+  // A bus's chain is reached at its Bus heading (the group search below), as
+  // Ctrl 1 to 3 do, and called by the bus ("Bus 2"): the chain is all the Bus
+  // group holds, and its own name, "Chain and routing", is the same on every bus.
+  const bool bus_heading = isEffectChainSection(section) && fxBusForSection(section) > 0;
   Component* target = nullptr;
   if (!bus_heading) {
     for (auto* component : row_focus_order_) {
@@ -8602,21 +8571,15 @@ void SynthEditor::showAccessibilitySettingsMenu() {
 
 namespace {
   // The keyboard help with this platform's key names: {Cmd} is Command on
-  // macOS and Ctrl elsewhere. Windows opens context menus with Shift F10 as
-  // well as Shift M, and not with the right bracket (kRightBracketOpensMenus),
-  // and adds comma and period stepping through effect slots.
+  // macOS and Ctrl elsewhere. Windows also opens context menus with Shift F10,
+  // as other Windows programs do.
   String keyboardHelpForPlatform(const char* text) {
 #if JUCE_MAC
-    const String command = "Cmd", context_menu = "Right bracket ( ] ) or Shift+M", heading_menu = "Shift+M";
+    const String command = "Cmd", context_menu = "Shift+M";
 #else
-    const String command = "Ctrl", context_menu = "Shift+M or Shift+F10", heading_menu = context_menu;
+    const String command = "Ctrl", context_menu = "Shift+M or Shift+F10";
 #endif
-    const String effect_slot_steps = kSectionKeysStepThroughEffectSlots
-        ? "  On an effects chain, Comma / Period also step through its effects (Slot 1, Slot 2 and so on)\n"
-        : "";
-    return String(text).replace("{Cmd}", command).replace("{ContextMenuKeys}", context_menu)
-                       .replace("{HeadingMenuKeys}", heading_menu)
-                       .replace("{EffectSlotSteps}", effect_slot_steps);
+    return String(text).replace("{Cmd}", command).replace("{ContextMenuKeys}", context_menu);
   }
 }
 
@@ -8653,11 +8616,12 @@ void SynthEditor::showKeyboardHelp() {
       "  1 to 9 - Jump to subsection within the current group\n"
       "  Comma ( , ) - Previous section\n"
       "  Period ( . ) - Next section\n"
-      "{EffectSlotSteps}"
+      "  On an effects chain, Comma / Period also step through its effects (Slot 1, Slot 2 and so on)\n"
+      "  A step to an effects bus lands on its heading and says the bus (Bus 1, Bus 2 or Bus 3)\n"
       "\n"
       "Headings with a menu\n"
-      "  {HeadingMenuKeys} on an oscillator heading - Copy an oscillator or paste one into this one\n"
-      "  {HeadingMenuKeys} on an effect slot heading - Copy the effect, paste it to another bus, replace or remove it\n"
+      "  {ContextMenuKeys} on an oscillator heading - Copy an oscillator or paste one into this one\n"
+      "  {ContextMenuKeys} on an effect slot heading - Copy the effect, paste it to another bus, replace or remove it\n"
       "\n"
       "Adjusting a parameter (when a slider has focus)\n"
       "  Up / Right / Page Up - Increase value\n"
@@ -18625,7 +18589,7 @@ void SynthEditor::moveToSection(int direction) {
   const int count = section_names_.size();
   if (count == 0)
     return;
-  if (kSectionKeysStepThroughEffectSlots && moveThroughEffectSlots(direction))
+  if (moveThroughEffectSlots(direction))
     return;
   int current = section_names_.indexOf(last_section_name_);
   if (current < 0)
@@ -18633,7 +18597,7 @@ void SynthEditor::moveToSection(int direction) {
   const String next = section_names_[(current + direction + count) % count];
   // Back onto an effects chain, the step before the element after it is the
   // chain's last slot.
-  if (kSectionKeysStepThroughEffectSlots && direction < 0 && isEffectChainSection(next)) {
+  if (direction < 0 && isEffectChainSection(next)) {
     const int slots = static_cast<int>(activeEffectSlots(next).size());
     if (slots > 0) {
       selectSectionByName(next, false);

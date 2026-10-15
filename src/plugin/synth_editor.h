@@ -58,7 +58,7 @@ namespace atlas::keys {
 
   inline String contextMenuKeys() {
 #if JUCE_MAC
-    return "Shift M, the right bracket key, or VoiceOver Shift M";
+    return "Shift M or VoiceOver Shift M";
 #else
     return "Shift M or Shift F10";
 #endif
@@ -423,7 +423,7 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     std::unique_ptr<AccessibleSectionHeader> makeSectionHeader(const String& title, int groupRank, bool topLevel,
                                                                const String& sectionKey = {});
     void moveToSection(int direction);
-    // Comma and period on an effects chain (Windows): from the chain into
+    // Comma and period on an effects chain: from the chain into
     // Slot 1, Slot 2 and on through the slots that hold an effect, then to the
     // next element, and back the same way. False when the step leaves the
     // chain, which is then the element moveToSection steps on from.
