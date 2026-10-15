@@ -47,8 +47,9 @@ namespace {
     editor.setVisible(true);
     pumpEditorEvents();
 
-    auto* lfo = titled(editor, "LFO Editor");
-    expect(lfo != nullptr, "the editor has the LFO keyboard editor");
+    // Each LFO section has its own keyboard editor.
+    auto* lfo = titled(editor, "LFO 1 accessible editor");
+    expect(lfo != nullptr, "the editor has LFO 1's keyboard editor");
     if (lfo != nullptr) {
       expectNavigationSpoken(*lfo, spoken, KeyPress(KeyPress::rightKey), "Bar 1", "LFO editor");
       expectNavigationSpoken(*lfo, spoken, KeyPress(KeyPress::leftKey), "Bar 1 beat 1 0%", "LFO editor");

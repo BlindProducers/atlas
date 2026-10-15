@@ -393,8 +393,9 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     Component* findRebuildFocusTarget(const String& parameterId, Component* persistentComponent,
                                       const String& accessibleTitle, const String& preferredSection) const;
     // On Windows a rebuild that a choice deciding the rows starts (an
-    // oscillator's Type, a filter's Model, an effect's mode) keeps the focused
-    // row of such a choice and the groups around it, and the new rows take them
+    // oscillator's Type, a filter's Model, an effect's mode, or Envelope 1's
+    // Analog switch) keeps the focused row of such a choice and the groups
+    // around it, and the new rows take them
     // back in place of fresh copies (makeSectionHeader, createAccessibleParameterRow).
     // NVDA then stays on the same control in the same groups and reads only its
     // new value, instead of every group around it and the control again, which

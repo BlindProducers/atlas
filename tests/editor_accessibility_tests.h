@@ -990,6 +990,74 @@ namespace {
     editor.removeFromDesktop();
   }
 
+  // Envelope 1's Analog switch swaps its Power rows for Analog Age, which
+  // rebuilds the rows. Focus stays on the switch, and on Windows the rebuild
+  // keeps the switch itself and its groups, as for the menus above.
+  void testAnalogSwitchKeepsItsControl() {
+    // Announcements go nowhere rather than to the screen reader.
+    atlas::speech::setObserverForTesting([](const String&) {});
+    SynthPlugin synth;
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    editor.toFront(true);
+    pumpEditorEvents();
+
+    auto* analog = dynamic_cast<Button*>(editor.controlForParameter("env_1_analog"));
+    expect(analog != nullptr && !analog->getToggleState(), "Envelope 1 has an Analog switch, off");
+    expect(editor.controlForParameter("env_1_analog_age") == nullptr, "Analog Age shows only in analog mode");
+    if (analog == nullptr) {
+      atlas::speech::setObserverForTesting(nullptr);
+      editor.removeFromDesktop();
+      return;
+    }
+    std::vector<Component::SafePointer<Component>> groups;
+    for (auto* parent = analog->getParentComponent(); parent != nullptr && parent != &editor;
+         parent = parent->getParentComponent()) {
+      if (parent->isFocusContainer())
+        groups.emplace_back(parent);
+    }
+    expect(!groups.empty(), "the Analog switch sits in groups");
+    editor.ensureComponentVisible(analog);
+    analog->grabKeyboardFocus();
+    Component::SafePointer<Component> flipped(analog);
+    Component::SafePointer<Component> power(editor.controlForParameter("env_1_attack_power"));
+    expect(power != nullptr, "Envelope 1 shows its Attack Power row");
+    const String title = analog->getTitle();
+
+    // Enter reaches the focused switch, as a typed key does; the click and the
+    // timer tick that rebuilds the rows follow on the message thread.
+    if (auto* peer = editor.getPeer())
+      peer->handleKeyPress(KeyPress(KeyPress::returnKey));
+    pumpUntil([&] { return power == nullptr && Component::getCurrentlyFocusedComponent() != nullptr; });
+
+    auto* focused = Component::getCurrentlyFocusedComponent();
+    auto* now = dynamic_cast<Button*>(editor.controlForParameter("env_1_analog"));
+    expect(power == nullptr && editor.controlForParameter("env_1_analog_age") != nullptr,
+           "analog mode swaps the Power rows for Analog Age");
+    expect(now != nullptr && focused == now && now->getToggleState() && now->getTitle() == title,
+           "focus stays on the Analog switch, which is on");
+    auto* handler = focused != nullptr ? focused->getAccessibilityHandler() : nullptr;
+    expect(handler != nullptr && handler->hasFocus(false), "the screen reader stays on the Analog switch");
+    if (kWindowsKeepsSwitchingFocus) {
+      expect(flipped != nullptr && focused == flipped.getComponent(), "the rebuild keeps the Analog switch");
+      bool kept_groups = true;
+      for (auto& group : groups)
+        kept_groups = kept_groups && group != nullptr && group->isParentOf(focused);
+      expect(kept_groups, "the rebuild keeps the groups around the Analog switch");
+    }
+    const auto controls = editor.createKeyboardFocusTraverser()->getAllComponents(&editor);
+    bool live = !controls.empty();
+    for (auto* control : controls)
+      live = live && editor.isParentOf(control);
+    expect(live && std::find(controls.begin(), controls.end(), focused) != controls.end(),
+           "after the Analog switch, Tab reaches the switch and only live controls");
+    pumpEditorEvents();
+    atlas::speech::setObserverForTesting(nullptr);
+    editor.removeFromDesktop();
+  }
+
   // Moving a slot whose rows depend on a variant (Dimension Expander mode) used
   // to race the 20 Hz timer: the tick saw the swapped mode, queued its own
   // rebuild with the stale title and the moved slot lost focus to the Editor menu.

@@ -808,7 +808,9 @@ namespace {
   // slot, and the pitched sample types can be frequency modulated.
   void testSlotModulationBetweenTypes() {
     using vital::SynthOscillator;
-    constexpr int kSlot = 4;  // Oscillator 5
+    // Static, so the lambdas below can use it without capturing it: MSVC asks
+    // for a capture where Clang does not.
+    static constexpr int kSlot = 4;  // Oscillator 5
     // Renders a fresh plugin: slot 5 plays the test sample as `type`, slots
     // 1-3 are wavetable modulators kept out of the mix by a key zone the note
     // misses (a level of 0 would still leak while its smoother settles), then

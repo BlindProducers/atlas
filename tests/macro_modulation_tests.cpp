@@ -826,6 +826,7 @@ int main(int argc, char** argv) {
     testSlotTypeRowsFollowTheType();
     testWavetableEditingOnASlotSwitchedToWavetable();
     testSwitchingChoiceKeepsItsControl();
+    testAnalogSwitchKeepsItsControl();
     testEffectMoveKeepsFocusAcrossTimerTick();
     testSectionKeysStepThroughEffectSlots();
     testOscillatorRowGroups();

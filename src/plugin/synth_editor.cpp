@@ -1746,6 +1746,12 @@ namespace {
     return false;
   }
 
+  // Switches that change which rows the editor shows, so flipping one
+  // rebuilds it: Envelope 1's analog mode swaps its Power rows for Analog Age.
+  bool isRowSwitchingToggle(const String& id) {
+    return id == "env_1_analog";
+  }
+
   // Convolution Reverb: free predelay in milliseconds, or a synced division.
   bool isConvolutionReverbParameterRelevant(const String& suffix, int synced) {
     if (suffix == "predelay") return synced == 0;
@@ -5297,9 +5303,13 @@ class AccessibleParameterRow : public Component {
     // choice menu as this row, so a rebuild can keep this row in its place.
     // Compares the parameter by address only: this row's may be gone.
     bool readsLike(const AccessibleParameterRow& fresh) const {
-      if (!use_combo_control_ || !fresh.use_combo_control_ || &parameter_ != &fresh.parameter_ ||
-          built_name_ != fresh.built_name_ || built_description_ != fresh.built_description_ ||
-          combo_values_ != fresh.combo_values_ || combo_.getNumItems() != fresh.combo_.getNumItems())
+      if (&parameter_ != &fresh.parameter_ || built_name_ != fresh.built_name_ ||
+          built_description_ != fresh.built_description_)
+        return false;
+      if (use_toggle_control_ || fresh.use_toggle_control_)
+        return use_toggle_control_ && fresh.use_toggle_control_;
+      if (!use_combo_control_ || !fresh.use_combo_control_ || combo_values_ != fresh.combo_values_ ||
+          combo_.getNumItems() != fresh.combo_.getNumItems())
         return false;
       for (int i = 0; i < combo_.getNumItems(); ++i) {
         if (combo_.getItemText(i) != fresh.combo_.getItemText(i))
@@ -7478,7 +7488,8 @@ void SynthEditor::keepFocusedSwitchingRow() {
     return;
   const auto found = std::find_if(rows_.begin(), rows_.end(), [this](const auto& row) {
     return row != nullptr && row->focusableControl()->hasKeyboardFocus(true) &&
-           isRowSwitchingChoice(row->parameterId()) && rows_container_.isParentOf(row.get());
+           (isRowSwitchingChoice(row->parameterId()) || isRowSwitchingToggle(row->parameterId())) &&
+           rows_container_.isParentOf(row.get());
   });
   if (found == rows_.end())
     return;
@@ -7684,9 +7695,11 @@ bool SynthEditor::refreshEnvelopeAnalogRowsIfNeeded() {
   const String accessible_title = focusedAccessibleTitle();
   auto* persistent_focus = persistentFocusedComponent();
 
+  keepFocusedSwitchingRow();
   showAllSections(false);
 
   restoreFocusAfterRebuild(parameter_id, persistent_focus, accessible_title, {}, true);
+  releaseKeptFocus();
 
   return true;
 }
