@@ -168,10 +168,11 @@ private:
   double time_ = 0;
   int fade_remaining_ = 0, warmup_remaining_ = 0;
   // Dry history while the effect is pending or warming up, sized for the
-  // type's longest latency. Only a live effect has one, as there are
-  // thousands of parked shells and Windows charges even untouched memory to
-  // the system. Left uninitialised: renderPending never reads a sample it has
-  // not written, so on macOS untouched pages cost nothing.
+  // type's longest latency. On Windows only a live effect has one, as there
+  // are thousands of parked shells and Windows charges even untouched memory
+  // to the system (kReserveMemoryOnlyWhileUsed). Left uninitialised:
+  // renderPending never reads a sample it has not written, so on macOS
+  // untouched pages cost nothing and every shell keeps its own.
   std::unique_ptr<float[]> pending_history_;
   int pending_capacity_ = 0;
   int pending_position_ = 0, pending_valid_ = 0, pending_latency_ = 0;

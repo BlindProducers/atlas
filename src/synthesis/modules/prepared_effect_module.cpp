@@ -120,6 +120,9 @@ PreparedEffectModule::PreparedEffectModule(int type, std::string prefix, Factory
                       type_ == constants::kSpectralLock ? SpectralLockModule::kMaxSpectralLatencySamples :
                       type_ == constants::kFilterFx ? filterFxLatency(atlas::filter_table::kLinear) :
                       description_.latency;
+  // On Windows only a live shell has its dry history (reserveControls).
+  if (!kReserveMemoryOnlyWhileUsed && pending_capacity_ > 0)
+    pending_history_.reset(new float[size_t(pending_capacity_) * poly_float::kSize]);
   if (type_ == constants::kConvolutionReverb)
     convolution_state_ = std::make_unique<ConvolutionReverbModule>(prefix_, std::move(ir_worker), true);
 }
@@ -375,7 +378,8 @@ void PreparedEffectModule::park() {
     // preparation already under way publishes for an older configuration.
     restart();
   }
-  pending_history_.reset();
+  if (kReserveMemoryOnlyWhileUsed)
+    pending_history_.reset();
   std::lock_guard<std::mutex> lock(wiring_mutex_);
   std::vector<std::string> unrouted;
   for (const auto& destination : data_->mono_mod_destinations)

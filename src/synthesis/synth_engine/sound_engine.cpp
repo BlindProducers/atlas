@@ -197,7 +197,7 @@ namespace vital {
       Value* bus_effect_chain_order = createBaseControl(bus_prefix + "effect_chain_order");
 
       bus_chain_inputs_[i] = new LatencyCompensatedSum(i + 1,
-          i * ReorderableEffectChain::kMaxLatencySamples, false);
+          i * ReorderableEffectChain::kMaxLatencySamples, !kReserveMemoryOnlyWhileUsed);
       bus_chain_inputs_[i]->plug(voice_handler_->getBusOutput(i), 0);
       for (int previous_bus = 0; previous_bus < i; ++previous_bus)
         bus_chain_inputs_[i]->plug(bus_routers_[previous_bus]->output(BusRouter::kBus1Out + i), previous_bus + 1);
@@ -218,7 +218,7 @@ namespace vital {
     }
 
     main_chain_input_ = new LatencyCompensatedSum(kNumBuses + 1,
-        kNumBuses * ReorderableEffectChain::kMaxLatencySamples, false);
+        kNumBuses * ReorderableEffectChain::kMaxLatencySamples, !kReserveMemoryOnlyWhileUsed);
     main_chain_input_->plug(voice_handler_, 0);
     for (int i = 0; i < kNumBuses; ++i)
       main_chain_input_->plug(bus_routers_[i]->output(BusRouter::kMainOut), i + 1);
@@ -251,7 +251,7 @@ namespace vital {
     createStatusOutput("flanger_delay_frequency", flanger->output(FlangerModule::kFrequencyOutput));
 
     output_total_ = new LatencyCompensatedSum(kNumBuses + 2,
-        (kNumBuses + 1) * ReorderableEffectChain::kMaxLatencySamples, false);
+        (kNumBuses + 1) * ReorderableEffectChain::kMaxLatencySamples, !kReserveMemoryOnlyWhileUsed);
     output_total_->plug(effect_chain_, 0);
     output_total_->plug(voice_handler_->getDirectOutput(), 1);
     for (int i = 0; i < kNumBuses; ++i)

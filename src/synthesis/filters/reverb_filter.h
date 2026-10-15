@@ -21,9 +21,10 @@ public:
   void process(int num_samples) override;
   void reset(poly_mask mask) override;
   // The delay memory of this filter and of every voice copy made from it,
-  // about 18 MB each at 48 kHz. A filter holds it from construction; the
-  // voice filters release it while another model is selected, as Windows
-  // charges even untouched memory against the system's commit limit. Both
+  // about 18 MB each at 48 kHz. A filter holds it from construction; on
+  // Windows the voice filters release it while another model is selected, as
+  // Windows charges even untouched memory against the system's commit limit
+  // (kReserveMemoryOnlyWhileUsed). Both
   // allocate or free, so they run on the message thread with processing
   // locked, or offline.
   void reserveMemory();
