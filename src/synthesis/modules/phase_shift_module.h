@@ -17,6 +17,7 @@
 #pragma once
 
 #include "synth_module.h"
+#include "atlas_fft.h"
 
 #include "JuceHeader.h"
 
@@ -61,7 +62,7 @@ namespace vital {
       Output* mix_;
       std::string prefix_;
 
-      dsp::FFT fft_;
+      atlas::ComplexFft fft_;
       std::array<mono_float, kFftSize> window_;
       std::array<mono_float, kFftSize / 2 + 1> mapped_index_;
       std::array<std::vector<float>, kChannels> input_ring_;

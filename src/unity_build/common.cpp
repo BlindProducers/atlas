@@ -14,6 +14,7 @@
  * along with vital.  If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include "atlas_fft.cpp"
 #include "line_generator.cpp"
 #include "atlas_arpeggiator.cpp"
 #include "midi_manager.cpp"

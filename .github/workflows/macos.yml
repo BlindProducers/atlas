@@ -30,8 +30,8 @@ jobs:
       - uses: actions/checkout@v7
 
       # .gitmodules marks the reference-test submodules update = none, so this
-      # fetches only the four the plugin needs (JUCE, nlohmann json,
-      # concurrentqueue and KISS FFT), shallow.
+      # fetches only the three the plugin needs (JUCE, nlohmann json and
+      # concurrentqueue), shallow.
       - name: Fetch submodules
         run: git submodule update --init --jobs 4
 

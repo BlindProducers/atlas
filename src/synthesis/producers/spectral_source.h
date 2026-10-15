@@ -135,7 +135,7 @@ namespace vital {
         int last_transient_frame = -1;
         std::array<float, SpectralAnalysis::kFftSize> overlap {};
         std::array<float, SpectralAnalysis::kNumBins> synth_phase {};
-        std::array<float, SpectralAnalysis::kFftSize * 2> work {};
+        alignas(16) std::array<float, SpectralAnalysis::kFftSize * 2> work {};
         std::array<float, SpectralAnalysis::kNumBins> magnitude {};
         std::array<float, SpectralAnalysis::kNumBins> frequency {};
         std::array<float, SpectralAnalysis::kNumBins> phase {};
@@ -167,7 +167,7 @@ namespace vital {
       int analysis_revision_ = -1;
       std::array<LaneState, poly_float::kSize> lanes_;
       std::array<float, SpectralAnalysis::kFftSize> window_;
-      std::shared_ptr<const juce::dsp::FFT> fft_;
+      atlas::Fft fft_ { SpectralAnalysis::kFftOrder };
       SlotModulation modulation_;
 
       JUCE_LEAK_DETECTOR(SpectralSource)

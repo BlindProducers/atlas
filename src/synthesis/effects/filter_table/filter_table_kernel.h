@@ -14,8 +14,7 @@
 //     which is the measured high-frequency roll-off; everything is band-limited
 //     just below Nyquist.
 #pragma once
-#include <juce_dsp/juce_dsp.h>
-#include "../spectral_common/shared_fft.h"
+#include "atlas_fft.h"
 #include <array>
 #include <complex>
 #include <limits>
@@ -45,7 +44,7 @@ namespace atlas::filter_table {
       // Linear interpolation of two frames' complex harmonics.
       static void interpolate(const Frame& a, const Frame& b, float t, Frame& out);
     private:
-      std::shared_ptr<const juce::dsp::FFT> fft_ = sharedFft(kFrameOrder);
+      atlas::Fft fft_ { kFrameOrder };
       std::vector<float> buffer_;
   };
 
@@ -96,8 +95,8 @@ namespace atlas::filter_table {
       void fade(float* kernel, bool start, bool end) const;
 
       int order_, size_, design_order_, design_size_;
-      std::shared_ptr<const juce::dsp::FFT> fft_;
-      std::shared_ptr<const juce::dsp::FFT> frame_fft_ = sharedFft(kFrameOrder);
+      atlas::ComplexFft fft_;
+      atlas::Fft frame_fft_ { kFrameOrder };
       std::array<float, kNumHarmonics + 1> magnitude_ {};      // tilted, resonance applied, band limited
       std::vector<float> grid_;                                 // |H| on the design_size_ / 2 + 1 bins
       std::vector<std::complex<float>> complex_a_, complex_b_;

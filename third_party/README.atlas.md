@@ -15,8 +15,6 @@ Fetched by default, needed to build Atlas:
   same file as the official release's single include).
 - `concurrentqueue/`: moodycamel concurrent queue (simplified BSD),
   https://github.com/cameron314/concurrentqueue at 0bc97ad (June 2016).
-- `kissfft/`: KISS FFT (BSD-3), https://github.com/mborgerding/kissfft at
-  760cb7e (October 2018). Atlas uses its header-only C++ class, `kissfft.hh`.
 
 Opt-in, only for reference tests. `git submodule update --init` skips these;
 fetch one with `git submodule update --init --checkout <path>`, and CMake uses
@@ -62,9 +60,10 @@ Kept in this repository:
 - `licenses/WolfShaper.LICENSE`: Atlas's Waveshaper adapts Wolf Shaper by
   Patrick Desaulniers (GPL v3 or later).
 - `pffft/`: PFFFT by Julien Pommier (FFTPACK licence, BSD style), unchanged
-  from https://bitbucket.org/jpommier/pffft. The oscillators' FFT
-  (`vital::FourierTransform`) uses it on Windows, where JUCE has only a scalar
-  fallback; see `pffft/README.atlas.md`.
+  from https://bitbucket.org/jpommier/pffft. Every Atlas FFT runs on it, on
+  macOS and Windows, through `atlas::Fft` (`src/common/atlas_fft.h`); see
+  `pffft/README.atlas.md`. It replaced KISS FFT (Vital's fallback, a
+  submodule until October 2026) and, on macOS, JUCE's vDSP engine.
 
 The Suppressor and Spectral Compressor effects are Atlas's own code under
 `src/synthesis/effects`. The JSFX oracle inputs are in `tests/jsfx/fixtures`.

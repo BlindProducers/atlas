@@ -81,14 +81,14 @@ namespace vital {
     float* frequency_data = getFrequencyData();
     memcpy(frequency_data, time_domain, kWaveformSize * sizeof(float));
     memset(frequency_data + kWaveformSize, 0, kWaveformSize * sizeof(float));
-    FFT<kWaveformBits>::transform()->transformRealForward(frequency_data);
+    FFT<kWaveformBits>::transformRealForward(frequency_data);
   }
 
   void WaveFrame::toTimeDomain() {
     float* frequency_data = getFrequencyData();
     memcpy(time_domain, frequency_domain, 2 * kNumRealComplex * sizeof(float));
     memset(frequency_data + 2 * kNumRealComplex, 0, 2 * kNumExtraComplex * sizeof(float));
-    FFT<kWaveformBits>::transform()->transformRealInverse(time_domain);
+    FFT<kWaveformBits>::transformRealInverse(time_domain);
   }
 
   void WaveFrame::removedDc() {

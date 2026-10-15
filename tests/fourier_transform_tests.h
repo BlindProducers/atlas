@@ -1,8 +1,8 @@
 #pragma once
 
-// vital::FourierTransform against juce::dsp::FFT: the same bin layout and
-// scaling whichever engine it uses (PFFFT on Windows), and one transform
-// object shared by several threads, as vital::FFT<bits>::transform() is.
+// vital::FourierTransform (PFFFT through atlas::Fft) against juce::dsp::FFT:
+// the same bin layout and scaling, and the process-wide vital::FFT<bits> used
+// by several threads at once.
 
 #include "fourier_transform.h"
 
@@ -77,8 +77,8 @@ namespace fourier_transform_tests {
            "a sine at bin 5 is -N/2 imaginary there, as juce::dsp::FFT gives");
   }
 
-  // vital::FFT<bits>::transform() is one object for the whole process, used by
-  // wavetable rendering on the message thread and possibly other threads.
+  // vital::FFT<bits> is one object for the whole process, used by wavetable
+  // rendering on the message thread and possibly other threads.
   void testSharedTransformIsThreadSafe() {
     std::vector<float> spectrum(2 * kSize, 0.0f);
     for (int i = 1; i < 40; ++i) {
@@ -86,13 +86,13 @@ namespace fourier_transform_tests {
       spectrum[2 * i + 1] = 0.5f / i;
     }
     std::vector<float> expected = spectrum;
-    vital::FFT<kBits>::transform()->transformRealInverse(expected.data());
+    vital::FFT<kBits>::transformRealInverse(expected.data());
     std::atomic<int> mismatches { 0 };
     auto worker = [&] {
       std::vector<float> data(2 * kSize);
       for (int round = 0; round < 2000; ++round) {
         std::copy(spectrum.begin(), spectrum.end(), data.begin());
-        vital::FFT<kBits>::transform()->transformRealInverse(data.data());
+        vital::FFT<kBits>::transformRealInverse(data.data());
         if (largestDifference(data.data(), expected.data(), kSize) != 0.0f)
           ++mismatches;
       }
@@ -108,7 +108,7 @@ namespace fourier_transform_tests {
     testMatchesJuceLayoutAndScaling();
     testSharedTransformIsThreadSafe();
     if (failures == 0)
-      std::cout << "Atlas Fourier transform tests passed (" << (ATLAS_USE_PFFFT ? "PFFFT" : "juce::dsp::FFT") << ")\n";
+      std::cout << "Atlas Fourier transform tests passed (PFFFT)\n";
     return failures == 0 ? 0 : 1;
   }
 }

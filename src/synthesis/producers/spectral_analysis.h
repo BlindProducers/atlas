@@ -17,7 +17,7 @@
 #pragma once
 
 #include "JuceHeader.h"
-#include "spectral_common/shared_fft.h"
+#include "atlas_fft.h"
 
 #include <functional>
 #include <vector>
@@ -57,7 +57,7 @@ namespace vital {
       int source_samples_ = 0;
       double source_sample_rate_ = 48000.0;
       float global_max_ = 0.0f;
-      std::shared_ptr<const juce::dsp::FFT> fft_;
+      atlas::Fft fft_ { kFftOrder };
 
       JUCE_LEAK_DETECTOR(SpectralAnalysis)
   };

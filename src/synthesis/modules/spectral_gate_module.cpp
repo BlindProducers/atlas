@@ -12,7 +12,7 @@ namespace vital {
     for (int index = 0; index < kNumFftSizes; ++index) {
       const int order = kMinFftOrder + index;
       const int size = 1 << order;
-      ffts_[index] = std::make_unique<juce::dsp::FFT>(order);
+      ffts_[index] = std::make_unique<atlas::Fft>(order);
       windows_[index].resize(size);
       for (int i = 0; i < size; ++i)
         windows_[index][i] = 0.5f - 0.5f * std::cos(2.0f * juce::MathConstants<float>::pi * i / size);

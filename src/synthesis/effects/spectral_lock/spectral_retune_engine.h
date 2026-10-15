@@ -13,7 +13,7 @@
 // 176.4 kHz and above), so bins stay near 5.9 Hz and notes a semitone apart
 // separate down to about 400 Hz whatever the oversampling. Latency is one frame.
 #pragma once
-#include <juce_dsp/juce_dsp.h>
+#include "atlas_fft.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -102,7 +102,7 @@ namespace atlas::spectral_lock::retune {
       int hop_size_ = 0;
       int num_bins_ = 0;
       float bin_hz_ = 0.0f;
-      std::unique_ptr<juce::dsp::FFT> fft_;
+      std::unique_ptr<atlas::Fft> fft_;
       std::vector<float> window_;
       std::vector<float> fft_left_, fft_right_, out_fft_left_, out_fft_right_;
       std::vector<float> in_left_, in_right_, out_left_, out_right_;

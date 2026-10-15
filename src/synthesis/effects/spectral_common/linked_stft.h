@@ -5,7 +5,7 @@
 // doubles as a dry path delayed by exactly the FFT size, so the reported
 // latency is kFftSize and a dry/wet mix or a delta output stays aligned.
 #pragma once
-#include <juce_dsp/juce_dsp.h>
+#include "atlas_fft.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -121,10 +121,11 @@ namespace atlas::stft {
       }
 
       double sample_rate_ = 48000.0;
-      juce::dsp::FFT fft_ { Order };
+      atlas::Fft fft_ { Order };
       std::array<float, kFftSize> window_ {};
       std::array<float, kNumBins> bin_hz_ {};
-      std::array<float, 2 * kFftSize> fft_left_ {}, fft_right_ {};
+      alignas(16) std::array<float, 2 * kFftSize> fft_left_ {};
+      alignas(16) std::array<float, 2 * kFftSize> fft_right_ {};
       std::array<float, kFftSize> in_left_ {}, in_right_ {}, out_left_ {}, out_right_ {};
       std::array<float, kNumBins> gain_ {};
       std::array<float, kNumBins> power_ {};

@@ -34,13 +34,12 @@ endif()
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# JUCE, nlohmann json, concurrentqueue and KISS FFT are git submodules pinned
-# to the exact versions used for validation.
+# JUCE, nlohmann json and concurrentqueue are git submodules pinned to the
+# exact versions used for validation. PFFFT is vendored (third_party/pffft).
 set(ATLAS_JUCE_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/third_party/JUCE8" CACHE PATH "JUCE source directory")
 foreach(dependency "${ATLAS_JUCE_SOURCE}/CMakeLists.txt"
                    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/nlohmann_json/include/nlohmann/json.hpp"
-                   "${CMAKE_CURRENT_SOURCE_DIR}/third_party/concurrentqueue/concurrentqueue.h"
-                   "${CMAKE_CURRENT_SOURCE_DIR}/third_party/kissfft/kissfft.hh")
+                   "${CMAKE_CURRENT_SOURCE_DIR}/third_party/concurrentqueue/concurrentqueue.h")
   if(NOT EXISTS "${dependency}")
     message(FATAL_ERROR "Missing ${dependency}. Fetch the submodules with: git submodule update --init")
   endif()
@@ -89,27 +88,11 @@ set(ATLAS_OPENB3_SOURCES
   src/synthesis/effects/openb3/scanner_vibrato.cpp
   src/synthesis/effects/openb3/whirl.cpp)
 
-# PFFFT replaces JUCE's scalar FFT fallback for the oscillators
-# (src/common/fourier_transform.h, third_party/pffft). On by default where JUCE
-# has no fast FFT engine; turning it on for macOS puts both on the same FFT.
-if(WIN32)
-  set(ATLAS_USE_PFFFT_DEFAULT ON)
-else()
-  set(ATLAS_USE_PFFFT_DEFAULT OFF)
-endif()
-option(ATLAS_USE_PFFFT "Use PFFFT for the oscillators' FFT" ${ATLAS_USE_PFFFT_DEFAULT})
-if(ATLAS_USE_PFFFT)
-  target_sources(Atlas PRIVATE third_party/pffft/pffft.c)
-endif()
-# fourier_transform.h chooses the platform default itself; only a different
-# choice needs the definition, on Atlas and every target built against it.
-if((ATLAS_USE_PFFFT AND NOT WIN32) OR (NOT ATLAS_USE_PFFFT AND WIN32))
-  if(ATLAS_USE_PFFFT)
-    target_compile_definitions(Atlas PUBLIC ATLAS_USE_PFFFT=1)
-  else()
-    target_compile_definitions(Atlas PUBLIC ATLAS_USE_PFFFT=0)
-  endif()
-endif()
+# Every Atlas FFT runs on PFFFT (third_party/pffft) through atlas::Fft
+# (src/common/atlas_fft.h), so macOS and Windows share one transform: NEON on
+# arm64, SSE on x64. pffft.c is C, outside the fast-math synthesis unity build.
+# Only Convolution Reverb keeps juce::dsp::Convolution and the FFT inside it.
+target_sources(Atlas PRIVATE third_party/pffft/pffft.c)
 
 target_sources(Atlas PRIVATE
   # Spectral effects keep IEEE semantics outside the fast-math synthesis unity build.
@@ -708,6 +691,21 @@ if(ATLAS_BUILD_TIMING_TESTS)
     add_dependencies(AtlasDefuseTests AtlasDefuseReference)
     add_test(NAME atlas_defuse_reference COMMAND AtlasDefuseTests "${ATLAS_DEFUSE_REFERENCE}")
   endif()
+
+  # atlas::Fft and atlas::ComplexFft (PFFFT) against juce::dsp::FFT, with the
+  # wrapper and PFFFT built in, so the test does not wait for Atlas.
+  # --benchmark times both (vDSP on macOS).
+  juce_add_console_app(AtlasFftTests PRODUCT_NAME "Atlas FFT Tests")
+  juce_generate_juce_header(AtlasFftTests)
+  target_sources(AtlasFftTests PRIVATE tests/fft_tests.cpp src/common/atlas_fft.cpp third_party/pffft/pffft.c)
+  target_include_directories(AtlasFftTests PRIVATE src/common third_party)
+  target_compile_definitions(AtlasFftTests PRIVATE
+    JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_DSP_USE_SHARED_FFTW=0)
+  target_link_libraries(AtlasFftTests PRIVATE
+    juce::juce_dsp juce::juce_events juce::juce_recommended_config_flags)
+  add_test(NAME atlas_fft COMMAND AtlasFftTests)
+  add_test(NAME atlas_fft_benchmark COMMAND AtlasFftTests --benchmark)
+  set_tests_properties(atlas_fft_benchmark PROPERTIES LABELS cpu)
 
   juce_add_console_app(AtlasSpectralGateTests PRODUCT_NAME "Atlas Spectral Gate Tests")
   juce_generate_juce_header(AtlasSpectralGateTests)

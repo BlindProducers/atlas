@@ -10,7 +10,7 @@
 // Fixed 2048-point STFT, Hann window, 75% overlap, linked stereo: the sum is
 // analysed and one gain curve is applied to both channels.
 #pragma once
-#include <juce_dsp/juce_dsp.h>
+#include "atlas_fft.h"
 #include <array>
 #include <memory>
 
@@ -69,10 +69,10 @@ namespace atlas::spectral_balance {
 
       Parameters parameters_;
       double sample_rate_ = 48000.0;
-      juce::dsp::FFT fft_ { kFftOrder };
+      atlas::Fft fft_ { kFftOrder };
       std::array<float, kFftSize> window_ {};
-      std::array<float, 2 * kFftSize> fft_left_ {};
-      std::array<float, 2 * kFftSize> fft_right_ {};
+      alignas(16) std::array<float, 2 * kFftSize> fft_left_ {};
+      alignas(16) std::array<float, 2 * kFftSize> fft_right_ {};
       std::array<float, kFftSize> in_left_ {}, in_right_ {}, out_left_ {}, out_right_ {};
       int position_ = 0;
       int hop_position_ = 0;

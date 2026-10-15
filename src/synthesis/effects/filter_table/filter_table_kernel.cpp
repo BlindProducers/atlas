@@ -31,7 +31,7 @@ namespace atlas::filter_table {
   void FrameAnalyser::analyse(const float* waveform, Frame& out) {
     std::copy_n(waveform, kFrameSize, buffer_.begin());
     std::fill(buffer_.begin() + kFrameSize, buffer_.end(), 0.0f);
-    fft_->performRealOnlyForwardTransform(buffer_.data(), true);
+    fft_.performRealOnlyForwardTransform(buffer_.data(), true);
     const float scale = 2.0f / kFrameSize;
     out.harmonics[0] = 0.0f;
     for (int n = 1; n <= kNumHarmonics; ++n)
@@ -46,7 +46,7 @@ namespace atlas::filter_table {
 
   KernelBuilder::KernelBuilder(int order, int design_order) :
       order_(order), size_(1 << order), design_order_(std::max(order, design_order)),
-      design_size_(1 << design_order_), fft_(sharedFft(design_order_)), grid_(design_size_ / 2 + 1),
+      design_size_(1 << design_order_), fft_(design_order_), grid_(design_size_ / 2 + 1),
       complex_a_(design_size_), complex_b_(design_size_), period_(2 * kFrameSize) {}
 
   void KernelBuilder::tiltedMagnitudes(const Frame& frame, const Parameters& p) {
@@ -133,7 +133,7 @@ namespace atlas::filter_table {
       }
       complex_a_[half] = std::complex<float>(complex_a_[half].real() * std::cos(kPi * sub_sample_offset), 0.0f);
     }
-    fft_->perform(complex_a_.data(), complex_b_.data(), true);
+    fft_.perform(complex_a_.data(), complex_b_.data(), true);
     for (int t = 0; t < size_; ++t) kernel[t] = complex_b_[(t - zero) & (n - 1)].real();
   }
 
@@ -148,12 +148,12 @@ namespace atlas::filter_table {
       complex_a_[k] = value;
       if (k > 0 && k < half) complex_a_[n - k] = value;
     }
-    fft_->perform(complex_a_.data(), complex_b_.data(), true);          // real cepstrum
+    fft_.perform(complex_a_.data(), complex_b_.data(), true);           // real cepstrum
     for (int i = 0; i < n; ++i) {
       const float c = complex_b_[i].real();
       complex_a_[i] = i == 0 || i == half ? c : (i < half ? 2.0f * c : 0.0f);
     }
-    fft_->perform(complex_a_.data(), complex_b_.data(), false);
+    fft_.perform(complex_a_.data(), complex_b_.data(), false);
     for (int i = 0; i < n; ++i) complex_a_[i] = std::exp(complex_b_[i]);
     finishKernel(std::isfinite(p.offset_override) ? p.offset_override : kMinimumOffset, 0, kernel);
     smooth(kernel);
@@ -209,7 +209,7 @@ namespace atlas::filter_table {
     }
     // JUCE's real inverse divides by N; cosine amplitudes need N / 2 to come
     // back as written, and one period of a kernel carries 2 / period.
-    frame_fft_->performRealOnlyInverseTransform(period_.data());
+    frame_fft_.performRealOnlyInverseTransform(period_.data());
     const float ratio = std::max(p.cutoff_hz, 1.0f) / referenceCutoff(p.sample_rate);   // native period / period
     const float period = float(kReferencePeriod) / ratio;
     const float scale = float(kFrameSize) / 2.0f * 2.0f / period;

@@ -39,7 +39,7 @@ namespace atlas::spectral_lock::retune {
       fft_size_ = 1 << order;
       hop_size_ = fft_size_ / 4;
       num_bins_ = fft_size_ / 2 + 1;
-      fft_ = std::make_unique<juce::dsp::FFT>(order);
+      fft_ = std::make_unique<atlas::Fft>(order);
       window_.assign(size_t(fft_size_), 0.0f);
       for (int i = 0; i < fft_size_; ++i)
         window_[size_t(i)] = 0.5f - 0.5f * std::cos(kTwoPi * float(i) / float(fft_size_));

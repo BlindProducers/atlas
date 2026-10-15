@@ -70,7 +70,7 @@ namespace vital {
     spectrum_floats_ = 2 * kBlock + 2;
     const int order = mono_ ? kFxOrder : kVoiceOrder;
     builder_ = std::make_unique<KernelBuilder>(order, order);
-    fft_ = atlas::sharedFft(kBlockOrder + 1);
+    fft_ = std::make_unique<atlas::Fft>(kBlockOrder + 1);
     history_.assign(4 * kBlock, 0.0f);      // written twice, so the last 2 * kBlock samples are contiguous
     for (auto& lane : fdl_) lane.assign(partitions_ * spectrum_floats_, 0.0f);
     for (auto& tail : tail_) tail.assign(kBlock, 0.0f);

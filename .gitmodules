@@ -6,10 +6,6 @@
 	path = third_party/concurrentqueue
 	url = https://github.com/cameron314/concurrentqueue.git
 	shallow = true
-[submodule "third_party/kissfft"]
-	path = third_party/kissfft
-	url = https://github.com/mborgerding/kissfft.git
-	shallow = true
 [submodule "third_party/nlohmann_json"]
 	path = third_party/nlohmann_json
 	url = https://github.com/ArthurSonzogni/nlohmann_json_cmake_fetchcontent.git

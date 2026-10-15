@@ -1199,7 +1199,8 @@ void voiceFilterCpu() {
 
 // Time of one transform of the sizes Atlas uses on the audio thread: the
 // wavetable oscillator's 2048-point real inverse (vital::FourierTransform),
-// and juce::dsp::FFT at 2048 and 8192 points (spectral effects).
+// and atlas::Fft at 2048 and 8192 points (spectral effects), all on PFFFT,
+// with juce::dsp::FFT (vDSP on macOS) timed the same way for comparison.
 void fftCpu() {
   auto time = [](const char* name, int iterations, auto&& function) {
     for (int i = 0; i < iterations / 10; ++i) function();
@@ -1227,15 +1228,21 @@ void fftCpu() {
     });
   }
   for (int order : { 11, 13 }) {
-    juce::dsp::FFT fft(order);
+    juce::dsp::FFT juce_fft(order);
+    atlas::Fft fft(order);
     const int size = 1 << order;
     std::vector<float> input(2 * size), data(2 * size);
     for (int i = 0; i < size; ++i) input[i] = random.nextFloat() - .5f;
-    const std::string label = "juce::dsp::FFT real forward+inverse " + std::to_string(size);
-    time(label.c_str(), order == 11 ? 20000 : 4000, [&] {
+    const std::string label = "real forward+inverse " + std::to_string(size);
+    time(("atlas::Fft " + label).c_str(), order == 11 ? 20000 : 4000, [&] {
       std::copy(input.begin(), input.end(), data.begin());
       fft.performRealOnlyForwardTransform(data.data(), true);
       fft.performRealOnlyInverseTransform(data.data());
+    });
+    time(("juce::dsp::FFT " + label).c_str(), order == 11 ? 20000 : 4000, [&] {
+      std::copy(input.begin(), input.end(), data.begin());
+      juce_fft.performRealOnlyForwardTransform(data.data(), true);
+      juce_fft.performRealOnlyInverseTransform(data.data());
     });
   }
 }

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "synth_module.h"
+#include "atlas_fft.h"
 #include "JuceHeader.h"
 
 #include <array>
@@ -43,9 +44,9 @@ namespace vital {
       Output* mix_ = nullptr;
       Value* tilt_enabled_ = nullptr;
       Value* fft_size_control_ = nullptr;
-      std::array<std::unique_ptr<juce::dsp::FFT>, kNumFftSizes> ffts_;
+      std::array<std::unique_ptr<atlas::Fft>, kNumFftSizes> ffts_;
       std::array<std::vector<float>, kNumFftSizes> windows_;
-      std::array<float, 2 * kMaxFftSize> fft_buffer_ {};
+      alignas(16) std::array<float, 2 * kMaxFftSize> fft_buffer_ {};
       std::array<poly_float, kMaxFftSize> input_buffer_;
       std::array<poly_float, kMaxFftSize> output_buffer_;
       int fft_index_ = kFftOrder - kMinFftOrder;
