@@ -2871,8 +2871,11 @@ namespace {
 #include "sample_hold_filter_tests.h"
 #include "release_velocity_glide_tests.h"
 #include "analog_oscillator_tests.h"
+#include "distortion_filter_tests.h"
 
 int main(int argc, char** argv) {
+  if (argc > 1 && std::string(argv[1]) == "--distortion-filter")
+    return distortion_filter_tests::run();
   if (argc > 1 && std::string(argv[1]) == "--analog-oscillator")
     return analog_oscillator_tests::runDsp();
   if (argc > 1 && std::string(argv[1]) == "--analog-oscillator-controls")

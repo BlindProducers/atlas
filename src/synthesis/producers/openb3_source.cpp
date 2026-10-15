@@ -42,20 +42,30 @@ namespace vital {
     return result;
   }
 
+  void OpenB3Source::release(openb3::Voice& voice, float level) {
+    if (!voice.active() || !voice.held())
+      return;
+    // Each key's contacts open at their own random moments.
+    uint32_t seed = static_cast<uint32_t>(voice.key() + 1) * 2246822519u + ++strike_count_;
+    const int length = openb3::makeContactEnvelopes(release_envelopes_.data(), false, level, organ_->sampleRate(),
+                                                    organ_->fragmentLength(), seed);
+    voice.noteOff(release_envelopes_.data(), length);
+  }
+
   void OpenB3Source::strike(VoiceState& state, float note, int offset, const openb3::Registration& registration,
-                            float click, const double* frequencies) {
+                            float click, float release_click, const double* frequencies) {
     const int key = std::clamp(static_cast<int>(std::lround(note)) - openb3::kFirstKeyNote, 0, openb3::kNumKeys - 1);
     // The lane moves to another key: the old one's contacts open and it fades.
     if (state.voice.active() && state.voice.key() != key) {
       std::swap(state.voice, state.fading);
-      state.fading.noteOff();
+      release(state.fading, release_click);
     }
     // Each strike's contacts close at their own random moments.
     uint32_t seed = static_cast<uint32_t>(key + 1) * 2654435761u + ++strike_count_;
-    const int length = organ_->fragmentLength();
-    openb3::makeClickEnvelopes(envelopes_.data(), length, organ_->sampleRate(), click, seed);
+    const int length = openb3::makeContactEnvelopes(envelopes_.data(), true, click, organ_->sampleRate(),
+                                                    organ_->fragmentLength(), seed);
     state.voice.setPitchRatio(std::exp2((note - (key + openb3::kFirstKeyNote)) / 12.0));
-    state.voice.noteOn(key, organ_->time() + offset, registration, envelopes_.data(), *organ_, frequencies);
+    state.voice.noteOn(key, organ_->time() + offset, registration, envelopes_.data(), length, *organ_, frequencies);
     organ_->keyPressed(offset);
     state.key_down = true;
   }
@@ -122,6 +132,7 @@ namespace vital {
       const openb3::Registration settings = registration(lane);
       frequencies = openb3::tables().frequencies[static_cast<size_t>(settings.temperament)].data();
       const float click = std::clamp(input(kKeyClick)->at(0)[lane], 0.0f, 1.0f);
+      const float release_click = std::clamp(input(kReleaseClick)->at(0)[lane], 0.0f, 1.0f);
       organ_->setPercussion(settings.percussion_soft, settings.percussion_fast);
       if (reset_mask[lane]) {
         state.voice.clear();
@@ -131,6 +142,11 @@ namespace vital {
       }
       state.voice.setRegistration(settings, frequencies);
       state.fading.setRegistration(settings, frequencies);
+      // A key released under Envelope 1 keeps its contacts closed; once the
+      // organ shapes the notes again they open, or the voice would be held
+      // open for ever.
+      if (hold_enabled && !state.key_down)
+        release(state.voice, release_click);
 
       int event = -1;
       int offset = count;
@@ -142,16 +158,16 @@ namespace vital {
       render(state, mono, 0, offset, count, state.note, note);
       if (event == kVoiceOn)
         strike(state, state.note + (note - state.note) * (static_cast<float>(offset) / count), offset, settings, click,
-               frequencies);
+               release_click, frequencies);
       else if (event == kVoiceOff) {
         state.key_down = false;
         // With Envelope 1 the wheels sound on through its release.
         if (hold_enabled)
-          state.voice.noteOff();
+          release(state.voice, release_click);
       }
       else if (event == kVoiceKill) {
         state.key_down = false;
-        state.voice.noteOff();
+        release(state.voice, release_click);
       }
       render(state, mono, offset, count, count, state.note, note);
       state.note = note;

@@ -42,6 +42,7 @@ namespace sample_navigation {
     MemoryBlock state;
     {
       SynthPlugin original;
+      slot_ids::useLegacySourceTypes(original);
       original.getControls().at("portamento_glide_zones")->set(1);
       std::array<float, 512> audio {};
       for (int i = 0; i < audio.size(); ++i) audio[i] = .2f * std::sin(i * .09f);

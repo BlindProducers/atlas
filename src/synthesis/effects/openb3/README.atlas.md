@@ -69,9 +69,27 @@ the reverb and the rotary speaker in turn. Atlas splits it like this:
   are scaled the same way.
 - tonegen.c draws its 8 attack envelopes once, when it starts, and a wheel
   gets the one for its place in the list of sounding wheels. Atlas draws a new
-  set for every key strike (with its own random generator), so no two strikes
-  click alike, and gives each wheel the one for its place in the key's list:
-  for a single key from silence that is the same assignment.
+  set for every key strike and release (with its own random generator), so no
+  two click alike, and gives each wheel the one for its place in the key's
+  list: for a single key from silence that is the same assignment.
+- Releases use setBfree's "click" release model (`osc.release.model`) instead
+  of OpenB3's linear fade, so a key clicks as it opens as well as when it
+  closes.
+- Key Click and Release Click set the contacts (`makeContactEnvelopes`). At
+  50%, their default, they are tonegen.c's ENV_CLICK model as setBfree sets it:
+  `osc.attack.click.level` 0.5 and `osc.release.click.level` 0.25, bursts of 8
+  to 40 samples at 22.05 kHz closing and 8 to 39 at 48 kHz opening, within a
+  fragment. setBfree's own range only reaches the noise inside that burst, so
+  changing it is hard to hear. Below 50% each contact closes (or opens) through
+  a raised-cosine ramp that widens to about 5 ms at 0%, with less noise: at 0%
+  nothing clicks. Above 50% the contacts wear: the noise deepens to full, the
+  bursts grow up to 8 times longer (about 10 ms) and the two-point smoothing
+  goes. Over 40 strikes, the attack click goes from none at 0% to about 18 dB
+  above setBfree's at 100%, and the release from a clean fade to about 19 dB
+  above setBfree's.
+- A key released under Envelope 1 keeps its contacts closed through Env 1's
+  release. When the slot is switched back to Organ, the contacts of every key
+  no longer down open, so no voice is held open.
 - Key compression and the percussion envelope follow the keys held at the end
   of the previous block (the voices check in as they finish a block), as
   tonegen.c reads `keyDownCount` and `upperKeyCount` between fragments. A key
@@ -131,7 +149,8 @@ reference tests compare against it:
   tonegen.c's loop frequencies and attack envelopes, with fragment-aligned
   keys: single keys across the manual for seven registrations, with and
   without percussion, match to a residual of -45 to -88 dB (the wave tables'
-  dither and loop seams), and a chord to -45 dB. Percussion through legato
+  dither and loop seams), and a chord to -45 dB. With tonegen.c's click
+  release model and its release envelopes, releases match to -63 to -78 dB. Percussion through legato
   playing matches tonegen.c's level within 1 dB.
 - `--scanner-reference`: the scanner is bit-identical to `vibratoProc` for
   every mode at three rates of the scanner, in uneven blocks.

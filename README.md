@@ -38,8 +38,9 @@ Atlas has eight oscillators. Each one chooses a **Type**:
   Each oscillator has a full wavetable editor: layers of wave, line and audio file
   sources with modifiers and keyframes, audio import as a splice, vocoded or pitched
   table, and export as a wavetable or WAV file.
-- **Analog**: a virtual analog oscillator with classic waveforms, shape and a sub
-  oscillator.
+- **Analog**: a virtual analog oscillator with classic waveforms, shape, a sub
+  oscillator, and aging controls for pitch drift, per-voice spread, worn waveforms,
+  power supply sag, hiss and crackle, and mains hum.
 - **Sample**: plays an audio file with start, loop and playback controls.
 - **Granular**: plays a sample as clouds of grains, with density, size and spread.
 - **Spectral**: resynthesises a sample from its spectrum, with shift, stretch, blur,
@@ -53,8 +54,11 @@ warp modes. Oscillators can modulate each other with FM and ring modulation.
 ## Filters
 
 Two filters with Vital's models (Analog, Dirty, Ladder, Digital, Diode, Formant,
-Comb, Phaser) plus Atlas's Reverb, Scream, Ring Mod, Sample & Hold and Wavetable
-models. The Wavetable model filters with any wavetable's frames as a response curve.
+Comb, Phaser) plus Atlas's Reverb, Scream, Ring Mod, Sample & Hold, Wavetable and
+Distortion models. The Wavetable model filters with any wavetable's frames as a
+response curve. The Distortion model is the Distortion effect, with all six types
+and its filter, working on each note on its own, so chords gain no extra tones
+between their notes.
 The filters run in parallel or in series and each sends its output to its own
 destination.
 
@@ -101,7 +105,8 @@ slots of its own.
   Loop Point and Loop Hold loop part of the shape. Fade, delay, smoothing, stereo
   phase, deform and swing shape it further.
 - **10 envelopes** with delay, attack, hold, decay, sustain and release, curve
-  controls and tempo-synced times.
+  controls and tempo-synced times. Envelope 1 also has an analog mode with RC curves
+  and its own Age control for worn timing.
 - **4 random LFOs**: Perlin, Sample & Hold, Sine Interpolate and Lorenz Attractor,
   free or tempo synced, mono or stereo.
 - **16 macros**, plus velocity, aftertouch, mod wheel, pitch bend, note and other
@@ -114,7 +119,7 @@ slots of its own.
   (typed in the destination's own units when assigned), bipolar or unipolar
   polarity, stereo, a curve and a remap shape. A slot in use has a Clear modulation
   slot button.
-- **Two arpeggiators** with styles, steps, gate, repeats, velocity and hold, at
+- **Two arpeggiators** with styles, steps, octave, gate, repeats, velocity and hold, at
   tempo-synced or free rates, each playing the oscillators you choose.
 
 ## Building
@@ -142,6 +147,12 @@ The plugins are written to `build/Atlas_artefacts/Release`. Copy the whole
 `Atlas.vst3` folder, which includes the Tape effect's resources, to your VST3 folder
 (`C:\Program Files\Common Files\VST3` on Windows).
 On macOS the Audio Unit goes to `~/Library/Audio/Plug-Ins/Components`.
+
+On macOS, `installer/macos/build_pkg.sh` turns that build into an installer,
+`dist/Atlas-<version>-macOS.pkg`, which installs the VST3 and the Audio Unit for
+all users in `/Library/Audio/Plug-Ins`. Every push to `dev` is also built on
+GitHub Actions, and the installer and plugins are published as the "dev build"
+pre-release on the Releases page.
 
 Atlas keeps its presets, wavetables, samples and effect presets in
 `Documents/Blind Producers Plugins/Atlas`.

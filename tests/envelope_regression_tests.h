@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include "editor_navigation.h"
 #include "../src/plugin/synth_editor.h"
 #include "slot_test_ids.h"
 #include "../src/common/envelope_time_utils.h"
@@ -229,12 +230,7 @@ namespace envelope_regressions {
     return nullptr;
   }
   bool select(Component& c, const String& title, const String& choice) {
-    auto* combo = dynamic_cast<ComboBox*>(withTitle(c, title));
-    if (combo == nullptr) return false;
-    for (int i = 0; i < combo->getNumItems(); ++i) if (combo->getItemText(i) == choice) {
-      combo->setSelectedItemIndex(i, sendNotificationSync); return true;
-    }
-    return false;
+    return editor_navigation::focusHeading(c, title, choice);
   }
   ValueBridge* bridgeFor(SynthPlugin& p, const std::string& name) {
     for (auto* parameter : p.getParameters()) if (auto* bridge = dynamic_cast<ValueBridge*>(parameter))
@@ -333,8 +329,87 @@ namespace envelope_regressions {
       }
   }
 
+  // Envelope 1's analog mode: RC curves, carrying on from the current level,
+  // and Age for worn timing parts.
+  void testAnalogMode() {
+    using E = vital::Envelope;
+    constexpr int rate = 48000;
+    auto make = [rate](float age) {
+      auto f = std::make_unique<EnvelopeFixture>(rate);
+      f->env.setVoiceCardSalt("env_1");
+      f->controls[E::kAnalogMode].set(1);
+      f->controls[E::kAnalogAge].set(age);
+      f->controls[E::kAttack].set(.1f);
+      f->controls[E::kDecay].set(1);
+      f->controls[E::kSustain].set(.5f);
+      f->controls[E::kRelease].set(1);
+      return f;
+    };
+    auto value = [](EnvelopeFixture& f) { return f.env.output()->buffer[0][0]; };
+    // Samples until the attack peaks, and the level halfway through the Attack time.
+    auto attack = [&](EnvelopeFixture& f, float& halfway, float& peak) {
+      f.event(vital::kVoiceOn, 0, true);
+      int samples = 0;
+      float last = -1.0f;
+      for (; samples < rate * 2; ++samples) {
+        f.process(1);
+        if (samples == rate / 20)
+          halfway = value(f);
+        if (value(f) <= last)
+          break;
+        last = value(f);
+      }
+      peak = last;
+      return samples;
+    };
+
+    auto plain = make(0.0f);
+    float halfway = 0.0f, peak = 0.0f;
+    const int attack_samples = attack(*plain, halfway, peak);
+    std::cout << "Analog envelope: attack " << 1000.0 * attack_samples / rate << " ms, halfway " << halfway << '\n';
+    check(std::abs(attack_samples - rate / 10) < rate / 500, "analog attack takes the Attack time");
+    check(halfway > .6f, "analog attack rises fast and bends over at the top");
+    check(peak == 1.0f, "unworn analog attack peaks at full level");
+
+    for (int i = 0; i < rate / 2; ++i) plain->process(1);
+    check(std::abs(value(*plain) - .55f) < .01f, "analog decay falls exponentially");
+    for (int i = 0; i < rate / 2; ++i) plain->process(1);
+    check(std::abs(value(*plain) - .5f) < .006f, "analog decay reaches sustain in the Decay time");
+
+    plain->event(vital::kVoiceOff);
+    for (int i = 0; i < rate / 2; ++i) plain->process(1);
+    const float releasing = value(*plain);
+    check(std::abs(releasing - .05f) < .005f, "analog release falls exponentially");
+    plain->event(vital::kVoiceOn);
+    plain->process(1);
+    check(value(*plain) >= releasing, "a new note carries on from the current level");
+    plain->event(vital::kVoiceOff);
+    for (int i = 0; i < rate * 3; ++i) plain->process(1);
+    check(value(*plain) == 0.0f, "analog release ends in silence so the voice can stop");
+
+    // Age: worn timing that is the same each load, a lower peak and a leaking sustain.
+    auto worn = make(1.0f), again = make(1.0f);
+    float worn_halfway = 0.0f, worn_peak = 0.0f, again_halfway = 0.0f, again_peak = 0.0f;
+    const int worn_samples = attack(*worn, worn_halfway, worn_peak);
+    const int again_samples = attack(*again, again_halfway, again_peak);
+    for (int i = 0; i < rate * 5; ++i) worn->process(1);
+    std::cout << "Worn envelope: attack " << 1000.0 * worn_samples / rate << " ms, peak " << worn_peak
+              << ", sustain after 5 s " << value(*worn) << '\n';
+    check(worn_samples != attack_samples && worn_samples > rate / 25 && worn_samples < rate / 4,
+          "Age changes the attack time within an octave or so");
+    check(worn_samples == again_samples && worn_peak == again_peak, "worn timing is the same every load");
+    check(worn_peak <= 1.0f && worn_peak >= .64f, "Age lowers the attack peak a little");
+    check(value(*worn) < .5f * .85f, "Age makes sustain leak away");
+
+    auto sluggish = make(1.0f);
+    sluggish->controls[E::kAttack].set(.0005f);
+    float sluggish_halfway = 0.0f, sluggish_peak = 0.0f;
+    check(attack(*sluggish, sluggish_halfway, sluggish_peak) > rate / 40, "Age makes the shortest attack sluggish");
+  }
+
   int run() {
     juce::ScopedJuceInitialiser_GUI gui;
+    testAnalogMode();
     testFreshVoiceAndAudibleRetrigger(); testDelayBehaviorPreserved(); testVoiceOwnershipHandoff();
     for (int env : {1,2}) for (int model : {0,1,2,3,4,7}) testRenderedFallback(model,env);
     for (int bus : {1,2,3}) testRenderedFallback(3,2,0,48000,bus);

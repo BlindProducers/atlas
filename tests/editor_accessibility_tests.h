@@ -741,6 +741,7 @@ namespace {
   // Sample/Granular playheads are offered as modulation sources.
   void testSlotTypeRowsFollowTheType() {
     SynthPlugin synth;
+    slot_ids::useLegacySourceTypes(synth);
     SynthEditor editor(synth);
     editor.updateFullGui();
     pumpEditorEvents();
@@ -832,6 +833,7 @@ namespace {
   // Any slot switched to Wavetable gets the wavetable actions and editor, not just slots 1-4.
   void testWavetableEditingOnASlotSwitchedToWavetable() {
     SynthPlugin synth;
+    slot_ids::useLegacySourceTypes(synth);
     SynthEditor editor(synth);
     editor.updateFullGui();
     editor.addToDesktop(0);
@@ -1082,22 +1084,18 @@ namespace {
     auto on_slot = [&](const String& section, const String& title) {
       return focused_title() == title && focused_section() == section;
     };
-    auto select = [&](const String& title, const String& item) {
-      auto* selector = dynamic_cast<ComboBox*>(titled(editor, title));
-      for (int index = 0; selector != nullptr && index < selector->getNumItems(); ++index) {
-        if (selector->getItemText(index) == item) {
-          selector->setSelectedItemIndex(index, sendNotificationSync);
-          return true;
-        }
-      }
-      return false;
+    // Reach an element as a keyboard user does: F for the Filters group, then
+    // the number that chooses the element in it.
+    auto start_on_filter = [&](const String& section) {
+      press(KeyPress('f', ModifierKeys(), 'f'));
+      for (int digit = 1; digit <= 9 && focused_section() != section; ++digit)
+        press(KeyPress('0' + digit, ModifierKeys(), static_cast<juce_wchar>('0' + digit)));
+      return focused_section() == section;
     };
 
     const String chain = "Chain and routing", bus_1 = "Bus 1 - Chain and routing",
                  bus_2 = "Bus 2 - Chain and routing", bus_3 = "Bus 3 - Chain and routing";
-    expect(select("Editor group", "Filters") && select("Editor element", "Filter 2") &&
-               focused_section() == "Filter 2",
-           "the walk starts on Filter 2");
+    expect(start_on_filter("Filter 2"), "the walk starts on Filter 2");
     press(period);
     expect(on_chain(chain), "period from Filter 2 reaches the effects chain");
     press(period);
@@ -1477,6 +1475,7 @@ namespace {
 
   void testOscillatorRowGroups() {
     SynthPlugin synth;
+    slot_ids::useLegacySourceTypes(synth);
     SynthEditor editor(synth);
     editor.updateFullGui();
     pumpEditorEvents();
@@ -1556,6 +1555,7 @@ namespace {
 
     // Every type reads the same way: output rows, controls, pitch, warp.
     SynthPlugin typed;
+    slot_ids::useLegacySourceTypes(typed);
     typed.parameterChanged("osc_2_type", float(vital::source_types::kAnalog));
     SynthEditor typed_editor(typed);
     typed_editor.updateFullGui();
@@ -1597,6 +1597,7 @@ namespace {
   // enter, holding one row per oscillator named "Oscillator N, <type>".
   void testArpeggiatorDestinationsAreAGroup() {
     SynthPlugin synth;
+    slot_ids::useLegacySourceTypes(synth);
     SynthEditor editor(synth);
     editor.updateFullGui();
     pumpEditorEvents();
@@ -1686,6 +1687,7 @@ namespace {
 
   void testGranularSizeModeNamesBothChoices() {
     SynthPlugin synth;
+    slot_ids::useLegacySourceTypes(synth);
     SynthEditor editor(synth);
     pumpEditorEvents();
     const auto valueText = [&]() {
@@ -1902,6 +1904,27 @@ namespace {
       }
       expect(!titled(*group, "Gate Release") && !titled(*group, "Damp") && !titled(*group, "Drive"),
              "Scream filter hides effect gate and unrelated filter controls");
+      synth.parameterChanged(filter_prefix + "model", vital::constants::kDistortionFilter);
+      pumpEditorEvents();
+      group = editorSection(editor, section, 19);
+      for (const char* name : { "Distortion Drive", "Distortion Filter Order", "Cutoff", "Resonance",
+                                "Filter blend, low pass to high pass", "Mix" }) {
+        auto* control = group ? titled(*group, name) : nullptr;
+        expect(control && control->isVisible() && control->getWidth() > 0,
+               std::string("Distortion Filter FX exposes its control: ") + name);
+      }
+      expect(group && !titled(*group, "Drive") && !titled(*group, "Comb Blend Offset"),
+             "Distortion Filter FX hides the filter drive it does not use");
+      if (auto* drive = slider(group, "Distortion Drive"))
+        expect(valueText(drive).contains("dB"), "Distortion Filter FX announces its drive in decibels");
+      if (auto* type = menu(group, "Distortion type")) {
+        StringArray items;
+        for (int i = 0; i < type->getNumItems(); ++i)
+          items.add(type->getItemText(i));
+        expect(items == StringArray { "Soft Clip", "Hard Clip", "Linear Fold", "Sine Fold", "Bit Crush", "Down Sample" },
+               "The Distortion model offers every type of the Distortion effect: " +
+                   items.joinIntoString(", ").toStdString());
+      }
       auto* untouched = editorSection(editor, section, 18);
       expect(untouched && !titled(*untouched, "Comb Blend Offset") && !titled(*untouched, "Formant X"),
              "Changing one filter preserves another filter in the same chain");
@@ -1930,6 +1953,18 @@ namespace {
       }
       expect(!titled(*group, "Filter " + String(voice_filter) + " Gate Release"),
              "Voice Scream relies on Env 1, with no gate release control");
+      synth.parameterChanged(prefix + "model", vital::constants::kDistortionFilter);
+      pumpEditorEvents();
+      group = editorSection(editor, "Filter " + String(voice_filter));
+      for (const char* name : { "Distortion Drive", "Distortion Filter Order", "Cutoff", "Resonance", "Mix", "Key Track" }) {
+        auto* control = group ? titled(*group, "Filter " + String(voice_filter) + " " + name) : nullptr;
+        expect(control && control->isVisible() && control->getWidth() > 0 && control->getWantsKeyboardFocus(),
+               std::string("Voice Distortion exposes a keyboard-accessible control: ") + name);
+      }
+      expect(group && !titled(*group, "Filter " + String(voice_filter) + " Drive"),
+             "Voice Distortion hides the filter drive it does not use");
+      expect(group && dynamic_cast<ComboBox*>(titled(*group, "Distortion type")) != nullptr,
+             "Voice Distortion offers its type as a menu");
       synth.parameterChanged(prefix + "model", vital::constants::kAnalog);
       pumpEditorEvents();
       group = editorSection(editor, "Filter " + String(voice_filter));

@@ -1325,6 +1325,31 @@ namespace vital {
       ValueDetails::kIndexed, false, "", "Arpeggiator 2 Destination Oscillator 7", strings::kOffOnNames },
     { "arp_2_destination_osc_8", 0x020114, 0.0, 1.0, 1.0, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Arpeggiator 2 Destination Oscillator 8", strings::kOffOnNames },
+
+    // How often Beat retrigger restarts each arpeggiator, appended by version
+    // to preserve every existing host parameter ID.
+    { "arp_1_retrigger_division", 0x02011e, 0.0, 8.0, 4.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Arpeggiator 1 Retrigger Division", strings::kArpRetriggerDivisionNames },
+    { "arp_2_retrigger_division", 0x02011e, 0.0, 8.0, 4.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Arpeggiator 2 Retrigger Division", strings::kArpRetriggerDivisionNames },
+    // Arpeggiator play order, appended by version to preserve every existing host parameter ID.
+    { "arp_1_play_order", 0x02011f, 0.0, 1.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Arpeggiator 1 Play Order", strings::kArpPlayOrderNames },
+    { "arp_2_play_order", 0x02011f, 0.0, 1.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Arpeggiator 2 Play Order", strings::kArpPlayOrderNames },
+    // How many times each arpeggiator pattern plays, appended by version to
+    // preserve every existing host parameter ID. Infinite matches older patches.
+    { "arp_1_loop", 0x020120, 0.0, 16.0, 16.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Arpeggiator 1 Loop", strings::kArpLoopNames },
+    { "arp_2_loop", 0x020120, 0.0, 16.0, 16.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Arpeggiator 2 Loop", strings::kArpLoopNames },
+
+    // Octave each arpeggiator plays in relative to the held keys, appended by
+    // version to preserve every existing host parameter ID. 0 matches older patches.
+    { "arp_1_octave", 0x020122, -4.0, 4.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, " octaves", "Arpeggiator 1 Octave", nullptr },
+    { "arp_2_octave", 0x020122, -4.0, 4.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, " octaves", "Arpeggiator 2 Octave", nullptr },
   };
 
   const ValueDetails ValueDetailsLookup::env_parameter_list[] = {
@@ -1465,6 +1490,10 @@ namespace vital {
       ValueDetails::kIndexed, false, "", "Autogain", strings::kOffOnNames },
     { "table_frame", 0x020118, 0.0, 256.0, 0.0, 0.0, 1.0,
       ValueDetails::kLinear, false, "", "Wavetable Frame", nullptr },
+    { "distortion_drive", 0x020125, Distortion::kMinDrive, Distortion::kMaxDrive, 0.0, 0.0, 1.0,
+      ValueDetails::kLinear, false, " dB", "Distortion Drive", nullptr },
+    { "distortion_filter_order", 0x020125, 0.0, 2.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Distortion Filter Order", strings::kDistortionFilterOrderNames },
   };
 
   const ValueDetails ValueDetailsLookup::osc_parameter_list[] = {
@@ -1524,11 +1553,11 @@ namespace vital {
       ValueDetails::kLinear, false, "", "Unison Frame Spread", nullptr },
     { "stereo_spread", 0x000000, 0.0, 1.0, 1.0, 0.0, 100.0,
       ValueDetails::kLinear, false, "%", "Stereo Spread", nullptr },
-    { "phase", 0x000000, 0.0, 1.0, 0.5, 0.0, 360.0,
+    { "phase", 0x000000, 0.0, 1.0, 0.0, 0.0, 360.0,
       ValueDetails::kLinear, false, "", "Phase", nullptr },
     { "distortion_phase", 0x000000, 0.0, 1.0, 0.5, 0.0, 360.0,
       ValueDetails::kLinear, false, "", "Distortion Phase", nullptr },
-    { "random_phase", 0x000000, 0.0, 1.0, 1.0, 0.0, 100.0,
+    { "random_phase", 0x000000, 0.0, 1.0, 0.0, 0.0, 100.0,
       ValueDetails::kLinear, false, "%", "Phase Randomization", nullptr },
     { "distortion_type", 0x000000, 0.0, SynthOscillator::kNumDistortionTypes - 1, 0.0, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Distortion Type", strings::kPhaseDistortionNames },
@@ -1576,6 +1605,22 @@ namespace vital {
       ValueDetails::kIndexed, false, "", "Sub Octave", strings::kSubOctaveNames },
     { "sub_waveform", 0x020113, 0.0, analog::kNumSubWaveforms - 1, analog::kSubSquare, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Sub Waveform", strings::kSubWaveformNames },
+    // Analog aging, appended by version. Every amount defaults to 0, which leaves
+    // the oscillator exactly as before.
+    { "analog_drift", 0x020124, 0.0, 1.0, 0.0, 0.0, 100.0,
+      ValueDetails::kLinear, false, "%", "Analog Drift", nullptr },
+    { "analog_voice_spread", 0x020124, 0.0, 1.0, 0.0, 0.0, 100.0,
+      ValueDetails::kLinear, false, "%", "Analog Voice Spread", nullptr },
+    { "analog_wear", 0x020124, 0.0, 1.0, 0.0, 0.0, 100.0,
+      ValueDetails::kLinear, false, "%", "Analog Wear", nullptr },
+    { "analog_noise", 0x020124, 0.0, 1.0, 0.0, 0.0, 100.0,
+      ValueDetails::kLinear, false, "%", "Analog Noise", nullptr },
+    { "analog_hum", 0x020124, 0.0, 1.0, 0.0, 0.0, 100.0,
+      ValueDetails::kLinear, false, "%", "Analog Hum", nullptr },
+    { "analog_hum_frequency", 0x020124, 0.0, 1.0, 1.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Analog Hum Frequency", strings::kHumFrequencyNames },
+    { "analog_sag", 0x020124, 0.0, 1.0, 0.0, 0.0, 100.0,
+      ValueDetails::kLinear, false, "%", "Analog Supply Sag", nullptr },
   };
 
   // Sample oscillator type: registered once per oscillator slot as osc_N_sample_*.
@@ -1869,9 +1914,13 @@ namespace vital {
       ValueDetails::kIndexed, false, "", "OpenB3 Percussion Decay", strings::kOpenB3PercussionDecayNames },
     { "b3_percussion_harmonic", 0x000000, 0.0, 1.0, 1.0, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "OpenB3 Percussion Harmonic", strings::kOpenB3PercussionHarmonicNames },
-    // osc.attack.click.level: the contact noise when a key closes.
+    // The contacts as a key closes and opens: 0% a clean fade, 50% setBfree's
+    // click model (osc.attack.click.level 0.5, osc.release.click.level 0.25),
+    // 100% worn contacts chattering for up to about 10 ms.
     { "b3_key_click", 0x000000, 0.0, 1.0, 0.5, 0.0, 100.0,
       ValueDetails::kLinear, false, "%", "OpenB3 Key Click", nullptr },
+    { "b3_release_click", 0x000000, 0.0, 1.0, 0.5, 0.0, 100.0,
+      ValueDetails::kLinear, false, "%", "OpenB3 Release Click", nullptr },
     { "b3_temperament", 0x000000, 0.0, 2.0, 0.0, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "OpenB3 Tuning", strings::kOpenB3TemperamentNames },
     { "b3_transpose", 0x000000, -48.0, 48.0, 0.0, 0.0, 1.0,
@@ -2047,6 +2096,16 @@ namespace vital {
                                        "Bus " + std::to_string(bus + 1) + " ");
     }
 
+    // Envelope 1 alone has an analog mode, appended by version.
+    static const ValueDetails env_1_analog_parameters[] = {
+      { "analog", 0x020124, 0.0, 1.0, 0.0, 0.0, 1.0,
+        ValueDetails::kIndexed, false, "", "Analog", strings::kOffOnNames },
+      { "analog_age", 0x020124, 0.0, 1.0, 0.0, 0.0, 100.0,
+        ValueDetails::kLinear, false, "%", "Analog Age", nullptr },
+    };
+    addParameterGroup(env_1_analog_parameters, sizeof(env_1_analog_parameters) / sizeof(ValueDetails), 0,
+                      kEnvIdPrefix, kEnvNamePrefix);
+
     int num_env_parameters = sizeof(env_parameter_list) / sizeof(ValueDetails);
     for (int env = 0; env < std::min(kNumEnvelopesOld, kNumEnvelopes); ++env)
       addParameterGroup(env_parameter_list, num_env_parameters, env, kEnvIdPrefix, kEnvNamePrefix);
@@ -2135,10 +2194,11 @@ namespace vital {
     details_lookup_["osc_2_destination"].default_value = 1.0f;
     details_lookup_["osc_3_destination"].default_value = 3.0f;
     details_lookup_["osc_4_destination"].default_value = 3.0f;
-    // Slots 5-8 default to the sources they replaced (Sample, Granular, Spectral, Noise), switched off.
+    // Every slot defaults to Wavetable. Slots 5-8, which replaced the Sample, Granular,
+    // Spectral and Noise sources, keep their effects destination. Presets that predate
+    // this and lack a slot's type load those sources (LoadSave::migrateSlotTypeLevels).
     for (int i = 0; i < source_types::kNumLegacySources; ++i) {
       const std::string prefix = source_types::slotPrefix(source_types::kFirstLegacySourceSlot + i);
-      details_lookup_[prefix + "type"].default_value = static_cast<mono_float>(source_types::kLegacySourceTypes[i]);
       details_lookup_[prefix + "destination"].default_value = 3.0f;
     }
     details_lookup_["filter_1_osc1_input"].default_value = 1.0f;

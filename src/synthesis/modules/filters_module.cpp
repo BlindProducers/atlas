@@ -25,6 +25,8 @@ namespace vital {
                                    filter_1_destination_(nullptr), filter_2_destination_(nullptr) {
     filter_1_input_ = std::make_shared<Output>();
     filter_2_input_ = std::make_shared<Output>();
+    filter_1_amplitude_ = std::make_shared<Output>();
+    filter_2_amplitude_ = std::make_shared<Output>();
     plug(&constants::kValueOne, kAmplitude);
   }
 
@@ -36,6 +38,7 @@ namespace vital {
     addProcessor(filter_1_);
 
     filter_1_->plug(filter_1_input_.get(), FilterModule::kAudio);
+    filter_1_->plug(filter_1_amplitude_.get(), FilterModule::kAmplitude);
     filter_1_->useInput(input(kReset), FilterModule::kReset);
     filter_1_->useInput(input(kKeytrack), FilterModule::kKeytrack);
     filter_1_->useInput(input(kMidi), FilterModule::kMidi);
@@ -47,6 +50,7 @@ namespace vital {
     addProcessor(filter_2_);
 
     filter_2_->plug(filter_2_input_.get(), FilterModule::kAudio);
+    filter_2_->plug(filter_2_amplitude_.get(), FilterModule::kAmplitude);
     filter_2_->useInput(input(kReset), FilterModule::kReset);
     filter_2_->useInput(input(kKeytrack), FilterModule::kKeytrack);
     filter_2_->useInput(input(kMidi), FilterModule::kMidi);
@@ -60,6 +64,19 @@ namespace vital {
     destination->buffer = destination->owned_buffer.get();
     for (int i = 0; i < num_samples; ++i)
       destination->buffer[i] = source[i] * (envelope_before_[index] ? voiceAmplitude(i) : poly_float(1));
+  }
+
+  void FiltersModule::prepareFilterAmplitude(int index, int num_samples) {
+    // The Distortion model shapes each note at its enveloped level, as the
+    // effect would. Where the envelope already comes before the filter, the
+    // input carries it and the model shapes it as it is.
+    FilterModule* filter = index ? filter_2_ : filter_1_;
+    if (filter->getOnValue()->value() <= .5f ||
+        filter->getModelValue()->value() != constants::kDistortionFilter)
+      return;
+    poly_float* amplitude = (index ? filter_2_amplitude_ : filter_1_amplitude_)->buffer;
+    for (int i = 0; i < num_samples; ++i)
+      amplitude[i] = envelope_before_[index] ? poly_float(1.0f) : voiceAmplitude(i);
   }
 
   void FiltersModule::processParallel(int num_samples) {
@@ -164,6 +181,8 @@ namespace vital {
     if (routing != FilterRouting::kParallel && scream_in_chain) tail_enabled = false;
     if (routing != FilterRouting::kParallel)
       envelope_before_[0] = envelope_before_[1] = tail_enabled;
+    prepareFilterAmplitude(0, num_samples);
+    prepareFilterAmplitude(1, num_samples);
     if (routing == FilterRouting::kSerialBackward)
       processSerialBackward(num_samples);
     else if (routing == FilterRouting::kSerialForward)

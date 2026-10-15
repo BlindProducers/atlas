@@ -7,6 +7,7 @@
 #include "JuceHeader.h"
 #include "synth_plugin.h"
 #include "synth_editor.h"
+#include "editor_navigation.h"
 #include "parameter_slider.h"
 #include "sound_engine.h"
 #include "source_types.h"
@@ -582,16 +583,7 @@ namespace {
   }
 
   bool selectEditorItem(Component& editor, const String& title, const String& text) {
-    auto* selector = dynamic_cast<ComboBox*>(titledExactly(editor, title));
-    if (selector == nullptr)
-      return false;
-    for (int i = 0; i < selector->getNumItems(); ++i) {
-      if (selector->getItemText(i) == text) {
-        selector->setSelectedItemIndex(i, sendNotificationSync);
-        return true;
-      }
-    }
-    return false;
+    return editor_navigation::focusHeading(editor, title, text);
   }
 
   // The slider titled `title` under `parent` (its row carries the same title).

@@ -56,6 +56,7 @@ namespace vital {
         kPercussionDecay,
         kPercussionHarmonic,
         kKeyClick,
+        kReleaseClick,
         kTemperament,
         kTranspose,
         kTune,
@@ -95,14 +96,17 @@ namespace vital {
 
       atlas::openb3::Registration registration(int lane) const;
       void strike(VoiceState& state, float note, int offset, const atlas::openb3::Registration& registration,
-                  float click, const double* frequencies);
+                  float click, float release_click, const double* frequencies);
+      // Opens a held key's contacts with the release click at `level`.
+      void release(atlas::openb3::Voice& voice, float level);
       // Renders samples [start, end) of the lane into `output`, the note
       // ramping from `from` at sample 0 to `to` at `count`.
       void render(VoiceState& state, double* output, int start, int end, int count, float from, float to);
 
       std::shared_ptr<atlas::openb3::Organ> organ_;
       std::array<VoiceState, kVoicesPerProcessor> voices_;
-      std::array<float, atlas::openb3::kNumClickEnvelopes * atlas::openb3::kMaxFragment> envelopes_ {};
+      std::array<float, atlas::openb3::kNumClickEnvelopes * atlas::openb3::kMaxContactLength> envelopes_ {};
+      std::array<float, atlas::openb3::kNumClickEnvelopes * atlas::openb3::kMaxContactLength> release_envelopes_ {};
       uint32_t strike_count_ = 0;
       double voice_rate_ = 0.0;
       poly_float pan_amplitude_ = 0.0f;

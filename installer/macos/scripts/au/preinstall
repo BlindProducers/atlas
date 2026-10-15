@@ -1,0 +1,5 @@
+#!/bin/sh
+# Removes the previous Atlas.component first, so files the new build no longer
+# ships do not stay behind inside the bundle. $3 is the target volume.
+rm -rf "$3/Library/Audio/Plug-Ins/Components/Atlas.component"
+exit 0

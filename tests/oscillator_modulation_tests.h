@@ -150,6 +150,102 @@ namespace {
     close(difference, 0.0f, "a macro route into an oscillator keeps its timing beside oscillator routes", 1.0e-5f);
   }
 
+  // Whether the route `source` -> `destination` exists and is plugged into the
+  // destination the engine has registered under that name now (the per-voice
+  // one, or the shared one for a source that is not per voice).
+  bool routeFeeds(SynthPlugin& synth, const std::string& source, const std::string& destination) {
+    const int index = synth.getConnectionIndex(source, destination);
+    if (index < 0)
+      return false;
+    const vital::Processor* route = synth.getEngine()->getModulationBank().atIndex(index)->modulation_processor.get();
+    for (vital::Processor* target : { synth.getEngine()->getPolyModulationDestination(destination),
+                                      synth.getEngine()->getMonoModulationDestination(destination) }) {
+      for (int i = 0; target != nullptr && i < target->numInputs(); ++i) {
+        const vital::Input* input = target->input(i);
+        if (input != nullptr && input->source != nullptr && input->source->owner == route)
+          return true;
+      }
+    }
+    return false;
+  }
+
+  // Saved routes into an oscillator must reach it once the state is restored,
+  // whichever type the oscillator loads as: a route must reach the module of
+  // the type the state selects, not the one the slot held before loading.
+  void testOscillatorRoutesSurviveStateRestore() {
+    struct Case {
+      int type;
+      const char* type_destination;
+    };
+    for (const Case& test : { Case { vital::source_types::kWavetable, "osc_2_transpose" },
+                              Case { vital::source_types::kNoise, "osc_2_noise_low_cutoff" },
+                              Case { vital::source_types::kOpenB3, "osc_2_b3_key_click" } }) {
+      const std::string type_name = vital::source_types::describe(test.type).id;
+      const std::vector<std::pair<std::string, std::string>> routes = {
+        { "osc_1_output", "osc_2_level" }, { "lfo_1", "osc_2_level" }, { "osc_1_playhead", "osc_2_pan" },
+        { "lfo_1", test.type_destination } };
+
+      SynthPlugin original;
+      prepare(original);
+      original.getControls().at("osc_2_on")->set(1.0f);
+      original.valueChanged("osc_2_type", static_cast<float>(test.type));
+      render(original, 128);
+      connectOscillator(original, 0, "osc_2_level", 0.5f);
+      connect(original, "lfo_1", "osc_2_level", 0.25f);
+      connect(original, "osc_1_playhead", "osc_2_pan", 0.25f);
+      connect(original, "lfo_1", test.type_destination, 0.25f);
+      MemoryBlock state;
+      original.getStateInformation(state);
+      TemporaryFile patch(".atp");
+      patch.getFile().replaceWithText(LoadSave::stateToJson(&original, original.getCriticalSection()).dump());
+
+      // Reopening a project: a fresh instance restores the host state.
+      SynthPlugin restored;
+      restored.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+      prepare(restored);
+      // Loading the patch into a running instance whose slot holds another type.
+      SynthPlugin reloaded;
+      prepare(reloaded);
+      std::string error;
+      expect(reloaded.loadFromFile(patch.getFile(), error), type_name + ": the saved patch loads");
+
+      for (const auto& [source, destination] : routes) {
+        const std::string route = source + " -> " + destination + " (Oscillator 2 as " + type_name + ")";
+        expect(routeFeeds(restored, source, destination), route + ": the restored state feeds the live control");
+        expect(routeFeeds(reloaded, source, destination), route + ": the loaded patch feeds the live control");
+      }
+
+      const int index = restored.getConnectionIndex("osc_1_output", "osc_2_level");
+      render(restored, 128 * 8, true);
+      expectRouteFollowsSource(restored, index >= 0 ? restored.getEngine()->getModulationBank().atIndex(index) : nullptr,
+                               0, "osc_2_level", 0.5f, "Oscillator 1 to Oscillator 2 Level restored as " + type_name);
+    }
+  }
+
+  // Level, pan and the FM/RM amounts are shared by every type, so their routes
+  // stay when a slot changes type, and must reach the new type's controls.
+  void testSharedRoutesFollowATypeChange() {
+    SynthPlugin synth;
+    prepare(synth);
+    synth.getControls().at("osc_2_on")->set(1.0f);
+    connectOscillator(synth, 0, "osc_2_level", 0.5f);
+    connect(synth, "lfo_1", "osc_2_level", 0.25f);
+    connect(synth, "lfo_1", "osc_2_pan", 0.25f);
+    connect(synth, "lfo_1", "osc_2_transpose", 0.25f);
+    for (int type : { static_cast<int>(vital::source_types::kNoise), static_cast<int>(vital::source_types::kOpenB3),
+                      static_cast<int>(vital::source_types::kWavetable) }) {
+      const std::string type_name = vital::source_types::describe(type).id;
+      synth.valueChanged("osc_2_type", static_cast<float>(type));
+      render(synth, 128);
+      for (const auto& [source, destination] : std::vector<std::pair<std::string, std::string>> {
+             { "osc_1_output", "osc_2_level" }, { "lfo_1", "osc_2_level" }, { "lfo_1", "osc_2_pan" } })
+        expect(routeFeeds(synth, source, destination),
+               source + " -> " + destination + " feeds the control after switching Oscillator 2 to " + type_name);
+    }
+    expect(synth.getConnectionIndex("lfo_1", "osc_2_transpose") < 0,
+           "a route into a control the new type lacks is dropped on the switch");
+  }
+
   void testEditorOffersOscillatorSources() {
     SynthPlugin synth;
     SynthEditor editor(synth);

@@ -5,11 +5,16 @@ set(ATLAS_PLUGIN_FORMATS VST3)
 
 if(APPLE)
   set(CMAKE_OSX_ARCHITECTURES arm64 CACHE STRING "macOS architectures" FORCE)
+  # Without a deployment target the plugins only load on the macOS version
+  # that built them. 11.0 is the first macOS for Apple Silicon.
+  if(NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+    set(CMAKE_OSX_DEPLOYMENT_TARGET 11.0 CACHE STRING "Minimum macOS version" FORCE)
+  endif()
   list(APPEND ATLAS_PROJECT_LANGUAGES OBJC OBJCXX)
   list(APPEND ATLAS_PLUGIN_FORMATS AU)
 endif()
 
-project(Atlas VERSION 2.1.0 LANGUAGES ${ATLAS_PROJECT_LANGUAGES})
+project(Atlas VERSION 2.0.0 LANGUAGES ${ATLAS_PROJECT_LANGUAGES})
 
 if(MSVC)
   # Keep Atlas and all static dependencies on the same self-contained CRT.
@@ -353,6 +358,7 @@ if(ATLAS_BUILD_TIMING_TESTS)
   add_test(NAME atlas_scream_filter COMMAND AtlasTimingTests --scream-filter)
   add_test(NAME atlas_ring_mod_filter COMMAND AtlasTimingTests --ring-mod-filter)
   add_test(NAME atlas_sample_hold_filter COMMAND AtlasTimingTests --sample-hold-filter)
+  add_test(NAME atlas_distortion_filter COMMAND AtlasTimingTests --distortion-filter)
   add_test(NAME atlas_filter_keytrack COMMAND AtlasTimingTests --filter-keytrack)
   add_test(NAME atlas_filter_routing COMMAND AtlasTimingTests --filter-routing)
   add_test(NAME atlas_release_velocity_glide COMMAND AtlasTimingTests --release-velocity-glide)
@@ -465,6 +471,7 @@ if(ATLAS_BUILD_TIMING_TESTS)
   add_test(NAME atlas_editor_speech COMMAND AtlasMacroTests --editor-speech)
   add_test(NAME atlas_editor_rebuild_focus COMMAND AtlasMacroTests --editor-rebuild-focus)
   add_test(NAME atlas_oscillator_modulation COMMAND AtlasMacroTests --oscillator-modulation)
+  add_test(NAME atlas_arpeggiator COMMAND AtlasMacroTests --arpeggiator)
 
   juce_add_console_app(AtlasDefuseTests PRODUCT_NAME "Atlas Defuse Tests")
   juce_generate_juce_header(AtlasDefuseTests)

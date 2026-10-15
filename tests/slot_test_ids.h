@@ -1,5 +1,7 @@
 #pragma once
 
+#include "source_types.h"
+
 #include <string>
 
 // Parameter names of the fixed Sample, Granular, Spectral and Noise sources that
@@ -33,5 +35,14 @@ namespace slot_ids {
       return slot_prefix + legacy;
     }
     return legacy;
+  }
+
+  // A new patch makes every slot a wavetable oscillator. Tests that play the fixed
+  // sources first give slots 5-8 the Sample, Granular, Spectral and Noise types.
+  template<typename Plugin>
+  void useLegacySourceTypes(Plugin& plugin) {
+    for (int i = 0; i < vital::source_types::kNumLegacySources; ++i)
+      plugin.parameterChanged("osc_" + std::to_string(vital::source_types::kFirstLegacySourceSlot + i + 1) + "_type",
+                              float(vital::source_types::kLegacySourceTypes[i]));
   }
 }

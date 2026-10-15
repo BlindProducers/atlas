@@ -273,6 +273,7 @@ namespace {
         set(*plugin, prefix + "unison_voices", 1);
       }
       set(*plugin, "osc_1_level", .15f);
+      slot_ids::useLegacySourceTypes(*plugin);
       set(*plugin, slot_ids::id("sample_on"), 1); set(*plugin, slot_ids::id("sample_level"), .2f);
       set(*plugin, slot_ids::id("sample_random_phase"), 0); set(*plugin, slot_ids::id("sample_loop"), 0);
       set(*plugin, "env_1_attack", .001f); set(*plugin, "env_1_decay", .001f);

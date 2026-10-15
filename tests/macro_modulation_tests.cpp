@@ -10,6 +10,7 @@
 #include "synth_strings.h"
 #include "file_source.h"
 #include "line_generator.h"
+#include "load_save.h"
 #include "phase_modifier.h"
 #include "wave_source.h"
 #include "wavetable_creator.h"
@@ -64,6 +65,8 @@ namespace {
     controls.at("oversampling")->set(oversampling);
     synth.checkOversampling();
     controls.at("osc_1_random_phase")->set(0.0f);
+    // The comparisons were calibrated with the oscillator starting at 180 degrees.
+    controls.at("osc_1_phase")->set(0.5f);
     controls.at("osc_1_unison_voices")->set(1.0f);
     controls.at("env_1_attack")->set(0.001f);
     controls.at("env_1_decay")->set(0.001f);
@@ -373,6 +376,7 @@ namespace {
   void testGranularGridFollowsPluginClock() {
     SynthPlugin synth;
     prepare(synth);
+    slot_ids::useLegacySourceTypes(synth);
     auto& controls = synth.getControls();
     std::vector<float> ones(48000, 0.5f);
     synth.getSample(slot_ids::kGranularSlot)->loadSample(ones.data(), static_cast<int>(ones.size()), 48000);
@@ -733,6 +737,7 @@ namespace {
 #include "editor_accessibility_tests.h"
 #include "editor_speech_tests.h"
 #include "oscillator_modulation_tests.h"
+#include "arpeggiator_tests.h"
 
 int main(int argc, char** argv) {
   ScopedJuceInitialiser_GUI juce;
@@ -777,10 +782,26 @@ int main(int argc, char** argv) {
     }
     return 0;
   }
+  if (argc > 1 && String(argv[1]) == "--arpeggiator") {
+    testArpNoteOffKeepsGate();
+    testArpOffStartsAtTheNote();
+    testArpBeatRetriggerFollowsTransport();
+    testArpBeatRetriggerWithTransportStopped();
+    testArpPlayOrder();
+    testArpLoop();
+    testArpOctave();
+    testArpRetriggerDivisionParameter();
+    testArpChordUsesVoicesOnlyForOscillatorsThatAreOn();
+    if (failures == 0)
+      std::cout << "Atlas arpeggiator tests passed\n";
+    return failures == 0 ? 0 : 1;
+  }
   if (argc > 1 && String(argv[1]) == "--oscillator-modulation") {
     testOscillatorSourcesReachOnlyAudioRateControls();
     testOscillatorRoutesFollowTheirSourceWithinTheBlock();
     testOscillatorRouteKeepsOtherRoutesInPlace();
+    testOscillatorRoutesSurviveStateRestore();
+    testSharedRoutesFollowATypeChange();
     testEditorOffersOscillatorSources();
     if (failures == 0)
       std::cout << "Atlas oscillator modulation tests passed\n";

@@ -450,6 +450,11 @@ namespace strings {
     "2 Octaves Down",
   };
 
+  const std::string kHumFrequencyNames[] = {
+    "50 Hz",
+    "60 Hz",
+  };
+
   const std::string kSubWaveformNames[] = {
     "Sine",
     "Triangle",
@@ -539,6 +544,7 @@ namespace strings {
     "Ring Mod",
     "Sample & Hold",
     "Wavetable",
+    "Distortion",
   };
 
   // Wavetable filter phase modes: Filter FX offers all four, the voice filters
@@ -811,6 +817,31 @@ namespace strings {
     "Off",
     "Note",
     "Beat"
+  };
+
+  const std::string kArpPlayOrderNames[] = {
+    "Pitch",
+    "As Played"
+  };
+
+  // Matches AtlasArpeggiator::kMaxLoops and kLoopInfinite.
+  const std::string kArpLoopNames[] = {
+    "1", "2", "3", "4", "5", "6", "7", "8",
+    "9", "10", "11", "12", "13", "14", "15", "16",
+    "Infinite"
+  };
+
+  // Matches AtlasArpeggiator::retriggerDivisions().
+  const std::string kArpRetriggerDivisionNames[] = {
+    "1/16",
+    "1/8",
+    "1/4",
+    "1/2",
+    "1 Bar",
+    "2 Bars",
+    "4 Bars",
+    "8 Bars",
+    "16 Bars"
   };
 
   const std::string kArpChannelNames[] = {

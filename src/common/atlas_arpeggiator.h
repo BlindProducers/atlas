@@ -5,6 +5,7 @@
 #include <array>
 #include <atomic>
 #include <bitset>
+#include <limits>
 #include <vector>
 
 class AtlasArpeggiator {
@@ -42,6 +43,23 @@ class AtlasArpeggiator {
       kNumRetriggerModes
     };
 
+    static constexpr int kDefaultRetriggerDivision = 4;
+
+    enum PlayOrder {
+      kPlayOrderPitch = 0,
+      kPlayOrderAsPlayed,
+      kNumPlayOrders
+    };
+
+    // Loop values 0 to kLoopInfinite - 1 play the pattern that many times plus
+    // one; kLoopInfinite repeats it until the keys are released.
+    static constexpr int kMaxLoops = 16;
+    static constexpr int kLoopInfinite = kMaxLoops;
+
+    // Octave shifts every note the arp plays by this many octaves.
+    static constexpr int kMinOctave = -4;
+    static constexpr int kMaxOctave = 4;
+
     struct SyncRate {
       const char* name;
       double quarter_notes;
@@ -60,17 +78,25 @@ class AtlasArpeggiator {
       int sync_rate = 10;
       float free_rate = 5.0f;
       int style = kUp;
+      // The order Style walks through: low to high, or the order keys were pressed.
+      int play_order = kPlayOrderPitch;
       float gate = 80.0f;
       float random_gate = 0.0f;
       int repeats = 1;
+      // How many times the pattern plays before the arp falls silent (see kLoopInfinite).
+      int loop = kLoopInfinite;
       int offset = 0;
       int distance = 12;
+      // Octaves added to every generated note, relative to the keys held.
+      int octave = 0;
       int steps = 1;
       int velocity = 100;
       float velocity_decay = 0.0f;
       float random_velocity = 0.0f;
       bool hold = false;
       int retrigger = kRetriggerNote;
+      // Index into retriggerDivisions(): how often Beat retrigger restarts the pattern.
+      int retrigger_division = kDefaultRetriggerDivision;
       int channel = 0;
     };
 
@@ -81,6 +107,7 @@ class AtlasArpeggiator {
                  double bpm, double ppq_position, bool has_ppq_position, const Settings& settings);
 
     static const std::vector<SyncRate>& syncRates();
+    static const std::vector<SyncRate>& retriggerDivisions();
 
     // MIDI panic: stop generated notes at sample_offset and forget held keys.
     void panic(juce::MidiBuffer& output, int sample_offset) {
@@ -104,10 +131,12 @@ class AtlasArpeggiator {
     void handleNoteOff(const juce::MidiMessage& message, const Settings& settings);
     void addDueNoteOffs(juce::MidiBuffer& output, int num_samples);
     void addInternalClockSteps(juce::MidiBuffer& output, int num_samples, double step_samples,
-                               double gate_samples, const Settings& settings);
-    void addHostClockSteps(juce::MidiBuffer& output, int num_samples, double rate_quarters,
-                           double gate_samples, double bpm, double ppq_position, bool has_ppq_position,
-                           const Settings& settings);
+                               double gate_samples, double block_start_beat, double quarters_per_sample,
+                               double division_quarters, const Settings& settings);
+    void addBeatClockSteps(juce::MidiBuffer& output, int num_samples, double rate_quarters,
+                           double gate_samples, double block_start_beat, double quarters_per_sample,
+                           double division_quarters, const Settings& settings);
+    void restartPatternAtDivision(int64 division_index);
     void triggerStep(juce::MidiBuffer& output, int sample_offset, int gate_samples, int block_samples,
                      const Settings& settings);
     const std::vector<HeldNote>& sortedHeldNotes();
@@ -126,6 +155,7 @@ class AtlasArpeggiator {
     std::vector<ActiveNote> active_notes_;
     std::vector<int> random_once_pattern_;
     std::vector<HeldNote> sorted_notes_;
+    std::vector<HeldNote> sorted_by_order_;
     std::vector<int> pattern_notes_;
     std::vector<int> scratch_notes_;
     std::vector<int> scratch_notes_2_;
@@ -135,6 +165,8 @@ class AtlasArpeggiator {
     double samples_until_next_step_ = 0.0;
     int pattern_index_ = 0;
     int repeat_index_ = 0;
+    // Steps played since the pattern last restarted, for Loop.
+    int loop_steps_ = 0;
     int last_random_note_ = -1;
     uint64_t next_held_order_ = 1;
     uint64_t chord_fingerprint_ = 0;
@@ -142,6 +174,12 @@ class AtlasArpeggiator {
     int64 random_seed_ = 0x41544c4153415250ll;
     double last_transport_end_ppq_ = 0.0;
     bool have_transport_position_ = false;
+    // Beat position (in quarter notes) used when the host transport is stopped.
+    // It starts at the first note and follows the host position while it plays.
+    double beat_position_ = 0.0;
+    // Division of the beat grid the last step fell in, for Beat retrigger.
+    static constexpr int64 kNoDivision = std::numeric_limits<int64>::min();
+    int64 last_division_index_ = kNoDivision;
     // Keys physically down per MIDI channel, so releasing Hold drops latched notes.
     std::array<std::bitset<128>, 16> physically_down_;
     bool last_hold_ = false;

@@ -52,7 +52,7 @@ namespace vital {
       addProcessor(slot_pitch_clamp_[i]);
       slot_zone_gain_[i] = 0.0f;
     }
-    for (int arp = 0; arp < 2; ++arp) {
+    for (int arp = 0; arp < kNumArpeggiators; ++arp) {
       arp_on_[arp] = nullptr;
       for (int destination = 0; destination < kNumArpDestinations; ++destination)
         arp_destinations_[arp][destination] = nullptr;
@@ -62,24 +62,28 @@ namespace vital {
   void ProducersModule::init() {
     portamento_glide_zones_ = createBaseControl("portamento_glide_zones");
     zone_crossfade_ = createBaseControl("zone_crossfade");
-    for (int arp = 0; arp < 2; ++arp) {
+    for (int arp = 0; arp < kNumArpeggiators; ++arp) {
       const std::string prefix = "arp_" + std::to_string(arp + 1) + "_";
       arp_on_[arp] = createBaseControl(prefix + "on");
       createBaseControl(prefix + "time_mode");
       createBaseControl(prefix + "sync_rate");
       createBaseControl(prefix + "free_rate");
       createBaseControl(prefix + "style");
+      createBaseControl(prefix + "play_order");
       createBaseControl(prefix + "gate");
       createBaseControl(prefix + "random_gate");
       createBaseControl(prefix + "repeats");
+      createBaseControl(prefix + "loop");
       createBaseControl(prefix + "offset");
       createBaseControl(prefix + "distance");
+      createBaseControl(prefix + "octave");
       createBaseControl(prefix + "steps");
       createBaseControl(prefix + "velocity");
       createBaseControl(prefix + "velocity_decay");
       createBaseControl(prefix + "random_velocity");
       createBaseControl(prefix + "hold");
       createBaseControl(prefix + "retrigger");
+      createBaseControl(prefix + "retrigger_division");
       createBaseControl(prefix + "channel");
       for (int destination = 0; destination < kNumArpDestinations; ++destination) {
         arp_destinations_[arp][destination] =
@@ -108,6 +112,7 @@ namespace vital {
       slots_[i]->useInput(input(kVelocity), SourceSlotModule::kVelocity);
       slots_[i]->useInput(input(kZoneMidi), SourceSlotModule::kNote);
       slots_[i]->useInput(input(kMidiKey), SourceSlotModule::kMidiKey);
+      slots_[i]->useInput(input(kSoundingVoices), SourceSlotModule::kSoundingVoices);
     }
 
     SynthModule::init();
@@ -137,13 +142,17 @@ namespace vital {
   }
 
   bool ProducersModule::arpDestinationOn(int arp, int destination) const {
-    return isPositiveAndBelow(arp, 2) && isPositiveAndBelow(destination, kNumArpDestinations) &&
+    return isPositiveAndBelow(arp, kNumArpeggiators) && isPositiveAndBelow(destination, kNumArpDestinations) &&
            arp_on_[arp] != nullptr && arp_on_[arp]->value() != 0.0f &&
            arp_destinations_[arp][destination] != nullptr && arp_destinations_[arp][destination]->value() != 0.0f;
   }
 
   bool ProducersModule::sourceHasActiveArp(int destination) const {
-    return arpDestinationOn(0, destination) || arpDestinationOn(1, destination);
+    for (int arp = 0; arp < kNumArpeggiators; ++arp) {
+      if (arpDestinationOn(arp, destination))
+        return true;
+    }
+    return false;
   }
 
   poly_float ProducersModule::getSourcePlaybackMask(int destination, poly_float zone_mask) const {

@@ -63,12 +63,13 @@ namespace {
     return found != controls.end() && found->second != nullptr ? found->second->value() : fallback;
   }
 
-  constexpr std::array<const char*, 17> kArpeggiatorControlNames {
+  constexpr std::array<const char*, 21> kArpeggiatorControlNames {
     "on", "time_mode", "sync_rate", "free_rate", "style", "gate", "random_gate", "repeats",
-    "offset", "distance", "steps", "velocity", "velocity_decay", "random_velocity", "hold", "retrigger", "channel"
+    "offset", "distance", "steps", "velocity", "velocity_decay", "random_velocity", "hold", "retrigger", "channel",
+    "retrigger_division", "play_order", "loop", "octave"
   };
 
-  AtlasArpeggiator::Settings arpeggiatorSettings(const std::array<vital::Value*, 17>& controls) {
+  AtlasArpeggiator::Settings arpeggiatorSettings(const std::array<vital::Value*, 21>& controls) {
     const auto value = [&](int index, float fallback) {
       return controls[index] ? controls[index]->value() : fallback;
     };
@@ -90,6 +91,11 @@ namespace {
     settings.hold = value(14, 0) >= 0.5f;
     settings.retrigger = static_cast<int>(std::round(value(15, 1)));
     settings.channel = static_cast<int>(std::round(value(16, 0)));
+    settings.retrigger_division = static_cast<int>(std::round(
+        value(17, AtlasArpeggiator::kDefaultRetriggerDivision)));
+    settings.play_order = static_cast<int>(std::round(value(18, AtlasArpeggiator::kPlayOrderPitch)));
+    settings.loop = static_cast<int>(std::round(value(19, AtlasArpeggiator::kLoopInfinite)));
+    settings.octave = static_cast<int>(std::round(value(20, 0)));
     return settings;
   }
 
@@ -159,7 +165,7 @@ SynthBase::SynthBase() : expired_(false) {
   // (one-frame) tables are already rendered, so only the flags need setting.
   for (int i = 0; i < vital::kNumOscillators; ++i)
     wavetable_render_pending_[i] = !slotUsesWavetable(i);
-  for (int arp = 0; arp < 2; ++arp) {
+  for (int arp = 0; arp < vital::kNumArpeggiators; ++arp) {
     const std::string prefix = "arp_" + std::to_string(arp + 1) + "_";
     for (size_t i = 0; i < kArpeggiatorControlNames.size(); ++i) {
       const auto found = controls_.find(prefix + kArpeggiatorControlNames[i]);
@@ -178,7 +184,7 @@ SynthBase::SynthBase() : expired_(false) {
     controls.key_end = findControl(names.key_end);
     controls.velocity_start = findControl(names.velocity_start);
     controls.velocity_end = findControl(names.velocity_end);
-    for (int arp = 0; arp < 2; ++arp)
+    for (int arp = 0; arp < vital::kNumArpeggiators; ++arp)
       controls.destination[arp] = findControl("arp_" + std::to_string(arp + 1) + "_destination_osc_" +
                                               std::to_string(slot + 1));
   }
@@ -194,7 +200,7 @@ SynthBase::SynthBase() : expired_(false) {
   for (const auto& control : controls_)
     if (!isEffectParameter(control.first))
       pending_gui_updates_.try_emplace(control.first);
-  for (int arp = 0; arp < 2; ++arp) {
+  for (int arp = 0; arp < vital::kNumArpeggiators; ++arp) {
     for (int destination = 0; destination < kNumArpDestinations; ++destination) {
       const int64 seed = 0x41544c4153415250ll + arp * kNumArpDestinations + destination;
       arpeggiators_[arp][destination].prepare(engine_->getSampleRate(), seed);
@@ -225,8 +231,12 @@ bool SynthBase::arpeggiatorPlaysSlot(int arp, int slot) const {
 
 bool SynthBase::keyboardPlaysSomeSlot() const {
   for (int slot = 0; slot < kNumArpDestinations; ++slot) {
-    if (valueOr(arp_slot_controls_[slot].on, 1.0f) >= 0.5f &&
-        !arpeggiatorSendsToSlot(0, slot) && !arpeggiatorSendsToSlot(1, slot))
+    if (valueOr(arp_slot_controls_[slot].on, 1.0f) < 0.5f)
+      continue;
+    bool arpeggiated = false;
+    for (int arp = 0; arp < vital::kNumArpeggiators; ++arp)
+      arpeggiated = arpeggiated || arpeggiatorSendsToSlot(arp, slot);
+    if (!arpeggiated)
       return true;
   }
   return false;
@@ -769,36 +779,6 @@ vital::Sample* SynthBase::getSample(int index) {
 }
 
 void SynthBase::prepareSelectedSources() {
-  // Routes into a type a slot is leaving would point at destroyed destinations.
-  std::vector<vital::ModulationConnection*> stale;
-  for (int slot = 0; slot < vital::kNumOscillators; ++slot) {
-    vital::SourceSlotModule* module = engine_->getSourceSlot(slot);
-    if (module == nullptr)
-      continue;
-    const int requested = module->requestedType();
-    const int active = module->activeType();
-    if (module->hasActiveModule() && vital::source_types::shareModule(active, requested))
-      continue;
-    const std::string prefix = vital::source_types::slotPrefix(slot);
-    for (vital::ModulationConnection* connection : mod_connections_) {
-      const std::string& destination = connection->destination_name;
-      if (destination.rfind(prefix, 0) != 0)
-        continue;
-      const std::string suffix = destination.substr(prefix.size());
-      const int owner = vital::source_types::typeForParameterSuffix(suffix);
-      const bool wavetable_group = owner < 0;
-      const bool stays = wavetable_group ? (vital::source_types::describe(requested).uses_wavetable ||
-                                            vital::source_types::isSharedSlotParameter(suffix))
-                                         : vital::source_types::shareModule(owner, requested);
-      if (!stays)
-        stale.push_back(connection);
-    }
-  }
-  for (vital::ModulationConnection* connection : stale)
-    disconnectModulation(connection);
-  // Route changes are queued for the audio thread; apply them now, while
-  // processing is paused, so none of them touches an engine we destroy below.
-  processModulationChanges();
   // Wavetables exist only for the slots that play them. A slot leaving the
   // wavetable group drops its table to one frame (the creator keeps the state);
   // a slot joining it renders the table it was holding back.
@@ -818,7 +798,56 @@ void SynthBase::prepareSelectedSources() {
       wavetable_render_pending_[slot] = true;
     }
   }
+  prepareSourceEngines();
+}
+
+void SynthBase::prepareSourceEngines() {
+  // A slot changing type gets a new engine, with its own modulation
+  // destinations. Routes into a parameter of the type it leaves are dropped.
+  // The others (level, pan, the FM/RM amounts) are lifted off the old engine
+  // and plugged into the new one; left alone they would feed a destroyed
+  // destination and modulate nothing.
+  std::vector<vital::ModulationConnection*> stale;
+  std::vector<std::pair<vital::ModulationConnection*, std::pair<std::string, std::string>>> moving;
+  for (int slot = 0; slot < vital::kNumOscillators; ++slot) {
+    vital::SourceSlotModule* module = engine_->getSourceSlot(slot);
+    if (module == nullptr)
+      continue;
+    const int requested = module->requestedType();
+    const int active = module->activeType();
+    if (module->hasActiveModule() && vital::source_types::shareModule(active, requested))
+      continue;
+    const std::string prefix = vital::source_types::slotPrefix(slot);
+    for (vital::ModulationConnection* connection : mod_connections_) {
+      const std::string& destination = connection->destination_name;
+      if (destination.rfind(prefix, 0) != 0)
+        continue;
+      const std::string suffix = destination.substr(prefix.size());
+      const int owner = vital::source_types::typeForParameterSuffix(suffix);
+      const bool wavetable_group = owner < 0;
+      const bool stays = wavetable_group ? (vital::source_types::describe(requested).uses_wavetable ||
+                                            vital::source_types::isSharedSlotParameter(suffix))
+                                         : vital::source_types::shareModule(owner, requested);
+      if (stays)
+        moving.push_back({ connection, { connection->source_name, destination } });
+      else
+        stale.push_back(connection);
+    }
+  }
+  for (vital::ModulationConnection* connection : stale)
+    disconnectModulation(connection);
+  for (auto& route : moving)
+    disconnectModulation(route.first);
+  // Route changes are queued for the audio thread; apply them now, while
+  // processing is paused, so none of them touches an engine we destroy below.
+  processModulationChanges();
   engine_->prepareSelectedSources();
+  for (auto& route : moving) {
+    route.first->source_name = route.second.first;
+    route.first->destination_name = route.second.second;
+    connectModulation(route.first);
+  }
+  processModulationChanges();
 }
 
 bool SynthBase::slotUsesWavetable(int slot) const {
@@ -1289,22 +1318,22 @@ void SynthBase::buildScheduledMidiEvents(MidiBuffer& midi_messages, int start_sa
   scheduled_midi_sequence_ = 0;
   clearMidiSchedulingBuffers();
 
-  const bool arpeggiator_enabled =
-      (arpeggiator_controls_[0][0] && arpeggiator_controls_[0][0]->value() >= 0.5f) ||
-      (arpeggiator_controls_[1][0] && arpeggiator_controls_[1][0]->value() >= 0.5f);
+  bool arpeggiator_enabled = false;
+  for (const auto& controls : arpeggiator_controls_)
+    arpeggiator_enabled = arpeggiator_enabled || (controls[0] && controls[0]->value() >= 0.5f);
   const bool arpeggiators_were_enabled = arpeggiators_were_enabled_;
   arpeggiators_were_enabled_ = arpeggiator_enabled;
   if (!arpeggiator_enabled) {
     if (arpeggiators_were_enabled) {
-      // Both arps were just switched off: let each run once disabled so it
+      // Every arp was just switched off: let each run once disabled so it
       // releases any generated note still waiting for its note-off.
-      const AtlasArpeggiator::Settings disabled_settings[2] = {
-        arpeggiatorSettings(arpeggiator_controls_[0]), arpeggiatorSettings(arpeggiator_controls_[1])
-      };
+      AtlasArpeggiator::Settings disabled_settings[vital::kNumArpeggiators];
+      for (int arp = 0; arp < vital::kNumArpeggiators; ++arp)
+        disabled_settings[arp] = arpeggiatorSettings(arpeggiator_controls_[arp]);
       MidiBuffer& empty_input = midi_scheduling_buffers_.arp_segment_input;
       MidiBuffer& arp_output = midi_scheduling_buffers_.arp_output;
       empty_input.clear();
-      for (int arp = 0; arp < 2; ++arp) {
+      for (int arp = 0; arp < vital::kNumArpeggiators; ++arp) {
         for (int destination = 0; destination < kNumArpDestinations; ++destination) {
           arp_output.clear();
           arpeggiators_[arp][destination].process(empty_input, arp_output, end_sample - start_sample,
@@ -1325,9 +1354,9 @@ void SynthBase::buildScheduledMidiEvents(MidiBuffer& midi_messages, int start_sa
     }
   }
   else {
-    const AtlasArpeggiator::Settings arp_settings[2] = {
-      arpeggiatorSettings(arpeggiator_controls_[0]), arpeggiatorSettings(arpeggiator_controls_[1])
-    };
+    AtlasArpeggiator::Settings arp_settings[vital::kNumArpeggiators];
+    for (int arp = 0; arp < vital::kNumArpeggiators; ++arp)
+      arp_settings[arp] = arpeggiatorSettings(arpeggiator_controls_[arp]);
     const double bpm = host_bpm > 0.0 ? host_bpm :
         60.0 * controlValue(controls_, "beats_per_minute", 2.0f);
     for (auto& arp_group : arpeggiators_) {
@@ -1346,7 +1375,7 @@ void SynthBase::buildScheduledMidiEvents(MidiBuffer& midi_messages, int start_sa
       input.addEvent(midi_message, relative_sample);
       if (midi_message.isAllNotesOff() || midi_message.isAllSoundOff()) {
         MidiBuffer& arp_output = midi_scheduling_buffers_.arp_output;
-        for (int arp = 0; arp < 2; ++arp) {
+        for (int arp = 0; arp < vital::kNumArpeggiators; ++arp) {
           for (int destination = 0; destination < kNumArpDestinations; ++destination) {
             arp_output.clear();
             arpeggiators_[arp][destination].panic(arp_output, relative_sample);
@@ -1356,7 +1385,7 @@ void SynthBase::buildScheduledMidiEvents(MidiBuffer& midi_messages, int start_sa
           }
         }
       }
-      for (int arp = 0; arp < 2; ++arp) {
+      for (int arp = 0; arp < vital::kNumArpeggiators; ++arp) {
         for (int destination = 0; destination < kNumArpDestinations; ++destination) {
           if (shouldSendToArpeggiator(arp, destination, midi_message))
             midi_scheduling_buffers_.arp_input[arp][destination].addEvent(midi_message, relative_sample);
@@ -1375,7 +1404,7 @@ void SynthBase::buildScheduledMidiEvents(MidiBuffer& midi_messages, int start_sa
     }
 
     const int num_samples = end_sample - start_sample;
-    for (int arp = 0; arp < 2; ++arp) {
+    for (int arp = 0; arp < vital::kNumArpeggiators; ++arp) {
       for (int destination = 0; destination < kNumArpDestinations; ++destination) {
         const MidiBuffer& destination_input = midi_scheduling_buffers_.arp_input[arp][destination];
         MidiBuffer& segment_input = midi_scheduling_buffers_.arp_segment_input;
@@ -1523,11 +1552,13 @@ void SynthBase::processMidi(MidiBuffer& midi_messages, int start_sample, int end
                             double host_bpm, double ppq_position, bool has_ppq_position) {
   bool process_all = end_sample == 0;
   if (!process_all && start_sample < end_sample) {
-    AtlasArpeggiator::Settings arp_settings[2] = {
-      arpeggiatorSettings(arpeggiator_controls_[0]),
-      arpeggiatorSettings(arpeggiator_controls_[1])
-    };
-    if (arp_settings[0].enabled || arp_settings[1].enabled) {
+    AtlasArpeggiator::Settings arp_settings[vital::kNumArpeggiators];
+    bool any_arp_enabled = false;
+    for (int arp = 0; arp < vital::kNumArpeggiators; ++arp) {
+      arp_settings[arp] = arpeggiatorSettings(arpeggiator_controls_[arp]);
+      any_arp_enabled = any_arp_enabled || arp_settings[arp].enabled;
+    }
+    if (any_arp_enabled) {
       const double bpm = host_bpm > 0.0 ? host_bpm : 60.0 * controlValue(controls_, "beats_per_minute", 2.0f);
       for (auto& arp_group : arpeggiators_) {
         for (auto& arp : arp_group)
@@ -1535,14 +1566,14 @@ void SynthBase::processMidi(MidiBuffer& midi_messages, int start_sample, int end
       }
 
       MidiBuffer input;
-      MidiBuffer arp_input[2][kNumArpDestinations];
+      MidiBuffer arp_input[vital::kNumArpeggiators][kNumArpDestinations];
       for (const MidiMessageMetadata message : midi_messages) {
         int midi_sample = message.samplePosition;
         if (midi_sample >= start_sample && midi_sample < end_sample) {
           const int relative_sample = midi_sample - start_sample;
           const MidiMessage midi_message = message.getMessage();
           input.addEvent(midi_message, relative_sample);
-          for (int arp = 0; arp < 2; ++arp) {
+          for (int arp = 0; arp < vital::kNumArpeggiators; ++arp) {
             for (int destination = 0; destination < kNumArpDestinations; ++destination) {
               if (shouldSendToArpeggiator(arp, destination, midi_message))
                 arp_input[arp][destination].addEvent(midi_message, relative_sample);
@@ -1562,7 +1593,7 @@ void SynthBase::processMidi(MidiBuffer& midi_messages, int start_sample, int end
           merged_output.addEvent(midi_message, message.samplePosition);
       }
 
-      for (int arp = 0; arp < 2; ++arp) {
+      for (int arp = 0; arp < vital::kNumArpeggiators; ++arp) {
         for (int destination = 0; destination < kNumArpDestinations; ++destination) {
           MidiBuffer arp_output;
           arpeggiators_[arp][destination].process(arp_input[arp][destination], arp_output, num_samples,

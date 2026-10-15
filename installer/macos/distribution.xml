@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The macOS installer's layout. build_pkg.sh fills in the version from
+     CMakeLists.txt. The plug-ins are arm64 builds for macOS 11 or newer. -->
+<installer-gui-script minSpecVersion="2">
+  <title>Atlas @VERSION@</title>
+  <options customize="allow" require-scripts="false" hostArchitectures="arm64"/>
+  <domains enable_anywhere="false" enable_currentUserHome="false" enable_localSystem="true"/>
+  <volume-check>
+    <allowed-os-versions>
+      <os-version min="11.0"/>
+    </allowed-os-versions>
+  </volume-check>
+  <choices-outline>
+    <line choice="vst3"/>
+    <line choice="au"/>
+  </choices-outline>
+  <choice id="vst3" title="VST3 plug-in" description="Installs Atlas.vst3 in /Library/Audio/Plug-Ins/VST3.">
+    <pkg-ref id="plugins.alessio.atlas.vst3"/>
+  </choice>
+  <choice id="au" title="Audio Unit plug-in" description="Installs Atlas.component in /Library/Audio/Plug-Ins/Components.">
+    <pkg-ref id="plugins.alessio.atlas.au"/>
+  </choice>
+  <pkg-ref id="plugins.alessio.atlas.vst3" version="@VERSION@">#Atlas-vst3.pkg</pkg-ref>
+  <pkg-ref id="plugins.alessio.atlas.au" version="@VERSION@">#Atlas-au.pkg</pkg-ref>
+</installer-gui-script>

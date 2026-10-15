@@ -54,6 +54,7 @@ namespace vital {
       void processSerialBackward(int num_samples);
       void routeFilterOutputs(int num_samples, FilterRouting routing);
       void prepareFilterInput(int index, int num_samples);
+      void prepareFilterAmplitude(int index, int num_samples);
       poly_float voiceAmplitude(int sample) const {
         const auto* source = input(kAmplitude)->source;
         return source->buffer[source->isControlRate() ? 0 : sample];
@@ -72,6 +73,8 @@ namespace vital {
         SynthModule::setOversampleAmount(oversample);
         filter_1_input_->ensureBufferSize(oversample * kMaxBufferSize);
         filter_2_input_->ensureBufferSize(oversample * kMaxBufferSize);
+        filter_1_amplitude_->ensureBufferSize(oversample * kMaxBufferSize);
+        filter_2_amplitude_->ensureBufferSize(oversample * kMaxBufferSize);
       }
 
     protected:
@@ -85,6 +88,9 @@ namespace vital {
 
       std::shared_ptr<Output> filter_1_input_;
       std::shared_ptr<Output> filter_2_input_;
+      // The voice amplitude each filter's Distortion model shapes at.
+      std::shared_ptr<Output> filter_1_amplitude_;
+      std::shared_ptr<Output> filter_2_amplitude_;
       bool envelope_before_[2] { false, false };
       std::array<int, poly_float::kSize> tail_hold_ {};
       std::array<int, poly_float::kSize> kill_remaining_ {};

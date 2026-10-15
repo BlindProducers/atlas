@@ -139,6 +139,15 @@ namespace vital {
         // Unison spread of the secondary warp amounts, like the primary pair's.
         kSecondaryDistortionSpread,
         kSecondarySpectralMorphSpread,
+        // Analog aging amounts. At 0 they leave the oscillator as it was.
+        kAnalogDrift,
+        kAnalogVoiceSpread,
+        kAnalogWear,
+        kAnalogNoise,
+        kAnalogHum,
+        kAnalogHumFrequency,
+        kAnalogSag,
+        kSoundingVoices,
         kNumInputs
       };
 
@@ -330,6 +339,10 @@ namespace vital {
       void process(int num_samples) override;
       Processor* clone() const override { return new SynthOscillator(*this); }
 
+      // Salts this oscillator's voice cards, so oscillators on the same voice
+      // get different tolerances. Call before the voices are cloned.
+      void setVoiceCardSalt(const std::string& salt);
+
       // FM, RM and sync read another oscillator slot. Position k is the k-th
       // other slot in ascending order; the legacy type names (Oscillator A/B/C,
       // Sample, Granular, Spectral, Noise) are the positions of the original
@@ -387,6 +400,10 @@ namespace vital {
                               poly_float current_detuned_amplitude);
       void resetAnalog(poly_mask reset_mask);
       void addAnalogSub(poly_float* audio_out, int num_samples, poly_mask reset_mask);
+      void ageAnalogPitch(int num_samples, poly_mask reset_mask, poly_mask active_mask);
+      void ageAnalogWave(poly_float* audio_out, int num_samples);
+      void addAnalogNoise(poly_float* audio_out, int num_samples, poly_mask reset_mask);
+      void ageAnalogLevel(poly_float* audio_out, int num_samples, poly_mask reset_mask);
       void applyMonoOverlapFade(int num_samples, poly_mask reset_mask);
       Output* modulationSource(DistortionType type) const;
 
@@ -467,6 +484,52 @@ namespace vital {
       analog::LaneState analog_states_[kNumPolyPhase];
       poly_int sub_phase_ = 0;
       utils::RandomGenerator random_generator_;
+
+      // Analog aging. Each voice clone is a "voice card" numbered in cloning
+      // order, so its fixed tolerances are the same every time a patch loads.
+      struct VoiceCard {
+        VoiceCard() : counter(std::make_shared<int>(0)) { }
+        VoiceCard(const VoiceCard& other) : counter(other.counter), index((*counter)++), salt(other.salt) { }
+        VoiceCard& operator=(const VoiceCard&) = delete;
+        std::shared_ptr<int> counter;
+        int index = 0;
+        uint32_t salt = 0;
+        bool ready = false;
+        // Per lane, in [-1, 1]: pitch, level and sub level offsets, the
+        // shape offset and the waveform asymmetry.
+        poly_float pitch = 0.0f;
+        poly_float level = 0.0f;
+        poly_float sub_level = 0.0f;
+        poly_float shape = 0.0f;
+        poly_float asymmetry = 0.0f;
+      };
+      VoiceCard voice_card_;
+      poly_int drift_random_ = 1;
+      poly_float drift_wander_ = 0.0f;
+      poly_float drift_wander_smooth_ = 0.0f;
+      poly_float drift_jitter_ = 0.0f;
+      // The pitch ratio and level the last block ended on.
+      poly_float drift_ratio_ = 1.0f;
+      poly_float drift_gain_ = 1.0f;
+      poly_float drift_target_gain_ = 1.0f;
+      // Each unison oscillator also wanders on its own.
+      poly_int unison_random_[kNumPolyPhase] {};
+      poly_float unison_wander_[kNumPolyPhase] {};
+      // Supply load from the number of sounding voices, smoothed like a power supply.
+      poly_float sag_load_ = 0.0f;
+      // This block's Wear, Noise and Hum amounts, the Wear shape offset and the sub gain.
+      poly_float wear_amount_ = 0.0f;
+      poly_float noise_amount_ = 0.0f;
+      poly_float hum_amount_ = 0.0f;
+      poly_float wear_shape_ = 0.0f;
+      poly_float sub_gain_ = 1.0f;
+      // Wear: the slow mean of the squared wave, and the softened edge.
+      poly_float wear_square_mean_ = 0.0f;
+      poly_float wear_edge_ = 0.0f;
+      // Noise: per voice randomness, the hum phase and the decaying crackle.
+      poly_int noise_random_ = 1;
+      mono_float hum_phase_ = 0.0f;
+      poly_float crackle_ = 0.0f;
 
       int transpose_quantize_;
       poly_float last_quantized_transpose_;

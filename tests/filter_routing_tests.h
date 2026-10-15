@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
+#include "editor_navigation.h"
 #include "filters_module.h"
 #include "producers_module.h"
 
@@ -214,13 +215,8 @@ namespace filter_routing_tests {
   }
 
   void select(Component& component, const String& title, const String& text) {
-    auto* combo = dynamic_cast<ComboBox*>(withTitle(component, title));
-    expect(combo != nullptr, "routing editor must expose " + title.toStdString());
-    if (!combo) return;
-    for (int i = 0; i < combo->getNumItems(); ++i) if (combo->getItemText(i) == text) {
-      combo->setSelectedItemIndex(i, sendNotificationSync); return;
-    }
-    expect(false, "routing editor must offer " + text.toStdString());
+    expect(editor_navigation::focusHeading(component, title, text),
+           "routing editor must offer " + text.toStdString());
   }
 
   void testEditorRouting() {

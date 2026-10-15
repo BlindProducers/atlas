@@ -3,6 +3,7 @@
 #include "fx_automation_parameter.h"
 #include "synth_plugin.h"
 #include "synth_editor.h"
+#include "editor_navigation.h"
 #include "parameter_slider.h"
 #include "sound_engine.h"
 #include "delay.h"
@@ -66,16 +67,7 @@ namespace {
   }
 
   bool selectEditorItem(Component& editor, const String& title, const String& text) {
-    auto* selector = dynamic_cast<ComboBox*>(componentWithTitle(editor, title));
-    if (selector == nullptr)
-      return false;
-    for (int i = 0; i < selector->getNumItems(); ++i) {
-      if (selector->getItemText(i) == text) {
-        selector->setSelectedItemIndex(i, sendNotificationSync);
-        return true;
-      }
-    }
-    return false;
+    return editor_navigation::focusHeading(editor, title, text);
   }
 
   bool continuousKeyboardControls(Component& parent) {
@@ -197,6 +189,7 @@ int main() {
   if (const int result = testFxBusPresets())
     return result;
   SynthPlugin synth;
+  slot_ids::useLegacySourceTypes(synth);
 
   std::map<std::string, String> original_host_ids;
   int original_host_index = 0;

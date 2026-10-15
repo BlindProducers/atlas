@@ -24,6 +24,7 @@ namespace vital {
 
   constexpr int kNumLfos = 12;
   constexpr int kNumOscillators = 8;
+  constexpr int kNumArpeggiators = 2;
   constexpr int kNumOscillatorWaveFrames = 257;
   constexpr int kNumEnvelopes = 10;
   constexpr int kNumRandomLfos = 4;
@@ -210,6 +211,7 @@ namespace vital {
       kRingModFilter,
       kSampleHoldFilter,
       kFilterTable,
+      kDistortionFilter,
       kNumFilterModels
     };
 

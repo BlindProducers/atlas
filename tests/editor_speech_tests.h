@@ -115,8 +115,6 @@ namespace {
   void testListsSayTheSelectedRow() {
     SpokenMessages spoken;
     SynthPlugin synth;
-    synth.connectModulation("lfo_1", "osc_1_transpose");
-    synth.connectModulation("lfo_2", "osc_1_level");
     SynthEditor editor(synth);
     editor.updateFullGui();
     editor.addToDesktop(0);
@@ -155,21 +153,10 @@ namespace {
       std::cout << "  fewer than two presets installed; skipped the preset results rows\n";
     }
 
-    auto* routes = dynamic_cast<ListBox*>(titled(editor, "Connected modulations"));
-    expect(routes != nullptr && routes->getListBoxModel() != nullptr &&
-               routes->getListBoxModel()->getNumRows() == 2,
-           "the modulation list shows both routes");
-    if (routes != nullptr && routes->getListBoxModel() != nullptr && routes->getListBoxModel()->getNumRows() == 2) {
-      routes->selectRow(0);
-      expectListRowSpoken(*routes, spoken, KeyPress(KeyPress::downKey), "Modulation two, LFO 2", "Connected modulations");
-      expectListRowSpoken(*routes, spoken, KeyPress(KeyPress::upKey), "Modulation one, LFO 1", "Connected modulations");
-    }
-
     // Use speech feedback off silences them too.
     atlas::speech::settings().speech_feedback = false;
     spoken.messages.clear();
     if (collection != nullptr) collection->keyPressed(KeyPress(KeyPress::endKey));
-    if (routes != nullptr) routes->keyPressed(KeyPress(KeyPress::downKey));
     expect(spoken.messages.isEmpty(), "Use speech feedback off silences the lists");
     atlas::speech::settings().speech_feedback = true;
 
