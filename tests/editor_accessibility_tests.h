@@ -1104,10 +1104,16 @@ namespace {
 
   // Comma and period step from element to element. On an effects chain they
   // also step through the slots that hold an effect: the chain, Slot 1, Slot 2,
-  // then the next element, and back the same way (Windows only).
+  // then the next element, and back the same way. A bus's chain is reached at
+  // its Bus heading and says only the bus (Windows only).
   void testSectionKeysStepThroughEffectSlots() {
-    // Announcements go nowhere rather than to the screen reader.
-    atlas::speech::setObserverForTesting([](const String&) {});
+    // Announcements are kept here rather than sent to the screen reader, with
+    // the navigation ones, which say where a step landed, switched on.
+    StringArray spoken;
+    atlas::speech::setObserverForTesting([&spoken](const String& message) { spoken.add(message); });
+    auto& speech = atlas::speech::settings();
+    const auto saved_speech = speech;
+    speech.speech_feedback = speech.navigation = true;
 
     SynthPlugin synth;
     // The main chain has Delay and Utility with an empty slot between them,
@@ -1152,6 +1158,12 @@ namespace {
     auto on_slot = [&](const String& section, const String& title) {
       return focused_title() == title && focused_section() == section;
     };
+    // The last step said `expected` and nothing else.
+    auto heard = [&](const String& expected, const std::string& what) {
+      expect(spoken.size() == 1 && spoken[0] == expected,
+             what + " says " + expected.toStdString() + " (heard: " + spoken.joinIntoString(" | ").toStdString() + ")");
+      spoken.clear();
+    };
     // Reach an element as a keyboard user does: F for the Filters group, then
     // the number that chooses the element in it.
     auto start_on_filter = [&](const String& section) {
@@ -1161,15 +1173,17 @@ namespace {
       return focused_section() == section;
     };
 
-    const String chain = "Chain and routing", bus_1 = "Bus 1 - Chain and routing",
-                 bus_2 = "Bus 2 - Chain and routing", bus_3 = "Bus 3 - Chain and routing";
+    const String chain = "Chain and routing", bus_1 = "Bus 1 - Chain and routing";
     expect(start_on_filter("Filter 2"), "the walk starts on Filter 2");
+    spoken.clear();
     press(period);
     expect(on_chain(chain), "period from Filter 2 reaches the effects chain");
+    heard("Chain and routing", "the step to the effects chain");
     press(period);
     if (!kWindowsStepsThroughEffectSlots) {
       expect(focused_section() == "Envelope 1", "off Windows, period goes from the chain to the next element");
       atlas::speech::setObserverForTesting(nullptr);
+      speech = saved_speech;
       editor.removeFromDesktop();
       return;
     }
@@ -1212,23 +1226,39 @@ namespace {
     press(period);
     expect(on_slot(chain, "Slot 1 (Delay)"), "period from the Effects heading goes to Slot 1");
 
-    // Each bus chain has its own slots; an empty chain is a single step.
+    // Each bus chain has its own slots; an empty chain is a single step. A
+    // step to a bus's chain lands on its Bus heading, where Ctrl 1 to 3 go,
+    // and says only the bus: "Chain and routing" is every bus chain's name.
+    auto on_bus = [&](int bus) { return focused_title() == "Bus " + String(bus); };
     press(KeyPress('1', ModifierKeys::ctrlModifier, 0));
-    expect(focused_title() == "Bus 1", "Ctrl 1 focuses the Bus 1 group");
+    expect(on_bus(1), "Ctrl 1 focuses the Bus 1 group");
+    press(comma);
+    expect(!on_bus(1) && !focused_section().startsWith("Bus "), "comma from the Bus 1 heading goes to the element before it");
+    spoken.clear();
+    press(period);
+    expect(on_bus(1), "period from the element before Bus 1 lands on the Bus 1 heading");
+    heard("Bus 1", "the step to Bus 1");
     press(period);
     expect(on_slot(bus_1, "Slot 1 (Reverb)"), "period from the Bus 1 heading goes to its Slot 1");
+    spoken.clear();
     press(period);
-    expect(on_chain(bus_2), "period after Bus 1's last slot reaches the empty Bus 2 chain");
+    expect(on_bus(2), "period after Bus 1's last slot reaches the empty Bus 2 chain, at its heading");
+    heard("Bus 2", "the step to Bus 2");
     press(period);
-    expect(on_chain(bus_3), "period from the empty Bus 2 chain goes on to Bus 3");
+    expect(on_bus(3), "period from the empty Bus 2 chain goes on to Bus 3");
+    heard("Bus 3", "the step to Bus 3");
     press(comma);
-    expect(on_chain(bus_2), "comma goes back to the empty Bus 2 chain");
+    expect(on_bus(2), "comma goes back to the empty Bus 2 chain");
+    heard("Bus 2", "the step back to Bus 2");
     press(comma);
     expect(on_slot(bus_1, "Slot 1 (Reverb)"), "comma from Bus 2 comes back to Bus 1's last slot");
+    spoken.clear();
     press(comma);
-    expect(on_chain(bus_1), "comma from Bus 1's Slot 1 goes back to the Bus 1 chain");
+    expect(on_bus(1), "comma from Bus 1's Slot 1 goes back to the Bus 1 heading");
+    heard("Bus 1", "the step back to Bus 1");
 
     atlas::speech::setObserverForTesting(nullptr);
+    speech = saved_speech;
     editor.removeFromDesktop();
   }
 

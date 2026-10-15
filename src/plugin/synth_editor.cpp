@@ -106,6 +106,16 @@ namespace {
 #else
   constexpr bool kSectionKeysStepThroughEffectSlots = false;
 #endif
+  // Whether a step to a bus's effects chain (comma, period, a number key)
+  // lands on its Bus heading, as Ctrl 1 to 3 do, and says the bus ("Bus 2").
+  // Otherwise it lands on the chain's Bus controls and says "Chain and
+  // routing", the name of every bus's chain (SynthEditor::selectSectionByName).
+  // Asked for on Windows.
+#if JUCE_WINDOWS
+  constexpr bool kBusChainsStepToTheirHeading = true;
+#else
+  constexpr bool kBusChainsStepToTheirHeading = false;
+#endif
 
   enum PresetFacetKind {
     kLibraryFacet = 1,
@@ -366,6 +376,14 @@ namespace {
   void postPluginAnnouncement(const String& message, AccessibilityHandler::AnnouncementPriority priority) {
     if (shouldPostPluginAnnouncement(message))
       atlas::speech::announce(message, priority);
+  }
+
+  // Where a step landed, for a name that holds none of the navigation words
+  // above ("Bus 2"), so that the Navigation setting still decides.
+  void postNavigationAnnouncement(const String& message) {
+    const auto& settings = accessibilitySpeechSettings();
+    if (settings.speech_feedback && settings.navigation)
+      atlas::speech::announce(message, AccessibilityHandler::AnnouncementPriority::high);
   }
 
   // Direct responses to a preset-browser command must not disappear when the
@@ -6374,14 +6392,21 @@ void SynthEditor::selectSectionByName(const String& section, bool announce) {
   last_section_name_ = section;
   if (row_focus_order_.empty())
     showAllSections(false);
+  // On Windows a bus's chain is reached at its Bus heading (the group search
+  // below) and called by the bus: the chain is all the Bus group holds, and
+  // its own name, "Chain and routing", is the same on every bus.
+  const bool bus_heading = kBusChainsStepToTheirHeading && isEffectChainSection(section) &&
+                           fxBusForSection(section) > 0;
   Component* target = nullptr;
-  for (auto* component : row_focus_order_) {
-    if (component != nullptr && component->getProperties()["SectionName"].toString() == section) {
-      target = component;
-      break;
+  if (!bus_heading) {
+    for (auto* component : row_focus_order_) {
+      if (component != nullptr && component->getProperties()["SectionName"].toString() == section) {
+        target = component;
+        break;
+      }
     }
   }
-  if (target == nullptr) {
+  if (target == nullptr && !bus_heading) {
     const String title = accessibleSectionTitle(section);
     for (auto* component : row_focus_order_) {
       if (component != nullptr && component->getTitle() == title) {
@@ -6403,9 +6428,12 @@ void SynthEditor::selectSectionByName(const String& section, bool announce) {
     ensureComponentVisible(target);
     target->grabKeyboardFocus();
   }
-  if (announce)
-    postPluginAnnouncement(accessibleSectionTitle(section),
-                                           AccessibilityHandler::AnnouncementPriority::high);
+  if (announce) {
+    if (bus_heading)
+      postNavigationAnnouncement(fxBusNameForSection(section));
+    else
+      postPluginAnnouncement(accessibleSectionTitle(section), AccessibilityHandler::AnnouncementPriority::high);
+  }
 }
 
 std::unique_ptr<AccessibleParameterRow> SynthEditor::createAccessibleParameterRow(AudioProcessorParameter& parameter,
