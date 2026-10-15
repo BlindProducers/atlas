@@ -70,6 +70,19 @@ namespace vital {
   // fast mono repetitions.
   constexpr mono_float kVoiceKillTime = 0.011048543f;
   constexpr mono_float kModulationHandoffTime = kVoiceKillTime;
+  // Windows charges every committed page to the system's commit limit,
+  // touched or not, so there the voice filters' Reverb memory, the parked
+  // effect shells' dry history and the latency compensation lines' history
+  // exist only while something uses them, and a block that meets one missing
+  // in realtime runs dry or undelayed until the message thread reserves it.
+  // macOS commits a page only once it is written, so it reserves them up
+  // front, about 3 MB actually touched, and never runs such a block.
+#if JUCE_WINDOWS
+  constexpr bool kReserveMemoryOnlyWhileUsed = true;
+#else
+  constexpr bool kReserveMemoryOnlyWhileUsed = false;
+#endif
+
   constexpr int kNumMidiChannels = 16;
   constexpr int kFirstMidiChannel = 0;
   constexpr int kLastMidiChannel = kNumMidiChannels - 1;

@@ -133,8 +133,8 @@ namespace vital {
     }
 
     VoiceHandler::init();
-    // The filters exist now. Voices hold Reverb memory only while a filter
-    // selects that model, including the copies prepareToPlay makes.
+    // The filters exist now. On Windows voices hold Reverb memory only while
+    // a filter selects that model, including the copies prepareToPlay makes.
     for (int i = 0; i < 2; ++i)
       setReverbMemory(i, false);
     producers_->setFilter1On(filters_module_->getFilter1OnValue());
@@ -646,6 +646,9 @@ namespace vital {
   }
 
   void SynthVoiceHandler::updateReverbMemory() {
+    // Elsewhere every filter keeps the memory it reserved at construction.
+    if (!kReserveMemoryOnlyWhileUsed)
+      return;
     for (int i = 0; i < 2; ++i) {
       FilterModule* filter = voiceFilter(i);
       const Value* model = filter ? filter->getModelValue() : nullptr;
@@ -655,6 +658,8 @@ namespace vital {
   }
 
   void SynthVoiceHandler::setReverbMemory(int index, bool reserve) {
+    if (!kReserveMemoryOnlyWhileUsed)
+      return;
     if (FilterModule* filter = voiceFilter(index))
       filter->setReverbMemory(reserve);
   }

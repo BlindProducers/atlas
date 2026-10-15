@@ -386,10 +386,11 @@ void SynthBase::valueChanged(const std::string& name, vital::mono_float value) {
     return;
   vital::Value* control = found->second;
   const bool changed = control->value() != value;
-  // The voice filters hold Reverb memory only while that model is selected:
-  // selecting it reserves the memory before the audio thread can see the new
-  // model, and leaving it frees the memory afterwards.
-  const int voice_filter = !changed ? -1 : name == "filter_1_model" ? 0 : name == "filter_2_model" ? 1 : -1;
+  // On Windows the voice filters hold Reverb memory only while that model is
+  // selected: selecting it reserves the memory before the audio thread can
+  // see the new model, and leaving it frees the memory afterwards.
+  const int voice_filter = !changed || !vital::kReserveMemoryOnlyWhileUsed ? -1 :
+                           name == "filter_1_model" ? 0 : name == "filter_2_model" ? 1 : -1;
   const bool reverb = static_cast<int>(value + 0.5f) == vital::constants::kReverbFilter;
   if (voice_filter >= 0 && reverb)
     setVoiceReverbMemory(voice_filter, true);
