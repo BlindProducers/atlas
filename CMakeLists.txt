@@ -473,8 +473,8 @@ if(ATLAS_BUILD_TIMING_TESTS)
     JUCE_MODAL_LOOPS_PERMITTED=1)
   target_link_libraries(AtlasMultiSampleTests PRIVATE
     Atlas juce::juce_audio_utils juce::juce_dsp juce::juce_gui_extra juce::juce_recommended_config_flags)
-  foreach(multisample_test sfz-parser sf2-parser decode pitch select envelope-mode release-trigger choke
-          cc-trigger container host-state sf2-preset-switch editor)
+  foreach(multisample_test sfz-parser sf2-parser decentsampler-parser decentsampler-load decode pitch select
+          envelope-mode release-trigger choke cc-trigger container host-state sf2-preset-switch editor)
     add_test(NAME atlas_multisample_${multisample_test} COMMAND AtlasMultiSampleTests --${multisample_test})
   endforeach()
 

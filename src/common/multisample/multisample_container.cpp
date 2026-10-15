@@ -47,7 +47,7 @@ namespace container {
     }
 
     bool isTextFile(const juce::String& name) {
-      return name.endsWithIgnoreCase(".sfz") || name.endsWithIgnoreCase(".sfzh") ||
+      return name.endsWithIgnoreCase(".sfz") || name.endsWithIgnoreCase(".sfzh") || name.endsWithIgnoreCase(".dspreset") ||
              name.endsWithIgnoreCase(".txt") || name.endsWithIgnoreCase(".json");
     }
 

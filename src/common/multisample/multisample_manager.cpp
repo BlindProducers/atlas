@@ -86,7 +86,8 @@ namespace multisample {
         info.size = size != item.end() && size->is_number() ? size->get<int64_t>() : 0;
         auto crc = item.find("crc");
         info.crc = crc != item.end() && crc->is_number() ? crc->get<uint32_t>() : 0;
-        info.text = juce::String(info.relative).endsWithIgnoreCase(".sfz");
+        info.text = juce::String(info.relative).endsWithIgnoreCase(".sfz") ||
+                    juce::String(info.relative).endsWithIgnoreCase(".dspreset");
         spec.files.push_back(info);
       }
     }
@@ -196,7 +197,7 @@ namespace multisample {
       const juce::File working = container::workingFolder(job.spec.hash).getChildFile(juce::String(job.spec.entry));
       const juce::File cached = container::cacheFolder(job.spec.hash).getChildFile(juce::String(job.spec.entry));
       job.load.file = working.existsAsFile() ? working : cached;
-      if (isSfz(job.load.file))
+      if (isTextInstrument(job.load.file))
         job.load.sfz_options = cacheOptions(job.spec, job.load.file);
     }
 
@@ -215,7 +216,7 @@ namespace multisample {
         container::touch(job.spec.hash);
         const juce::File entry = container::cacheFolder(job.spec.hash).getChildFile(juce::String(job.spec.entry));
         cached.load.file = entry;
-        if (isSfz(entry))
+        if (isTextInstrument(entry))
           cached.load.sfz_options = cacheOptions(job.spec, entry);
         std::shared_ptr<LoadResult> cached_result = loadInstrument(cached.load, progress);
         if (cached_result == nullptr)
@@ -334,7 +335,7 @@ namespace multisample {
       if (state.current && !state.from_cache && state.loaded_file == file)
         job.load.previous = state.current;
       state.spec = InstrumentSpec();
-      state.spec.format = isSf2(file) ? "sf2" : "sfz";
+      state.spec.format = instrumentFormat(file);
       state.spec.name = file.getFileNameWithoutExtension().toStdString();
       state.spec.path = file.getFullPathName().toStdString();
     }
@@ -551,7 +552,7 @@ namespace multisample {
     if (slot < 0 || slot >= kNumSlots)
       return {};
     Slot& state = slots_[static_cast<size_t>(slot)];
-    if (state.current == nullptr || state.spec.format != "sfz" || state.loaded_file == juce::File())
+    if (state.current == nullptr || state.spec.format == "sf2" || state.loaded_file == juce::File())
       return {};
     const juce::File working_root = container::cacheRoot().getChildFile("Working");
     if (!state.from_cache || state.loaded_file.isAChildOf(working_root))

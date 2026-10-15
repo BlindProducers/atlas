@@ -1,4 +1,4 @@
-// Multi-sample oscillator tests: SFZ and SF2 parsing, decoding, playback,
+// Multi-sample oscillator tests: SFZ, DecentSampler and SF2 parsing, decoding, playback,
 // presets and host state. Fixtures are written to a temporary folder; no test
 // depends on the large libraries the feature is meant for. `--manual <file>`
 // loads a real instrument and prints what the loader found.
@@ -15,6 +15,7 @@
 #include "multisample_container.h"
 #include "multisample_manager.h"
 #include "load_save.h"
+#include "decentsampler_parser.h"
 #include "sf2_parser.h"
 #include "sfz_parser.h"
 
@@ -1065,6 +1066,357 @@ namespace {
     }
     return true;
   }
+  // ---- DecentSampler ------------------------------------------------------------
+
+  const Region* regionWithKey(const Instrument& instrument, int key, int position = 1) {
+    for (const Region& region : instrument.regions) {
+      if (region.lokey <= key && region.hikey >= key && region.seq_position == position &&
+          region.trigger != Trigger::kCc)
+        return &region;
+    }
+    return nullptr;
+  }
+
+  bool hasWarning(const Instrument& instrument, const std::string& text) {
+    for (const std::string& warning : instrument.warnings) {
+      if (warning.find(text) != std::string::npos)
+        return true;
+    }
+    return false;
+  }
+
+  int decentSamplerParser() {
+    TempFolder temp;
+    const juce::File root = temp.folder;
+    writeWav(root.getChildFile("Samples/Low.wav"), 220.0, 4800);
+    writeWav(root.getChildFile("Samples/high.wav"), 440.0, 4800);
+    const juce::File preset = root.getChildFile("Piano.dspreset");
+    writeText(preset, R"(<?xml version="1.0" encoding="UTF-8"?>
+<DecentSampler minVersion="1.0.0">
+  <ui>
+    <tab name="main">
+      <labeled-knob label="Body" minValue="0" maxValue="100" value="25">
+        <binding type="amp" level="group" position="0" parameter="AMP_VOLUME"
+                 translation="linear" translationOutputMin="0" translationOutputMax="2"/>
+      </labeled-knob>
+      <labeled-knob label="RT" minValue="0" maxValue="100" value="60">
+        <binding type="amp" level="group" position="1" parameter="AMP_VOLUME"
+                 translation="linear" translationOutputMin="0" translationOutputMax="1"/>
+      </labeled-knob>
+      <labeled-knob label="Release" minValue="0" maxValue="10" value="2.5">
+        <binding type="amp" level="instrument" position="0" parameter="ENV_RELEASE"/>
+      </labeled-knob>
+      <labeled-knob label="Tone" minValue="0" maxValue="1" value="0.5">
+        <binding type="effect" level="instrument" position="0" parameter="FX_FILTER_FREQUENCY"/>
+      </labeled-knob>
+      <menu value="2">
+        <option name="Close">
+          <binding type="amp" level="group" position="2" parameter="ENABLED" translation="fixed_value" translationValue="true"/>
+        </option>
+        <option name="Room">
+          <binding type="amp" level="group" position="2" parameter="ENABLED" translation="fixed_value" translationValue="false"/>
+        </option>
+      </menu>
+      <labeled-knob label="Hats" minValue="0" maxValue="1" value="0.5">
+        <binding type="amp" level="tag" identifier="hats" parameter="TAG_VOLUME"
+                 translation="table" translationTable="0,0;0.5,0.25;1,1"/>
+      </labeled-knob>
+    </tab>
+  </ui>
+  <groups volume="-6dB" attack="0.01" decay="2" sustain="0.5" globalTuning="1" globalPan="-20">
+    <group groupVolume="0.8" ampVelTrack="0.5" seqMode="round_robin" tags="body">
+      <sample path="Samples\low.wav" rootNote="48" loNote="0" hiNote="59" loVel="1" hiVel="100" seqPosition="1"
+              tuning="0.5" pan="40" start="10" end="4000" loopEnabled="true" loopStart="100" loopEnd="3999"/>
+      <sample path="Samples/Low.wav" rootNote="48" loNote="0" hiNote="59" seqPosition="2" volume="6dB"/>
+      <sample path="Samples/high.wav" rootNote="64" loNote="60" hiNote="127" pitchKeyTrack="0"
+              tuning="2" loopEnabled="true" loopDuringRelease="false" glideTime="0.2"/>
+    </group>
+    <group trigger="release" releaseTriggerDecay="3dB" ampEnvEnabled="false" volume="20dB">
+      <sample path="Samples/high.wav" rootNote="64" loNote="60" hiNote="62" loCC64="0" hiCC64="63"/>
+      <sample path="Samples/low.wav" rootNote="48" onLoCC64="64" onHiCC64="127"/>
+    </group>
+    <group>
+      <sample path="Samples/high.wav" rootNote="70" loNote="70" hiNote="70"/>
+    </group>
+    <group seqMode="random" tags="hats" silencingMode="normal">
+      <sample path="Samples/high.wav" rootNote="42" loNote="42" hiNote="42" seqPosition="1" tags="closed"/>
+      <sample path="Samples/high.wav" rootNote="42" loNote="42" hiNote="42" seqPosition="2" tags="closed"/>
+      <sample path="Samples/high.wav" rootNote="46" loNote="46" hiNote="46" silencedByTags="closed"
+              silencingDecay="0.05" delay="0.02"/>
+    </group>
+    <group enabled="false">
+      <sample path="Samples/high.wav" rootNote="80" loNote="80" hiNote="80"/>
+    </group>
+    <group tags="muted">
+      <sample path="Samples/high.wav" rootNote="90" loNote="90" hiNote="90"/>
+    </group>
+  </groups>
+  <tags>
+    <tag name="muted" enabled="false"/>
+  </tags>
+  <effects>
+    <effect type="reverb" wetLevel="0.5"/>
+  </effects>
+</DecentSampler>
+)");
+    SfzParser::Result result = DecentSamplerParser::parse(preset);
+    expect(result.error.empty(), "the preset parses: " + result.error);
+    if (!result.instrument)
+      return finish("decentsampler parser");
+    const Instrument& instrument = *result.instrument;
+    expect(instrument.format == "dspreset", "format is dspreset");
+    expect(instrument.name == "Piano", "named after the file");
+    expect(result.text_files.size() == 1 && result.text_files[0] == preset, "the preset is the only text file");
+    expect(result.samples.size() == 2, "two sample files, each once (got " + std::to_string(result.samples.size()) + ")");
+    // Group 2 is turned off by the menu, group 4 by setting enabled="false", group 5 by its tag.
+    expect(instrument.regions.size() == 8, "eight regions (got " + std::to_string(instrument.regions.size()) + ")");
+    for (const Region& region : instrument.regions)
+      expect(region.lokey != 70 && region.lokey != 80 && region.lokey != 90, "disabled groups and tags play nothing");
+
+    const Region* low = regionWithKey(instrument, 50, 1);
+    expect(low != nullptr, "round robin position 1 maps below middle C");
+    if (low) {
+      expect(juce::File(juce::String(low->sample_path)) == root.getChildFile("Samples/Low.wav"),
+             "a backslash path is found ignoring case");
+      close(low->pitch_keycenter, 48.0, "rootNote is the key centre");
+      expect(low->lovel == 1 && low->hivel == 100, "velocity range");
+      expect(low->seq_length == 2 && low->seq_position == 1,
+             "round robin length comes from the positions of samples sharing its keys");
+      close(low->tune_cents, 150.0, "global and sample tuning add up in cents");
+      close(low->pan, 0.2, "pan plus globalPan");
+      // -6 dB for the instrument, times the group's 0.8 and its knob's 0.5 (25 of 100 mapped to 0..2).
+      close(low->amplitude, std::pow(10.0, -6.0 / 20.0) * 0.8 * 0.5, "volumes multiply, with the knob's value", 1.0e-5);
+      close(low->amp_veltrack, 0.5, "ampVelTrack");
+      close(low->velocity_gain[127], 1.0, "full velocity is full gain");
+      close(low->velocity_gain[0], 0.5, "velocity tracking is half");
+      close(low->velocity_gain[64], 0.5 + 0.5 * 64.0 / 127.0, "gain follows velocity linearly", 1.0e-5);
+      expect(low->offset == 10 && low->end == 4001, "start and end, end inclusive");
+      expect(low->loop_mode_set && low->loop_mode == LoopMode::kContinuous, "loopEnabled loops");
+      expect(low->loop_start == 100 && low->loop_end == 4000, "loop points, end inclusive");
+      close(low->ampeg.attack, 0.01, "attack inherits from groups");
+      close(low->ampeg.decay, 2.0, "decay");
+      close(low->ampeg.sustain, 0.5, "sustain");
+      close(low->ampeg.release, 2.5, "an instrument knob sets the release");
+    }
+    const Region* second = regionWithKey(instrument, 50, 2);
+    if (second)
+      close(second->amplitude, std::pow(10.0, -6.0 / 20.0) * 0.8 * 0.5 * std::pow(10.0, 6.0 / 20.0), "sample volume in dB", 1.0e-5);
+    else
+      expect(false, "round robin position 2");
+    const Region* high = regionWithKey(instrument, 100);
+    expect(high != nullptr, "the high sample maps above middle C");
+    if (high) {
+      expect(high->seq_length == 1, "a sample alone on its keys is not a round robin");
+      close(high->pitch_keytrack, 0.0, "pitchKeyTrack 0");
+      close(high->tune_cents, 0.0, "tuning scales with key tracking");
+      expect(high->loop_mode == LoopMode::kSustain, "loopDuringRelease=false loops until release");
+    }
+
+    int release_regions = 0;
+    int cc_regions = 0;
+    for (const Region& region : instrument.regions) {
+      if (region.trigger == Trigger::kRelease) {
+        release_regions++;
+        close(region.rt_decay, 3.0, "releaseTriggerDecay in dB per second");
+        close(region.amplitude, std::pow(10.0, -6.0 / 20.0) * 10.0 * 0.6,
+              "a group volume knob multiplies the group's own volume", 1.0e-4);
+        expect(region.loop_mode == LoopMode::kOneShot, "ampEnvEnabled=false plays to the end");
+        expect(region.cc_gates.size() == 1 && region.cc_gates[0].cc == 64 && region.cc_gates[0].high == 63.0f,
+               "loCC64/hiCC64 gate the region");
+      }
+      if (region.trigger == Trigger::kCc) {
+        cc_regions++;
+        expect(region.on_cc == 64 && region.on_low == 64.0f && region.on_high == 127.0f, "onLoCC64/onHiCC64 trigger");
+      }
+    }
+    expect(release_regions == 1, "one release-triggered region");
+    expect(cc_regions == 1, "one CC-triggered region");
+
+    // Hats: random round robin, tag volume from a table binding, and choking by tag.
+    std::vector<const Region*> closed;
+    const Region* open = nullptr;
+    for (const Region& region : instrument.regions) {
+      if (region.lokey == 42)
+        closed.push_back(&region);
+      if (region.lokey == 46)
+        open = &region;
+    }
+    expect(closed.size() == 2, "two closed hats");
+    if (closed.size() == 2) {
+      close(closed[0]->lorand, 0.0, "random positions split the range");
+      close(closed[0]->hirand, 0.5, "first half");
+      close(closed[1]->lorand, 0.5, "second half");
+      close(closed[0]->amplitude, std::pow(10.0, -6.0 / 20.0) * 0.25, "a tag volume from a table binding", 1.0e-5);
+      expect(closed[0]->group != 0 && closed[0]->group == closed[1]->group, "closed hats share a choke group");
+      expect(closed[0]->off_mode == OffMode::kNormal, "silencingMode=normal");
+    }
+    expect(open != nullptr, "the open hat");
+    if (open && !closed.empty()) {
+      expect(open->off_by == closed[0]->group, "silencedByTags chokes the open hat");
+      expect(open->off_mode == OffMode::kTime, "silencingDecay fades");
+      close(open->off_time, 0.05, "silencingDecay time");
+      close(open->delay, 0.02, "delay in seconds");
+    }
+
+    expect(hasWarning(instrument, "<effects>"), "effects are reported");
+    expect(hasWarning(instrument, "glidetime"), "unsupported attributes are reported");
+    expect(hasWarning(instrument, "FX_FILTER_FREQUENCY"), "unsupported bindings are reported");
+
+    // seqPosition without seqMode takes turns; an explicit "always" stacks.
+    {
+      auto takes = [&](const std::string& mode) {
+        const std::string attribute = mode.empty() ? std::string() : " seqMode=\"" + mode + "\"";
+        return DecentSamplerParser::parseText(
+            "<DecentSampler><groups><group" + attribute + ">"
+            "<sample path=\"Samples/low.wav\" rootNote=\"60\" loNote=\"60\" hiNote=\"60\" seqPosition=\"1\"/>"
+            "<sample path=\"Samples/low.wav\" rootNote=\"60\" loNote=\"60\" hiNote=\"60\" seqPosition=\"2\"/>"
+            "<sample path=\"Samples/low.wav\" rootNote=\"60\" loNote=\"60\" hiNote=\"60\" seqPosition=\"3\"/>"
+            "<sample path=\"Samples/high.wav\" rootNote=\"72\" loNote=\"72\" hiNote=\"72\" seqPosition=\"1\"/>"
+            "</group></groups></DecentSampler>", root.getChildFile("takes.dspreset"));
+      };
+      SfzParser::Result implied = takes("");
+      expect(implied.instrument && implied.instrument->regions.size() == 4, "four takes parse");
+      if (implied.instrument && implied.instrument->regions.size() == 4) {
+        const auto& regions = implied.instrument->regions;
+        expect(regions[0].seq_length == 3 && regions[1].seq_position == 2 && regions[2].seq_position == 3,
+               "numbered takes without seqMode take turns");
+        expect(regions[3].seq_length == 1, "a lone take with position 1 always plays");
+        expect(hasWarning(*implied.instrument, "no seqMode play as round robins"), "the inferred round robin is reported");
+      }
+      SfzParser::Result stacked = takes("always");
+      expect(stacked.instrument && stacked.instrument->regions.size() == 4 &&
+             stacked.instrument->regions[0].seq_length == 1 && stacked.instrument->regions[1].seq_length == 1 &&
+             !hasWarning(*stacked.instrument, "round robins"), "an explicit seqMode=always stacks");
+    }
+
+    // Paths resolve through overrides and search roots like SFZ.
+    SfzParser::Options options;
+    options.path_overrides["Samples/high.wav"] = root.getChildFile("Samples/Low.wav");
+    SfzParser::Result overridden = DecentSamplerParser::parseText(
+        "<DecentSampler><groups><group><sample path=\"Samples/high.wav\" rootNote=\"60\"/></group></groups></DecentSampler>",
+        root.getChildFile("text.dspreset"), options);
+    expect(overridden.samples.size() == 1 && overridden.samples[0].file == root.getChildFile("Samples/Low.wav") &&
+           overridden.samples[0].written == "Samples/high.wav", "path overrides apply");
+
+    // Defaults: full key and velocity range, key centre 60, linear velocity, a short release.
+    SfzParser::Result plain = DecentSamplerParser::parseText(
+        "<DecentSampler><groups><sample path=\"x.wav\"/><group><sample path=\"Samples/low.wav\"/></group></groups></DecentSampler>",
+        root.getChildFile("plain.dspreset"));
+    expect(plain.error.empty() && plain.instrument && plain.instrument->regions.size() == 1, "a bare sample parses");
+    if (plain.instrument && plain.instrument->regions.size() == 1) {
+      const Region& region = plain.instrument->regions[0];
+      expect(region.lokey == 0 && region.hikey == 127, "full key range");
+      close(region.pitch_keycenter, 60.0, "key centre defaults to 60");
+      close(region.velocity_gain[64], 64.0 / 127.0, "linear velocity by default", 1.0e-5);
+      close(region.ampeg.release, 0.1, "default release");
+      expect(!region.loop_mode_set, "no loopEnabled leaves loops to the file");
+      expect(hasWarning(*plain.instrument, "<sample>"), "a sample outside a group is reported");
+    }
+
+    // Errors.
+    expect(!DecentSamplerParser::parseText("<DecentSampler><groups>", root.getChildFile("bad.dspreset")).error.empty(),
+           "broken XML is an error");
+    expect(!DecentSamplerParser::parseText("<Other/>", root.getChildFile("other.dspreset")).error.empty(),
+           "another root element is an error");
+    expect(!DecentSamplerParser::parseText("<DecentSampler/>", root.getChildFile("empty.dspreset")).error.empty(),
+           "no groups is an error");
+    expect(!DecentSamplerParser::parse(root.getChildFile("missing.dspreset")).error.empty(), "a missing file is an error");
+    return finish("decentsampler parser");
+  }
+
+  // Loading, playing, saving into a container and restoring a DecentSampler preset.
+  int decentSamplerLoad() {
+    TempFolder temp;
+    container::setCacheRootForTesting(temp.folder.getChildFile("cache"));
+    const juce::File library = temp.folder.getChildFile("Library");
+    writeWav(library.getChildFile("Samples/a440.wav"), 440.0, kRate * 2);
+    writeWav(library.getChildFile("Samples/a220.wav"), 220.0, kRate * 2);
+    const juce::File preset = library.getChildFile("Presets/Keys.dspreset");
+    writeText(preset,
+              "<DecentSampler><groups release=\"0.01\">"
+              "<group><sample path=\"../Samples/a440.wav\" rootNote=\"69\" loNote=\"60\" hiNote=\"127\"/>"
+              "<sample path=\"../Samples/a220.wav\" rootNote=\"57\" loNote=\"0\" hiNote=\"59\" volume=\"0.5\"/>"
+              "<sample path=\"../Samples/gone.wav\" rootNote=\"30\" loNote=\"30\" hiNote=\"30\"/></group>"
+              "</groups></DecentSampler>");
+
+    LoadRequest request;
+    request.file = preset;
+    auto result = loadInstrument(request, nullptr);
+    expect(result && result->error.empty(), "the preset loads: " + (result ? result->error : std::string()));
+    if (!result || !result->instrument)
+      return finish("decentsampler load");
+    expect(result->instrument->regions.size() == 2, "the missing sample's region is dropped");
+    expect(result->instrument->missing_files.size() == 1, "the missing sample is reported");
+    expect(result->entry == "Presets/Keys.dspreset", "entry relative to the library");
+    expect(result->files.size() == 3 && result->files[0].text, "the preset text and two samples are listed");
+
+    auto measure = [&](int note) {
+      SynthPlugin plugin;
+      preparePlayback(plugin);
+      setInstrument(plugin, 0, result->instrument);
+      auto audio = render(plugin, kRate / 2, { { 0, juce::MidiMessage::noteOn(1, note, 1.0f) } });
+      return std::make_pair(frequency(audio, kRate / 10, kRate / 2), rms(audio, kRate / 10, kRate / 2));
+    };
+    const auto a4 = measure(69);
+    close(a4.first, 440.0, "rootNote plays at the recorded pitch", 1.0);
+    close(measure(81).first, 880.0, "an octave up", 2.0);
+    const auto a3 = measure(57);
+    close(a3.first, 220.0, "the low sample", 1.0);
+    close(a3.second / a4.second, 0.5, "volume=0.5 halves the level", 0.02);
+
+    // A preset with the instrument is a self-contained container.
+    const juce::File saved = temp.folder.getChildFile("Saved/Keys.atp");
+    std::vector<float> reference;
+    std::string hash;
+    {
+      SynthPlugin plugin;
+      preparePlayback(plugin);
+      manager(plugin).loadFromUser(0, preset);
+      settle(plugin);
+      const auto status = manager(plugin).status(0);
+      expect(status.state == vital::multisample::SlotStatus::kLoaded, "user load succeeds: " + status.error);
+      expect(manager(plugin).spec(0).format == "dspreset", "the slot records the DecentSampler format");
+      hash = manager(plugin).result(0) ? manager(plugin).result(0)->hash : "";
+      reference = renderPhrase(plugin);
+      expect(rms(reference, 0, kRate / 4) > 0.01, "the instrument plays");
+      expect(plugin.saveToFile(saved) && container::isContainer(saved), "the preset saves as a container");
+      juce::ZipFile zip(saved);
+      const std::string root = "multisample/" + hash + "/";
+      expect(zip.getIndexOfFileName(juce::String(root + "Presets/Keys.dspreset")) >= 0, "the .dspreset is stored");
+      expect(zip.getIndexOfFileName(juce::String(root + "Samples/a440.wav")) >= 0, "samples keep their layout");
+      expect(manager(plugin).editableFile(0) == preset, "the original .dspreset is edited in place");
+    }
+
+    library.deleteRecursively();
+    container::setCacheRootForTesting(temp.folder.getChildFile("cache2"));
+    {
+      SynthPlugin plugin;
+      preparePlayback(plugin);
+      std::string error;
+      expect(plugin.loadFromFile(saved, error), "the container loads: " + error);
+      settle(plugin);
+      const auto status = manager(plugin).status(0);
+      expect(status.state == vital::multisample::SlotStatus::kLoaded, "the instrument comes from the container: " + status.error);
+      plugin.checkOversampling();
+      expect(same(renderPhrase(plugin), reference), "the container plays exactly like the original");
+
+      // A cached preset is edited through a working copy and reloads.
+      const juce::File editable = manager(plugin).editableFile(0);
+      expect(editable.existsAsFile() && editable.hasFileExtension("dspreset") &&
+             editable.isAChildOf(container::cacheRoot().getChildFile("Working")),
+             "cached DecentSampler text is copied out for editing");
+      editable.replaceWithText(editable.loadFileAsString().replace("loNote=\"60\"", "loNote=\"61\""));
+      manager(plugin).reload(0);
+      settle(plugin);
+      auto edited = manager(plugin).result(0);
+      const auto edited_status = manager(plugin).status(0);
+      expect(edited && edited->instrument && edited->instrument->attack_by_key[60].empty() &&
+             !edited->instrument->attack_by_key[61].empty(),
+             "the edited copy reloads: " + edited_status.error);
+    }
+    return finish("decentsampler load");
+  }
+
 
   // An SFZ library with includes, a sample above the SFZ's folder, a
   // backslash path and a sample outside the library (an absolute path).
@@ -1681,6 +2033,10 @@ int main(int argc, char** argv) {
     return sfzParser();
   if (flag == "--sf2-parser")
     return sf2Parser();
+  if (flag == "--decentsampler-parser")
+    return decentSamplerParser();
+  if (flag == "--decentsampler-load")
+    return decentSamplerLoad();
   if (flag == "--decode")
     return decode();
   if (flag == "--pitch")
@@ -1703,6 +2059,6 @@ int main(int argc, char** argv) {
     return sf2PresetSwitch();
   if (flag == "--editor")
     return editorTest();
-  std::cerr << "usage: AtlasMultiSampleTests --sfz-parser | --sf2-parser | --decode | --manual <file> [preset]\n";
+  std::cerr << "usage: AtlasMultiSampleTests --sfz-parser | --sf2-parser | --decentsampler-parser | --decode | --manual <file> [preset]\n";
   return 2;
 }

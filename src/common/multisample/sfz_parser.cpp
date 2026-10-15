@@ -11,6 +11,77 @@ namespace vital {
 namespace multisample {
 
   namespace {
+    bool isAbsolutePath(const std::string& path) {
+      if (path.empty())
+        return false;
+      if (path[0] == '/')
+        return true;
+      return path.size() > 2 && std::isalpha(static_cast<unsigned char>(path[0])) && path[1] == ':' && path[2] == '/';
+    }
+
+    // Retries a missing relative path matching each component without case.
+    juce::File findIgnoringCase(const juce::File& root, const std::string& relative) {
+      juce::File current = root;
+      juce::StringArray parts = juce::StringArray::fromTokens(juce::String(relative), "/", "");
+      for (const juce::String& part : parts) {
+        if (part.isEmpty() || part == ".")
+          continue;
+        if (part == "..") {
+          current = current.getParentDirectory();
+          continue;
+        }
+        juce::File exact = current.getChildFile(part);
+        if (exact.exists()) {
+          current = exact;
+          continue;
+        }
+        bool found = false;
+        for (const auto& entry : juce::RangedDirectoryIterator(current, false, "*",
+                                                               juce::File::findFilesAndDirectories)) {
+          if (entry.getFile().getFileName().equalsIgnoreCase(part)) {
+            current = entry.getFile();
+            found = true;
+            break;
+          }
+        }
+        if (!found)
+          return {};
+      }
+      return current;
+    }
+
+  } // namespace
+
+  bool isAbsoluteInstrumentPath(const std::string& path) {
+    return isAbsolutePath(path);
+  }
+
+  juce::File resolveInstrumentPath(const std::string& written, const std::vector<juce::File>& roots,
+                                   const std::map<std::string, juce::File>& overrides, bool* absolute) {
+    auto override_entry = overrides.find(written);
+    if (override_entry != overrides.end())
+      return override_entry->second;
+    if (isAbsolutePath(written)) {
+      if (absolute)
+        *absolute = true;
+      return juce::File(juce::String(written));
+    }
+    if (absolute)
+      *absolute = false;
+    for (const juce::File& root : roots) {
+      juce::File candidate = root.getChildFile(juce::String(written));
+      if (candidate.exists())
+        return candidate;
+    }
+    for (const juce::File& root : roots) {
+      juce::File candidate = findIgnoringCase(root, written);
+      if (candidate != juce::File())
+        return candidate;
+    }
+    return roots.front().getChildFile(juce::String(written));
+  }
+
+  namespace {
     constexpr int kMaxIncludeDepth = 32;
 
     struct Opcode {
@@ -69,45 +140,6 @@ namespace multisample {
       return true;
     }
 
-    bool isAbsolutePath(const std::string& path) {
-      if (path.empty())
-        return false;
-      if (path[0] == '/')
-        return true;
-      return path.size() > 2 && std::isalpha(static_cast<unsigned char>(path[0])) && path[1] == ':' && path[2] == '/';
-    }
-
-    // Retries a missing relative path matching each component without case.
-    juce::File findIgnoringCase(const juce::File& root, const std::string& relative) {
-      juce::File current = root;
-      juce::StringArray parts = juce::StringArray::fromTokens(juce::String(relative), "/", "");
-      for (const juce::String& part : parts) {
-        if (part.isEmpty() || part == ".")
-          continue;
-        if (part == "..") {
-          current = current.getParentDirectory();
-          continue;
-        }
-        juce::File exact = current.getChildFile(part);
-        if (exact.exists()) {
-          current = exact;
-          continue;
-        }
-        bool found = false;
-        for (const auto& entry : juce::RangedDirectoryIterator(current, false, "*",
-                                                               juce::File::findFilesAndDirectories)) {
-          if (entry.getFile().getFileName().equalsIgnoreCase(part)) {
-            current = entry.getFile();
-            found = true;
-            break;
-          }
-        }
-        if (!found)
-          return {};
-      }
-      return current;
-    }
-
     class Parser {
       public:
         Parser(const juce::File& main_file, const SfzParser::Options& options) :
@@ -149,27 +181,7 @@ namespace multisample {
         enum class Level { kNone, kControl, kGlobal, kMaster, kGroup, kRegion, kIgnored };
 
         juce::File resolve(const std::string& written, bool* absolute = nullptr) const {
-          auto override_entry = options_.path_overrides.find(written);
-          if (override_entry != options_.path_overrides.end())
-            return override_entry->second;
-          if (isAbsolutePath(written)) {
-            if (absolute)
-              *absolute = true;
-            return juce::File(juce::String(written));
-          }
-          if (absolute)
-            *absolute = false;
-          for (const juce::File& root : roots_) {
-            juce::File candidate = root.getChildFile(juce::String(written));
-            if (candidate.exists())
-              return candidate;
-          }
-          for (const juce::File& root : roots_) {
-            juce::File candidate = findIgnoringCase(root, written);
-            if (candidate != juce::File())
-              return candidate;
-          }
-          return roots_.front().getChildFile(juce::String(written));
+          return resolveInstrumentPath(written, roots_, options_.path_overrides, absolute);
         }
 
         void parseFile(const juce::File& file, int depth) {

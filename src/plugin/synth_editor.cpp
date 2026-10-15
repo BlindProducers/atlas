@@ -16796,7 +16796,9 @@ namespace {
   }
 
   String instrumentFormatName(const std::string& format) {
-    return format == "sf2" ? "SF2" : "SFZ";
+    if (format == "sf2")
+      return "SF2";
+    return format == "dspreset" ? "DecentSampler" : "SFZ";
   }
 
   // Opens the grouped preset menu instead of JUCE's single scrolling column.
@@ -16972,7 +16974,7 @@ String SynthEditor::instrumentDetails(int oscillator) const {
                  String::fromUTF8(instrument.missing_files.front().c_str()) + ".";
     if (!instrument.warnings.empty())
       details += " " + String(static_cast<int>(instrument.warnings.size())) +
-                 " SFZ features are not supported and were ignored.";
+                 " " + instrumentFormatName(instrument.format) + " features are not supported and were ignored.";
     if (!status.notice.empty())
       details += " " + String::fromUTF8(status.notice.c_str());
     const auto spec = manager->spec(oscillator);
@@ -16988,7 +16990,7 @@ void SynthEditor::addMultiSampleControlsGroup(int oscillator, Component& parent,
   auto group = std::make_unique<AccessibleSectionHeader>(
       "Instrument", groupRank("Oscillators"), false, section_name + " instrument");
   auto* group_ptr = group.get();
-  group_ptr->setDescription("Load an SFZ or SF2 instrument and choose how it plays in " + section_name);
+  group_ptr->setDescription("Load an SFZ, DecentSampler or SF2 instrument and choose how it plays in " + section_name);
   group_ptr->setExplicitFocusOrder(focus_order++);
   parent.addAndMakeVisible(group_ptr);
   if (auto* accessible_parent = dynamic_cast<AccessibleSectionHeader*>(&parent))
@@ -17018,7 +17020,7 @@ void SynthEditor::addMultiSampleControlsGroup(int oscillator, Component& parent,
     return static_cast<OffscreenTextButton*>(place(std::move(button), 38));
   };
 
-  add_button("Load instrument", "Choose an SFZ or SF2 file for " + section_name,
+  add_button("Load instrument", "Choose an SFZ, DecentSampler or SF2 file for " + section_name,
              [this, oscillator] { chooseInstrumentFile(oscillator); });
 
   // The status reads what is loaded; Enter speaks the details.
@@ -17083,9 +17085,11 @@ void SynthEditor::addMultiSampleControlsGroup(int oscillator, Component& parent,
                [this, oscillator] { stepInstrumentPreset(oscillator, 1); });
   }
   if (ui_state == 1) {
-    add_button("Open in text editor", "Open the SFZ file of " + section_name + " in a text editor",
+    const String format = instrumentFormatName(result != nullptr && result->instrument != nullptr
+                                                   ? result->instrument->format : std::string("sfz"));
+    add_button("Open in text editor", "Open the " + format + " file of " + section_name + " in a text editor",
                [this, oscillator] { openInstrumentInTextEditor(oscillator); });
-    add_button("Reload SFZ", "Read the SFZ file of " + section_name + " again after editing it",
+    add_button("Reload " + format, "Read the " + format + " file of " + section_name + " again after editing it",
                [this, oscillator] { reloadInstrument(oscillator); });
   }
 
@@ -17106,7 +17110,7 @@ void SynthEditor::chooseInstrumentFile(int oscillator) {
       start = current;
   }
   instrument_chooser_ = std::make_unique<FileChooser>("Load instrument for Oscillator " + String(oscillator + 1),
-                                                      start, "*.sfz;*.sf2;*.SFZ;*.SF2");
+                                                      start, "*.sfz;*.dspreset;*.sf2;*.SFZ;*.DSPRESET;*.SF2");
   instrument_chooser_->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
                                    [this, oscillator](const FileChooser& chooser) {
     const File file = chooser.getResult();
@@ -17129,11 +17133,12 @@ void SynthEditor::openInstrumentInTextEditor(int oscillator) {
   auto* manager = synth_.getMultiSampleManager();
   const File file = manager != nullptr ? manager->editableFile(oscillator) : File();
   if (!file.existsAsFile()) {
-    postPluginAnnouncement("No SFZ instrument file to open", AccessibilityHandler::AnnouncementPriority::high);
+    postPluginAnnouncement("No instrument text file to open", AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
 
-  // Open as text, not with whatever application claims .sfz files.
+  // Open as text, not with whatever application claims .sfz or .dspreset files.
+  const String format = file.hasFileExtension("dspreset") ? "DecentSampler" : "SFZ";
   StringArray command;
 #if JUCE_MAC
   command = { "/usr/bin/open", "-t", file.getFullPathName() };
@@ -17144,12 +17149,12 @@ void SynthEditor::openInstrumentInTextEditor(int oscillator) {
 #endif
   text_editor_process_ = std::make_unique<ChildProcess>();
   if (!text_editor_process_->start(command, 0)) {
-    NativeMessageBox::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Unable to open the SFZ file",
+    NativeMessageBox::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Unable to open the " + format + " file",
                                           "No text editor could be started for " + file.getFullPathName());
-    postPluginAnnouncement("Unable to open the SFZ instrument file", AccessibilityHandler::AnnouncementPriority::high);
+    postPluginAnnouncement("Unable to open the " + format + " instrument file", AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
-  postPluginAnnouncement("Opened " + file.getFileName() + " in the text editor. After saving changes, choose Reload SFZ",
+  postPluginAnnouncement("Opened " + file.getFileName() + " in the text editor. After saving changes, choose Reload " + format,
                          AccessibilityHandler::AnnouncementPriority::high);
 }
 
@@ -17159,8 +17164,10 @@ void SynthEditor::reloadInstrument(int oscillator) {
     postPluginAnnouncement("No instrument to reload", AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
+  const auto loaded = manager->result(oscillator);
+  const String format = loaded->instrument != nullptr ? instrumentFormatName(loaded->instrument->format) : String("SFZ");
   manager->reload(oscillator);
-  postPluginAnnouncement("Reloading SFZ instrument for Oscillator " + String(oscillator + 1),
+  postPluginAnnouncement("Reloading " + format + " instrument for Oscillator " + String(oscillator + 1),
                          AccessibilityHandler::AnnouncementPriority::high);
 }
 
@@ -17188,7 +17195,7 @@ void SynthEditor::clearInstrument(int oscillator) {
     postPluginAnnouncement(announcement, AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
-  // The preset menu or SFZ buttons go away, so rebuild once the click has
+  // The preset menu or text-file buttons go away, so rebuild once the click has
   // returned (before the timer does) and stay on Clear instrument here.
   Component::SafePointer<SynthEditor> safe_this(this);
   MessageManager::callAsync([safe_this, section_name, announcement] {

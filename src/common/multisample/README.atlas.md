@@ -1,15 +1,19 @@
-# Multi-sample oscillator (SFZ and SF2)
+# Multi-sample oscillator (SFZ, DecentSampler and SF2)
 
-The Multi-sample oscillator type plays SFZ and SoundFont 2 instruments. The
-parsers, loader and player are written for Atlas from the public format
-descriptions: the SoundFont 2.04 specification and the opcode reference at
-sfzformat.com. No code from another SFZ or SF2 player is used, so `NOTICE` is
-unchanged. Behaviour matches sfizz and FluidSynth where noted below.
+The Multi-sample oscillator type plays SFZ, DecentSampler (`.dspreset`) and
+SoundFont 2 instruments. The parsers, loader and player are written for Atlas
+from the public format descriptions: the SoundFont 2.04 specification, the
+opcode reference at sfzformat.com and the DecentSampler Developer Guide
+(decentsampler-developers-guide.readthedocs.io, version 1.37). No code from
+another SFZ, DecentSampler or SF2 player is used, so `NOTICE` is unchanged.
+The DecentSampler converter in schwung-sfz (github.com/charlesvestal/schwung-sfz)
+was read as a second description of the format, but none of its code is used.
+Behaviour matches sfizz and FluidSynth where noted below.
 
 ## Files
 
 - `multisample_instrument.*`: the immutable instrument model (regions, lookups, CC defaults).
-- `sfz_parser.*`, `sf2_parser.*`: text and RIFF parsing.
+- `sfz_parser.*`, `decentsampler_parser.*`, `sf2_parser.*`: SFZ text, DecentSampler XML and RIFF parsing. `resolveInstrumentPath` in `sfz_parser.*` finds sample files for both text formats.
 - `multisample_loader.*`: decoding (WAV, AIFF, FLAC, Ogg) to 16-bit, CRC32 and the content hash.
 - `multisample_container.*`: self-contained presets and the instrument cache.
 - `multisample_manager.*`: background loading, per-slot state, presets and host state.
@@ -51,6 +55,38 @@ unchanged. Behaviour matches sfizz and FluidSynth where noted below.
   - `*_curveccN` and `*_smoothccN`. CC modulation is linear.
   - `bend_up`/`bend_down` (Atlas's pitch-bend range applies), `polyphony`, and the generators `*sine`, `*noise` and so on.
 
+## DecentSampler support
+
+A `.dspreset` becomes the same regions an SFZ file would. Samples are found the
+same way, from the preset's folder, ignoring case when the exact path is missing.
+
+- **Structure:** `<groups>`, `<group>` and `<sample>`. Most attributes inherit from `<groups>` to `<group>` to `<sample>`. A group with `enabled="false"` plays nothing.
+- **Mapping:** `rootNote`, `loNote`, `hiNote`, `loVel`, `hiVel`, `loCCN`/`hiCCN` (a value of -1 is off), and `trigger=attack|release|first|legato`. `continuous` plays like `attack` and is reported. `onLoCCN`/`onHiCCN` start CC-triggered regions.
+- **Round robins:** `seqMode=round_robin` uses `seqPosition` and `seqLength`. `random` and `true_random` split the random range by position. Without `seqLength`, the length is the highest `seqPosition` among the group's samples that share keys and velocities with the sample.
+  - Without any `seqMode`, DecentSampler's default is `always`, which plays every matching zone. Samples that share keys and velocities but have different `seqPosition` values play as `round_robin` instead, and this is reported. Numbering takes without a mode is a mistake in the preset (DecentSampler's developer calls it a bug in its converters), and stacking the takes is louder and smears the attack. Claustrophobic Piano is one library written this way. An explicit `seqMode="always"` still stacks.
+- **Pitch:** `globalTuning`, `groupTuning` and `tuning` add up in semitones. `pitchKeyTrack` scales key tracking and, as in DecentSampler, also scales the tuning unless `tuningIgnoresKeyTrack="true"`.
+- **Level:**
+  - The `<groups>` volume (`globalVolume`), the `<group>` volume (`groupVolume`) and the `<sample>` volume multiply. Each is linear or ends in `dB`.
+  - `pan` inherits; `globalPan` and `groupPan` add to it, clamped to ±100.
+  - `ampVelTrack` (default 1) with gain linear in velocity, so velocity 64 plays at about half.
+- **Playback:** `start`, `end` (inclusive), `delay` in seconds (`delayUnit=beats|samples` is reported), `loopEnabled`, `loopStart`, `loopEnd` (inclusive) and `loopDuringRelease="false"` (loop until release). Without `loopEnabled`, a loop stored in the WAV file is used, as for SFZ. `ampEnvEnabled="false"` plays to the end of the sample.
+- **Envelope:** `attack`, `decay`, `sustain` and `release`. DecentSampler documents no defaults; Atlas uses no attack or decay, full sustain and a 0.1 s release.
+- **Release samples:** `releaseTriggerDecay` in dB per second (`"3dB"`), or a linear share lost per second.
+- **Tags:**
+  - `tags` on groups and samples. `<tags>` sets each tag's `volume` and `enabled`.
+  - `silencedByTags` becomes a choke group, with `silencingMode=fast|normal` and `silencingDecay`. Atlas regions have one choke group each, so a sample with several silencing tags chokes through the first one, and a `silencedByTags` list uses its first tag. Both cases are reported.
+- **Controls:** DecentSampler fires each control's bindings once at load. Atlas applies those load-time values and then ignores the controls (Atlas's own UI and modulation replace them). A value replaces the attribute at the binding's level, so a sample's own `release` still wins over an instrument `ENV_RELEASE` knob. `AMP_VOLUME` is the exception: as in DecentSampler, the knob's level multiplies the `volume` the file sets. A release group at `volume="20dB"` under a knob at 0.6 plays at 6 times, which is how Claustrophobic Piano's quiet key-release samples are heard. schwung-sfz's converter, checked against DecentSampler renders, does the same. Mapping parameters (notes, velocities, sample and loop points) set every sample below the binding.
+  - `<labeled-knob>`, `<control>` and `<slider>` use their `value`, `<menu>` its selected `<option>` (counting from 1), and `<button>` its selected `<state>` (counting from 0).
+  - Translations `linear` (with `translationOutputMin`/`Max` and `translationReversed`), `table` and `fixed_value`, after `factor`. Bindings with `enabled="false"` or `triggerOnLoad="false"` are skipped.
+  - Instrument level: `AMP_VOLUME`, `GLOBAL_TUNING`, `PAN`, the `ENV_*` stages, `AMP_VEL_TRACK`, `PITCH_KEY_TRACK`, `SAMPLE_START`/`END`, `LOOP_START`/`END`, `LO_NOTE`/`HI_NOTE`, `ROOT_NOTE` and `SILENCING_MODE`/`DECAY`.
+  - Group level, by `position`/`groupIndex` or `groupTags`/`tags`: the same, plus `AMP_VOLUME`, `GROUP_TUNING`, `PAN` (the group pan offset), `ENABLED`, `AMP_ENV_ENABLED`, `LO_VEL` and `HI_VEL`.
+  - Tag level: `TAG_VOLUME` and `TAG_ENABLED`.
+- **Ignored and reported:**
+  - `<effects>`, `<modulators>`, `<midi>` (so CCs don't move controls), `<buses>`, `<noteSequences>`, `<arpeggiator>` and `<oscillator>`.
+  - Effect, modulator and other bindings.
+  - Envelope curves, `loopCrossfade`, glide, slice stretch, `previousNotes`, `legatoInterval`, output routing and tag polyphony.
+  - `length` and `playbackMode` are skipped silently: they describe the file and how DecentSampler streams it, not the sound.
+
 ## SF2 support
 
 - **Structure:** `INFO`, `sdta` (`smpl` and `sm24`; 24-bit data is rounded to 16 bits) and `pdta`, with every index bounds-checked. ROM samples are skipped.
@@ -80,8 +116,8 @@ unchanged. Behaviour matches sfizz and FluidSynth where noted below.
 
 - **Preset files:** a preset whose Multi-sample oscillators have instruments is written as a zip:
   - `preset.json` comes first.
-  - Then each instrument's files go under `multisample/<hash>/` in their original layout. Audio and SF2 files are stored uncompressed, exactly as they were; SFZ text is compressed.
-  - SFZ text is never rewritten. Samples outside the library's folder go under `_external/` and are mapped back through `path_overrides`.
+  - Then each instrument's files go under `multisample/<hash>/` in their original layout. Audio and SF2 files are stored uncompressed, exactly as they were; SFZ and DecentSampler text is compressed.
+  - SFZ and DecentSampler text is never rewritten. Samples outside the library's folder go under `_external/` and are mapped back through `path_overrides`.
   - Other presets stay plain JSON.
 - **The hash:** two FNV-1a hashes over each file's relative path, size and CRC32, so a library hashes the same wherever it lives.
 - **Host (DAW) state:** stores the instrument's path and hash, not the audio. A restore tries, in order:
@@ -92,14 +128,15 @@ unchanged. Behaviour matches sfizz and FluidSynth where noted below.
   - Container presets unpack into it, with each file's CRC checked.
   - Direct loads are hard-linked into it, or copied when under 2 GB.
   - It is trimmed, least recently used first, above 20 GB, never removing an instrument a slot uses.
-  - Editing a cached SFZ works on a copy of its text in `Working/<hash>`.
+  - Editing a cached SFZ or DecentSampler preset works on a copy of its text in `Working/<hash>`.
 - **Size limits:** JUCE's zip code has no ZIP64, so a container holds at most 4 GB and 65,000 files.
 
 ## Tests
 
-`AtlasMultiSampleTests` (`tests/multisample_tests.cpp`) generates small WAV, FLAC, SFZ and SF2 fixtures. Each flag has an `atlas_multisample_*` ctest entry:
+`AtlasMultiSampleTests` (`tests/multisample_tests.cpp`) generates small WAV, FLAC, SFZ, DecentSampler and SF2 fixtures. Each flag has an `atlas_multisample_*` ctest entry:
 
-- Parsers: `--sfz-parser`, `--sf2-parser`, `--decode`.
+- Parsers: `--sfz-parser`, `--decentsampler-parser`, `--sf2-parser`, `--decode`.
+- DecentSampler end to end (load, pitch and level, container, restore, editing a cached copy): `--decentsampler-load`.
 - Playback through the plugin: `--pitch`, `--select`, `--envelope-mode`, `--release-trigger`, `--choke`, `--cc-trigger`.
 - Saving and restoring: `--container`, `--host-state`, `--sf2-preset-switch`.
 - Accessibility of the Instrument group: `--editor`.
