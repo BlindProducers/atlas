@@ -46,11 +46,13 @@ namespace multisample {
     float high = 127.0f;
   };
 
-  // A per-CC modulation; `amount` is in the unit of the target, applied
-  // linearly over the CC range 0..127 (SFZ curves are not applied).
+  // A per-CC modulation; `amount` is in the unit of the target, scaled by
+  // the CC through `curve` (an index into Instrument::curve_tables), or
+  // linearly over 0..127 when it has none.
   struct CcMod {
     int cc = 0;
     float amount = 0.0f;
+    int curve = -1;
   };
 
   // DAHDSR amplitude envelope in seconds; start and sustain are 0..1.
@@ -102,6 +104,8 @@ namespace multisample {
     bool loop_mode_set = false;
     bool loop_start_set = false;
     bool loop_end_set = false;
+    // The loop plays forward and back (DecentSampler loopMode="pingpong").
+    bool loop_alternate = false;
 
     // Selection.
     int lokey = 0;
@@ -153,6 +157,9 @@ namespace multisample {
     std::vector<CcMod> pan_cc;
     Envelope ampeg;
     EnvelopeCcMods ampeg_cc;
+    // ampeg_dynamic: the envelope's CC modulation follows the CCs while the
+    // note plays (a release lengthens and shortens with the pedal).
+    bool ampeg_dynamic = false;
     // SF2 keynumToVolEnvHold / Decay in timecents per key from key 60.
     float hold_keytrack = 0.0f;
     float decay_keytrack = 0.0f;
@@ -171,6 +178,25 @@ namespace multisample {
     int index = 0;
   };
 
+  // A control the instrument's author put on its panel (a DecentSampler knob,
+  // menu or button). Changing `value` and parsing again applies its bindings.
+  struct Control {
+    enum class Kind : uint8_t { kKnob, kMenu, kButton };
+    Kind kind = Kind::kKnob;
+    // Position among the file's controls, in document order: the key under
+    // which presets store the value.
+    int index = 0;
+    std::string label;
+    // Knobs: the range, and whole numbers only for type="integer".
+    double minimum = 0.0;
+    double maximum = 1.0;
+    bool integer = false;
+    // Menus count options from 1, buttons count states from 0.
+    std::vector<std::string> choices;
+    double default_value = 0.0;
+    double value = 0.0;
+  };
+
   // The playable result of parsing an SFZ or SF2 instrument. Immutable after
   // build(); the audio thread reads it through a shared pointer.
   class Instrument {
@@ -184,7 +210,11 @@ namespace multisample {
       std::array<std::vector<int>, kNumKeys> release_by_key;
       std::array<std::vector<int>, kNumCcs> cc_triggered;
       std::array<float, kNumCcs> cc_defaults {};
+      // SFZ <curve> tables (and built-in curves in use): 128 points, CC value to 0..1.
+      std::vector<std::array<float, kNumCcs>> curve_tables;
       std::map<int, std::string> cc_labels;
+      // Controls whose bindings change the sound here, in panel order.
+      std::vector<Control> controls;
       int sw_default = -1;
       int sw_lokey = 128;
       int sw_hikey = -1;

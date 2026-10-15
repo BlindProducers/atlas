@@ -52,6 +52,7 @@ namespace vital {
     start.offset = offset;
     start.gain = gain;
     start.serial = serial;
+    start.generation = slot_->generation();
     start.ignore_note_off = ignore_note_off;
     start.sample_rate = static_cast<float>(getSampleRate());
     freePlayer(voice).start(start, *slot_);
@@ -126,11 +127,17 @@ namespace vital {
     const float sample_rate = static_cast<float>(getSampleRate());
 
     if (slot_ != nullptr && slot_->generation() != generation_) {
-      // The instrument changed: players point into the old one.
+      // The instrument changed. Players of a freed one stop; after a control
+      // change the previous one is kept, and its notes play on.
+      // A held note of a stopped instrument starts no release samples.
+      const bool replaced = !slot_->isLiveGeneration(generation_);
       for (VoiceState& state : voices_) {
-        for (MultiSamplePlayer& player : state.players)
-          player.clear();
-        state.held = false;
+        for (MultiSamplePlayer& player : state.players) {
+          if (!slot_->isLive(player))
+            player.clear();
+        }
+        if (replaced)
+          state.held = false;
       }
       generation_ = slot_->generation();
     }
@@ -191,6 +198,7 @@ namespace vital {
           if (!player.active())
             continue;
           player.checkChoke(*slot_, sample_rate);
+          player.follow(*slot_);
           const multisample::Region& region = *player.region();
           const double semitones = player.pitchOffset(state.tuned_note) + bend + shift_input[lane];
           const double rate = std::exp2(std::max(-96.0, std::min(96.0, semitones)) / 12.0) *

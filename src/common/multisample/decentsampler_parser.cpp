@@ -102,7 +102,7 @@ namespace multisample {
         "grouptuning", "volume", "globalvolume", "groupvolume", "pan", "globalpan", "grouppan", "pitchkeytrack",
         "tuningignoreskeytrack", "trigger", "releasetriggerdecay", "tags", "silencedbytags", "silencingmode",
         "silencingdecay", "seqmode", "seqlength", "seqposition", "loopstart", "loopend", "loopenabled",
-        "loopduringrelease", "ampenvenabled", "attack", "decay", "sustain", "release", "ampveltrack", "delay",
+        "loopduringrelease", "loopmode", "loopcrossfade", "loopcrossfademode", "ampenvenabled", "attack", "decay", "sustain", "release", "ampveltrack", "delay",
         "delayunit", "enabled", "name",
         // Informational, or about how DecentSampler reads files rather than how they sound.
         "length", "playbackmode",
@@ -244,46 +244,172 @@ namespace multisample {
           }
         }
 
-        // The controls' bindings fire once when DecentSampler loads a preset,
-        // so their translated values replace what the groups set.
+        // DecentSampler fires each control's bindings when it loads a preset,
+        // and again whenever the control moves, so the value a control has
+        // (the file's, or one the user chose) replaces what the groups set.
+        // Controls that change the sound here are listed on the instrument.
         void applyControls(const juce::XmlElement* ui) {
           if (ui == nullptr)
             return;
+          int index = 0;
+          const size_t first_listed = result_.instrument->controls.size();
           for (const auto* tab : ui->getChildWithTagNameIterator("tab")) {
-            for (const auto* control : tab->getChildIterator()) {
-              const std::string kind = lower(control->getTagName().toStdString());
-              const Attributes attributes = attributesOf(*control);
-              if (kind == "labeled-knob" || kind == "control" || kind == "slider") {
-                const double minimum = find(attributes, "minvalue") ? toNumber(*find(attributes, "minvalue")) : 0.0;
-                const double maximum = find(attributes, "maxvalue") ? toNumber(*find(attributes, "maxvalue")) : 1.0;
-                const double value = find(attributes, "value") ? toNumber(*find(attributes, "value")) : minimum;
-                for (const auto* binding : control->getChildWithTagNameIterator("binding"))
-                  fire(attributesOf(*binding), value, minimum, maximum);
-              }
-              else if (kind == "menu") {
-                // Menu values count options from 1; 0 selects none.
-                const int selected = find(attributes, "value") ? toInt(*find(attributes, "value")) : 1;
-                int index = 0;
-                for (const auto* option : control->getChildWithTagNameIterator("option")) {
-                  if (++index != selected)
-                    continue;
-                  for (const auto* binding : option->getChildWithTagNameIterator("binding"))
-                    fire(attributesOf(*binding), selected, 1.0, 1.0);
+            std::vector<const juce::XmlElement*> labels;
+            for (const auto* label : tab->getChildWithTagNameIterator("label"))
+              labels.push_back(label);
+            const juce::XmlElement* previous = nullptr;
+            for (const auto* element : tab->getChildIterator()) {
+              const juce::XmlElement* before = previous;
+              previous = element;
+              const std::string kind = lower(element->getTagName().toStdString());
+              const bool knob = kind == "labeled-knob" || kind == "control" || kind == "slider";
+              if (!knob && kind != "menu" && kind != "button")
+                continue;
+
+              const Attributes attributes = attributesOf(*element);
+              Control control;
+              control.index = index++;
+              control.label = controlLabel(*element, attributes, before, labels);
+              auto chosen = options_.control_values.find(control.index);
+              const bool user_set = chosen != options_.control_values.end();
+              bool audible = false;
+
+              if (knob) {
+                control.kind = Control::Kind::kKnob;
+                control.minimum = find(attributes, "minvalue") ? toNumber(*find(attributes, "minvalue")) : 0.0;
+                control.maximum = find(attributes, "maxvalue") ? toNumber(*find(attributes, "maxvalue")) : 1.0;
+                if (control.maximum < control.minimum)
+                  std::swap(control.minimum, control.maximum);
+                control.integer = find(attributes, "type") && lower(*find(attributes, "type")) == "integer";
+                control.default_value = knobValue(control, find(attributes, "value")
+                                                               ? toNumber(*find(attributes, "value")) : control.minimum);
+                control.value = user_set ? knobValue(control, chosen->second) : control.default_value;
+                for (const auto* binding : element->getChildWithTagNameIterator("binding")) {
+                  const Attributes binding_attributes = attributesOf(*binding);
+                  audible = audible || applies(binding_attributes);
+                  fire(binding_attributes, control.value, control.minimum, control.maximum, user_set);
                 }
               }
-              else if (kind == "button") {
-                // Button values count states from 0.
-                const int selected = find(attributes, "value") ? toInt(*find(attributes, "value")) : 0;
-                int index = 0;
-                for (const auto* state : control->getChildWithTagNameIterator("state")) {
-                  if (index++ != selected)
-                    continue;
-                  for (const auto* binding : state->getChildWithTagNameIterator("binding"))
-                    fire(attributesOf(*binding), selected, 0.0, 0.0);
+              else {
+                // Menu values count options from 1 (0 selects none); button values count states from 0.
+                const bool menu = kind == "menu";
+                control.kind = menu ? Control::Kind::kMenu : Control::Kind::kButton;
+                const char* item_tag = menu ? "option" : "state";
+                std::vector<const juce::XmlElement*> items;
+                for (const auto* item : element->getChildWithTagNameIterator(item_tag)) {
+                  items.push_back(item);
+                  const Attributes item_attributes = attributesOf(*item);
+                  const std::string* name = find(item_attributes, "name");
+                  control.choices.push_back(name && !name->empty() ? *name
+                                                                   : (menu ? "Option " : "State ") +
+                                                                     std::to_string(control.choices.size() + 1));
+                  for (const auto* binding : item->getChildWithTagNameIterator("binding"))
+                    audible = audible || applies(attributesOf(*binding));
+                }
+                const int first = menu ? 1 : 0;
+                const int last = first + std::max(0, static_cast<int>(items.size()) - 1);
+                auto clampChoice = [&](double value) {
+                  return static_cast<double>(std::max(first, std::min(last, static_cast<int>(std::lround(value)))));
+                };
+                const double file_value = find(attributes, "value") ? toNumber(*find(attributes, "value")) : first;
+                // A menu at 0 selects nothing, so its default plays no option.
+                const bool none = menu && std::lround(file_value) == 0 && !user_set;
+                control.default_value = clampChoice(file_value);
+                control.value = user_set ? clampChoice(chosen->second) : control.default_value;
+                control.minimum = first;
+                control.maximum = last;
+                control.integer = true;
+                const int selected = static_cast<int>(control.value) - first;
+                if (!none && selected >= 0 && selected < static_cast<int>(items.size())) {
+                  for (const auto* binding : items[static_cast<size_t>(selected)]->getChildWithTagNameIterator("binding"))
+                    fire(attributesOf(*binding), control.value, control.value, control.value, user_set);
                 }
               }
+
+              const bool visible = !find(attributes, "visible") || toBool(*find(attributes, "visible"));
+              if (audible && visible && (knob || control.choices.size() > 1))
+                result_.instrument->controls.push_back(std::move(control));
             }
           }
+
+          // Unnamed controls are numbered by kind among those listed: "Menu 1".
+          std::map<Control::Kind, int> counts;
+          for (size_t i = first_listed; i < result_.instrument->controls.size(); ++i) {
+            Control& control = result_.instrument->controls[i];
+            const int number = ++counts[control.kind];
+            if (control.label.empty()) {
+              const char* kind = control.kind == Control::Kind::kKnob ? "Knob "
+                                 : control.kind == Control::Kind::kMenu ? "Menu " : "Button ";
+              control.label = kind + std::to_string(number);
+            }
+          }
+        }
+
+        static double knobValue(const Control& control, double value) {
+          value = std::max(control.minimum, std::min(control.maximum, value));
+          return control.integer ? std::round(value) : value;
+        }
+
+        // The name a control shows: its label, else its host parameter name,
+        // else the <label> the panel shows on it. Panels place a label's text
+        // (centred in its box) at the control's top edge, inside its width,
+        // in whatever order the file lists them; without coordinates, a
+        // label just before the control names it.
+        static std::string controlLabel(const juce::XmlElement& element, const Attributes& attributes,
+                                        const juce::XmlElement* before,
+                                        const std::vector<const juce::XmlElement*>& labels) {
+          for (const char* name : { "label", "parametername", "text" }) {
+            const std::string* value = find(attributes, name);
+            if (value != nullptr && !value->empty())
+              return *value;
+          }
+          auto text = [](const juce::XmlElement& label) {
+            return label.getStringAttribute("text").trim().toStdString();
+          };
+          auto placed = [](const juce::XmlElement& item) {
+            return item.hasAttribute("x") && item.hasAttribute("y") && item.hasAttribute("width") &&
+                   item.hasAttribute("height");
+          };
+          if (placed(element)) {
+            const double x = element.getDoubleAttribute("x");
+            const double y = element.getDoubleAttribute("y");
+            const double width = element.getDoubleAttribute("width");
+            const double height = std::max(1.0, element.getDoubleAttribute("height"));
+            const juce::XmlElement* best = nullptr;
+            double best_distance = std::numeric_limits<double>::max();
+            for (const juce::XmlElement* label : labels) {
+              if (!placed(*label) || text(*label).empty())
+                continue;
+              const double centre_x = label->getDoubleAttribute("x") + 0.5 * label->getDoubleAttribute("width");
+              const double centre_y = label->getDoubleAttribute("y") + 0.5 * label->getDoubleAttribute("height");
+              // Above the top edge by up to its height (at least 40), or a little into it.
+              const double above = y - centre_y;
+              if (centre_x < x || centre_x > x + width || above > std::max(40.0, height) || above < -0.25 * height)
+                continue;
+              const double distance = std::abs(above) + std::abs(centre_x - (x + 0.5 * width));
+              if (distance < best_distance) {
+                best_distance = distance;
+                best = label;
+              }
+            }
+            return best != nullptr ? text(*best) : std::string();
+          }
+          if (before != nullptr && before->hasTagName("label"))
+            return text(*before);
+          return {};
+        }
+
+        // Whether a binding changes something Atlas plays.
+        static bool applies(const Attributes& binding) {
+          if (find(binding, "enabled") && !toBool(*find(binding, "enabled")))
+            return false;
+          const std::string level = find(binding, "level") ? lower(*find(binding, "level")) : "";
+          const std::string parameter = find(binding, "parameter") ? upper(*find(binding, "parameter")) : "";
+          if (level == "tag")
+            return find(binding, "identifier") != nullptr && !tagAttribute(parameter).empty();
+          if (level != "instrument" && level != "group")
+            return false;
+          return !bindingAttribute(parameter, level == "instrument").empty();
         }
 
         static std::string translate(const Attributes& binding, double input, double minimum, double maximum) {
@@ -331,10 +457,11 @@ namespace multisample {
           return numberText(toNumber(*low) + t * (toNumber(*high) - toNumber(*low)));
         }
 
-        void fire(const Attributes& binding, double input, double minimum, double maximum) {
+        // `moved`: the user set the control, which fires bindings that skip the load.
+        void fire(const Attributes& binding, double input, double minimum, double maximum, bool moved) {
           if (find(binding, "enabled") && !toBool(*find(binding, "enabled")))
             return;
-          if (find(binding, "triggeronload") && !toBool(*find(binding, "triggeronload")))
+          if (!moved && find(binding, "triggeronload") && !toBool(*find(binding, "triggeronload")))
             return;
           const std::string level = find(binding, "level") ? lower(*find(binding, "level")) : "";
           const std::string parameter = find(binding, "parameter") ? upper(*find(binding, "parameter")) : "";
@@ -345,9 +472,10 @@ namespace multisample {
 
           if (level == "tag") {
             const std::string* tag = find(binding, "identifier");
-            if (parameter == "TAG_VOLUME" && tag != nullptr)
+            const std::string target = tagAttribute(parameter);
+            if (target == "volume" && tag != nullptr)
               tag_volumes_[lower(*tag)] = linearGain(value);
-            else if (parameter == "TAG_ENABLED" && tag != nullptr)
+            else if (target == "enabled" && tag != nullptr)
               tag_enabled_[lower(*tag)] = toBool(value);
             else
               ignored_bindings_[parameter.empty() ? "tag" : parameter]++;
@@ -391,6 +519,16 @@ namespace multisample {
           const int index = position ? toInt(*position) : 0;
           if (index >= 0 && index < static_cast<int>(groups_list_.size()))
             groups_list_[static_cast<size_t>(index)].overrides[attribute] = value;
+        }
+
+        // What a tag-level binding sets. Presets also write the group names
+        // (Emerald Resonances' layer knobs use AMP_VOLUME).
+        static std::string tagAttribute(const std::string& parameter) {
+          if (parameter == "TAG_VOLUME" || parameter == "AMP_VOLUME")
+            return "volume";
+          if (parameter == "TAG_ENABLED" || parameter == "ENABLED")
+            return "enabled";
+          return {};
         }
 
         // The attribute a binding parameter sets, or "" for one with no effect here.
@@ -511,6 +649,8 @@ namespace multisample {
           int continuous = 0;
           int inferred_round_robins = 0;
           int missing_paths = 0;
+          int other_loop_modes = 0;
+          int crossfades = 0;
           for (const Group& group : groups_list_) {
             oscillators += group.oscillators;
             const std::string* enabled = own(group.overrides, group.attributes, { "enabled" });
@@ -616,6 +756,17 @@ namespace multisample {
                 }
                 else
                   region.loop_mode = LoopMode::kNoLoop;
+              }
+              if (const std::string* loop_mode = inherited(group, sample, "loopmode")) {
+                const std::string value = lower(*loop_mode);
+                region.loop_alternate = value == "pingpong" || value == "ping_pong" || value == "alternate";
+                if (!region.loop_alternate && value != "forward")
+                  other_loop_modes++;
+              }
+              // DecentSampler counts loopCrossfade in samples; under one is no crossfade.
+              if (const std::string* crossfade = inherited(group, sample, "loopcrossfade")) {
+                if (toNumber(*crossfade) >= 1.0)
+                  crossfades++;
               }
               const std::string* envelope = inherited(group, sample, "ampenvenabled");
               if (envelope && !toBool(*envelope)) {
@@ -723,6 +874,11 @@ namespace multisample {
           if (inferred_round_robins > 0)
             notes_.push_back(std::to_string(inferred_round_robins) +
                              " samples with seqPosition but no seqMode play as round robins");
+          if (other_loop_modes > 0)
+            notes_.push_back("loopMode other than forward or pingpong plays forward (" +
+                             std::to_string(other_loop_modes) + " uses)");
+          if (crossfades > 0)
+            notes_.push_back("Loop crossfades were ignored (" + std::to_string(crossfades) + " uses)");
           if (continuous > 0)
             notes_.push_back("trigger=continuous plays like attack (" + std::to_string(continuous) + " uses)");
           if (unsupported_delays > 0)

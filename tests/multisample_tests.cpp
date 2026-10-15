@@ -1038,6 +1038,148 @@ namespace {
   }
 
 
+  // A ping-pong loop plays forward to its last frame, back to its first, and
+  // on; before it first turns, frames below the loop play as written.
+  int pingpongLoop() {
+    std::vector<int16_t> ramp(100);
+    for (size_t i = 0; i < ramp.size(); ++i)
+      ramp[i] = static_cast<int16_t>(100 * i);
+    Region region;
+    region.left = ramp.data();
+    region.data_frames = static_cast<int64_t>(ramp.size());
+    region.end = region.data_frames;
+    region.loop_mode = LoopMode::kContinuous;
+    region.loop_start = 20;
+    region.loop_end = 41;
+    region.loop_alternate = true;
+    region.buildVelocityCurve();
+
+    vital::MultiSampleSlot slot;
+    vital::MultiSamplePlayer player;
+    vital::MultiSamplePlayer::Start start;
+    start.region = &region;
+    start.velocity = 127;
+    start.sample_rate = static_cast<float>(kRate);
+    player.start(start, slot);
+    constexpr int kFrames = 200;
+    std::vector<float> left(kFrames, 0.0f);
+    std::vector<float> right(kFrames, 0.0f);
+    player.render(left.data(), right.data(), kFrames, 1.0, 1.0, 1.0f, 1.0f, 1.0f);
+
+    // At whole-frame positions the interpolation returns the frame itself.
+    const double unit = left[10] / 1000.0;
+    expect(unit > 0.0, "the ramp plays");
+    int position = 0;
+    int direction = 1;
+    bool turned = false;
+    bool matches = true;
+    for (int i = 0; i < kFrames && unit > 0.0; ++i) {
+      matches = matches && std::abs(left[static_cast<size_t>(i)] / unit - 100.0 * position) < 0.5;
+      position += direction;
+      if (position > 40) {
+        position = 80 - position;
+        direction = -1;
+        turned = true;
+      }
+      else if (turned && position < 20) {
+        position = 40 - position;
+        direction = 1;
+      }
+    }
+    expect(matches, "the loop runs 20 to 40 and back");
+    expect(player.active(), "a held ping-pong loop keeps playing");
+    return finish("pingpong loop");
+  }
+
+
+  // SFZ curves and ampeg_dynamic, as The Experience NY S&S Model B uses them:
+  // the release follows the sustain pedal through a curve, while the note plays.
+  int dynamicEnvelope() {
+    TempFolder temp;
+    writeWav(temp.folder.getChildFile("tone.wav"), 440.0, kRate * 8);
+
+    // Parsing: spaces around '=', <curve> tables and curves named before
+    // or after their modulation.
+    SfzParser::Result parsed = SfzParser::parseText(
+        "<curve>curve_index=11 v000=0 v064=.3 v073=1\n"
+        "<global> volume = -3  // a comment\n"
+        "<group> ampeg_release_curvecc64=11 ampeg_releasecc64=15 ampeg_dynamic=1 amplitude_oncc7=100 amplitude_curvecc7=4\n"
+        "<region> sample=tone.wav key=60\n"
+        "<region> sample=tone.wav key=61 ampeg_release_curvecc64=99\n",
+        temp.folder.getChildFile("parse.sfz"));
+    expect(parsed.error.empty() && parsed.instrument && parsed.instrument->regions.size() == 2, "the curves parse");
+    if (parsed.instrument && parsed.instrument->regions.size() == 2) {
+      const Instrument& instrument = *parsed.instrument;
+      const Region& region = instrument.regions[0];
+      close(region.volume_db, -3.0, "volume = -3 with spaces around the '='");
+      expect(region.ampeg_dynamic, "ampeg_dynamic");
+      expect(instrument.curve_tables.size() == 2, "the two curves in use are kept");
+      expect(region.ampeg_cc.release.size() == 1 && region.ampeg_cc.release[0].curve >= 0,
+             "a curve named before its modulation applies to it");
+      if (region.ampeg_cc.release.size() == 1 && region.ampeg_cc.release[0].curve >= 0) {
+        const auto& table = instrument.curve_tables[static_cast<size_t>(region.ampeg_cc.release[0].curve)];
+        close(table[0], 0.0, "curve start");
+        close(table[32], 0.15, "points in between are interpolated", 1.0e-5);
+        close(table[64], 0.3, "a given point");
+        close(table[100], 1.0, "the end is 1 unless given");
+      }
+      expect(region.amplitude_cc.size() == 1 && region.amplitude_cc[0].curve >= 0, "a built-in curve (4, squared)");
+      if (region.amplitude_cc.size() == 1 && region.amplitude_cc[0].curve >= 0)
+        close(instrument.curve_tables[static_cast<size_t>(region.amplitude_cc[0].curve)][64], std::pow(64.0 / 127.0, 2.0),
+              "curve 4 squares", 1.0e-5);
+      expect(instrument.regions[1].ampeg_cc.release.size() == 1 && instrument.regions[1].ampeg_cc.release[0].curve < 0,
+             "an undefined curve reads as linear");
+      bool reported = false;
+      bool empty_opcode = false;
+      for (const std::string& warning : instrument.warnings) {
+        reported = reported || warning.find("Undefined curves") != std::string::npos;
+        empty_opcode = empty_opcode || warning.find("Ignored opcode  ") != std::string::npos;
+      }
+      expect(reported, "and is reported");
+      expect(!empty_opcode, "no empty opcode name");
+    }
+
+    // Playback through the plugin, where the sustain pedal holds the voice.
+    const juce::File sfz = temp.folder.getChildFile("pedal.sfz");
+    writeText(sfz, "<curve>curve_index=11 v000=0 v064=.3 v073=1\n"
+                   "<region> sample=tone.wav key=60 ampeg_release=0.05 ampeg_releasecc64=5 "
+                   "ampeg_release_curvecc64=11 ampeg_dynamic=1\n"
+                   "<region> sample=tone.wav key=62 ampeg_release=0.05 ampeg_releasecc1=5 ampeg_dynamic=1\n"
+                   "<region> sample=tone.wav key=64 ampeg_release=0.05 ampeg_releasecc1=5\n");
+    auto instrument = loadSfz(sfz);
+    if (!instrument)
+      return finish("dynamic envelope");
+    SynthPlugin plugin;
+    preparePlayback(plugin);
+    setInstrument(plugin, 0, instrument);
+
+    // Struck with the pedal down, the key let go, then the pedal lifts: the
+    // release takes the pedal's value when it starts, so the note damps.
+    auto damped = render(plugin, kRate * 2, { { 0, juce::MidiMessage::controllerEvent(1, 64, 127) },
+                                              { 10, juce::MidiMessage::noteOn(1, 60, 1.0f) },
+                                              { kRate / 4, juce::MidiMessage::noteOff(1, 60) },
+                                              { kRate, juce::MidiMessage::controllerEvent(1, 64, 0) } });
+    expect(rms(damped, kRate / 2, kRate) > 0.01, "the pedal holds the note");
+    expect(rms(damped, kRate + kRate / 5, kRate + kRate / 2) < 1.0e-4, "lifting the pedal damps it");
+
+    // A long release under way shortens when its CC falls.
+    auto shortened = render(plugin, kRate * 2, { { 0, juce::MidiMessage::controllerEvent(1, 1, 127) },
+                                                 { 10, juce::MidiMessage::noteOn(1, 62, 1.0f) },
+                                                 { kRate / 4, juce::MidiMessage::noteOff(1, 62) },
+                                                 { kRate, juce::MidiMessage::controllerEvent(1, 1, 0) } });
+    expect(rms(shortened, kRate / 2, kRate) > 0.005, "the release is long while the CC is up");
+    expect(rms(shortened, kRate + kRate / 5, kRate + kRate / 2) < 1.0e-4, "and short once it falls");
+
+    // Without ampeg_dynamic the release keeps its note-on length.
+    auto fixed = render(plugin, kRate * 2, { { 0, juce::MidiMessage::controllerEvent(1, 1, 127) },
+                                             { 10, juce::MidiMessage::noteOn(1, 64, 1.0f) },
+                                             { kRate / 4, juce::MidiMessage::noteOff(1, 64) },
+                                             { kRate, juce::MidiMessage::controllerEvent(1, 1, 0) } });
+    expect(rms(fixed, kRate + kRate / 5, kRate + kRate / 2) > 0.001, "a fixed envelope ignores the later CC");
+    return finish("dynamic envelope");
+  }
+
+
   // ---- Manager, presets and host state ------------------------------------------
 
   vital::multisample::Manager& manager(SynthPlugin& plugin) {
@@ -1313,6 +1455,144 @@ namespace {
       expect(hasWarning(*plain.instrument, "<sample>"), "a sample outside a group is reported");
     }
 
+    // Controls that change the sound are listed: not Tone (an effect).
+    expect(instrument.controls.size() == 5, "five controls (got " + std::to_string(instrument.controls.size()) + ")");
+    if (instrument.controls.size() == 5) {
+      const auto& body = instrument.controls[0];
+      expect(body.kind == Control::Kind::kKnob && body.label == "Body" && body.index == 0, "the first knob");
+      close(body.minimum, 0.0, "knob minimum");
+      close(body.maximum, 100.0, "knob maximum");
+      close(body.default_value, 25.0, "knob default");
+      close(body.value, 25.0, "knob value");
+      const auto& menu = instrument.controls[3];
+      expect(menu.kind == Control::Kind::kMenu && menu.index == 4, "the menu keeps its place among the controls");
+      expect(menu.choices == std::vector<std::string>({ "Close", "Room" }), "menu options");
+      close(menu.value, 2.0, "menu value counts from 1");
+      expect(instrument.controls[4].label == "Hats" && instrument.controls[4].index == 5, "the tag knob");
+    }
+
+    // Values the user chose replace the file's.
+    {
+      SfzParser::Options turned;
+      turned.control_values[0] = 100.0;
+      turned.control_values[2] = 5.0;
+      turned.control_values[4] = 1.0;
+      turned.control_values[5] = 1.0;
+      SfzParser::Result moved = DecentSamplerParser::parse(preset, turned);
+      expect(moved.error.empty() && moved.instrument, "the preset parses with control values");
+      if (moved.instrument) {
+        const Region* moved_low = regionWithKey(*moved.instrument, 50, 1);
+        expect(moved_low != nullptr, "the low sample with control values");
+        if (moved_low) {
+          close(moved_low->amplitude, std::pow(10.0, -6.0 / 20.0) * 0.8 * 2.0, "Body at 100 doubles the group", 1.0e-5);
+          close(moved_low->ampeg.release, 5.0, "the release knob");
+        }
+        bool room = false;
+        for (const Region& region : moved.instrument->regions)
+          room = room || region.lokey == 70;
+        expect(room, "the menu's first option enables the third group");
+        close(moved.instrument->controls[0].value, 100.0, "the control reports the chosen value");
+        close(moved.instrument->controls[3].value, 1.0, "the menu reports the chosen option");
+        for (const Region& region : moved.instrument->regions) {
+          if (region.lokey == 42)
+            close(region.amplitude, std::pow(10.0, -6.0 / 20.0), "the tag knob at full", 1.0e-5);
+        }
+      }
+      SfzParser::Options outside;
+      outside.control_values[0] = 500.0;
+      SfzParser::Result clamped = DecentSamplerParser::parse(preset, outside);
+      expect(clamped.instrument && clamped.instrument->controls.size() == 5, "out-of-range values parse");
+      if (clamped.instrument && clamped.instrument->controls.size() == 5)
+        close(clamped.instrument->controls[0].value, 100.0, "values are kept in the knob's range");
+    }
+
+    // triggerOnLoad="false" bindings fire once the user moves the control;
+    // integer knobs round; a hidden control, or one with one choice, is not listed.
+    {
+      const std::string text =
+          R"(<DecentSampler><ui><tab>
+  <control label="Steps" type="integer" minValue="0" maxValue="4" value="1">
+    <binding level="instrument" parameter="ENV_ATTACK" triggerOnLoad="false"/>
+  </control>
+  <labeled-knob label="Hidden" visible="false"><binding level="instrument" parameter="ENV_DECAY"/></labeled-knob>
+  <label text="Mics"/>
+  <button value="0">
+    <state name="Off"><binding level="group" position="0" parameter="AMP_VOLUME" translation="fixed_value" translationValue="0"/></state>
+    <state name="On"><binding level="group" position="0" parameter="AMP_VOLUME" translation="fixed_value" translationValue="1"/></state>
+  </button>
+  <menu><option name="Only"><binding level="instrument" parameter="ENV_SUSTAIN"/></option></menu>
+</tab></ui><groups><group><sample path="Samples/low.wav"/></group></groups></DecentSampler>)";
+      const juce::File file = root.getChildFile("steps.dspreset");
+      SfzParser::Result loaded = DecentSamplerParser::parseText(text, file);
+      expect(loaded.instrument && loaded.instrument->controls.size() == 2, "a knob and a button are listed");
+      if (loaded.instrument && loaded.instrument->controls.size() == 2) {
+        const auto& steps = loaded.instrument->controls[0];
+        expect(steps.integer && steps.index == 0, "type=integer");
+        close(loaded.instrument->regions[0].ampeg.attack, 0.0, "triggerOnLoad=false skips the load");
+        const auto& mics = loaded.instrument->controls[1];
+        expect(mics.kind == Control::Kind::kButton && mics.index == 2 && mics.label == "Mics" &&
+               mics.choices.size() == 2, "a button takes the label placed before it");
+        close(loaded.instrument->regions[0].amplitude, 0.0, "the button's first state");
+      }
+      SfzParser::Options moved;
+      moved.control_values[0] = 2.6;
+      moved.control_values[2] = 1.0;
+      SfzParser::Result turned = DecentSamplerParser::parseText(text, file, moved);
+      if (turned.instrument && !turned.instrument->regions.empty()) {
+        close(turned.instrument->regions[0].ampeg.attack, 3.0, "a moved control fires it, rounded to a step");
+        close(turned.instrument->regions[0].amplitude, 1.0, "the button's second state");
+      }
+      else
+        expect(false, "the moved controls parse");
+    }
+
+    // A panel laid out like Emerald Resonances: each <label> follows its
+    // knob in the file and sits on its top edge; layer knobs bind
+    // AMP_VOLUME at tag level; the menu has no label; loops ping-pong.
+    {
+      const std::string text = R"(<DecentSampler><ui><tab name="main">
+  <control x="250" y="150" width="90" height="90" minValue="0" maxValue="10" value="1">
+    <binding level="instrument" parameter="ENV_ATTACK"/>
+  </control>
+  <label x="250" y="110" width="90" height="90" text="Attack"/>
+  <control x="350" y="150" width="90" height="90" minValue="0" maxValue="5" value="5">
+    <binding level="instrument" parameter="ENV_DECAY"/>
+  </control>
+  <label x="350" y="110" width="90" height="90" text="Decay"/>
+  <label x="40" y="40" width="130" height="130" text="Volume Controls"/>
+  <control x="0" y="130" width="110" height="110" minValue="0" maxValue="1" value="0.5">
+    <binding level="tag" identifier="Ambience" parameter="AMP_VOLUME"/>
+  </control>
+  <label x="10" y="90" width="90" height="90" text="Ambience"/>
+  <menu x="0" y="30" width="200" height="30" value="1">
+    <option name="All"><binding level="group" position="0" parameter="ENABLED" translation="fixed_value" translationValue="true"/></option>
+    <option name="None"><binding level="group" position="0" parameter="ENABLED" translation="fixed_value" translationValue="false"/></option>
+  </menu>
+</tab></ui><groups><group tags="Ambience">
+  <sample path="Samples/low.wav" loopEnabled="true" loopMode="pingpong" loopStart="10" loopEnd="99" loopCrossfade="0.3"/>
+  <sample path="Samples/low.wav" loNote="70" hiNote="70" loopEnabled="true" loopMode="forward" loopStart="10" loopEnd="99" loopCrossfade="64"/>
+</group></groups></DecentSampler>)";
+      SfzParser::Result laid_out = DecentSamplerParser::parseText(text, root.getChildFile("panel.dspreset"));
+      expect(laid_out.instrument && laid_out.instrument->controls.size() == 4, "the panel's four controls are listed");
+      if (laid_out.instrument && laid_out.instrument->controls.size() == 4) {
+        const auto& controls = laid_out.instrument->controls;
+        expect(controls[0].label == "Attack" && controls[1].label == "Decay",
+               "labels after their knobs name them by position (got " + controls[0].label + ", " + controls[1].label + ")");
+        expect(controls[2].label == "Ambience", "a heading above the label does not name the knob (got " + controls[2].label + ")");
+        expect(controls[3].label == "Menu 1", "an unlabelled menu is numbered among the menus (got " + controls[3].label + ")");
+        const auto& regions = laid_out.instrument->regions;
+        expect(regions.size() == 2, "two regions");
+        if (regions.size() == 2) {
+          close(regions[0].amplitude, 0.5, "AMP_VOLUME at tag level sets the tag's volume", 1.0e-6);
+          expect(regions[0].loop_alternate && !regions[1].loop_alternate, "loopMode=pingpong alternates");
+        }
+        expect(hasWarning(*laid_out.instrument, "Loop crossfades were ignored (1 uses)"),
+               "a crossfade of a sample or more is reported, a fraction of one is not");
+        expect(!hasWarning(*laid_out.instrument, "loopmode") && !hasWarning(*laid_out.instrument, "Ignored control binding"),
+               "loopMode and the tag binding are understood");
+      }
+    }
+
     // Errors.
     expect(!DecentSamplerParser::parseText("<DecentSampler><groups>", root.getChildFile("bad.dspreset")).error.empty(),
            "broken XML is an error");
@@ -1415,6 +1695,112 @@ namespace {
              "the edited copy reloads: " + edited_status.error);
     }
     return finish("decentsampler load");
+  }
+
+
+  // The instrument's knobs and menus: changing them rebuilds the regions, notes
+  // already sounding play on, and the values are saved with the preset.
+  int decentSamplerControls() {
+    TempFolder temp;
+    container::setCacheRootForTesting(temp.folder.getChildFile("cache"));
+    const juce::File library = temp.folder.getChildFile("Library");
+    writeWav(library.getChildFile("Samples/a440.wav"), 440.0, kRate * 3);
+    const juce::File preset = library.getChildFile("Lead.dspreset");
+    writeText(preset,
+              "<DecentSampler><ui><tab name=\"main\">"
+              "<labeled-knob label=\"Level\" minValue=\"0\" maxValue=\"1\" value=\"0.5\">"
+              "<binding type=\"amp\" level=\"group\" position=\"0\" parameter=\"AMP_VOLUME\"/></labeled-knob>"
+              "<menu value=\"1\"><option name=\"Short\"><binding level=\"instrument\" parameter=\"ENV_RELEASE\" "
+              "translation=\"fixed_value\" translationValue=\"0.01\"/></option>"
+              "<option name=\"Long\"><binding level=\"instrument\" parameter=\"ENV_RELEASE\" "
+              "translation=\"fixed_value\" translationValue=\"1\"/></option></menu>"
+              "</tab></ui><groups><group><sample path=\"Samples/a440.wav\" rootNote=\"69\"/></group></groups>"
+              "</DecentSampler>");
+
+    const juce::File saved = temp.folder.getChildFile("Lead.atp");
+    {
+      SynthPlugin plugin;
+      preparePlayback(plugin);
+      auto& slots = manager(plugin);
+      slots.loadFromUser(0, preset);
+      settle(plugin);
+      auto loaded = slots.result(0);
+      expect(loaded && loaded->instrument && loaded->instrument->controls.size() == 2, "the knob and the menu are listed");
+      if (!loaded || !loaded->instrument)
+        return finish("decentsampler controls");
+      const auto decoded = loaded->decoded.empty() ? nullptr : loaded->decoded[0].data;
+
+      // A note held across a change keeps its level; the next note has the new one.
+      const auto before = render(plugin, kRate / 4, { { 0, juce::MidiMessage::noteOn(1, 69, 1.0f) } });
+      const double half = rms(before, kRate / 10, kRate / 4);
+      expect(half > 0.01, "the note plays");
+      const uint32_t revision = slots.status(0).revision;
+      slots.setControlValue(0, 0, 1.0);
+      expect(slots.status(0).state == vital::multisample::SlotStatus::kLoaded, "a control change shows no load");
+      expect(slots.spec(0).control_values.count(0) && slots.spec(0).control_values.at(0) == 1.0,
+             "the spec records the value at once");
+      settle(plugin);
+      auto rebuilt = slots.result(0);
+      expect(rebuilt && rebuilt != loaded && rebuilt->hash == loaded->hash, "the instrument is rebuilt from the same files");
+      expect(rebuilt && !rebuilt->decoded.empty() && rebuilt->decoded[0].data == decoded, "decoded audio is reused");
+      expect(slots.status(0).state == vital::multisample::SlotStatus::kLoaded && slots.status(0).revision > revision,
+             "the slot stays loaded");
+      const auto held = render(plugin, kRate / 4, {});
+      close(rms(held, 0, kRate / 4) / half, 1.0, "the held note plays on at its level", 0.03);
+      const auto after = render(plugin, kRate / 2, { { 0, juce::MidiMessage::noteOff(1, 69) },
+                                                     { kRate / 4, juce::MidiMessage::noteOn(1, 69, 1.0f) } });
+      close(rms(after, kRate / 4 + kRate / 10, kRate / 2) / half, 2.0, "the next note has the knob's level", 0.05);
+
+      // The menu's second option lengthens the release.
+      slots.setControlValue(0, 1, 2.0);
+      settle(plugin);
+      auto longer = slots.result(0);
+      expect(longer && longer->instrument && !longer->instrument->regions.empty() &&
+             std::abs(longer->instrument->regions[0].ampeg.release - 1.0f) < 1.0e-6f &&
+             std::abs(longer->instrument->regions[0].amplitude - 1.0f) < 1.0e-6f,
+             "the menu sets the release and the knob's value stays");
+
+      // Specs carry the values through JSON.
+      const auto spec = slots.spec(0);
+      const auto round_trip = vital::multisample::InstrumentSpec::fromJson(spec.toJson(false));
+      expect(round_trip.control_values == spec.control_values && spec.control_values.size() == 2,
+             "control values survive JSON");
+      render(plugin, kRate / 2, { { 0, juce::MidiMessage::allNotesOff(1) } });
+      expect(plugin.saveToFile(saved), "the preset saves");
+
+      // Loading the file again starts from its own values.
+      slots.loadFromUser(0, preset);
+      settle(plugin);
+      expect(slots.spec(0).control_values.empty(), "a new load forgets the values");
+    }
+
+    library.deleteRecursively();
+    container::setCacheRootForTesting(temp.folder.getChildFile("cache2"));
+    {
+      SynthPlugin plugin;
+      preparePlayback(plugin);
+      std::string error;
+      expect(plugin.loadFromFile(saved, error), "the saved preset loads: " + error);
+      settle(plugin);
+      auto restored = manager(plugin).result(0);
+      expect(restored && restored->instrument && restored->instrument->controls.size() == 2 &&
+             restored->instrument->controls[0].value == 1.0 && restored->instrument->controls[1].value == 2.0,
+             "the preset restores the control values");
+      if (restored && restored->instrument && !restored->instrument->regions.empty())
+        close(restored->instrument->regions[0].amplitude, 1.0, "and plays with them", 1.0e-6);
+
+      // A preset naming the same instrument with other values rebuilds it.
+      auto spec = manager(plugin).spec(0);
+      spec.control_values[0] = 0.25;
+      manager(plugin).applySpec(0, spec, {});
+      settle(plugin);
+      auto shared = manager(plugin).result(0);
+      expect(shared && shared->instrument && !shared->instrument->regions.empty() &&
+             std::abs(shared->instrument->regions[0].amplitude - 0.25f) < 1.0e-6f,
+             "values apply to an instrument that is already loaded");
+    }
+    container::setCacheRootForTesting({});
+    return finish("decentsampler controls");
   }
 
 
@@ -1850,6 +2236,57 @@ namespace {
                              "Clear instrument after clearing");
     }
 
+    // A DecentSampler preset's knobs and menus become a slider and a menu.
+    {
+      writeText(temp.folder.getChildFile("knobs.dspreset"),
+                "<DecentSampler><ui><tab><labeled-knob label=\"Level\" minValue=\"0\" maxValue=\"1\" value=\"0.5\">"
+                "<binding level=\"group\" position=\"0\" parameter=\"AMP_VOLUME\"/></labeled-knob>"
+                "<menu value=\"2\"><option name=\"Dry\"><binding level=\"instrument\" parameter=\"ENV_RELEASE\" "
+                "translation=\"fixed_value\" translationValue=\"0.1\"/></option><option name=\"Wet\">"
+                "<binding level=\"instrument\" parameter=\"ENV_RELEASE\" translation=\"fixed_value\" "
+                "translationValue=\"2\"/></option></menu></tab></ui>"
+                "<groups><group><sample path=\"tone.wav\"/></group></groups></DecentSampler>");
+      multisample->loadFromUser(0, temp.folder.getChildFile("knobs.dspreset"));
+      auto knob = [&] { return section() ? dynamic_cast<Slider*>(titledExactly(*section(), "1 Instrument Level")) : nullptr; };
+      pumpUntil([&] { return knob() != nullptr; });
+      auto* level = knob();
+      expect(level != nullptr && level->getWantsKeyboardFocus() && level->getDescription().isNotEmpty() &&
+             level->getHelpText().isNotEmpty(), "the knob is an accessible slider titled by its label");
+      expectAccessibleButton(section() ? titledExactly(*section(), "Reload DecentSampler") : nullptr, "Reload DecentSampler");
+      if (level != nullptr) {
+        // The editor is not on screen, so make the handler a screen reader would use.
+        auto handler = level->createAccessibilityHandler();
+        auto* value = handler != nullptr ? handler->getValueInterface() : nullptr;
+        expect(value != nullptr && value->getCurrentValueAsString() == "50%", "a 0 to 1 knob reads as a percentage");
+        if (value != nullptr)
+          value->setValue(0.75);
+        expect(multisample->spec(0).control_values.count(0) && multisample->spec(0).control_values.at(0) == 0.75,
+               "turning the slider sets the instrument's knob");
+        pumpUntil([&] {
+          auto result = multisample->result(0);
+          return result && result->instrument && !result->instrument->regions.empty() &&
+                 result->instrument->regions[0].amplitude == 0.75f;
+        });
+        expect(knob() == level, "a control change keeps the rows (and focus)");
+      }
+      auto* wet = section() ? dynamic_cast<ComboBox*>(titledExactly(*section(), "1 Instrument Menu 1")) : nullptr;
+      expect(wet != nullptr && wet->getNumItems() == 2 && wet->getText() == "Wet",
+             "an unlabelled menu is named by its place and shows its option");
+      if (wet != nullptr) {
+        wet->setSelectedId(1, juce::sendNotificationSync);
+        expect(multisample->spec(0).control_values.count(1) && multisample->spec(0).control_values.at(1) == 1.0,
+               "choosing an option sets the menu");
+      }
+      // A value set elsewhere (a preset, the host) moves the slider.
+      auto spec = multisample->spec(0);
+      spec.control_values[0] = 0.2;
+      multisample->applySpec(0, spec, {});
+      pumpUntil([&] { return knob() != nullptr && std::abs(knob()->getValue() - 0.2) < 1.0e-9; });
+      expect(knob() != nullptr && std::abs(knob()->getValue() - 0.2) < 1.0e-9, "the slider follows the slot's value");
+      multisample->clear(0);
+      pumpUntil([&] { return knob() == nullptr; });
+    }
+
     // A large SoundFont's menu is grouped so every submenu fits on screen.
     std::vector<vital::multisample::PresetName> many;
     for (int bank : { 0, 8, 128 }) {
@@ -1965,6 +2402,142 @@ namespace {
 
   // ---- Manual inspection of a real instrument ----------------------------------
 
+  // Plays a held C4 with each of the instrument's controls at its lowest,
+  // its file and its highest setting (every option of a menu), and prints
+  // the level while held and after release.
+  int manualControls(const juce::File& file) {
+    SynthPlugin plugin;
+    preparePlayback(plugin);
+    auto& slots = manager(plugin);
+    slots.loadFromUser(0, file);
+    settle(plugin);
+    auto loaded = slots.result(0);
+    if (loaded == nullptr || loaded->instrument == nullptr) {
+      std::cout << "error: " << slots.status(0).error << "\n";
+      return 1;
+    }
+    const std::vector<Control> controls = loaded->instrument->controls;
+    auto measure = [&] {
+      render(plugin, kRate / 2, { { 0, juce::MidiMessage::allNotesOff(1) } });
+      const auto audio = render(plugin, kRate * 4, { { 0, juce::MidiMessage::noteOn(1, 60, 0.85f) },
+                                                     { kRate * 2, juce::MidiMessage::noteOff(1, 60) } });
+      bool finite = true;
+      for (float sample : audio)
+        finite = finite && std::isfinite(sample);
+      return "held " + juce::String(rms(audio, kRate / 2, kRate * 2), 4).toStdString() + ", after release " +
+             juce::String(rms(audio, kRate * 2 + kRate / 2, kRate * 4), 4).toStdString() + (finite ? "" : ", NOT FINITE");
+    };
+    std::cout << "file settings: " << measure() << "\n";
+    for (const Control& control : controls) {
+      std::vector<double> values;
+      if (control.kind == Control::Kind::kKnob)
+        values = { control.minimum, control.maximum };
+      else {
+        for (int i = static_cast<int>(control.minimum); i <= static_cast<int>(control.maximum); ++i)
+          values.push_back(i);
+      }
+      for (double value : values) {
+        slots.setControlValue(0, control.index, value);
+        settle(plugin);
+        const auto result = slots.result(0);
+        std::string label = control.label + " = " + juce::String(value, 2).toStdString();
+        if (control.kind != Control::Kind::kKnob)
+          label += " (" + control.choices[static_cast<size_t>(value - control.minimum)] + ")";
+        std::cout << label << ": " << (result && result->instrument ? result->instrument->regions.size() : 0)
+                  << " regions, " << measure() << "\n";
+      }
+      slots.setControlValue(0, control.index, control.default_value);
+      settle(plugin);
+    }
+    return 0;
+  }
+
+  // Holds one note for `seconds` and prints, per 5 s window, the level and
+  // the largest step between neighbouring samples (a click shows as a spike).
+  int manualHold(const juce::File& file, int note, int seconds) {
+    SynthPlugin plugin;
+    preparePlayback(plugin);
+    manager(plugin).loadFromUser(0, file);
+    settle(plugin);
+    if (manager(plugin).result(0) == nullptr) {
+      std::cout << "error: " << manager(plugin).status(0).error << "\n";
+      return 1;
+    }
+    const auto audio = render(plugin, kRate * seconds, { { 0, juce::MidiMessage::noteOn(1, note, 0.85f) } });
+    for (int window = 0; window + 5 <= seconds; window += 5) {
+      float step = 0.0f;
+      bool finite = true;
+      for (int i = window * kRate + 1; i < (window + 5) * kRate; ++i) {
+        step = std::max(step, std::abs(audio[static_cast<size_t>(i)] - audio[static_cast<size_t>(i - 1)]));
+        finite = finite && std::isfinite(audio[static_cast<size_t>(i)]);
+      }
+      std::cout << window << "-" << window + 5 << " s: rms " << rms(audio, window * kRate, (window + 5) * kRate)
+                << ", largest step " << step << (finite ? "" : ", NOT FINITE") << "\n";
+    }
+    return 0;
+  }
+
+  // Two files of one library (an SFZ and its DecentSampler version): for
+  // every key and a few velocities, which samples each plays and how.
+  // Prints only the notes where they differ, then a count.
+  // `mapping_only` leaves out gain, envelope and sample range.
+  int manualCompare(const juce::File& first, const juce::File& second, bool mapping_only) {
+    auto parse = [](const juce::File& file) {
+      return file.hasFileExtension("dspreset") ? DecentSamplerParser::parse(file) : SfzParser::parse(file);
+    };
+    const SfzParser::Result a = parse(first);
+    const SfzParser::Result b = parse(second);
+    if (!a.instrument || !b.instrument) {
+      std::cout << "error: " << a.error << " / " << b.error << "\n";
+      return 1;
+    }
+    auto describe = [mapping_only](const Instrument& instrument, int key, int velocity, Trigger trigger) {
+      std::vector<std::string> parts;
+      for (const Region& region : instrument.regions) {
+        if (region.trigger != trigger || key < region.lokey || key > region.hikey || velocity < region.lovel ||
+            velocity > region.hivel)
+          continue;
+        const double gain = region.baseGain() * region.velocity_gain[static_cast<size_t>(velocity)];
+        const auto& envelope = region.ampeg;
+        parts.push_back(juce::File(juce::String(region.sample_path)).getFileName().toStdString() +
+                        " rr" + std::to_string(region.seq_position) + "/" + std::to_string(region.seq_length) +
+                        " root " + juce::String(region.pitch_keycenter, 0).toStdString() +
+                        " tune " + juce::String(region.tune_cents, 1).toStdString() +
+                        " track " + juce::String(region.pitch_keytrack, 0).toStdString() +
+                        (mapping_only ? std::string() : std::string(" gain ") + juce::String(20.0 * std::log10(std::max(1.0e-9, gain)), 1).toStdString() + "dB" +
+                        " adsr " + juce::String(envelope.attack, 3).toStdString() + "/" +
+                        juce::String(envelope.decay, 2).toStdString() + "/" + juce::String(envelope.sustain, 2).toStdString() +
+                        "/" + juce::String(envelope.release, 2).toStdString() +
+                        " range " + std::to_string(region.offset) + "-" + std::to_string(region.end)) +
+                        (region.loop_mode == LoopMode::kNoLoop ? "" : " loop"));
+      }
+      std::sort(parts.begin(), parts.end());
+      std::string text;
+      for (const std::string& part : parts)
+        text += "\n      " + part;
+      return text.empty() ? std::string("\n      (nothing)") : text;
+    };
+    int differences = 0;
+    int compared = 0;
+    for (Trigger trigger : { Trigger::kAttack, Trigger::kRelease }) {
+      for (int key = 0; key < 128; ++key) {
+        for (int velocity : { 1, 30, 52, 53, 70, 85, 86, 100, 116, 117, 127 }) {
+          const std::string left = describe(*a.instrument, key, velocity, trigger);
+          const std::string right = describe(*b.instrument, key, velocity, trigger);
+          compared++;
+          if (left == right)
+            continue;
+          if (++differences <= 12) {
+            std::cout << (trigger == Trigger::kRelease ? "release " : "") << "key " << key << " velocity " << velocity
+                      << "\n  " << first.getFileName() << ":" << left << "\n  " << second.getFileName() << ":" << right << "\n";
+          }
+        }
+      }
+    }
+    std::cout << differences << " of " << compared << " key and velocity pairs differ\n";
+    return 0;
+  }
+
   int manual(const juce::File& file, int preset) {
     LoadRequest request;
     request.file = file;
@@ -2012,6 +2585,14 @@ namespace {
         std::cout << "  " << p.bank << ":" << p.program << " " << p.name << "\n";
       }
     }
+    for (const Control& control : instrument.controls) {
+      std::cout << "control " << control.index << ": \"" << control.label << "\" "
+                << (control.kind == Control::Kind::kKnob ? "knob" : control.kind == Control::Kind::kMenu ? "menu" : "button")
+                << " " << control.minimum << ".." << control.maximum << " = " << control.value;
+      for (const std::string& choice : control.choices)
+        std::cout << " | " << choice;
+      std::cout << "\n";
+    }
     std::cout << "missing files: " << instrument.missing_files.size() << "\n";
     for (size_t i = 0; i < std::min<size_t>(10, instrument.missing_files.size()); ++i)
       std::cout << "  " << instrument.missing_files[i] << "\n";
@@ -2024,6 +2605,14 @@ namespace {
 int main(int argc, char** argv) {
   juce::ScopedJuceInitialiser_GUI juce;
   const juce::String flag = argc > 1 ? juce::String(argv[1]) : juce::String();
+  if (flag == "--compare" && argc > 3)
+    return manualCompare(juce::File(juce::String(argv[2])), juce::File(juce::String(argv[3])),
+                         argc > 4 && juce::String(argv[4]) == "mapping");
+  if (flag == "--hold" && argc > 4)
+    return manualHold(juce::File(juce::String(argv[2])), juce::String(argv[3]).getIntValue(),
+                      juce::String(argv[4]).getIntValue());
+  if (flag == "--controls" && argc > 2)
+    return manualControls(juce::File(juce::String(argv[2])));
   if (flag == "--manual" && argc > 2)
     return manual(juce::File(juce::String(argv[2])), argc > 3 ? juce::String(argv[3]).getIntValue() : -1);
   if (flag == "--render" && argc > 3)
@@ -2035,6 +2624,12 @@ int main(int argc, char** argv) {
     return sf2Parser();
   if (flag == "--decentsampler-parser")
     return decentSamplerParser();
+  if (flag == "--dynamic-envelope")
+    return dynamicEnvelope();
+  if (flag == "--pingpong-loop")
+    return pingpongLoop();
+  if (flag == "--decentsampler-controls")
+    return decentSamplerControls();
   if (flag == "--decentsampler-load")
     return decentSamplerLoad();
   if (flag == "--decode")

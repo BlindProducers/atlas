@@ -218,6 +218,7 @@ class WavetableKeyboardComponent : public Component {
 namespace vital {
 namespace multisample {
   struct PresetName;
+  struct LoadResult;
 }
 }
 
@@ -496,8 +497,15 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void syncInstrumentPresetMenu(int oscillator);
     String instrumentStatusTitle(int oscillator) const;
     String instrumentDetails(int oscillator) const;
-    // 0 nothing loaded, 1 SFZ, 2 SF2 with one preset, 3 SF2 with several.
+    // 0 nothing loaded, 1 SFZ or DecentSampler, 2 SF2 with one preset, 3 SF2
+    // with several, 4 DecentSampler with controls.
     int multiSampleUiState(int oscillator) const;
+    // A slider for each knob of the instrument and a menu for each menu and button.
+    void addInstrumentControlRows(int oscillator, const vital::multisample::LoadResult& result,
+                                  const std::function<Component*(std::unique_ptr<Component>, int)>& place,
+                                  const String& section_name);
+    // Keeps those rows on the values the slot plays; another instrument rebuilds them.
+    void syncInstrumentControls(int oscillator);
     // The Braids synthesis mode a slot has selected, 0 to 47.
     int braidsModel(int oscillator) const;
     // A section row with every callback wired (modulation, MIDI learn, value entry, automation).

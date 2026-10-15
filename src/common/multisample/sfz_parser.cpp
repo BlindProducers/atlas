@@ -2,8 +2,10 @@
 #include "sfz_parser.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
+#include <iterator>
 #include <limits>
 #include <set>
 
@@ -164,6 +166,8 @@ namespace multisample {
           else
             parseFile(main_file_, 0);
           finishRegion();
+          finishCurve();
+          resolveCurves();
 
           Instrument& instrument = *result_.instrument;
           for (const auto& unsupported : unsupported_) {
@@ -178,7 +182,7 @@ namespace multisample {
         }
 
       private:
-        enum class Level { kNone, kControl, kGlobal, kMaster, kGroup, kRegion, kIgnored };
+        enum class Level { kNone, kControl, kGlobal, kMaster, kGroup, kRegion, kCurve, kIgnored };
 
         juce::File resolve(const std::string& written, bool* absolute = nullptr) const {
           return resolveInstrumentPath(written, roots_, options_.path_overrides, absolute);
@@ -320,10 +324,16 @@ namespace multisample {
             size_t name_start = i;
             while (i < size && text[i] != '=' && !isSpace(text[i]) && text[i] != '<')
               i++;
-            if (i >= size || text[i] != '=') {
+            const size_t name_end = i;
+            // "volume = -3": spaces (not line breaks) may stand around the '='.
+            while (i < size && (text[i] == ' ' || text[i] == '\t') && name_end > name_start)
+              i++;
+            if (i >= size || text[i] != '=' || name_end == name_start) {
+              if (i < size && text[i] == '=')
+                i++;
               continue;
             }
-            const std::string name = expand(text.substr(name_start, i - name_start));
+            const std::string name = expand(text.substr(name_start, name_end - name_start));
             i++;
             size_t value_start = i;
             size_t limit = value_start;
@@ -341,7 +351,10 @@ namespace multisample {
               size_t name_end = k;
               while (name_end < limit && isNameChar(text[name_end]))
                 name_end++;
-              if (name_end > k && name_end < limit && text[name_end] == '=') {
+              size_t equals = name_end;
+              while (equals < limit && (text[equals] == ' ' || text[equals] == '\t'))
+                equals++;
+              if (name_end > k && equals < limit && text[equals] == '=') {
                 value_end = j;
                 break;
               }
@@ -354,7 +367,13 @@ namespace multisample {
 
         void header(const std::string& name) {
           finishRegion();
-          if (name == "control") {
+          finishCurve();
+          if (name == "curve") {
+            level_ = Level::kCurve;
+            curve_index_ = -1;
+            curve_points_.clear();
+          }
+          else if (name == "control") {
             level_ = Level::kControl;
           }
           else if (name == "global") {
@@ -404,9 +423,94 @@ namespace multisample {
               // Opcodes before any header behave like <global> ones.
               global_.push_back({ name, value });
               break;
+            case Level::kCurve: {
+              int number = 0;
+              if (name == "curve_index")
+                curve_index_ = toInt(value);
+              else if (matchNumbered(name, "v", number) && number >= 0 && number < kNumCcs)
+                curve_points_[number] = static_cast<float>(toNumber(value));
+              else
+                unsupported(name);
+              break;
+            }
             case Level::kIgnored:
               break;
           }
+        }
+
+        // A <curve>: points between those given are interpolated, and the
+        // ends are 0 and 1 unless given.
+        void finishCurve() {
+          if (level_ != Level::kCurve || curve_index_ < 0)
+            return;
+          std::map<int, float> points = curve_points_;
+          points.emplace(0, 0.0f);
+          points.emplace(kNumCcs - 1, 1.0f);
+          std::array<float, kNumCcs> table {};
+          for (int i = 0; i < kNumCcs; ++i) {
+            // The ends are always present, so a point at or after i exists and one before it when it is past i.
+            const auto after = points.lower_bound(i);
+            if (after->first == i) {
+              table[static_cast<size_t>(i)] = after->second;
+              continue;
+            }
+            const auto before = std::prev(after);
+            const float t = static_cast<float>(i - before->first) / static_cast<float>(after->first - before->first);
+            table[static_cast<size_t>(i)] = before->second + t * (after->second - before->second);
+          }
+          user_curves_[curve_index_] = table;
+          curve_index_ = -1;
+        }
+
+        // SFZ's built-in curves: 0 linear, 1 bipolar, 2 inverted, 3 inverted
+        // bipolar, 4 squared, 5 square root, 6 inverted square root.
+        static bool builtInCurve(int index, std::array<float, kNumCcs>& table) {
+          if (index < 0 || index > 6)
+            return false;
+          for (int i = 0; i < kNumCcs; ++i) {
+            const float x = static_cast<float>(i) / (kNumCcs - 1);
+            const float values[] = { x, 2.0f * x - 1.0f, 1.0f - x, 1.0f - 2.0f * x, x * x, std::sqrt(x),
+                                     std::sqrt(1.0f - x) };
+            table[static_cast<size_t>(i)] = values[index];
+          }
+          return true;
+        }
+
+        // Curve numbers on the CC modulations become indices into the
+        // instrument's tables, holding only the curves in use.
+        void resolveCurves() {
+          Instrument& instrument = *result_.instrument;
+          std::map<int, int> slots;
+          int unknown = 0;
+          auto resolve = [&](std::vector<CcMod>& mods) {
+            for (CcMod& mod : mods) {
+              if (mod.curve < 0)
+                continue;
+              auto known = slots.find(mod.curve);
+              if (known == slots.end()) {
+                std::array<float, kNumCcs> table {};
+                auto user = user_curves_.find(mod.curve);
+                if (user != user_curves_.end())
+                  table = user->second;
+                else if (!builtInCurve(mod.curve, table)) {
+                  unknown++;
+                  mod.curve = -1;
+                  continue;
+                }
+                instrument.curve_tables.push_back(table);
+                known = slots.emplace(mod.curve, static_cast<int>(instrument.curve_tables.size()) - 1).first;
+              }
+              mod.curve = known->second;
+            }
+          };
+          for (Region& region : instrument.regions) {
+            for (auto* mods : { &region.amplitude_cc, &region.volume_cc, &region.pan_cc, &region.ampeg_cc.delay,
+                                &region.ampeg_cc.start, &region.ampeg_cc.attack, &region.ampeg_cc.hold,
+                                &region.ampeg_cc.decay, &region.ampeg_cc.sustain, &region.ampeg_cc.release })
+              resolve(*mods);
+          }
+          if (unknown > 0)
+            instrument.warnings.push_back("Undefined curves were read as linear (" + std::to_string(unknown) + " uses)");
         }
 
         void controlOpcode(const std::string& name, const std::string& value) {
@@ -464,10 +568,19 @@ namespace multisample {
 
           Region region;
           bool disabled = false;
+          pending_curves_.clear();
           for (const OpcodeList* list : { &global_, &master_, &group_, &region_ }) {
             for (const Opcode& op : *list)
               apply(region, op.name, op.value, disabled);
           }
+          // A curve may be named before its modulation: attach them now.
+          for (const PendingCurve& pending : pending_curves_) {
+            for (CcMod& mod : *pending.mods) {
+              if (mod.cc == pending.cc)
+                mod.curve = pending.curve;
+            }
+          }
+          pending_curves_.clear();
           if (disabled || region.sample_path.empty())
             return;
           if (region.sample_path[0] == '*') {
@@ -640,6 +753,9 @@ namespace multisample {
           }
           else if (name == "rt_decay")
             region.rt_decay = static_cast<float>(std::max(0.0, toNumber(value)));
+          else if (name == "ampeg_dynamic")
+            region.ampeg_dynamic = toInt(value) != 0;
+          else if (curveOpcode(region, name, value)) { }
           else if (applyEnvelope(region, name, value)) { }
           else if (matchNumbered(name, "amplitude_oncc", number) || matchNumbered(name, "amplitude_cc", number))
             addMod(region.amplitude_cc, number, static_cast<float>(toNumber(value) / 100.0));
@@ -680,6 +796,36 @@ namespace multisample {
             }
           }
           mods.push_back({ cc, amount });
+        }
+
+        // "ampeg_release_curvecc64=11" names the curve of a CC modulation.
+        bool curveOpcode(Region& region, const std::string& name, const std::string& value) {
+          if (name.find("_curvecc") == std::string::npos)
+            return false;
+          static const std::pair<const char*, std::vector<CcMod> Region::*> kTargets[] = {
+            { "amplitude_curvecc", &Region::amplitude_cc }, { "volume_curvecc", &Region::volume_cc },
+            { "gain_curvecc", &Region::volume_cc }, { "pan_curvecc", &Region::pan_cc },
+          };
+          int number = 0;
+          for (const auto& target : kTargets) {
+            if (matchNumbered(name, target.first, number)) {
+              pending_curves_.push_back({ &(region.*target.second), number, toInt(value) });
+              return true;
+            }
+          }
+          static const std::pair<const char*, std::vector<CcMod> EnvelopeCcMods::*> kStages[] = {
+            { "ampeg_delay_curvecc", &EnvelopeCcMods::delay }, { "ampeg_start_curvecc", &EnvelopeCcMods::start },
+            { "ampeg_attack_curvecc", &EnvelopeCcMods::attack }, { "ampeg_hold_curvecc", &EnvelopeCcMods::hold },
+            { "ampeg_decay_curvecc", &EnvelopeCcMods::decay }, { "ampeg_sustain_curvecc", &EnvelopeCcMods::sustain },
+            { "ampeg_release_curvecc", &EnvelopeCcMods::release },
+          };
+          for (const auto& stage : kStages) {
+            if (matchNumbered(name, stage.first, number)) {
+              pending_curves_.push_back({ &(region.ampeg_cc.*stage.second), number, toInt(value) });
+              return true;
+            }
+          }
+          return false;
         }
 
         bool applyEnvelope(Region& region, const std::string& name, const std::string& value) {
@@ -725,6 +871,16 @@ namespace multisample {
         std::set<juce::String> include_stack_;
         std::map<std::string, int> unsupported_;
         std::set<std::string> ignored_headers_;
+
+        struct PendingCurve {
+          std::vector<CcMod>* mods;
+          int cc;
+          int curve;
+        };
+        std::vector<PendingCurve> pending_curves_;
+        int curve_index_ = -1;
+        std::map<int, float> curve_points_;
+        std::map<int, std::array<float, kNumCcs>> user_curves_;
 
         Level level_ = Level::kNone;
         bool in_region_ = false;

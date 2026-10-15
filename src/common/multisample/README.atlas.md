@@ -21,7 +21,8 @@ Behaviour matches sfizz and FluidSynth where noted below.
 
 ## SFZ support
 
-- **Headers:** `<control>`, `<global>`, `<master>`, `<group>` and `<region>`, inherited in that order. A new header resets the levels below it. `<curve>`, `<effect>`, `<midi>` and `<sample>` blocks are skipped and reported.
+- **Headers:** `<control>`, `<global>`, `<master>`, `<group>` and `<region>`, inherited in that order. A new header resets the levels below it. `<effect>`, `<midi>` and `<sample>` blocks are skipped and reported. Spaces may stand around an opcode's `=` (`volume = -3`, as The Experience NY S&S Model B writes it).
+- **Curves:** `<curve>` blocks with `curve_index` and `vN` points, interpolated linearly, with 0 at the start and 1 at the end unless given. SFZ's built-in curves 0 to 6 (linear, bipolar, inverted, inverted bipolar, squared, square root, inverted square root) need no block. `amplitude_`, `volume_`/`gain_`, `pan_` and every `ampeg_` stage take a `_curveccN`, before or after the modulation it shapes. An undefined curve reads as linear and is reported.
 - **Preprocessor:**
   - `#define $NAME value`, kept across included files. The longest name wins when names share a prefix.
   - `#include "file"`, resolved from the main file's folder as sfizz does, with cycle and depth guards.
@@ -46,13 +47,14 @@ Behaviour matches sfizz and FluidSynth where noted below.
   - `offset`, `offset_random`, `end` (`end=0` or `-1` silences a region), `delay`.
   - `loop_mode`, `loop_start`, `loop_end`. A loop stored in the WAV file is used when the SFZ names none.
   - `sample=*silence` regions play nothing but still trigger choke groups.
-- **Envelope:** `ampeg_delay|start|attack|hold|decay|sustain|release`, plus their `_onccN`/`ccN` forms, which add linearly at note-on. Decay and release fall exponentially, reaching -96 dB at the release time.
+- **Envelope:** `ampeg_delay|start|attack|hold|decay|sustain|release`, plus their `_onccN`/`ccN` forms, which add at note-on through their curve (linearly without one). With `ampeg_dynamic=1` the release and sustain follow their CCs while the note plays, and a release under way goes on at the new rate. The Experience NY S&S Model B lengthens the release to 15 s with the pedal down this way, and lifting the pedal damps the strings. Decay and release fall exponentially, reaching -96 dB at the release time.
 - **Choke:** `group` (`polyphony_group`), `off_by`, `off_mode=fast|normal|time` and `off_time`.
 - **Controls:** `set_ccN`, `set_hdccN` and `label_ccN`.
 - **Ignored and reported:**
   - Filters, EQ, LFOs, and pitch and filter envelopes. Atlas's own filters and modulation apply after the oscillator.
   - `tune_ccN`. It is meaningless without its curves; Big Rusty Drums would be detuned by about 600 cents.
-  - `*_curveccN` and `*_smoothccN`. CC modulation is linear.
+  - `*_smoothccN`, and `ampeg_release_shape` (releases fall exponentially).
+  - `sustain_cc`. Atlas's sustain pedal (CC64) holds the whole voice, so a library that moves its sustain elsewhere and lets CC64 shape the release (The Experience NY S&S Model B) gets its note-offs when the pedal lifts. With `ampeg_dynamic` the release then takes the pedal-up length and damps, as the library intends; its release-triggered damper and key noises play at that moment rather than at key-up.
   - `bend_up`/`bend_down` (Atlas's pitch-bend range applies), `polyphony`, and the generators `*sine`, `*noise` and so on.
 
 ## DecentSampler support
@@ -69,22 +71,25 @@ same way, from the preset's folder, ignoring case when the exact path is missing
   - The `<groups>` volume (`globalVolume`), the `<group>` volume (`groupVolume`) and the `<sample>` volume multiply. Each is linear or ends in `dB`.
   - `pan` inherits; `globalPan` and `groupPan` add to it, clamped to ±100.
   - `ampVelTrack` (default 1) with gain linear in velocity, so velocity 64 plays at about half.
-- **Playback:** `start`, `end` (inclusive), `delay` in seconds (`delayUnit=beats|samples` is reported), `loopEnabled`, `loopStart`, `loopEnd` (inclusive) and `loopDuringRelease="false"` (loop until release). Without `loopEnabled`, a loop stored in the WAV file is used, as for SFZ. `ampEnvEnabled="false"` plays to the end of the sample.
+- **Playback:** `start`, `end` (inclusive), `delay` in seconds (`delayUnit=beats|samples` is reported), `loopEnabled`, `loopStart`, `loopEnd` (inclusive), `loopMode="pingpong"` (the loop plays forward to its last frame and back to its first; other modes play forward and are reported) and `loopDuringRelease="false"` (loop until release). Without `loopEnabled`, a loop stored in the WAV file is used, as for SFZ. `ampEnvEnabled="false"` plays to the end of the sample.
 - **Envelope:** `attack`, `decay`, `sustain` and `release`. DecentSampler documents no defaults; Atlas uses no attack or decay, full sustain and a 0.1 s release.
 - **Release samples:** `releaseTriggerDecay` in dB per second (`"3dB"`), or a linear share lost per second.
 - **Tags:**
   - `tags` on groups and samples. `<tags>` sets each tag's `volume` and `enabled`.
   - `silencedByTags` becomes a choke group, with `silencingMode=fast|normal` and `silencingDecay`. Atlas regions have one choke group each, so a sample with several silencing tags chokes through the first one, and a `silencedByTags` list uses its first tag. Both cases are reported.
-- **Controls:** DecentSampler fires each control's bindings once at load. Atlas applies those load-time values and then ignores the controls (Atlas's own UI and modulation replace them). A value replaces the attribute at the binding's level, so a sample's own `release` still wins over an instrument `ENV_RELEASE` knob. `AMP_VOLUME` is the exception: as in DecentSampler, the knob's level multiplies the `volume` the file sets. A release group at `volume="20dB"` under a knob at 0.6 plays at 6 times, which is how Claustrophobic Piano's quiet key-release samples are heard. schwung-sfz's converter, checked against DecentSampler renders, does the same. Mapping parameters (notes, velocities, sample and loop points) set every sample below the binding.
+- **Controls:** DecentSampler fires each control's bindings at load and whenever the control moves. Atlas does the same. A value replaces the attribute at the binding's level, so a sample's own `release` still wins over an instrument `ENV_RELEASE` knob. `AMP_VOLUME` is the exception: as in DecentSampler, the knob's level multiplies the `volume` the file sets. A release group at `volume="20dB"` under a knob at 0.6 plays at 6 times, which is how Claustrophobic Piano's quiet key-release samples are heard. schwung-sfz's converter, checked against DecentSampler renders, does the same. Mapping parameters (notes, velocities, sample and loop points) set every sample below the binding.
   - `<labeled-knob>`, `<control>` and `<slider>` use their `value`, `<menu>` its selected `<option>` (counting from 1), and `<button>` its selected `<state>` (counting from 0).
-  - Translations `linear` (with `translationOutputMin`/`Max` and `translationReversed`), `table` and `fixed_value`, after `factor`. Bindings with `enabled="false"` or `triggerOnLoad="false"` are skipped.
+  - Translations `linear` (with `translationOutputMin`/`Max` and `translationReversed`), `table` and `fixed_value`, after `factor`. Bindings with `enabled="false"` are skipped, and so are bindings with `triggerOnLoad="false"` until the user moves their control.
+  - **In the editor:** each visible control with at least one binding Atlas applies appears in the Instrument group. A knob becomes a slider and a menu or button becomes a menu, titled by the control's `label`, then `parameterName` or `text`, then the `<label>` the panel shows on it: the one whose text (centred in its box) lies within the control's width, at its top edge or up to its height above it. Files list labels before or after their controls (Emerald Resonances puts them after), so position decides, and only a panel without coordinates falls back to a label just before the control. Controls with no name are numbered by kind among those listed ("Menu 1"). A 0 to 1 knob reads as a percentage, and `type="integer"` knobs step by whole numbers. Backspace returns a control to the file's value.
+  - **Changing a control** parses the preset again with the new value (`SfzParser::Options::control_values`) on the loading thread. The decoded audio is reused and the slot's status does not change. The engine swaps instruments softly: notes already sounding play on with the previous instrument, which the slot keeps until the next change, and new notes use the new one.
+  - **Saving:** the values the user chose are stored by the control's position in the file (`controls` in the slot's instrument spec), in presets and host state. Loading the file again from disk starts from its own values.
   - Instrument level: `AMP_VOLUME`, `GLOBAL_TUNING`, `PAN`, the `ENV_*` stages, `AMP_VEL_TRACK`, `PITCH_KEY_TRACK`, `SAMPLE_START`/`END`, `LOOP_START`/`END`, `LO_NOTE`/`HI_NOTE`, `ROOT_NOTE` and `SILENCING_MODE`/`DECAY`.
   - Group level, by `position`/`groupIndex` or `groupTags`/`tags`: the same, plus `AMP_VOLUME`, `GROUP_TUNING`, `PAN` (the group pan offset), `ENABLED`, `AMP_ENV_ENABLED`, `LO_VEL` and `HI_VEL`.
-  - Tag level: `TAG_VOLUME` and `TAG_ENABLED`.
+  - Tag level: `TAG_VOLUME` and `TAG_ENABLED`, also written `AMP_VOLUME` and `ENABLED`.
 - **Ignored and reported:**
-  - `<effects>`, `<modulators>`, `<midi>` (so CCs don't move controls), `<buses>`, `<noteSequences>`, `<arpeggiator>` and `<oscillator>`.
+  - `<effects>`, `<modulators>`, `<midi>` (so CCs don't move controls, and controls are not host parameters), `<buses>`, `<noteSequences>`, `<arpeggiator>` and `<oscillator>`.
   - Effect, modulator and other bindings.
-  - Envelope curves, `loopCrossfade`, glide, slice stretch, `previousNotes`, `legatoInterval`, output routing and tag polyphony.
+  - Envelope curves, `loopCrossfade` (in samples: values under one, as Emerald Resonances writes, are no crossfade and are not reported), glide, slice stretch, `previousNotes`, `legatoInterval`, output routing and tag polyphony.
   - `length` and `playbackMode` are skipped silently: they describe the file and how DecentSampler streams it, not the sound.
 
 ## SF2 support
@@ -137,11 +142,17 @@ same way, from the preset's folder, ignoring case when the exact path is missing
 
 - Parsers: `--sfz-parser`, `--decentsampler-parser`, `--sf2-parser`, `--decode`.
 - DecentSampler end to end (load, pitch and level, container, restore, editing a cached copy): `--decentsampler-load`.
+- DecentSampler controls (rebuilds, held notes across a change, saving the values): `--decentsampler-controls`.
 - Playback through the plugin: `--pitch`, `--select`, `--envelope-mode`, `--release-trigger`, `--choke`, `--cc-trigger`.
+- Ping-pong loops in the player: `--pingpong-loop`.
+- SFZ curves, spaces around `=` and `ampeg_dynamic` with the sustain pedal: `--dynamic-envelope`.
 - Saving and restoring: `--container`, `--host-state`, `--sf2-preset-switch`.
 - Accessibility of the Instrument group: `--editor`.
 
-Two flags are for checking real libraries by hand and are not in ctest:
+Five flags are for checking real libraries by hand and are not in ctest:
 
-- `--manual <file> [preset]` prints what the loader found.
+- `--manual <file> [preset]` prints what the loader found, including the instrument's controls.
+- `--controls <file>` plays a held C4 with each control at its lowest, file and highest setting (every option of a menu) and prints the levels.
+- `--compare <a> <b> [mapping]` lists, for every key and several velocities, the samples two files of one library play (an SFZ and its DecentSampler version) and how, and prints where they differ. `mapping` leaves out gain and envelope, which the two formats set differently.
+- `--hold <file> <note> <seconds>` holds a note and prints the level and largest sample step per 5 s window, to hear loops turn.
 - `--render <file> <out.wav> [preset]` plays a phrase and reports levels and speed.

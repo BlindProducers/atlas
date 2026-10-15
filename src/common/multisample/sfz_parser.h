@@ -32,6 +32,9 @@ namespace multisample {
         // Paths as written in the file (after default_path, with forward
         // slashes) mapped to the file that replaces them.
         std::map<std::string, juce::File> path_overrides;
+        // DecentSampler: control values by Control::index, replacing the
+        // file's own (the user turned a knob).
+        std::map<int, double> control_values;
       };
 
       struct SampleReference {
