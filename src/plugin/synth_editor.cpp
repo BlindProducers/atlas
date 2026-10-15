@@ -3657,10 +3657,13 @@ namespace {
            CharacterFunctions::toLowerCase(key.getTextCharacter()) == 'c';
   }
 
-  // The right bracket key, and Shift F10 as in other Windows programs, open the
-  // same menu that VoiceOver exposes through VO+Shift+M (the showMenu action),
-  // for Windows screen reader users and anyone without VoiceOver.
+  // Shift M, the right bracket key, and Shift F10 as in other Windows programs,
+  // open the same menu that VoiceOver exposes through VO+Shift+M (the showMenu
+  // action), for Windows screen reader users and anyone without VoiceOver
+  // (atlas::keys::contextMenuKeys). On every control and heading with a menu.
   bool isContextMenuKey(const KeyPress& key) {
+    if (isModulationMenuKey(key))
+      return true;
     const ModifierKeys modifiers = key.getModifiers();
     if (key.getKeyCode() == KeyPress::F10Key)
       return modifiers.isShiftDown() && !modifiers.isCommandDown() && !modifiers.isCtrlDown() &&
@@ -4551,7 +4554,7 @@ namespace {
       std::function<void(Component&)> onContextMenu;
 
       bool keyPressed(const KeyPress& key) override {
-        if (onContextMenu && (isContextMenuKey(key) || isModulationMenuKey(key))) {
+        if (onContextMenu && isContextMenuKey(key)) {
           onContextMenu(*this);
           return true;
         }
@@ -5945,7 +5948,7 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
       deleteSelectedPreset();
       return true;
     }
-    if (isContextMenuKey(key) || isModulationMenuKey(key)) {
+    if (isContextMenuKey(key)) {
       showSelectedPresetMenu(preset_table_);
       return true;
     }
@@ -8440,14 +8443,16 @@ namespace {
   // and comma and period stepping through effect slots.
   String keyboardHelpForPlatform(const char* text) {
 #if JUCE_MAC
-    const String command = "Cmd", context_menu = "Right bracket ( ] ) or Shift+M";
+    const String command = "Cmd", context_menu = "Right bracket ( ] ) or Shift+M", heading_menu = "Shift+M";
 #else
-    const String command = "Ctrl", context_menu = "Right bracket ( ] ), Shift+M or Shift+F10";
+    const String command = "Ctrl", context_menu = "Right bracket ( ] ), Shift+M or Shift+F10",
+                 heading_menu = "Shift+M or Shift+F10";
 #endif
     const String effect_slot_steps = kSectionKeysStepThroughEffectSlots
         ? "  On an effects chain, Comma / Period also step through its effects (Slot 1, Slot 2 and so on)\n"
         : "";
     return String(text).replace("{Cmd}", command).replace("{ContextMenuKeys}", context_menu)
+                       .replace("{HeadingMenuKeys}", heading_menu)
                        .replace("{EffectSlotSteps}", effect_slot_steps);
   }
 }
@@ -8486,6 +8491,10 @@ void SynthEditor::showKeyboardHelp() {
       "  Comma ( , ) - Previous section\n"
       "  Period ( . ) - Next section\n"
       "{EffectSlotSteps}"
+      "\n"
+      "Headings with a menu\n"
+      "  {HeadingMenuKeys} on an oscillator heading - Copy an oscillator or paste one into this one\n"
+      "  {HeadingMenuKeys} on an effect slot heading - Copy the effect, paste it to another bus, replace or remove it\n"
       "\n"
       "Adjusting a parameter (when a slider has focus)\n"
       "  Up / Right / Page Up - Increase value\n"

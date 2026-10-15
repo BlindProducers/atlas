@@ -1262,6 +1262,71 @@ namespace {
     editor.removeFromDesktop();
   }
 
+  // Shift M opens a menu wherever Shift F10 does: on a parameter (modulation,
+  // MIDI learn and the rest), on an effect slot's heading (copy, paste, replace,
+  // remove) and on an oscillator's heading (copy, paste).
+  void testShiftMOpensEveryContextMenu() {
+    // Announcements go nowhere rather than to the screen reader.
+    atlas::speech::setObserverForTesting([](const String&) {});
+
+    SynthPlugin synth;
+    synth.parameterChanged("fx_slot_1_type", vital::constants::kDelay + 1);
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    editor.toFront(true);
+    pumpEditorEvents();
+
+    // Presses `key` on `control` as a typed key arrives, through the focused
+    // control first, and closes the menu it opened.
+    auto opens_menu = [&](Component* control, const KeyPress& key) {
+      PopupMenu::dismissAllActiveMenus();
+      if (control == nullptr)
+        return false;
+      editor.ensureComponentVisible(control);
+      control->grabKeyboardFocus();
+      if (auto* peer = editor.getPeer())
+        peer->handleKeyPress(key);
+      const bool opened = PopupMenu::dismissAllActiveMenus();
+      pumpEditorEvents();
+      return opened;
+    };
+    const KeyPress shift_m('M', ModifierKeys::shiftModifier, 'M');
+    const KeyPress shift_f10(KeyPress::F10Key, ModifierKeys::shiftModifier, 0);
+
+    // Looked up before each key: a rebuild replaces the editor's components.
+    struct Target {
+      const char* what;
+      std::function<Component*()> find;
+      std::function<bool(Component&)> is_kind;
+    };
+    const Target targets[] = {
+      { "an effect slot heading", [&] { return editorSection(editor, "Chain and routing", 0); },
+        [](Component& c) { return c.getTitle() == "Slot 1 (Delay)"; } },
+      { "an oscillator heading", [&] { return editorSection(editor, "Oscillator 1"); },
+        [](Component& c) { return c.getTitle().startsWith("Oscillator 1"); } },
+      { "a slider", [&] { return editor.controlForParameter("fx_slot_1_delay_feedback"); },
+        [](Component& c) { return dynamic_cast<Slider*>(&c) != nullptr; } },
+      { "a toggle", [&] { return editor.controlForParameter("fx_slot_1_enabled"); },
+        [](Component& c) { return dynamic_cast<ToggleButton*>(&c) != nullptr; } },
+      { "a choice", [&] { return editor.controlForParameter("filter_1_model"); },
+        [](Component& c) { return dynamic_cast<ComboBox*>(&c) != nullptr; } },
+    };
+    for (const auto& target : targets) {
+      const std::string what = target.what;
+      auto* control = target.find();
+      expect(control != nullptr && target.is_kind(*control), "the editor has " + what);
+      if (control == nullptr)
+        continue;
+      expect(opens_menu(control, shift_m), "Shift M opens the menu on " + what);
+      expect(opens_menu(target.find(), shift_f10), "Shift F10 still opens the menu on " + what);
+    }
+
+    atlas::speech::setObserverForTesting(nullptr);
+    editor.removeFromDesktop();
+  }
+
   // Oscillator sections group their rows: output rows at the top level, then
   // Analog controls, Pitch and unison (with Scale lock inside), Warp and the
   // type's own group, depending on the slot's type.

@@ -881,6 +881,7 @@ int main(int argc, char** argv) {
     testAnalogSwitchKeepsItsControl();
     testEffectMoveKeepsFocusAcrossTimerTick();
     testSectionKeysStepThroughEffectSlots();
+    testShiftMOpensEveryContextMenu();
     testOscillatorRowGroups();
     testOscillatorRowsNameTheirOscillatorNumber();
     testArpeggiatorDestinationsAreAGroup();
