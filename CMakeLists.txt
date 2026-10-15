@@ -89,6 +89,28 @@ set(ATLAS_OPENB3_SOURCES
   src/synthesis/effects/openb3/scanner_vibrato.cpp
   src/synthesis/effects/openb3/whirl.cpp)
 
+# PFFFT replaces JUCE's scalar FFT fallback for the oscillators
+# (src/common/fourier_transform.h, third_party/pffft). On by default where JUCE
+# has no fast FFT engine; turning it on for macOS puts both on the same FFT.
+if(WIN32)
+  set(ATLAS_USE_PFFFT_DEFAULT ON)
+else()
+  set(ATLAS_USE_PFFFT_DEFAULT OFF)
+endif()
+option(ATLAS_USE_PFFFT "Use PFFFT for the oscillators' FFT" ${ATLAS_USE_PFFFT_DEFAULT})
+if(ATLAS_USE_PFFFT)
+  target_sources(Atlas PRIVATE third_party/pffft/pffft.c)
+endif()
+# fourier_transform.h chooses the platform default itself; only a different
+# choice needs the definition, on Atlas and every target built against it.
+if((ATLAS_USE_PFFFT AND NOT WIN32) OR (NOT ATLAS_USE_PFFFT AND WIN32))
+  if(ATLAS_USE_PFFFT)
+    target_compile_definitions(Atlas PUBLIC ATLAS_USE_PFFFT=1)
+  else()
+    target_compile_definitions(Atlas PUBLIC ATLAS_USE_PFFFT=0)
+  endif()
+endif()
+
 target_sources(Atlas PRIVATE
   # Spectral effects keep IEEE semantics outside the fast-math synthesis unity build.
   src/synthesis/effects/suppressor/suppressor_engine.cpp
@@ -363,6 +385,7 @@ if(ATLAS_BUILD_TIMING_TESTS)
   add_test(NAME atlas_filter_routing COMMAND AtlasTimingTests --filter-routing)
   add_test(NAME atlas_release_velocity_glide COMMAND AtlasTimingTests --release-velocity-glide)
   add_test(NAME atlas_analog_oscillator COMMAND AtlasTimingTests --analog-oscillator)
+  add_test(NAME atlas_fourier_transform COMMAND AtlasTimingTests --fourier-transform)
   add_test(NAME atlas_analog_oscillator_controls COMMAND AtlasTimingTests --analog-oscillator-controls)
 
   juce_add_console_app(AtlasCpuTests PRODUCT_NAME "Atlas CPU Tests")

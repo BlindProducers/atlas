@@ -61,6 +61,10 @@ Kept in this repository:
   client Atlas speaks through NVDA with; see `nvda_controller/README.atlas.md`.
 - `licenses/WolfShaper.LICENSE`: Atlas's Waveshaper adapts Wolf Shaper by
   Patrick Desaulniers (GPL v3 or later).
+- `pffft/`: PFFFT by Julien Pommier (FFTPACK licence, BSD style), unchanged
+  from https://bitbucket.org/jpommier/pffft. The oscillators' FFT
+  (`vital::FourierTransform`) uses it on Windows, where JUCE has only a scalar
+  fallback; see `pffft/README.atlas.md`.
 
 The Suppressor and Spectral Compressor effects are Atlas's own code under
 `src/synthesis/effects`. The JSFX oracle inputs are in `tests/jsfx/fixtures`.

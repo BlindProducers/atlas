@@ -48,6 +48,10 @@ their sources.
   NVDA speech client from on Windows (third_party/nvda_controller).
 - nlohmann json (MIT), moodycamel concurrentqueue (simplified BSD) and KISS FFT
   (BSD-3), as submodules under third_party.
+- PFFFT by Julien Pommier, based on FFTPACKv4 by Paul Swarztrauber (NCAR), under
+  the FFTPACK licence (BSD style, Copyright (c) 2004 the University Corporation
+  for Atmospheric Research): the oscillators' FFT on Windows (third_party/pffft,
+  licence text at the top of each file).
 - Test-only submodules, never built into Atlas: WDL's EEL2 (zlib licence),
   NIH-plug (ISC) with Diopser (GPL v3 or later), OpenWurli with Melange (GPL
   v3 or later), and OpenB3 (AGPL v3 or later, with setBfree's Beatrix files,
