@@ -377,6 +377,7 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     bool refreshOscillatorModeRowsIfNeeded();
     bool refreshZoneCrossfadeRowIfNeeded();
     bool refreshEnvelopeAnalogRowsIfNeeded();
+    int currentGlideZones() const;
     String focusedParameterId() const;
     String focusedAccessibleTitle() const;
     // The SectionName of the focused control or its nearest group, so a rebuild

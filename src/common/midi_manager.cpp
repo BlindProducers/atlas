@@ -56,58 +56,95 @@ MidiManager::~MidiManager() {
 }
 
 void MidiManager::armMidiLearn(std::string name) {
+  commitPendingMidiLearn();
   current_bank_ = -1;
   current_folder_ = -1;
   current_preset_ = -1;
-  armed_value_ = &vital::Parameters::getDetails(name);
+  armed_value_.store(isLearnable(name) ? &vital::Parameters::getDetails(name) : nullptr);
 }
 
 void MidiManager::cancelMidiLearn() {
-  armed_value_ = nullptr;
+  armed_value_.store(nullptr);
 }
 
-void MidiManager::clearMidiLearn(const std::string& name) {
-  for (auto& controls : midi_learn_map_) {
-    if (controls.second.count(name)) {
-      midi_learn_map_[controls.first].erase(name);
-      LoadSave::saveMidiMapConfig(this);
-    }
+bool MidiManager::isLearnable(const std::string& name) const {
+  return vital::Parameters::isParameter(name) && synth_->getControls().count(name) != 0;
+}
+
+void MidiManager::commitPendingMidiLearn() {
+  if (learned_value_.load(std::memory_order_acquire) == nullptr)
+    return;
+  {
+    // The audio thread reads the map while it holds this lock.
+    const ScopedLock lock(synth_->getCriticalSection());
+    const vital::ValueDetails* learned = learned_value_.exchange(nullptr, std::memory_order_acquire);
+    if (learned == nullptr)
+      return;
+    midi_learn_map_[learned_midi_id_.load(std::memory_order_relaxed)][learned->name] = learned;
   }
-}
-
-std::string MidiManager::armedName() const {
-  return armed_value_ != nullptr ? armed_value_->name : std::string();
-}
-
-void MidiManager::clearAllMidiLearn() {
-  midi_learn_map_.clear();
   LoadSave::saveMidiMapConfig(this);
 }
 
-void MidiManager::midiInput(int midi_id, vital::mono_float value) {
-  if (armed_value_) {
-    std::string learned_name = armed_value_->name;
-    midi_learn_map_[midi_id][learned_name] = armed_value_;
-    armed_value_ = nullptr;
-
-    // TODO: Probably shouldn't write this config on the audio thread.
+void MidiManager::clearMidiLearn(const std::string& name) {
+  commitPendingMidiLearn();
+  bool removed = false;
+  {
+    const ScopedLock lock(synth_->getCriticalSection());
+    for (auto& controls : midi_learn_map_)
+      removed = controls.second.erase(name) > 0 || removed;
+  }
+  if (removed)
     LoadSave::saveMidiMapConfig(this);
+}
 
-    if (listener_)
-      listener_->valueMidiLearned(learned_name, midi_id);
+std::string MidiManager::armedName() const {
+  const vital::ValueDetails* armed = armed_value_.load();
+  return armed != nullptr ? armed->name : std::string();
+}
+
+void MidiManager::clearAllMidiLearn() {
+  {
+    const ScopedLock lock(synth_->getCriticalSection());
+    midi_learn_map_.clear();
+    learned_value_.store(nullptr, std::memory_order_relaxed);
+  }
+  LoadSave::saveMidiMapConfig(this);
+}
+
+void MidiManager::applyMidiValue(const std::string& name, const vital::ValueDetails& details,
+                                 vital::mono_float value) {
+  vital::mono_float percent = value / kControlMax;
+  vital::mono_float range = details.max - details.min;
+  vital::mono_float translated = percent * range + details.min;
+
+  if (details.value_scale == vital::ValueDetails::kIndexed)
+    translated = std::round(translated);
+  listener_->valueChangedThroughMidi(name, translated);
+}
+
+void MidiManager::midiInput(int midi_id, vital::mono_float value) {
+  // This runs on the audio thread, which must not allocate or touch files:
+  // completing a learn only hands the mapping to the message thread
+  // (commitPendingMidiLearn), which adds it to the map and saves the config.
+  if (armed_value_.load(std::memory_order_relaxed) != nullptr) {
+    if (const vital::ValueDetails* armed = armed_value_.exchange(nullptr)) {
+      learned_midi_id_.store(midi_id, std::memory_order_relaxed);
+      learned_value_.store(armed, std::memory_order_release);
+      if (listener_)
+        listener_->valueMidiLearned(armed->name, midi_id);
+    }
   }
 
-  if (midi_learn_map_.count(midi_id)) {
-    for (auto& control : midi_learn_map_[midi_id]) {
-      const vital::ValueDetails* details = control.second;
-      vital::mono_float percent = value / kControlMax;
-      vital::mono_float range = details->max - details->min;
-      vital::mono_float translated = percent * range + details->min;
+  const auto mapped = midi_learn_map_.find(midi_id);
+  // Until then the new mapping follows the controller from here.
+  const vital::ValueDetails* learned = learned_value_.load(std::memory_order_acquire);
+  if (learned != nullptr && learned_midi_id_.load(std::memory_order_relaxed) == midi_id &&
+      (mapped == midi_learn_map_.end() || mapped->second.count(learned->name) == 0))
+    applyMidiValue(learned->name, *learned, value);
 
-      if (details->value_scale == vital::ValueDetails::kIndexed)
-        translated = std::round(translated);
-      listener_->valueChangedThroughMidi(control.first, translated);
-    }
+  if (mapped != midi_learn_map_.end()) {
+    for (auto& control : mapped->second)
+      applyMidiValue(control.first, *control.second, value);
   }
 }
 

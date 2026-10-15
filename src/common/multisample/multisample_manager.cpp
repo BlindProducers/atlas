@@ -110,6 +110,8 @@ namespace multisample {
         slot.request = next_request_++;
     }
     pool_.removeAllJobs(true, 30000);
+    // A cache copy stops within one piece once shutting_down_ is set.
+    cache_pool_.removeAllJobs(true, 30000);
     cancelPendingUpdate();
   }
 
@@ -135,10 +137,10 @@ namespace multisample {
       slot.pending = nullptr;
       setStatus(job.slot, SlotStatus::kLoading, "Loading", 0.0f);
     }
-    running_++;
+    loading_++;
     pool_.addJob([this, job] {
       run(job);
-      running_--;
+      loading_--;
     });
   }
 
@@ -230,13 +232,19 @@ namespace multisample {
 
     finish(slot, request, result, notice, job.load.file, job.load.sfz_options, job.from_cache);
 
-    if (result->error.empty() && job.populate_cache && !job.from_cache) {
-      if (shutting_down_)
-        return;
-      container::populateCache(result->hash, result->files, kMaxCacheCopyBytes,
-                               [this] { return shutting_down_.load(); });
-      if (!shutting_down_)
-        container::pruneCache(kCacheBudgetBytes, hashesInUse());
+    // The instrument plays now. Keeping a copy for projects whose files later
+    // move is background work: saving, rendering and the next load do not
+    // wait for it.
+    if (result->error.empty() && job.populate_cache && !job.from_cache && !shutting_down_) {
+      caching_++;
+      cache_pool_.addJob([this, hash = result->hash, files = result->files] {
+        const auto cancelled = [this] { return shutting_down_.load(); };
+        if (!cancelled())
+          container::populateCache(hash, files, kMaxCacheCopyBytes, cancelled);
+        if (!cancelled())
+          container::pruneCache(kCacheBudgetBytes, hashesInUse(), cancelled);
+        caching_--;
+      });
     }
   }
 
@@ -579,7 +587,7 @@ namespace multisample {
   }
 
   bool Manager::hasPendingLoads() const {
-    if (running_ > 0)
+    if (loading_ > 0)
       return true;
     std::lock_guard<std::mutex> lock(mutex_);
     for (const Slot& slot : slots_) {
@@ -591,7 +599,17 @@ namespace multisample {
 
   bool Manager::waitForPendingLoads(int timeout_ms) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
-    while (running_ > 0) {
+    while (loading_ > 0) {
+      if (std::chrono::steady_clock::now() > deadline)
+        return false;
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+    return true;
+  }
+
+  bool Manager::waitForCacheWork(int timeout_ms) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    while (loading_ > 0 || caching_ > 0) {
       if (std::chrono::steady_clock::now() > deadline)
         return false;
       std::this_thread::sleep_for(std::chrono::milliseconds(2));

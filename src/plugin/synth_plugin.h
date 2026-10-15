@@ -50,6 +50,11 @@ class SynthPlugin : public SynthBase, public AudioProcessor, public ValueBridge:
     void setValueNotifyHost(const std::string& name, vital::mono_float value) override;
     const CriticalSection& getCriticalSection() override;
     void pauseProcessing(bool pause) override;
+    bool isProcessingPaused() const override { return isSuspended(); }
+    // Tells the host the state changed where no host parameter shows it (a
+    // preset load, an effect, a route, a wavetable or LFO edit), so it marks
+    // the project modified. Coalesced; message thread; never during a restore.
+    void markStateChanged() override;
 
     void prepareToPlay(double sample_rate, int buffer_size) override;
     void releaseResources() override;
@@ -122,6 +127,14 @@ class SynthPlugin : public SynthBase, public AudioProcessor, public ValueBridge:
     EditorMemory& getEditorMemory() { return editor_memory_; }
 
   private:
+    struct StateChangeNotifier : public AsyncUpdater {
+      explicit StateChangeNotifier(SynthPlugin& plugin) : plugin_(plugin) { }
+      void handleAsyncUpdate() override;
+      SynthPlugin& plugin_;
+    };
+    StateChangeNotifier state_change_notifier_ { *this };
+    bool restoring_state_ = false;
+
     EditorMemory editor_memory_;
     void updateFxSampleRate();
     std::atomic<double> fx_sample_rate_ { 44100.0 };

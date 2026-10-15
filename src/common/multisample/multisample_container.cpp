@@ -324,6 +324,33 @@ namespace container {
     return true;
   }
 
+  // Copies in pieces, so a cancel (closing the plugin) stops a copy of a
+  // large SoundFont within moments rather than after the whole file.
+  static bool copyFileCancellable(const juce::File& source, const juce::File& target,
+                           const std::function<bool()>& cancelled) {
+    juce::FileInputStream input(source);
+    if (!input.openedOk())
+      return false;
+    target.deleteFile();
+    juce::FileOutputStream output(target);
+    if (!output.openedOk())
+      return false;
+    std::vector<char> buffer(4 << 20);
+    for (;;) {
+      if (cancelled && cancelled())
+        return false;
+      const int read = input.read(buffer.data(), static_cast<int>(buffer.size()));
+      if (read < 0)
+        return false;
+      if (read == 0)
+        break;
+      if (!output.write(buffer.data(), static_cast<size_t>(read)))
+        return false;
+    }
+    output.flush();
+    return !output.getStatus().failed() && input.isExhausted();
+  }
+
   bool populateCache(const std::string& hash, const std::vector<FileInfo>& files, int64_t max_copy_bytes,
                      const std::function<bool()>& cancelled) {
     std::lock_guard<std::mutex> lock(cacheWriteMutex());
@@ -363,7 +390,7 @@ namespace container {
       return false;
     }
     for (const FileInfo* info : to_copy) {
-      if ((cancelled && cancelled()) || !info->file.copyFileTo(partial.getChildFile(juce::String(info->relative)))) {
+      if (!copyFileCancellable(info->file, partial.getChildFile(juce::String(info->relative)), cancelled)) {
         partial.deleteRecursively();
         return false;
       }
@@ -375,7 +402,8 @@ namespace container {
     return true;
   }
 
-  void pruneCache(int64_t budget_bytes, const std::set<std::string>& in_use) {
+  void pruneCache(int64_t budget_bytes, const std::set<std::string>& in_use,
+                  const std::function<bool()>& cancelled) {
     std::lock_guard<std::mutex> lock(cacheWriteMutex());
     const juce::File root = cacheRoot();
     if (!root.isDirectory())
@@ -389,6 +417,8 @@ namespace container {
     std::vector<Entry> entries;
     int64_t total = 0;
     for (const auto& item : juce::RangedDirectoryIterator(root, false, "*", juce::File::findDirectories)) {
+      if (cancelled && cancelled())
+        return;
       const juce::File folder = item.getFile();
       const juce::String name = folder.getFileName();
       if (name.endsWith(".partial")) {
@@ -404,7 +434,7 @@ namespace container {
     }
     std::sort(entries.begin(), entries.end(), [](const Entry& a, const Entry& b) { return a.used < b.used; });
     for (const Entry& entry : entries) {
-      if (total <= budget_bytes)
+      if (total <= budget_bytes || (cancelled && cancelled()))
         break;
       const std::string hash = entry.folder.getFileName().toStdString();
       if (in_use.count(hash))

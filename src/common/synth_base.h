@@ -197,6 +197,13 @@ class SynthBase : public MidiManager::Listener {
     void clearArpeggiators();
     virtual const CriticalSection& getCriticalSection() = 0;
     virtual void pauseProcessing(bool pause) = 0;
+    // True while processing is paused and the host hears silence from this
+    // instance: no audio callback is inside the engine then, so changing its
+    // graph needs no lock (holding it would only make the host's audio thread
+    // wait).
+    virtual bool isProcessingPaused() const { return false; }
+    // The state changed in a way no host parameter reports (see SynthPlugin).
+    virtual void markStateChanged() { }
     Tuning* getTuning() { return &tuning_; }
     uint64_t getScheduledMidiOverflowCount() const { return scheduled_midi_overflow_count_; }
 
@@ -210,7 +217,7 @@ class SynthBase : public MidiManager::Listener {
     bool isInvalidConnection(const vital::modulation_change& change);
     virtual SynthGuiInterface* getGuiInterface() = 0;
     json saveToJson();
-    bool loadFromJson(const json& state);
+    bool loadFromJson(json state);
     vital::ModulationConnection* getConnection(const std::string& source, const std::string& destination);
 
     inline bool getNextModulationChange(vital::modulation_change& change) {

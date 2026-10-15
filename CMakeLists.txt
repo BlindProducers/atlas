@@ -401,6 +401,11 @@ if(ATLAS_BUILD_TIMING_TESTS)
   # cost of processing with light effects; `--construction chain` measures one chain.
   add_test(NAME atlas_effect_construction COMMAND AtlasPreparedEffectTests --construction)
   set_tests_properties(atlas_effect_construction PROPERTIES LABELS cpu)
+  # Saving, restoring and saving again gives the same state.
+  add_test(NAME atlas_state_round_trip COMMAND AtlasPreparedEffectTests --state-round-trip)
+  # Preset loads, state restores and FX bus loads and saves never make the
+  # host's audio thread wait on Atlas's callback lock.
+  add_test(NAME atlas_callback_lock_wait COMMAND AtlasPreparedEffectTests --lock-wait)
 
   juce_add_console_app(AtlasLatencyTests PRODUCT_NAME "Atlas Latency Tests")
   juce_generate_juce_header(AtlasLatencyTests)
@@ -472,6 +477,9 @@ if(ATLAS_BUILD_TIMING_TESTS)
   add_test(NAME atlas_editor_rebuild_focus COMMAND AtlasMacroTests --editor-rebuild-focus)
   add_test(NAME atlas_oscillator_modulation COMMAND AtlasMacroTests --oscillator-modulation)
   add_test(NAME atlas_arpeggiator COMMAND AtlasMacroTests --arpeggiator)
+  # Voice allocation with arpeggiator tails, MIDI learn, state restore and
+  # what the host is told (the 2026-10-14 audit).
+  add_test(NAME atlas_release_hardening COMMAND AtlasMacroTests --release-hardening)
 
   juce_add_console_app(AtlasDefuseTests PRODUCT_NAME "Atlas Defuse Tests")
   juce_generate_juce_header(AtlasDefuseTests)
@@ -531,7 +539,7 @@ if(ATLAS_BUILD_TIMING_TESTS)
   target_link_libraries(AtlasMultiSampleTests PRIVATE
     Atlas juce::juce_audio_utils juce::juce_dsp juce::juce_gui_extra juce::juce_recommended_config_flags)
   foreach(multisample_test sfz-parser sf2-parser decode pitch select envelope-mode release-trigger choke
-          cc-trigger container host-state sf2-preset-switch editor)
+          cc-trigger container host-state sf2-preset-switch sf2-encoding editor)
     add_test(NAME atlas_multisample_${multisample_test} COMMAND AtlasMultiSampleTests --${multisample_test})
   endforeach()
 

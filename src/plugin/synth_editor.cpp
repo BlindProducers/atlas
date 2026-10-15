@@ -7704,11 +7704,14 @@ bool SynthEditor::refreshEnvelopeAnalogRowsIfNeeded() {
   return true;
 }
 
-bool SynthEditor::refreshZoneCrossfadeRowIfNeeded() {
-  int glide_zones = 0;
+int SynthEditor::currentGlideZones() const {
   if (auto* bridge = parameterBridge("portamento_glide_zones"))
-    glide_zones = static_cast<int>(std::round(bridge->convertToEngineValue(bridge->getValue())));
+    return static_cast<int>(std::round(bridge->convertToEngineValue(bridge->getValue())));
+  return 0;
+}
 
+bool SynthEditor::refreshZoneCrossfadeRowIfNeeded() {
+  const int glide_zones = currentGlideZones();
   if (last_glide_zones_ == glide_zones)
     return false;
   last_glide_zones_ = glide_zones;
@@ -7749,6 +7752,10 @@ void SynthEditor::clearSectionComponents() {
 
 void SynthEditor::showAllSections(bool announce) {
   clearSectionComponents();
+  // The rows built here already follow the glide setting; the timer rebuilds
+  // only when it changes. Never recorded, it rebuilt every row on the
+  // editor's first tick.
+  last_glide_zones_ = currentGlideZones();
 
   showPresetControls();
   active_oscillator_ = -1;
@@ -10161,6 +10168,7 @@ void SynthEditor::loadTuningFile() {
 
 void SynthEditor::clearTuning() {
   synth_.getTuning()->setDefaultTuning();
+  synth_.markStateChanged();
   postPluginAnnouncement("Tuning cleared", AccessibilityHandler::AnnouncementPriority::high);
 }
 
@@ -10567,6 +10575,7 @@ void SynthEditor::writeLfoPoints(LineGenerator* generator, std::vector<CopiedLfo
   }
   generator->setSmooth(smooth);
   generator->render();
+  synth_.markStateChanged();
 }
 
 void SynthEditor::replaceLfoEditorBlock(const std::vector<CopiedLfoPoint>& replacement,
@@ -11062,6 +11071,7 @@ void SynthEditor::stepLfoCurve(int direction) {
       generator->setPower(index, powerForCurveIndex(next_curve));
   }
   generator->render();
+  synth_.markStateChanged();
 
   if (mode == LineGenerator::kModePerformer)
     postLfoAnnouncement("Performer shape curve " + curveNameForIndex(next_curve) + ", " +
@@ -11126,6 +11136,7 @@ void SynthEditor::clearLfoShape() {
   generator->setPower(1, power);
   generator->setSmooth(false);
   generator->render();
+  synth_.markStateChanged();
   lfo_cursor_phase_ = 0.0f;
   selected_lfo_point_phases_.clear();
   syncLfoEditorState();
@@ -11396,6 +11407,7 @@ void SynthEditor::pasteLfoPoints() {
     generator->setPower(i, points[static_cast<size_t>(i)].power);
   }
   generator->render();
+  synth_.markStateChanged();
 
   lfo_cursor_phase_ = paste_start;
   syncLfoEditorState();
@@ -11430,6 +11442,7 @@ void SynthEditor::pasteLfoShape() {
     generator->setPower(i, copied_lfo_shape_[static_cast<size_t>(i)].power);
   }
   generator->render();
+  synth_.markStateChanged();
 
   lfo_cursor_phase_ = 0.0f;
   selected_lfo_point_phases_.clear();
@@ -11710,7 +11723,7 @@ void SynthEditor::applyLfoShapePreset() {
       return points;
     };
 
-    auto setPoints = [generator](std::vector<ShapePoint> points) {
+    auto setPoints = [this, generator](std::vector<ShapePoint> points) {
       constexpr float tolerance = 0.0005f;
       for (auto& point : points) {
         point.phase = jlimit(0.0f, 1.0f, point.phase);
@@ -11770,6 +11783,7 @@ void SynthEditor::applyLfoShapePreset() {
       }
       generator->setSmooth(false);
       generator->render();
+      synth_.markStateChanged();
     };
 
     auto insertPoints = [this, generator](const std::vector<ShapePoint>& source) {
@@ -11820,6 +11834,7 @@ void SynthEditor::applyLfoShapePreset() {
     if (mode == LineGenerator::kModeLfo && (shape == 1 || shape == 18 || shape == 19)) {
       generator->setSmooth(true);
       generator->render();
+      synth_.markStateChanged();
     }
   }
   generator->setShapeMode(mode);
@@ -11852,6 +11867,7 @@ void SynthEditor::addLfoPoint() {
   const float output_value = generator->valueAtPhase(lfo_cursor_phase_);
   generator->addPoint(insert_index, { lfo_cursor_phase_, 1.0f - output_value });
   generator->render();
+  synth_.markStateChanged();
   syncLfoEditorState();
   setLfoEditorItem(insert_index, false);
   selected_lfo_point_phases_.clear();
@@ -11887,6 +11903,7 @@ void SynthEditor::deleteLfoPoint() {
     generator->removePoint(index);
   }
   generator->render();
+  synth_.markStateChanged();
   selected_lfo_point_phases_.clear();
   syncLfoEditorState();
   if (indices.size() == 1)
@@ -11964,6 +11981,7 @@ void SynthEditor::moveLfoPointTime(float delta) {
     generator->setPower(i, points[static_cast<size_t>(i)].power);
   }
   generator->render();
+  synth_.markStateChanged();
   lfo_cursor_phase_ = selected_lfo_point_phases_.empty() ? lfo_cursor_phase_ : selected_lfo_point_phases_.front();
   syncLfoEditorState();
   const int moved_index = lfoPointIndexAtPhase(lfo_cursor_phase_);
@@ -12024,6 +12042,7 @@ void SynthEditor::moveLfoPointValue(float delta) {
       selected_lfo_point_phases_.push_back(point.first);
     }
     generator->render();
+    synth_.markStateChanged();
     lfo_cursor_phase_ = start;
     syncLfoEditorState();
     postLfoAnnouncement("Performer shape range " + percentString(minimum + applied_delta) + " to " +
@@ -12047,6 +12066,7 @@ void SynthEditor::moveLfoPointValue(float delta) {
     generator->setPoint(index, { point.first, 1.0f - output_value });
   }
   generator->render();
+  synth_.markStateChanged();
   syncLfoEditorState();
   if (indices.size() == 1)
     postLfoAnnouncement("Value " + percentString(output_value) + ", " + lfoPointDescription(indices.front()));
@@ -12086,6 +12106,7 @@ void SynthEditor::setLfoPointCurve(int curve_index) {
       generator->setPower(index, powerForCurveIndex(curve_index));
   }
   generator->render();
+  synth_.markStateChanged();
   if (mode == LineGenerator::kModePerformer)
     postLfoAnnouncement("Performer shape curve " + curveNameForIndex(curve_index) + ", " +
                         lfoTimeDescription(lfoEditorBlockStart(lfo_cursor_phase_)));
@@ -12273,6 +12294,7 @@ void SynthEditor::pasteOscillatorClipboard(int targetOscillator, Component& targ
     if (auto* creator = synth_.getWavetableCreator(targetOscillator)) {
       creator->jsonToState(copied_oscillator_.wavetable);
       creator->render();
+      synth_.markStateChanged();
     }
   }
   for (const auto& parameter : copied_oscillator_.parameters)
@@ -12796,8 +12818,9 @@ void SynthEditor::pasteEffectSlotClipboard(const String& targetSection, const St
   for (const auto& parameter : copied_effect_slot_.parameters)
     setInternalParameterEngineValue(slot_prefix + parameter.first, parameter.second);
   if (type - 1 == vital::constants::kConvolutionReverb) {
+    // Processing is paused, so no callback lock: the host's audio thread
+    // would wait while the impulse response decodes.
     if (auto* module = convolutionModuleForPrefix(slot_prefix)) {
-      const ScopedLock lock(synth_.getCallbackLock());
       if (!copied_effect_slot_.impulse_response.is_null())
         module->irStateFromJson(copied_effect_slot_.impulse_response);
       else if (module->hasCustomIr())
@@ -14505,6 +14528,7 @@ void SynthEditor::addModulationRemapPoint() {
 
   generator->addMiddlePoint(insertion_index);
   generator->render();
+  synth_.markStateChanged();
   modulation_remap_point_index_ = insertion_index;
   finishModulationRemapEdit("Added " + modulationRemapPointDescription(insertion_index));
 }
@@ -14520,6 +14544,7 @@ void SynthEditor::deleteModulationRemapPoint() {
 
   generator->removePoint(point_index);
   generator->render();
+  synth_.markStateChanged();
   modulation_remap_point_index_ = jmin(point_index, generator->getNumPoints() - 1);
   finishModulationRemapEdit("Deleted point. " + modulationRemapPointDescription(modulation_remap_point_index_));
 }
@@ -14537,6 +14562,7 @@ void SynthEditor::moveModulationRemapPointInput(float delta) {
                        generator->getPoint(point_index + 1).first, point.first + delta);
   generator->setPoint(point_index, point);
   generator->render();
+  synth_.markStateChanged();
   finishModulationRemapEdit("Input " + compactFloat(point.first * 100.0f, 1) + "%");
 }
 
@@ -14551,6 +14577,7 @@ void SynthEditor::moveModulationRemapPointOutput(float delta) {
   point.second = 1.0f - output;
   generator->setPoint(point_index, point);
   generator->render();
+  synth_.markStateChanged();
   finishModulationRemapEdit("Output " + compactFloat(output * 100.0f, 1) + "%");
 }
 
@@ -14564,6 +14591,7 @@ void SynthEditor::setModulationRemapCurve(int curve) {
   generator->setSmooth(smoothForCurveIndex(curve));
   generator->setPower(point_index, powerForCurveIndex(curve));
   generator->render();
+  synth_.markStateChanged();
   finishModulationRemapEdit(curveNameForIndex(curve));
 }
 
@@ -14784,6 +14812,7 @@ bool SynthEditor::loadWavetableIntoCreator(WavetableCreator& creator, const File
     }
     creator.setFileLoaded(file.getFullPathName().toStdString());
     creator.render();
+    synth_.markStateChanged();
     return true;
   }
   catch (const std::exception& e) {
@@ -14878,6 +14907,7 @@ void SynthEditor::synthesizePresetToWavetable(int oscillator) {
       if (file_source != nullptr) {
         file_source->setWindowSize(sample_rate / vital::utils::midiNoteToFrequency(kCaptureNote));
         creator->render();
+        safe_this->synth_.markStateChanged();
       }
 
       auto& state = safe_this->wavetable_keyboard_state_[oscillator];
@@ -15992,6 +16022,7 @@ void SynthEditor::adjustWavetableHarmonicLevel(int oscillator, float deltaPercen
     wave_frame->toFrequencyDomain();
   }
   creator->render();
+  synth_.markStateChanged();
   postWavetableEditorAnnouncement(wavetableHarmonicStatusText(oscillator, true, false) +
                                       (targets.size() > 1 ? ", " + String(targets.size()) + " frames" : ""),
                                   AccessibilityHandler::AnnouncementPriority::high);
@@ -16018,6 +16049,7 @@ void SynthEditor::adjustWavetableHarmonicPhase(int oscillator, float deltaDegree
     wave_frame->toFrequencyDomain();
   }
   creator->render();
+  synth_.markStateChanged();
   postWavetableEditorAnnouncement(wavetableHarmonicStatusText(oscillator, false, true) +
                                       (targets.size() > 1 ? ", " + String(targets.size()) + " frames" : ""),
                                   AccessibilityHandler::AnnouncementPriority::high);
@@ -16077,6 +16109,7 @@ void SynthEditor::pasteWavetableFrames(int oscillator) {
     }
   }
   creator->render();
+  synth_.markStateChanged();
   postWavetableEditorAnnouncement("Pasted into " + String(targets.size()) + " wavetable frame" +
                                   (targets.size() == 1 ? String() : String("s")),
                                   AccessibilityHandler::AnnouncementPriority::high);
@@ -16113,6 +16146,7 @@ void SynthEditor::addWavetableFrame(int oscillator) {
   state.frame = source->indexOf(inserted);
   state.selected_frames.clear();
   creator->render();
+  synth_.markStateChanged();
   postWavetableEditorAnnouncement("Frame added, " + wavetableFrameStatusText(oscillator),
                                   AccessibilityHandler::AnnouncementPriority::high);
 }
@@ -16139,6 +16173,7 @@ void SynthEditor::deleteWavetableFrames(int oscillator) {
   state.frame = jlimit(0, source->numFrames() - 1, next_cursor);
   state.selected_frames.clear();
   creator->render();
+  synth_.markStateChanged();
   postWavetableEditorAnnouncement("Deleted " + String(targets.size()) + " wavetable frame" +
                                   (targets.size() == 1 ? String() : String("s")) + ", " +
                                   wavetableFrameStatusText(oscillator),
@@ -16171,6 +16206,7 @@ void SynthEditor::setWavetableFramePosition(int oscillator, int frame, int posit
   source->reposition(keyframe);
   wavetable_keyboard_state_[oscillator].frame = source->indexOf(keyframe);
   creator->render();
+  synth_.markStateChanged();
 }
 
 void SynthEditor::clearWavetableDc(int oscillator) {
@@ -16188,6 +16224,7 @@ void SynthEditor::clearWavetableDc(int oscillator) {
     wave_frame->toFrequencyDomain();
   }
   creator->render();
+  synth_.markStateChanged();
   postWavetableEditorAnnouncement("Removed DC offset from " + String(targets.size()) + " wavetable frame" +
                                   (targets.size() == 1 ? String() : String("s")),
                                   AccessibilityHandler::AnnouncementPriority::high);
@@ -16244,6 +16281,7 @@ void SynthEditor::addWavetableModifier(int oscillator, int modifier_type) {
   if (component == nullptr)
     return;
   creator->render();
+  synth_.markStateChanged();
   const int component_index = group->numComponents() - 1;
   const String name = atlas::wavetable_edit::componentName(component);
   postWavetableEditorAnnouncement(name + " added to layer " + String(layer + 1), AccessibilityHandler::AnnouncementPriority::high);
@@ -16259,6 +16297,7 @@ void SynthEditor::removeWavetableModifier(int oscillator, int component_index) {
   creator->getGroup(wavetable_keyboard_state_[oscillator].layer)->removeComponent(component_index);
   wavetable_keyboard_state_[oscillator].keyframes.clear();
   creator->render();
+  synth_.markStateChanged();
   postWavetableEditorAnnouncement(name + " removed", AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, "Add modifier");
 }
@@ -16292,6 +16331,7 @@ void SynthEditor::moveWavetableModifier(int oscillator, int component_index, int
   auto& keyframes = wavetable_keyboard_state_[oscillator].keyframes;
   std::swap(keyframes[component_index], keyframes[destination]);
   creator->render();
+  synth_.markStateChanged();
   postWavetableEditorAnnouncement(name + (direction < 0 ? " moved up" : " moved down"), AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, name + " " + String(destination) + " keyframe interpolation");
 }
@@ -16369,6 +16409,7 @@ void SynthEditor::addWavetableLayer(int oscillator, int sourceType) {
   if (atlas::wavetable_edit::addLayer(*creator, sourceType) == nullptr)
     return;
   creator->render();
+  synth_.markStateChanged();
   auto& state = wavetable_keyboard_state_[oscillator];
   state.layer = creator->numGroups() - 1;
   state.frame = 0;
@@ -16403,6 +16444,7 @@ void SynthEditor::addWavetableAudioLayer(int oscillator, const File& file) {
     return;
   atlas::wavetable_edit::loadAudioLayer(group->getComponent(0), buffer.getReadPointer(0), buffer.getNumSamples(), sample_rate);
   creator->render();
+  synth_.markStateChanged();
   auto& state = wavetable_keyboard_state_[oscillator];
   state.layer = creator->numGroups() - 1;
   state.keyframes.clear();
@@ -16449,6 +16491,7 @@ void SynthEditor::removeWavetableLayer(int oscillator) {
     return;
   }
   creator->render();
+  synth_.markStateChanged();
   state.layer = jlimit(0, creator->numGroups() - 1, removed);
   state.frame = 0;
   state.selected_frames.clear();
@@ -16466,6 +16509,7 @@ void SynthEditor::moveWavetableLayer(int oscillator, int direction) {
     return;
   state.layer += direction < 0 ? -1 : 1;
   creator->render();
+  synth_.markStateChanged();
   postWavetableEditorAnnouncement("Layer moved to position " + String(state.layer + 1), AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, direction < 0 ? "Move layer earlier" : "Move layer later");
 }
@@ -16772,6 +16816,7 @@ void SynthEditor::applyWavetableHarmonicEdit(int oscillator, int frame, bool all
     wave_frame->toFrequencyDomain();
   }
   creator->render();
+  synth_.markStateChanged();
 
   postWavetableEditorAnnouncement("Set harmonic " + String(harmonic) +
                                   (targets.size() == 1 ? " on frame " + String(targets.front() + 1) :
@@ -16807,6 +16852,7 @@ void SynthEditor::applyWavetableStartingShape(int oscillator, int frame, bool al
   for (int index : targets)
     source->getKeyframe(index)->wave_frame()->copy(starting_frame);
   creator->render();
+  synth_.markStateChanged();
 
   static const char* const kShapeNames[] = {
     "Sine", "Saturated sine", "Triangle", "Square", "Pulse 25 percent", "Saw"
@@ -16846,6 +16892,7 @@ void SynthEditor::clearWavetableHarmonic(int oscillator, int frame, bool allFram
     wave_frame->toFrequencyDomain();
   }
   creator->render();
+  synth_.markStateChanged();
 
   postWavetableEditorAnnouncement("Cleared harmonic " + String(harmonic) +
                                   (targets.size() == 1 ? " on frame " + String(targets.front() + 1) :
@@ -16880,6 +16927,7 @@ void SynthEditor::normalizeWavetableFrame(int oscillator, int frame, bool allFra
     wave_frame->toFrequencyDomain();
   }
   creator->render();
+  synth_.markStateChanged();
 
   postWavetableEditorAnnouncement(targets.size() == 1 ? "Normalized wavetable frame " + String(targets.front() + 1) :
                                                         "Normalized " + String(static_cast<int>(targets.size())) +
@@ -17006,6 +17054,7 @@ void SynthEditor::showWavetableActionsMenu(int oscillator, Component& target) {
         if (auto* creator = synth_.getWavetableCreator(oscillator)) {
           creator->loadDefaultCreator();
           creator->render();
+          synth_.markStateChanged();
           refreshWavetableNameLabel(oscillator);
           wavetable_keyboard_state_[oscillator] = {};
           postPluginAnnouncement("Wavetable reset to the default", AccessibilityHandler::AnnouncementPriority::high);
@@ -17425,6 +17474,7 @@ void SynthEditor::chooseInstrumentFile(int oscillator) {
     last_instrument_folder_ = file.getParentDirectory();
     setParameterEngineValue(vital::source_types::slotPrefix(oscillator) + "on", 1.0f);
     manager->loadFromUser(oscillator, file);
+    synth_.markStateChanged();
     postPluginAnnouncement("Loading instrument " + file.getFileNameWithoutExtension() + " into Oscillator " +
                                String(oscillator + 1),
                            AccessibilityHandler::AnnouncementPriority::high);
@@ -17626,6 +17676,7 @@ void SynthEditor::loadSampleFile(const File& file, int sample_target) {
     sample->setName(file.getFileNameWithoutExtension().toStdString());
     sample->setLastBrowsedFile(file.getFullPathName().toStdString());
     synth_.pauseProcessing(false);
+    synth_.markStateChanged();
 
     // Granular and spectral oscillators switch on when given material, as the fixed sources did.
     const int type = sourceSlotType(sample_target);

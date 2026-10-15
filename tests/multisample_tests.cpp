@@ -120,6 +120,7 @@ namespace {
     std::vector<InstrumentSpec> instruments;
     std::vector<SampleSpec> samples;
     std::vector<uint8_t> sm24;
+    std::string bank_name = "Test Font";
 
     static void id(juce::MemoryOutputStream& out, const char* text) { out.write(text, 4); }
     static void name20(juce::MemoryOutputStream& out, const std::string& text) {
@@ -159,7 +160,9 @@ namespace {
         ifil.writeShort(2);
         ifil.writeShort(4);
         chunk(info, "ifil", ifil.getMemoryBlock());
-        juce::MemoryBlock inam("Test Font\0\0", 10);
+        // Zero-terminated, padded to an even length.
+        juce::MemoryBlock inam(bank_name.data(), bank_name.size());
+        inam.setSize((bank_name.size() + 2) & ~size_t(1), true);
         chunk(info, "INAM", inam);
       }
 
@@ -1200,7 +1203,10 @@ namespace {
       preparePlayback(plugin);
       manager(plugin).loadFromUser(0, main);
       settle(plugin);
-      // The direct load is linked into the cache in the background.
+      // The direct load is linked into the cache in the background, which a
+      // save, a render or the next load does not wait for.
+      expect(!manager(plugin).hasPendingLoads(), "a load is finished once the instrument plays");
+      expect(manager(plugin).waitForCacheWork(10000), "the cache work finishes");
       for (int i = 0; i < 200 && !container::isCached(manager(plugin).spec(0).hash); ++i)
         juce::Thread::sleep(10);
       hash = manager(plugin).spec(0).hash;
@@ -1313,6 +1319,58 @@ namespace {
     }
     container::setCacheRootForTesting({});
     return finish("sf2 preset switch");
+  }
+
+  // A SoundFont made with a Windows tool names its bank and presets in its
+  // code page (é as the byte 0xE9). Saved state is JSON, which must be UTF-8:
+  // such names made every project or preset save of a patch using the font
+  // throw. They are read as Windows-1252; valid UTF-8 is kept.
+  int sf2Encoding() {
+    TempFolder temp;
+    container::setCacheRootForTesting(temp.folder.getChildFile("cache"));
+    Sf2Builder font = testFont();
+    font.bank_name = "Fl\xF6te";
+    font.presets[0].name = "Pi\xE9no";
+    // UTF-8 cut inside a character by the 20-byte name field.
+    font.presets[1].name = std::string(18, 'x') + "\xC3\xA9";
+    const juce::File file = temp.folder.getChildFile("font.sf2");
+    writeFont(font, file);
+
+    juce::MemoryBlock state;
+    {
+      SynthPlugin plugin;
+      preparePlayback(plugin);
+      manager(plugin).loadFromUser(0, file);
+      settle(plugin);
+      const auto spec = manager(plugin).spec(0);
+      expect(spec.name == "Fl\xC3\xB6te", "the bank name reads as Windows-1252: " + spec.name);
+      expect(spec.sf2_name == "Pi\xC3\xA9no", "the preset name too: " + spec.sf2_name);
+      try {
+        plugin.getStateInformation(state);
+        manager(plugin).selectSf2Preset(0, 1);
+        settle(plugin);
+        juce::MemoryBlock other;
+        plugin.getStateInformation(other);
+        expect(other.getSize() > 0, "a preset whose name was cut inside a character saves");
+        manager(plugin).selectSf2Preset(0, 0);
+        settle(plugin);
+      }
+      catch (const std::exception& error) {
+        expect(false, std::string("saving threw: ") + error.what());
+      }
+      expect(state.getSize() > 0, "the state saves");
+    }
+    {
+      SynthPlugin plugin;
+      preparePlayback(plugin);
+      plugin.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+      settle(plugin);
+      auto restored = manager(plugin).result(0);
+      expect(restored && restored->instrument && restored->instrument->preset_index == 0,
+             "the preset is found by its name after a restore");
+    }
+    container::setCacheRootForTesting({});
+    return finish("sf2 encoding");
   }
 
 
@@ -1701,6 +1759,8 @@ int main(int argc, char** argv) {
     return hostState();
   if (flag == "--sf2-preset-switch")
     return sf2PresetSwitch();
+  if (flag == "--sf2-encoding")
+    return sf2Encoding();
   if (flag == "--editor")
     return editorTest();
   std::cerr << "usage: AtlasMultiSampleTests --sfz-parser | --sf2-parser | --decode | --manual <file> [preset]\n";

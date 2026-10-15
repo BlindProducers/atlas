@@ -738,6 +738,7 @@ namespace {
 #include "editor_speech_tests.h"
 #include "oscillator_modulation_tests.h"
 #include "arpeggiator_tests.h"
+#include "release_hardening_tests.h"
 
 int main(int argc, char** argv) {
   ScopedJuceInitialiser_GUI juce;
@@ -796,6 +797,57 @@ int main(int argc, char** argv) {
       std::cout << "Atlas arpeggiator tests passed\n";
     return failures == 0 ? 0 : 1;
   }
+  if (argc > 2 && String(argv[1]) == "--state-dump") {
+    // Diagnostics only: writes a fresh instance's saved state to a file.
+    SynthPlugin synth;
+    synth.setPlayConfigDetails(0, 2, 48000, 512);
+    synth.prepareToPlay(48000, 512);
+    MemoryBlock state;
+    // With a second file: restore that state first (an older save, say).
+    if (argc > 3 && File(String(argv[3])).loadFileAsData(state))
+      synth.setStateInformation(state.getData(), int(state.getSize()));
+    state.reset();
+    synth.getStateInformation(state);
+    File(String(argv[2])).replaceWithData(state.getData(), state.getSize());
+    std::cout << "state bytes=" << state.getSize() << std::endl;
+    return 0;
+  }
+  if (argc > 1 && String(argv[1]) == "--editor-timing") {
+    // Timing only: what opening and running the editor costs the message thread.
+    const auto ms = [](auto&& function) {
+      const auto start = Time::getMillisecondCounterHiRes();
+      function();
+      return Time::getMillisecondCounterHiRes() - start;
+    };
+    std::unique_ptr<SynthPlugin> synth;
+    std::cout << "plugin constructed ms=" << ms([&] { synth = std::make_unique<SynthPlugin>(); }) << std::endl;
+    synth->setPlayConfigDetails(0, 2, 48000, 512);
+    std::cout << "prepareToPlay ms=" << ms([&] { synth->prepareToPlay(48000, 512); }) << std::endl;
+    for (int pass = 0; pass < 2; ++pass) {
+      std::unique_ptr<SynthEditor> editor;
+      std::cout << "editor constructed ms=" << ms([&] { editor = std::make_unique<SynthEditor>(*synth); }) << std::endl;
+      // The 20 Hz timer's first tick lands right after the window appears.
+      std::cout << "first timer tick ms=" << ms([&] { editor->pollStateNow(); }) << std::endl;
+      std::cout << "editor shown ms=" << ms([&] {
+        editor->addToDesktop(ComponentPeer::windowHasTitleBar);
+        editor->setVisible(true);
+        MessageManager::getInstance()->runDispatchLoopUntil(10);
+      }) << std::endl;
+      MessageManager::getInstance()->runDispatchLoopUntil(500);
+      constexpr int kTicks = 100;
+      std::cout << "timer tick ms=" << ms([&] { for (int i = 0; i < kTicks; ++i) editor->pollStateNow(); }) / kTicks
+                << std::endl;
+      std::cout << "full refresh ms=" << ms([&] { editor->updateFullGui(); }) << std::endl;
+      std::cout << "editor closed ms=" << ms([&] {
+        synth->editorBeingDeleted(editor.get());
+        editor.reset();
+      }) << std::endl;
+    }
+    std::cout << "plugin destroyed ms=" << ms([&] { synth.reset(); }) << std::endl;
+    return 0;
+  }
+  if (argc > 1 && String(argv[1]) == "--release-hardening")
+    return runReleaseHardeningTests();
   if (argc > 1 && String(argv[1]) == "--oscillator-modulation") {
     testOscillatorSourcesReachOnlyAudioRateControls();
     testOscillatorRoutesFollowTheirSourceWithinTheBlock();

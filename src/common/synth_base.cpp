@@ -40,6 +40,20 @@ namespace {
   constexpr int kNumArpDestinations = 8;
   constexpr int kFirstAtlasArpDestinationVoiceChannel = 16;
 
+  // Runs a change to the engine's graph out of the audio thread's way: under
+  // the callback lock, or without it while processing is paused, when no
+  // audio callback can be inside the engine and the lock would only make the
+  // host's audio thread wait for the change.
+  template <typename Function>
+  void changeEngine(SynthBase& synth, Function&& change) {
+    if (synth.isProcessingPaused()) {
+      change();
+      return;
+    }
+    const ScopedLock lock(synth.getCriticalSection());
+    change();
+  }
+
   bool sourceIsEnvelope(const std::string& source) {
     return source.rfind("env_", 0) == 0;
   }
@@ -301,8 +315,7 @@ void SynthBase::scheduleEffectControlReservation() {
   // runs on the message thread holding the callback lock. Until then the slot
   // passes audio through, as while its effect is being built.
   auto reserve = [this] {
-    const ScopedLock lock(getCriticalSection());
-    updateEffectShells();
+    changeEngine(*this, [this] { updateEffectShells(); });
   };
   if (MessageManager::getInstance()->isThisTheMessageThread()) {
     reserve();
@@ -356,15 +369,21 @@ void SynthBase::setVoiceReverbMemory(int filter, bool reserve) {
   // Allocation belongs on the message thread. From another thread (host
   // automation, MIDI learn) the voices pass audio through until it has run.
   if (MessageManager::getInstance()->isThisTheMessageThread()) {
-    const ScopedLock lock(getCriticalSection());
-    engine_->setVoiceReverbMemory(filter, reserve);
+    changeEngine(*this, [&] { engine_->setVoiceReverbMemory(filter, reserve); });
     return;
   }
   scheduleEffectControlReservation();
 }
 
 void SynthBase::valueChanged(const std::string& name, vital::mono_float value) {
-  const bool changed = controls_[name]->value() != value;
+  // A name that is not a control (a MIDI-learn mapping saved by an older
+  // Atlas, for one) changes nothing. This can run on the audio thread, so it
+  // must neither insert into nor dereference a missing entry.
+  const auto found = controls_.find(name);
+  if (found == controls_.end() || found->second == nullptr)
+    return;
+  vital::Value* control = found->second;
+  const bool changed = control->value() != value;
   // The voice filters hold Reverb memory only while that model is selected:
   // selecting it reserves the memory before the audio thread can see the new
   // model, and leaving it frees the memory afterwards.
@@ -372,7 +391,7 @@ void SynthBase::valueChanged(const std::string& name, vital::mono_float value) {
   const bool reverb = static_cast<int>(value + 0.5f) == vital::constants::kReverbFilter;
   if (voice_filter >= 0 && reverb)
     setVoiceReverbMemory(voice_filter, true);
-  controls_[name]->set(value);
+  control->set(value);
   if (voice_filter >= 0 && !reverb)
     setVoiceReverbMemory(voice_filter, false);
   if (changed && isSourceTypeControl(name))
@@ -550,8 +569,7 @@ void SynthBase::prepareModulationDestination(const std::string& destination) {
   // A parked effect has no modulation wiring; build the destination's (it
   // stays while a route reaches it). This changes the graph, so the audio
   // thread must be out of it.
-  const ScopedLock lock(getCriticalSection());
-  engine_->wireModulationDestination(destination);
+  changeEngine(*this, [&] { engine_->wireModulationDestination(destination); });
 }
 
 void SynthBase::connectModulation(vital::ModulationConnection* connection) {
@@ -603,8 +621,10 @@ bool SynthBase::connectModulation(const std::string& source, const std::string& 
     }
   }
 
-  if (connection)
+  if (connection) {
     connectModulation(connection);
+    markStateChanged();
+  }
 
   return create;
 }
@@ -624,8 +644,10 @@ void SynthBase::disconnectModulation(vital::ModulationConnection* connection) {
 
 void SynthBase::disconnectModulation(const std::string& source, const std::string& destination) {
   vital::ModulationConnection* connection = getConnection(source, destination);
-  if (connection)
+  if (connection) {
     disconnectModulation(connection);
+    markStateChanged();
+  }
 }
 
 void SynthBase::clearModulations() {
@@ -755,16 +777,14 @@ void SynthBase::prepareFilterTable(const std::string& prefix) {
   // from the audio thread, in which case the filter passes audio through until
   // its buffers exist.
   if (MessageManager::existsAndIsCurrentThread()) {
-    const ScopedLock lock(getCriticalSection());
-    engine_->prepareFilterTable(prefix);
+    changeEngine(*this, [&] { engine_->prepareFilterTable(prefix); });
     return;
   }
   std::shared_ptr<std::atomic<bool>> alive = alive_;
   MessageManager::callAsync([this, alive, prefix] {
     if (!alive->load())
       return;
-    const ScopedLock lock(getCriticalSection());
-    engine_->prepareFilterTable(prefix);
+    changeEngine(*this, [&] { engine_->prepareFilterTable(prefix); });
   });
 }
 
@@ -836,8 +856,12 @@ void SynthBase::prepareSourceEngines() {
   }
   for (vital::ModulationConnection* connection : stale)
     disconnectModulation(connection);
-  for (auto& route : moving)
-    disconnectModulation(route.first);
+  for (auto& route : moving) {
+    if (engine_->getMonoModulationDestination(route.second.second) != nullptr)
+      disconnectModulation(route.first);
+    else
+      mod_connections_.remove(route.first);  // Never plugged in: its destination did not exist.
+  }
   // Route changes are queued for the audio thread; apply them now, while
   // processing is paused, so none of them touches an engine we destroy below.
   processModulationChanges();
@@ -845,7 +869,12 @@ void SynthBase::prepareSourceEngines() {
   for (auto& route : moving) {
     route.first->source_name = route.second.first;
     route.first->destination_name = route.second.second;
-    connectModulation(route.first);
+    // A type without the destination (Multi-sample has no FM/RM amount) keeps
+    // the route unplugged for a type that has it, rather than dropping it.
+    if (engine_->getMonoModulationDestination(route.second.second) != nullptr)
+      connectModulation(route.first);
+    else if (mod_connections_.count(route.first) == 0)
+      mod_connections_.push_back(route.first);
   }
   processModulationChanges();
 }
@@ -906,11 +935,9 @@ void SynthBase::initEngine() {
   for (int i = 0; i < vital::kNumLfos; ++i)
     getLfoSource(i)->initTriangle();
 
-  vital::control_map controls = engine_->getControls();
-  for (auto& control : controls) {
-    vital::ValueDetails details = vital::Parameters::getDetails(control.first);
-    control.second->set(details.default_value);
-  }
+  const vital::control_map controls = engine_->getControls();
+  for (const auto& control : controls)
+    control.second->set(vital::Parameters::getDetails(control.first).default_value);
   prepareSelectedSources();
   for (auto& arp_group : arpeggiators_) {
     for (auto& arp : arp_group)
@@ -923,6 +950,7 @@ void SynthBase::initEngine() {
 
 void SynthBase::loadTuningFile(const File& file) {
   tuning_.loadFile(file);
+  markStateChanged();
 }
 
 void SynthBase::loadInitPreset() {
@@ -931,13 +959,15 @@ void SynthBase::loadInitPreset() {
   initEngine();
   LoadSave::initSaveInfo(save_info_);
   pauseProcessing(false);
+  markStateChanged();
 }
 
-bool SynthBase::loadFromJson(const json& data) {
+bool SynthBase::loadFromJson(json data) {
   pauseProcessing(true);
   engine_->allSoundsOff();
+  clearArpeggiators();
   try {
-    bool result = LoadSave::jsonToState(this, save_info_, data);
+    bool result = LoadSave::jsonToState(this, save_info_, std::move(data));
     prepareSelectedSources();
     pauseProcessing(false);
     return result;
@@ -961,7 +991,7 @@ bool SynthBase::loadFromFile(File preset, std::string& error) {
   multisample_container_ = vital::multisample::container::isContainer(preset) ? preset : File();
   try {
     json parsed_json_state = json::parse(text, nullptr);
-    if (!loadFromJson(parsed_json_state)) {
+    if (!loadFromJson(std::move(parsed_json_state))) {
       multisample_container_ = File();
       error = "Preset was created with a newer version.";
       return false;
@@ -977,6 +1007,7 @@ bool SynthBase::loadFromFile(File preset, std::string& error) {
   multisample_container_ = File();
   
   setPresetName(preset.getFileNameWithoutExtension());
+  markStateChanged();
 
   SynthGuiInterface* gui_interface = getGuiInterface();
   if (gui_interface) {
@@ -1116,7 +1147,15 @@ void SynthBase::renderAudioForResynthesis(float* data, int samples, int note) {
   static constexpr int kPreProcessSamples = 44100;
   static constexpr int kBufferSize = 64;
 
-  ScopedLock lock(getCriticalSection());
+  // Seconds of audio render here on the live engine. Pause processing rather
+  // than hold the callback lock: the host then gets silence from this
+  // instance (whose notes this cuts anyway), not a stalled audio thread.
+  struct Pause {
+    SynthBase& synth;
+    const bool pause = !synth.isProcessingPaused();
+    explicit Pause(SynthBase& owner) : synth(owner) { if (pause) synth.pauseProcessing(true); }
+    ~Pause() { if (pause) synth.pauseProcessing(false); }
+  } paused(*this);
 
   double sample_time = 1.0 / getSampleRate();
   double current_time = -kPreProcessSamples * sample_time;
@@ -1190,10 +1229,10 @@ bool SynthBase::writePresetFile(const File& preset, std::string* error) {
   }
 
   if (instruments.empty())
-    return preset.replaceWithText(data.dump());
+    return preset.replaceWithText(LoadSave::dumpState(data));
 
   std::string message;
-  const bool written = multisample::container::write(preset, data.dump(), instruments, message);
+  const bool written = multisample::container::write(preset, LoadSave::dumpState(data), instruments, message);
   if (!written && error != nullptr)
     *error = message;
   return written;
@@ -1698,6 +1737,7 @@ void SynthBase::clearMidiLearn(const std::string& name) {
 }
 
 std::vector<std::pair<int, std::string>> SynthBase::midiLearnMappings() {
+  midi_manager_->commitPendingMidiLearn();
   std::vector<std::pair<int, std::string>> mappings;
   for (const auto& controller : midi_manager_->getMidiLearnMap())
     for (const auto& destination : controller.second)
@@ -1714,6 +1754,7 @@ void SynthBase::clearAllMidiLearn() {
 }
 
 bool SynthBase::isMidiMapped(const std::string& name) {
+  midi_manager_->commitPendingMidiLearn();
   return midi_manager_->isMidiMapped(name);
 }
 
@@ -1807,6 +1848,8 @@ void SynthBase::queueGuiControlUpdate(const std::string& name, vital::mono_float
 }
 
 void SynthBase::dispatchPendingGuiUpdates(SynthGuiInterface& gui_interface) {
+  // A MIDI learn the audio thread completed joins the map, and the config.
+  midi_manager_->commitPendingMidiLearn();
   if (!gui_updates_pending_.exchange(false, std::memory_order_acquire))
     return;
 

@@ -374,14 +374,19 @@ namespace vital {
     change.modulation_processor->setCollapsePolyphonicSource(false);
     change.modulation_processor->setRefreshSourceWhenIdle(false);
 
-    Processor* destination = change.mono_destination;
-    if (change.source->owner->isPolyphonic() && change.poly_destination)
-      destination = change.poly_destination;
+    // A route kept while its slot plays a type without that destination was
+    // never plugged in; there is nothing to unplug.
+    if (change.mono_destination != nullptr && change.source != nullptr) {
+      Processor* destination = change.mono_destination;
+      if (change.source->owner->isPolyphonic() && change.poly_destination)
+        destination = change.poly_destination;
 
-    destination->unplug(change.modulation_processor);
+      destination->unplug(change.modulation_processor);
+    }
     voice_handler_->disableModulationConnection(change.modulation_processor);
 
-    if (change.mono_destination->connectedInputs() == 1 &&
+    if (change.mono_destination != nullptr && change.mono_modulation_switch != nullptr &&
+        change.mono_destination->connectedInputs() == 1 &&
         (change.poly_destination == nullptr || change.poly_destination->connectedInputs() == 0)) {
       change.mono_modulation_switch->set(0);
 
@@ -393,7 +398,7 @@ namespace vital {
 
     change.modulation_processor->enable(false);
     change.modulation_processor->setControlRate(true);
-    if (change.num_audio_rate == 0)
+    if (change.num_audio_rate == 0 && change.source != nullptr)
       change.source->owner->setControlRate(true);
 
     modulation_processors_.remove(change.modulation_processor);

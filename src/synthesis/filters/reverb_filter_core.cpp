@@ -22,15 +22,20 @@ void ReverbFilterCore::reserve(double maximum_rate) {
     // not touch megabytes of delay pages, and a note reset is constant time.
     memory_.reset(new float[required]);
     if (history_ == nullptr)
-      history_.reset(new double[384 * kMaximumOversampling]);
+      history_.reset(new double[kFirTaps * kMaximumOversampling]);
+    if (fir_coefficients_ == nullptr)
+      fir_coefficients_.reset(new double[kFirTaps]);
     capacity_ = required;
+    terms_.cutoff = -1;
     reset();
   }
 }
 void ReverbFilterCore::release() {
   memory_.reset();
   history_.reset();
+  fir_coefficients_.reset();
   capacity_ = 0;
+  terms_.cutoff = -1;
   reset();
 }
 void ReverbFilterCore::setSampleRate(double rate, int oversampling) {
@@ -41,9 +46,10 @@ void ReverbFilterCore::setSampleRate(double rate, int oversampling) {
   if (rate_ == rate && main_size_ == main && oversampling_ == oversampling) return;
   rate_ = rate;
   oversampling_ = oversampling;
-  fir_size_ = 384 * oversampling;
+  fir_size_ = kFirTaps * oversampling;
   main_size_ = main; ap_size_ = ap; low_size_ = low;
   ap_base_ = 16 * main; low_base_ = ap_base_ + 6 * ap;
+  terms_.cutoff = -1;
   reset();
 }
 void ReverbFilterCore::reset() {
@@ -68,37 +74,81 @@ void ReverbFilterCore::beginBlock(double resonance, double damp, int samples) {
   boost_step_ = (std::exp(2 * resonance / 8.68588963806504) - boost_) * inverse;
   fresh_ = false;
 }
-double ReverbFilterCore::read(int base, int position, int size, double delay) const {
+int ReverbFilterCore::delayOffset(int size, double delay) const {
   // Rounding at the processing rate changes the resonant modes. Round on the
   // JSFX/host sample grid first, then express that delay in processing samples.
-  const int offset = static_cast<int>(std::floor(std::clamp(delay / oversampling_,
+  return static_cast<int>(std::floor(std::clamp(delay / oversampling_,
       1.0, double(size / oversampling_ - 2)) + .5)) * oversampling_;
+}
+double ReverbFilterCore::read(int base, int position, int size, int offset) const {
   if (offset > valid_) return 0;
   int index = position - offset;
   if (index < 0) index += size;
   return memory_[base + index];
 }
-double ReverbFilterCore::allpass(double input, int stage, double delay, double coefficient) {
+double ReverbFilterCore::allpass(double input, int stage, int offset, double coefficient) {
   const int base = ap_base_ + stage * ap_size_;
-  const double output = read(base, ap_pos_, ap_size_, delay) - coefficient * input;
+  const double output = read(base, ap_pos_, ap_size_, offset) - coefficient * input;
   memory_[base + ap_pos_] = static_cast<float>(reverbClean(input + coefficient * output));
   return output;
+}
+void ReverbFilterCore::updateCutoffTerms(double cutoff_hz) {
+  using namespace reverb_filter_data;
+  CutoffTerms& terms = terms_;
+  terms.cutoff = cutoff_hz;
+  const double log_cut = std::log(cutoff_hz);
+  terms.log_cut = log_cut;
+  const double network_log = cutoff_hz < 50 ? std::log(12.4) +
+      reverbUnit(log_cut, std::log(8.0), std::log(50.0)) * (std::log(50.0) - std::log(12.4)) : log_cut;
+  const double scale = rate_ / std::exp(network_log);
+  terms.allpass_offsets[0] = delayOffset(ap_size_, .023 * scale);
+  terms.allpass_offsets[1] = delayOffset(ap_size_, .037 * scale);
+  terms.allpass_offsets[2] = delayOffset(ap_size_, .053 * scale);
+  terms.allpass_offsets[3] = delayOffset(ap_size_, .23 * scale);
+  terms.allpass_offsets[4] = delayOffset(ap_size_, .31 * scale);
+  terms.allpass_offsets[5] = delayOffset(ap_size_, .41 * scale);
+  for (int i = 0; i < 16; ++i)
+    terms.network_offsets[i] = delayOffset(main_size_, ratio[i] * scale);
+
+  terms.fir_taps = 0;
+  if (cutoff_hz > 300) {
+    static constexpr double frequencies[] { 400, 800, 1600, 3200, 6400, 12800 };
+    const double* kernels[] { fir400.data(), fir800.data(), fir1600.data(), fir3200.data(), fir6400.data(), fir12800.data() };
+    static constexpr int sizes[] { 384, 320, 192, 128, 128, 128 };
+    int a = 0;
+    while (a < 5 && cutoff_hz >= frequencies[a + 1]) ++a;
+    const int b = cutoff_hz < 400 ? 0 : std::min(5, a + 1);
+    const double t = b == a ? 0 : reverbUnit(log_cut, std::log(frequencies[a]), std::log(frequencies[b]));
+    terms.fir_amount = cutoff_hz < 400 ? reverbUnit(log_cut, std::log(300.0), std::log(400.0)) : 1;
+    terms.fir_taps = sizes[a];
+    for (int i = 0; i < sizes[a]; ++i)
+      fir_coefficients_[i] = kernels[a][i] * (1 - t) + (i < sizes[b] ? kernels[b][i] * t : 0);
+  }
+  terms.low_amount = 1 - reverbUnit(log_cut, std::log(8.0), std::log(50.0));
+  if (terms.low_amount > 0) {
+    for (int i = 0; i < kLowTaps; ++i)
+      terms.low_offsets[i] = delayOffset(low_size_, low_ratio[i] * rate_ / cutoff_hz);
+  }
+  double compensation = 0;
+  if (cutoff_hz <= 200) compensation = .59;
+  else if (cutoff_hz < 400) compensation = .59 + reverbUnit(log_cut, std::log(200.0), std::log(400.0)) * (.14 - .59);
+  else if (cutoff_hz < 800) compensation = .14 * (1 - reverbUnit(log_cut, std::log(400.0), std::log(800.0)));
+  terms.gain = std::exp(compensation / 8.68588963806504);
 }
 double ReverbFilterCore::tick(double input, double cutoff_hz) {
   using namespace reverb_filter_data;
   cutoff_hz = std::clamp(cutoff_hz, 8.0, 20000.0);
-  const double log_cut = std::log(cutoff_hz);
-  const double network_log = cutoff_hz < 50 ? std::log(12.4) +
-      reverbUnit(log_cut, std::log(8.0), std::log(50.0)) * (std::log(50.0) - std::log(12.4)) : log_cut;
-  const double scale = rate_ / std::exp(network_log);
+  if (cutoff_hz != terms_.cutoff)
+    updateCutoffTerms(cutoff_hz);
+  const CutoffTerms& terms = terms_;
   damp_ += damp_step_; boost_ += boost_step_;
-  double diffused = allpass(input, 0, .023 * scale, .82);
-  diffused = allpass(diffused, 1, .037 * scale, .82);
-  diffused = allpass(diffused, 2, .053 * scale, .82);
+  double diffused = allpass(input, 0, terms.allpass_offsets[0], .82);
+  diffused = allpass(diffused, 1, terms.allpass_offsets[1], .82);
+  diffused = allpass(diffused, 2, terms.allpass_offsets[2], .82);
   double sum = 0, wet = 0;
   auto& damping = damping_[fir_pos_ % oversampling_];
   for (int i = 0; i < 16; ++i) {
-    const double value = read(i * main_size_, fdn_pos_, main_size_, ratio[i] * scale);
+    const double value = read(i * main_size_, fdn_pos_, main_size_, terms.network_offsets[i]);
     damping[i] += damp_ * (value - damping[i]);
     sum += damping[i];
     wet += (i < 8 ? -1 : 1) * value;
@@ -109,47 +159,34 @@ double ReverbFilterCore::tick(double input, double cutoff_hz) {
     memory_[i * main_size_ + fdn_pos_] = static_cast<float>(reverbClean(stored));
   }
   wet *= 2.2844642888941586 * .25;
-  wet = allpass(wet, 3, .23 * scale, .5);
-  wet = allpass(wet, 4, .31 * scale, .5);
-  wet = allpass(wet, 5, .41 * scale, .5);
+  wet = allpass(wet, 3, terms.allpass_offsets[3], .5);
+  wet = allpass(wet, 4, terms.allpass_offsets[4], .5);
+  wet = allpass(wet, 5, terms.allpass_offsets[5], .5);
 
   history_[fir_pos_] = input;
-  if (cutoff_hz > 300) {
-    static constexpr double frequencies[] { 400, 800, 1600, 3200, 6400, 12800 };
-    const double* kernels[] { fir400.data(), fir800.data(), fir1600.data(), fir3200.data(), fir6400.data(), fir12800.data() };
-    static constexpr int sizes[] { 384, 320, 192, 128, 128, 128 };
-    int a = 0;
-    while (a < 5 && cutoff_hz >= frequencies[a + 1]) ++a;
-    const int b = cutoff_hz < 400 ? 0 : std::min(5, a + 1);
-    const double t = b == a ? 0 : reverbUnit(log_cut, std::log(frequencies[a]), std::log(frequencies[b]));
-    const double amount = cutoff_hz < 400 ? reverbUnit(log_cut, std::log(300.0), std::log(400.0)) : 1;
+  if (terms.fir_taps > 0) {
+    const double* coefficients = fir_coefficients_.get();
     double correction = 0;
-    const int count = std::min(sizes[a], valid_ / oversampling_ + 1);
+    const int count = std::min(terms.fir_taps, valid_ / oversampling_ + 1);
     for (int i = 0; i < count; ++i) {
-      const double coefficient = kernels[a][i] * (1 - t) + (i < sizes[b] ? kernels[b][i] * t : 0);
       int index = fir_pos_ - i * oversampling_;
       if (index < 0) index += fir_size_;
-      correction += coefficient * history_[index];
+      correction += coefficients[i] * history_[index];
     }
-    wet += amount * correction;
+    wet += terms.fir_amount * correction;
   }
   memory_[low_base_ + low_pos_] = static_cast<float>(input);
-  const double low_amount = 1 - reverbUnit(log_cut, std::log(8.0), std::log(50.0));
-  if (low_amount > 0) {
+  if (terms.low_amount > 0) {
     double low = 0;
-    for (int i = 0; i < 32; ++i)
-      low += low_coeff[i] * read(low_base_, low_pos_, low_size_, low_ratio[i] * rate_ / cutoff_hz);
-    wet += low_amount * low;
+    for (int i = 0; i < kLowTaps; ++i)
+      low += low_coeff[i] * read(low_base_, low_pos_, low_size_, terms.low_offsets[i]);
+    wet += terms.low_amount * low;
   }
-  double compensation = 0;
-  if (cutoff_hz <= 200) compensation = .59;
-  else if (cutoff_hz < 400) compensation = .59 + reverbUnit(log_cut, std::log(200.0), std::log(400.0)) * (.14 - .59);
-  else if (cutoff_hz < 800) compensation = .14 * (1 - reverbUnit(log_cut, std::log(400.0), std::log(800.0)));
   if (++fdn_pos_ == main_size_) fdn_pos_ = 0;
   if (++ap_pos_ == ap_size_) ap_pos_ = 0;
   if (++low_pos_ == low_size_) low_pos_ = 0;
   if (++fir_pos_ == fir_size_) fir_pos_ = 0;
   valid_ = std::min(valid_ + 1, std::max(fir_size_, main_size_));
-  return wet * std::exp(compensation / 8.68588963806504) * boost_;
+  return wet * terms.gain * boost_;
 }
 }

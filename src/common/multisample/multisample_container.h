@@ -52,11 +52,14 @@ namespace multisample {
     bool extractToCache(const juce::File& container, const std::string& hash, const std::vector<FileInfo>& files,
                         const std::function<bool(float)>& progress, std::string& error);
     // Places an instrument's files in the cache by hard link, or by copy when
-    // linking fails and the files total less than `max_copy_bytes`.
+    // linking fails and the files total less than `max_copy_bytes`. A copy
+    // asks `cancelled` between pieces of a few megabytes.
     bool populateCache(const std::string& hash, const std::vector<FileInfo>& files, int64_t max_copy_bytes,
                        const std::function<bool()>& cancelled = {});
     // Removes least recently used instruments until the cache fits the budget.
-    void pruneCache(int64_t budget_bytes, const std::set<std::string>& in_use);
+    // `cancelled` is asked between folders.
+    void pruneCache(int64_t budget_bytes, const std::set<std::string>& in_use,
+                    const std::function<bool()>& cancelled = {});
   } // namespace container
 } // namespace multisample
 } // namespace vital

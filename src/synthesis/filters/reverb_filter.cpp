@@ -81,6 +81,11 @@ void ReverbFilter::process(int num_samples) {
     bass.setSampleRate(getSampleRate(), getOversampleAmount());
     core.beginBlock(resonance[lane], damp[lane], num_samples);
     bass.beginBlock(bass_amount[lane], num_samples);
+    // The cutoff only changes when it is modulated or glides. (No NaN marks
+    // the first sample: this unit is built with fast math, which assumes no
+    // NaNs and may compare them wrongly.)
+    bool have_cutoff = false;
+    double last_pitch = 0, cutoff = 0;
     for (int i = 0; i < num_samples; ++i) {
       if (reset_mask[lane] && i == resets->trigger_offset[lane]) {
         core.reset();
@@ -89,7 +94,11 @@ void ReverbFilter::process(int num_samples) {
         bass.beginBlock(bass_amount[lane], num_samples - i);
       }
       const double pitch = input(kCutoffLog)->at(i)[lane] + input(kKeytrack)->at(i)[lane] / 12.0;
-      const double cutoff = std::exp2(std::clamp(pitch, 3.0, 14.28771237954945));
+      if (!have_cutoff || pitch != last_pitch) {
+        have_cutoff = true;
+        last_pitch = pitch;
+        cutoff = std::exp2(std::clamp(pitch, 3.0, 14.28771237954945));
+      }
       const double dry = input(kAudio)->at(i)[lane];
       output()->buffer[i].set(lane, static_cast<float>(bass.tick(dry, core.tick(dry, cutoff))));
     }

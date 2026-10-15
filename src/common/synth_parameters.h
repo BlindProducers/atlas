@@ -87,6 +87,11 @@ namespace vital {
         return details_lookup_;
       }
 
+      // Every parameter by name, without a copy.
+      const std::map<std::string, ValueDetails>& detailsByName() const {
+        return details_lookup_;
+      }
+
       void addParameterGroup(const ValueDetails* list, int num_parameters, int index,
                              std::string id_prefix, std::string name_prefix, int version = -1);
 
@@ -144,6 +149,11 @@ namespace vital {
 
       static std::map<std::string, ValueDetails> getAllDetails() {
         return lookup_.getAllDetails();
+      }
+
+      // Sorted by name like a control_map, so the two can be walked together.
+      static const std::map<std::string, ValueDetails>& detailsByName() {
+        return lookup_.detailsByName();
       }
 
       static ValueDetailsLookup lookup_;
