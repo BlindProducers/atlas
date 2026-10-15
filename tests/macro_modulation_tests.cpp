@@ -64,6 +64,8 @@ namespace {
     controls.at("oversampling")->set(oversampling);
     synth.checkOversampling();
     controls.at("osc_1_random_phase")->set(0.0f);
+    // The comparisons were calibrated with the oscillator starting at 180 degrees.
+    controls.at("osc_1_phase")->set(0.5f);
     controls.at("osc_1_unison_voices")->set(1.0f);
     controls.at("env_1_attack")->set(0.001f);
     controls.at("env_1_decay")->set(0.001f);
@@ -252,6 +254,7 @@ namespace {
   void testGranularGridFollowsPluginClock() {
     SynthPlugin synth;
     prepare(synth);
+    slot_ids::useLegacySourceTypes(synth);
     auto& controls = synth.getControls();
     std::vector<float> ones(48000, 0.5f);
     synth.getSample(slot_ids::kGranularSlot)->loadSample(ones.data(), static_cast<int>(ones.size()), 48000);

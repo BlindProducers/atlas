@@ -765,18 +765,19 @@ namespace analog_oscillator_tests {
       { "analog_drift", 0.0f }, { "analog_voice_spread", 0.0f }, { "analog_wear", 0.0f },
       { "analog_noise", 0.0f }, { "analog_hum", 0.0f }, { "analog_hum_frequency", 1.0f }, { "analog_sag", 0.0f }
     };
-    // Slots 5-8 default to the Sample, Granular, Spectral and Noise types they replaced.
-    auto defaultFor = [](int osc, const std::pair<const char*, float>& entry) {
-      if (std::string(entry.first) == "type" && osc > 4)
-        return float(vital::source_types::kLegacySourceTypes[osc - 5]);
-      return entry.second;
-    };
     for (int osc = 1; osc <= vital::kNumOscillators; ++osc) for (const auto& entry : defaults) {
       const std::string id = "osc_" + std::to_string(osc) + "_" + entry.first;
       expect(controls.count(id) == 1, "Control exists: " + id);
       if (controls.count(id))
-        expectClose(controls.at(id)->value(), defaultFor(osc, entry), 0, "Clean default for " + id);
+        expectClose(controls.at(id)->value(), entry.second, 0, "Clean default for " + id);
     }
+    // A preset saved before slots had a type loads slots 5-8 as the Sample,
+    // Granular, Spectral and Noise sources they replaced.
+    auto loadedFor = [](int osc, const std::pair<const char*, float>& entry) {
+      if (std::string(entry.first) == "type" && osc > 4)
+        return float(vital::source_types::kLegacySourceTypes[osc - 5]);
+      return entry.second;
+    };
 
     // Envelope 1 alone has an analog mode, off by default.
     for (const auto& entry : std::vector<std::pair<std::string, float>> { { "env_1_analog", 0.0f },
@@ -859,7 +860,7 @@ namespace analog_oscillator_tests {
     restored.setStateInformation(text.data(), int(text.size()));
     for (int osc = 1; osc <= vital::kNumOscillators; ++osc) for (const auto& entry : defaults) {
       const std::string id = "osc_" + std::to_string(osc) + "_" + entry.first;
-      expectClose(restored.getControls().at(id)->value(), defaultFor(osc, entry), 0, "Old preset loads the default " + id);
+      expectClose(restored.getControls().at(id)->value(), loadedFor(osc, entry), 0, "Old preset loads the default " + id);
     }
 
     // The accessible editor shows the controls for the current type.

@@ -1553,11 +1553,11 @@ namespace vital {
       ValueDetails::kLinear, false, "", "Unison Frame Spread", nullptr },
     { "stereo_spread", 0x000000, 0.0, 1.0, 1.0, 0.0, 100.0,
       ValueDetails::kLinear, false, "%", "Stereo Spread", nullptr },
-    { "phase", 0x000000, 0.0, 1.0, 0.5, 0.0, 360.0,
+    { "phase", 0x000000, 0.0, 1.0, 0.0, 0.0, 360.0,
       ValueDetails::kLinear, false, "", "Phase", nullptr },
     { "distortion_phase", 0x000000, 0.0, 1.0, 0.5, 0.0, 360.0,
       ValueDetails::kLinear, false, "", "Distortion Phase", nullptr },
-    { "random_phase", 0x000000, 0.0, 1.0, 1.0, 0.0, 100.0,
+    { "random_phase", 0x000000, 0.0, 1.0, 0.0, 0.0, 100.0,
       ValueDetails::kLinear, false, "%", "Phase Randomization", nullptr },
     { "distortion_type", 0x000000, 0.0, SynthOscillator::kNumDistortionTypes - 1, 0.0, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Distortion Type", strings::kPhaseDistortionNames },
@@ -2194,10 +2194,11 @@ namespace vital {
     details_lookup_["osc_2_destination"].default_value = 1.0f;
     details_lookup_["osc_3_destination"].default_value = 3.0f;
     details_lookup_["osc_4_destination"].default_value = 3.0f;
-    // Slots 5-8 default to the sources they replaced (Sample, Granular, Spectral, Noise), switched off.
+    // Every slot defaults to Wavetable. Slots 5-8, which replaced the Sample, Granular,
+    // Spectral and Noise sources, keep their effects destination. Presets that predate
+    // this and lack a slot's type load those sources (LoadSave::migrateSlotTypeLevels).
     for (int i = 0; i < source_types::kNumLegacySources; ++i) {
       const std::string prefix = source_types::slotPrefix(source_types::kFirstLegacySourceSlot + i);
-      details_lookup_[prefix + "type"].default_value = static_cast<mono_float>(source_types::kLegacySourceTypes[i]);
       details_lookup_[prefix + "destination"].default_value = 3.0f;
     }
     details_lookup_["filter_1_osc1_input"].default_value = 1.0f;

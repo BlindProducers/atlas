@@ -588,6 +588,7 @@ namespace {
     std::mt19937 random(5);
     std::uniform_real_distribution<float> unit(-0.4f, 0.4f);
     for (int i = 0; i < 2400; ++i) pcm[i] = unit(random);
+    slot_ids::useLegacySourceTypes(synth);
     synth.getEngine()->getSample(slot_ids::kSampleSlot)->loadSample(pcm.data(), 48000, 48000);
     for (int osc = 1; osc <= 4; ++osc) controls.at("osc_" + std::to_string(osc) + "_on")->set(0);
     synth.parameterChanged("fx_slot_1_type", vital::constants::kResonator + 1);

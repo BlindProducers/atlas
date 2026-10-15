@@ -726,6 +726,7 @@ namespace {
   // Sample/Granular playheads are offered as modulation sources.
   void testSlotTypeRowsFollowTheType() {
     SynthPlugin synth;
+    slot_ids::useLegacySourceTypes(synth);
     SynthEditor editor(synth);
     editor.updateFullGui();
     pumpEditorEvents();
@@ -817,6 +818,7 @@ namespace {
   // Any slot switched to Wavetable gets the wavetable actions and editor, not just slots 1-4.
   void testWavetableEditingOnASlotSwitchedToWavetable() {
     SynthPlugin synth;
+    slot_ids::useLegacySourceTypes(synth);
     SynthEditor editor(synth);
     editor.updateFullGui();
     editor.addToDesktop(0);
@@ -1230,6 +1232,7 @@ namespace {
 
   void testOscillatorRowGroups() {
     SynthPlugin synth;
+    slot_ids::useLegacySourceTypes(synth);
     SynthEditor editor(synth);
     editor.updateFullGui();
     pumpEditorEvents();
@@ -1309,6 +1312,7 @@ namespace {
 
     // Every type reads the same way: output rows, controls, pitch, warp.
     SynthPlugin typed;
+    slot_ids::useLegacySourceTypes(typed);
     typed.parameterChanged("osc_2_type", float(vital::source_types::kAnalog));
     SynthEditor typed_editor(typed);
     typed_editor.updateFullGui();
@@ -1350,6 +1354,7 @@ namespace {
   // enter, holding one row per oscillator named "Oscillator N, <type>".
   void testArpeggiatorDestinationsAreAGroup() {
     SynthPlugin synth;
+    slot_ids::useLegacySourceTypes(synth);
     SynthEditor editor(synth);
     editor.updateFullGui();
     pumpEditorEvents();
@@ -1439,6 +1444,7 @@ namespace {
 
   void testGranularSizeModeNamesBothChoices() {
     SynthPlugin synth;
+    slot_ids::useLegacySourceTypes(synth);
     SynthEditor editor(synth);
     pumpEditorEvents();
     const auto valueText = [&]() {

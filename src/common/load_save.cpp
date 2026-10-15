@@ -637,7 +637,8 @@ void LoadSave::migrateFixedSourcesToSlots(json& settings, json& modulations) {
 
 // Early slot builds saved level and pan per type (osc_N_sample_level ...). They
 // are slot controls now: the active type's values move to osc_N_level/pan and
-// the rest are dropped.
+// the rest are dropped. Slots 5-8 used to default to the Sample, Granular,
+// Spectral and Noise sources they replaced, so a save without their type keeps them.
 void LoadSave::migrateSlotTypeLevels(json& settings, json& modulations) {
   if (!settings.is_object())
     return;
@@ -648,6 +649,9 @@ void LoadSave::migrateSlotTypeLevels(json& settings, json& modulations) {
   for (int slot = 0; slot < vital::kNumOscillators; ++slot) {
     const std::string prefix = vital::source_types::slotPrefix(slot);
     const std::string type_key = prefix + "type";
+    if (slot >= vital::source_types::kFirstLegacySourceSlot && !settings.count(type_key))
+      settings[type_key] = static_cast<float>(
+          vital::source_types::kLegacySourceTypes[slot - vital::source_types::kFirstLegacySourceSlot]);
     int type = static_cast<int>(vital::Parameters::getDetails(type_key).default_value);
     if (settings.count(type_key) && settings[type_key].is_number())
       type = static_cast<int>(settings[type_key].get<float>() + 0.5f);

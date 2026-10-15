@@ -189,6 +189,7 @@ int main() {
   if (const int result = testFxBusPresets())
     return result;
   SynthPlugin synth;
+  slot_ids::useLegacySourceTypes(synth);
 
   std::map<std::string, String> original_host_ids;
   int original_host_index = 0;

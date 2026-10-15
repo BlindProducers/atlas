@@ -268,6 +268,7 @@ int main() {
       // to prove that the stopped/muted comparisons contain actual input audio.
       std::vector<float> pcm(48000);
       for (int i = 0; i < 48000; ++i) pcm[i] = 0.4f * std::sin(i * 0.031f);
+      slot_ids::useLegacySourceTypes(synth);
       synth.getEngine()->getSample(slot_ids::kSampleSlot)->loadSample(pcm.data(), 48000, 48000);
       synth.getControls().at(slot_ids::id("sample_on"))->set(1); synth.getControls().at(slot_ids::id("sample_level"))->set(0.3f);
       synth.getControls().at(slot_ids::id("sample_destination"))->set(vital::constants::kEffects);

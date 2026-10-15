@@ -15,6 +15,8 @@
 #include "wavetable_creator.h"
 #include "synth_oscillator.h"
 #include "source_types.h"
+#include "slot_test_ids.h"
+#include "smooth_value.h"
 #include "source_slot_module.h"
 #include "producers_module.h"
 #include "load_save.h"
@@ -83,6 +85,21 @@ namespace {
     expect(found != controls.end(), "control exists: " + name);
     if (found != controls.end())
       found->second->set(value);
+  }
+
+  // The fixtures and their references were written when slots 5-8 defaulted to
+  // the Sample, Granular, Spectral and Noise sources and oscillators started at
+  // 180 degrees. A new patch is all wavetables at phase 0 now; restore the old one.
+  // Phase is smoothed, so it is set without a glide, as if the patch began there.
+  void useLegacyDefaults(SynthPlugin& plugin) {
+    slot_ids::useLegacySourceTypes(plugin);
+    for (int slot = 0; slot < vital::kNumOscillators; ++slot) {
+      vital::Value* phase = plugin.getControls().at(vital::source_types::slotPrefix(slot) + "phase");
+      if (auto* smooth = dynamic_cast<vital::SmoothValue*>(phase))
+        smooth->setHard(0.5f);
+      else
+        phase->set(0.5f);
+    }
   }
 
   // A deterministic half-second test sample: a decaying chirp with harmonics.
@@ -262,6 +279,7 @@ namespace {
       for (int i = 1; i <= 20; ++i)
         set(plugin, prefix + "fx_slot_" + std::to_string(i) + "_type", 0.0f);
     }
+    useLegacyDefaults(plugin);
     fixture.configure(plugin);
     plugin.checkOversampling();
 
@@ -396,6 +414,7 @@ namespace {
       set(plugin, "osc_" + std::to_string(i) + "_on", 0.0f);
       set(plugin, "osc_" + std::to_string(i) + "_random_phase", 0.0f);
     }
+    useLegacyDefaults(plugin);
     plugin.checkOversampling();
   }
 
@@ -404,22 +423,33 @@ namespace {
     plugin.parameterChanged(vital::source_types::slotPrefix(slot) + "type", float(type));
   }
 
-  void testDefaultPatchMatchesLegacySources() {
+  // A new patch, and Initialize, make every slot a wavetable oscillator that
+  // starts at phase 0 with no phase randomization. Slots 5-8 keep the main
+  // effects destination of the sources they replaced.
+  void testDefaultPatch() {
     SynthPlugin plugin;
-    preparePlugin(plugin);
-    const int expected[] = { vital::source_types::kSample, vital::source_types::kGranular,
-                             vital::source_types::kSpectral, vital::source_types::kNoise };
-    for (int i = 0; i < 4; ++i) {
-      auto* slot = plugin.getEngine()->getSourceSlot(4 + i);
-      expect(slot != nullptr && slot->activeType() == expected[i],
-             "slot " + std::to_string(5 + i) + " defaults to the source it replaced");
-      expect(plugin.getControls().at(vital::source_types::slotPrefix(4 + i) + "destination")->value() == 3.0f,
-             "slots 5-8 default to the main effects destination like the old sources");
-    }
-    for (int i = 0; i < 4; ++i) {
-      auto* slot = plugin.getEngine()->getSourceSlot(i);
-      expect(slot != nullptr && slot->activeType() == vital::source_types::kWavetable,
-             "slots 1-4 default to wavetable oscillators");
+    plugin.setPlayConfigDetails(0, 2, kSampleRate, 128);
+    plugin.prepareToPlay(kSampleRate, 128);
+    for (bool initialized : { false, true }) {
+      if (initialized) {
+        setType(plugin, 4, vital::source_types::kSample);
+        set(plugin, "osc_1_phase", 0.25f);
+        set(plugin, "osc_1_random_phase", 1.0f);
+        plugin.loadInitPreset();
+      }
+      const std::string context = initialized ? " after Initialize" : "";
+      for (int slot = 0; slot < vital::kNumOscillators; ++slot) {
+        const std::string prefix = vital::source_types::slotPrefix(slot);
+        auto* source = plugin.getEngine()->getSourceSlot(slot);
+        expect(source != nullptr && source->activeType() == vital::source_types::kWavetable,
+               "slot " + std::to_string(slot + 1) + " defaults to a wavetable oscillator" + context);
+        expect(plugin.getControls().at(prefix + "phase")->value() == 0.0f &&
+               plugin.getControls().at(prefix + "random_phase")->value() == 0.0f,
+               "slot " + std::to_string(slot + 1) + " starts at phase 0 without phase randomization" + context);
+      }
+      for (int slot = vital::source_types::kFirstLegacySourceSlot; slot < vital::kNumOscillators; ++slot)
+        expect(plugin.getControls().at(vital::source_types::slotPrefix(slot) + "destination")->value() == 3.0f,
+               "slots 5-8 default to the main effects destination like the old sources" + context);
     }
   }
 
@@ -1001,7 +1031,9 @@ namespace {
     expect(slot_settings.value("osc_6_level", -1.0f) == 0.1f && slot_settings.count("osc_6_granular_level") == 0 &&
            slot_settings.count("osc_6_sample_level") == 0 && slot_settings.count("osc_6_sample_pan") == 0,
            "the active type's level moves to the slot and inactive copies are dropped");
-    expect(slot_settings.value("osc_7_pan", -1.0f) == 0.3f, "slot 7 defaults to Spectral so its spectral pan moves");
+    expect(slot_settings.value("osc_7_pan", -1.0f) == 0.3f &&
+           slot_settings.value("osc_7_type", -1.0f) == float(vital::source_types::kSpectral),
+           "a save without slot 7's type keeps the Spectral source, so its spectral pan moves");
     expect(slot_settings.count("osc_1_level") == 0 && slot_settings.count("osc_1_noise_level") == 0,
            "a wavetable slot drops a stray noise level");
     expect(slot_modulations.size() == 1 && slot_modulations[0]["destination"] == "osc_6_level",
@@ -1099,7 +1131,7 @@ namespace {
 
   int behaviour() {
     testDetoursLeaveTypesUnchanged();
-    testDefaultPatchMatchesLegacySources();
+    testDefaultPatch();
     testTypeSwitchBuildsOnlyTheActiveEngine();
     testLegacyPresetMigration();
     testHostParametersAndAutomationProxies();
@@ -1549,7 +1581,8 @@ namespace {
     for (const FactoryPreset& preset : factoryPresets()) {
       SynthPlugin plugin;
       preparePlugin(plugin);
-      // preparePlugin switches every slot off; presets start from the engine's own defaults.
+      // preparePlugin switches every slot off; presets start from the defaults they
+      // were written with, which included full phase randomization.
       for (int slot = 0; slot < 8; ++slot) {
         set(plugin, vital::source_types::slotPrefix(slot) + "on", slot == 0 ? 1.0f : 0.0f);
         set(plugin, vital::source_types::slotPrefix(slot) + "random_phase", 1.0f);

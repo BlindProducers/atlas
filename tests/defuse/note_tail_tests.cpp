@@ -33,6 +33,7 @@ namespace {
     std::vector<float> pcm(48000);
     for (int i = 0; i < int(pcm.size()); ++i)
       pcm[i] = .4f * std::sin(float(i) * (2.0f * 3.14159265358979323846f * 130.8128f / 48000.0f));
+    slot_ids::useLegacySourceTypes(synth);
     synth.getEngine()->getSample(slot_ids::kSampleSlot)->loadSample(pcm.data(), int(pcm.size()), 48000);
     set(synth, slot_ids::id("sample_on"), 1); set(synth, slot_ids::id("sample_level"), .3f);
     set(synth, slot_ids::id("sample_random_phase"), 0); set(synth, slot_ids::id("sample_loop"), 0);
