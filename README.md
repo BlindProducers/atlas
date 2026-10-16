@@ -153,8 +153,13 @@ On macOS, `installer/macos/build_pkg.sh` turns that build into an installer,
 all users in `/Library/Audio/Plug-Ins`. Every push to `dev` is also built on
 GitHub Actions, and the installer and plugins are published on the Releases page
 as the current beta pre-release (`v2.0.0-beta.1` and so on; the beta number is
-set at the top of `.github/workflows/macos.yml`). Atlas is in beta: a limiter
-after it is recommended, and contributions are welcome.
+set at the top of `.github/workflows/macos.yml`). Every push to the `Windows`
+branch builds the Windows VST3 the same way (`.github/workflows/windows.yml`)
+and adds `Atlas-<version>-<beta>-Windows-VST3.zip` to that pre-release. Windows
+users download that zip from the Releases page and copy the whole `Atlas.vst3`
+folder it holds into `C:\Program Files\Common Files\VST3`, then rescan plug-ins
+in their host. Atlas is in beta: a limiter after it is recommended, and
+contributions are welcome.
 
 Atlas keeps its presets, wavetables, samples and effect presets in
 `Documents/Blind Producers Plugins/Atlas`.
