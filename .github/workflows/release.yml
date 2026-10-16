@@ -21,6 +21,9 @@ on:
     paths-ignore:
       - '**.md'
       - 'docs/**'
+  # Run by hand from the Actions tab to rebuild and republish the current
+  # dev head, for example after a force-push, which starts no run.
+  workflow_dispatch:
 
 # A newer push cancels the build still running for an older one.
 concurrency:
