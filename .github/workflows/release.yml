@@ -1,0 +1,167 @@
+# Builds Atlas for macOS (VST3, AU and a .pkg installer) and for Windows (VST3
+# and an .exe installer) on every push to dev, then publishes all of it as the
+# current beta pre-release on the Releases page (v2.0.0-beta.1 and so on, see
+# ATLAS_PRERELEASE below). The two builds run side by side; the release is
+# touched only once both have succeeded, so its files always come from one
+# commit. Each publish replaces the files of the one before, and the beta's
+# tag moves to the commit it was built from; bumping ATLAS_PRERELEASE starts
+# a new release. Nothing here touches main.
+name: Build and publish
+
+env:
+  # The pre-release the dev branch publishes: its tag is v<version>-<this>,
+  # its title "Atlas <version> beta N". Bump it for the next beta.
+  ATLAS_PRERELEASE: beta.1
+
+on:
+  push:
+    branches:
+      - dev
+    # A push that only changes documentation does not need a new build.
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+
+# A newer push cancels the build still running for an older one.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  macos:
+    name: macOS arm64
+    runs-on: macos-26
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+
+      # .gitmodules marks the reference-test submodules update = none, so this
+      # fetches only the four the plugin needs (JUCE, nlohmann json,
+      # concurrentqueue and KISS FFT), shallow.
+      - name: Fetch submodules
+        run: git submodule update --init --jobs 4
+
+      - name: Configure
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+
+      # The runner has 3 cores and 7 GB of RAM, and one compile job can use
+      # several GB (see CLAUDE.md), so build with 2 jobs.
+      - name: Build
+        run: cmake --build build --config Release --parallel 2 --target Atlas_VST3 Atlas_AU
+
+      # ditto keeps the bundles' symlinks, permissions and signatures.
+      - name: Package
+        run: |
+          version=$(sed -n 's/^project(Atlas VERSION \([^ ]*\).*/\1/p' CMakeLists.txt)
+          name="Atlas-${version}-${ATLAS_PRERELEASE}-macOS"
+          installer/macos/build_pkg.sh build dist
+          mv "dist/Atlas-${version}-macOS.pkg" "dist/${name}.pkg"
+          ditto -c -k --sequesterRsrc --keepParent build/Atlas_artefacts/Release/VST3/Atlas.vst3 "dist/${name}-VST3.zip"
+          ditto -c -k --sequesterRsrc --keepParent build/Atlas_artefacts/Release/AU/Atlas.component "dist/${name}-AU.zip"
+          # File attributes in a payload become stray ._ entries, so flag them.
+          pkgutil --expand "dist/${name}.pkg" "$RUNNER_TEMP/expanded"
+          for component in "$RUNNER_TEMP"/expanded/*.pkg; do
+            if gunzip -dc < "$component/Payload" | cpio -t 2> /dev/null | grep '/\._' > /dev/null; then
+              echo "::warning::$(basename "$component") has ._ attribute files in its payload"
+            fi
+          done
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: macos
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  windows:
+    name: Windows x64
+    # Visual Studio 2022, the Windows SDK (its MIDL generates the NVDA
+    # controller stub during the build) and Inno Setup come with the image.
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Fetch submodules
+        run: git submodule update --init --jobs 4
+
+      - name: Configure
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DATLAS_MSVC_COMPILE_JOBS=3
+
+      # The runner has 4 cores and 16 GB of RAM, and each compiler on a unity
+      # file can use several GB (see CLAUDE.md): one project at a time, with
+      # three compilers inside it.
+      - name: Build
+        run: cmake --build build --config Release --parallel 1 --target Atlas_VST3
+
+      # The zip holds the whole bundle folder (the DLL under
+      # Contents/x86_64-win and the Tape effect's clips under
+      # Contents/Resources/Tape); the installer puts that folder into the
+      # system VST3 folder (installer/windows/Atlas.iss).
+      - name: Package
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path CMakeLists.txt -Pattern '^project\(Atlas VERSION (\S+)').Matches[0].Groups[1].Value
+          $name = "Atlas-$version-$env:ATLAS_PRERELEASE-Windows"
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Compress-Archive -Path build/Atlas_artefacts/Release/VST3/Atlas.vst3 -DestinationPath "dist/$name-VST3.zip"
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Q "/DAppVersion=$version" "/DOutputName=$name" installer\windows\Atlas.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-ChildItem dist | Select-Object Name, Length
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: windows
+          path: dist/*
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish the beta pre-release
+    needs: [macos, windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      # Moves the beta tag and updates its release.
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY_URL: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          version=$(sed -n 's/^project(Atlas VERSION \([^ ]*\).*/\1/p' CMakeLists.txt)
+          tag="v${version}-${ATLAS_PRERELEASE}"
+          # beta.1 reads as "beta 1" in the title and notes.
+          beta="${ATLAS_PRERELEASE/./ }"
+          title="Atlas ${version} ${beta}"
+          notes="Atlas ${version} ${beta}, built from commit ${GITHUB_SHA} on the dev branch (${GITHUB_SHA::7}: $(git log -1 --format=%s)). Every push to dev replaces these files until the next beta.
+
+          This is a beta release. Atlas is still being developed and tested: expect rough edges, keep copies of the presets you care about, and tell us what works and what does not.
+
+          Atlas can get loud. Some oscillators, filters and effects reach well above 0 dBFS, so a limiter after Atlas, on the track or on the master, is recommended when you play it, especially on headphones.
+
+          Contributions are welcome: bug reports, feature requests, pull requests, presets, wavetables and documentation, at ${REPOSITORY_URL}. Atlas is built to be played and programmed with a keyboard and a screen reader, so reports from VoiceOver and Windows screen reader users are especially valuable.
+
+          macOS: the .pkg installs the VST3 and the Audio Unit in /Library/Audio/Plug-Ins. It is not signed, so the first time macOS blocks it: open System Settings > Privacy & Security and click Open Anyway. The macOS zips hold the bare plug-ins for copying by hand. They are not notarized either, so after unzipping, clear the quarantine flag (xattr -dr com.apple.quarantine Atlas.vst3, and the same for Atlas.component) or hosts refuse to load them.
+
+          Windows: the .exe installs Atlas.vst3 into C:\\Program Files\\Common Files\\VST3 (or a folder you choose) and can be removed from Apps & features. It is not signed, so SmartScreen may ask once: choose More info, then Run anyway. The Windows zip holds the bare Atlas.vst3 folder for copying by hand into your VST3 folder. Rescan plug-ins in your host afterwards."
+          ls -l dist
+          git tag -f "$tag" "$GITHUB_SHA"
+          git push -f origin "refs/tags/$tag"
+          if gh release view "$tag" > /dev/null 2>&1; then
+            gh release view "$tag" --json assets --jq '.assets[].name' | while read -r asset; do
+              gh release delete-asset "$tag" "$asset" --yes
+            done
+            gh release edit "$tag" --title "$title" --notes "$notes" --prerelease
+          else
+            gh release create "$tag" --verify-tag --prerelease --latest=false --title "$title" --notes "$notes"
+          fi
+          gh release upload "$tag" dist/*
