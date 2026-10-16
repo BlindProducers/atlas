@@ -2,6 +2,9 @@
 #pragma once
 #include <array>
 namespace vital::tape {
+  // Recordings in the Tape Noise Sound menu: "Vinyl 1" to "Vinyl 8", read from
+  // Factory/Samples/Tape by TapeNoiseLibrary and named by strings::kTapeNoiseNames.
+  inline constexpr int kNumNoiseSounds = 8;
   enum Control {
     kDriveEnabled,
     kDriveAmount,
@@ -52,7 +55,7 @@ namespace vital::tape {
     { "dropouts", 0.0f, 1.0f, 0.08f, 1.0f, false },
     { "dropout_density", 0.0f, 1.0f, 0.08f, 1.0f, false },
     { "noise_enabled", 0.0f, 1.0f, 0.02f, 1.0f, true },
-    { "noise_source", 0.0f, 26.0f, 0.02f, 1.0f, true },
+    { "noise_source", 0.0f, kNumNoiseSounds - 1.0f, 0.02f, 1.0f, true },
     { "noise_level", -60.0f, 0.0f, 0.02f, 0.1f, false },
     { "noise_follow", 0.0f, 1.0f, 0.02f, 1.0f, false },
     { "noise_pitch", -24.0f, 24.0f, 0.02f, 1.0f, false },

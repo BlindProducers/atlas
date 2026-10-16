@@ -3312,7 +3312,7 @@ namespace {
     if (defuse_suffix == "automation_precision") return "Coefficient update precision. 100 percent updates each sample while smoothing; zero percent updates every 512 samples. Arrows change one percent, Page keys ten percent.";
     const String tape_suffix = effectSuffix("tape_");
     if (tape_suffix.isNotEmpty()) {
-      if (tape_suffix == "noise_source") return "Choose Vinyl 1 through Vinyl 27 from Factory, Samples, Tape. Sounds load in the background and crossfade when changed.";
+      if (tape_suffix == "noise_source") return "Choose Vinyl 1 through Vinyl 8 from Factory, Samples, Tape. Sounds load in the background and crossfade when changed.";
       if (tape_suffix == "noise_follow") return "Make noise follow the input level. Zero keeps it constant; 100 percent follows the signal with a 10 ms attack and 180 ms release.";
       if (tape_suffix == "noise_pitch") return "Change the recording playback pitch and speed from minus 24 to plus 24 semitones.";
       if (tape_suffix == "noise_tone") return "Darken or brighten the noise with Opus's high shelf at 1800 Hz.";

@@ -63,48 +63,44 @@ bool finite(const Signal& a) {
 }
 int main(int argc, char** argv) {
   juce::ScopedJuceInitialiser_GUI juce;
-  if (argc < 2) { std::cerr << "Pass Factory/Samples/Tape and optionally the original Opus Noise folder\n"; return 2; }
+  if (argc < 2) { std::cerr << "Pass Factory/Samples/Tape\n"; return 2; }
   const juce::File folder { juce::String(argv[1]) };
   auto library = std::make_shared<vital::TapeNoiseLibrary>(folder);
-  for (int i = 0; i < 27; ++i) library->request(i);
+  constexpr int clips = vital::TapeNoiseLibrary::kNumClips;
+  for (int i = 0; i < clips; ++i) library->request(i);
   for (int attempt = 0; attempt < 400; ++attempt) {
     bool loaded = true;
-    for (int i = 0; i < 27; ++i) loaded &= library->status(i) == 1;
+    for (int i = 0; i < clips; ++i) loaded &= library->status(i) == 1;
     if (loaded) break;
     juce::Thread::sleep(25);
   }
-  for (int i = 0; i < 27; ++i) {
-    const auto* clip = library->request(i);
-    expect(clip != nullptr, "all 27 authenticated noise recordings load");
-    if (!clip) return 1;
-    if (argc > 2) {
-      juce::WavAudioFormat format;
-      auto stream = juce::File(juce::String(argv[2])).getChildFile("Vinyl " + juce::String(i + 1) + ".wav").createInputStream();
-      std::unique_ptr<juce::AudioFormatReader> reader(format.createReaderFor(stream.release(), true));
-      expect(reader && reader->lengthInSamples == clip->audio.getNumSamples() && reader->sampleRate == clip->sample_rate,
-             "encrypted samples preserve the original Opus lengths and sample rates");
-      if (reader) {
-        juce::AudioBuffer<float> original(static_cast<int>(reader->numChannels), static_cast<int>(reader->lengthInSamples));
-        reader->read(&original, 0, original.getNumSamples(), 0, true, true);
-        bool same = original.getNumChannels() == clip->audio.getNumChannels();
-        if (same) for (int ch = 0; ch < original.getNumChannels(); ++ch)
-          same &= std::memcmp(original.getReadPointer(ch), clip->audio.getReadPointer(ch), original.getNumSamples() * sizeof(float)) == 0;
-        expect(same, "decoded audio must be sample-exact to the user's Opus recordings");
-      }
+  const auto clipIsSane = [](const vital::TapeNoiseLibrary::Clip& clip) {
+    bool sane = clip.audio.getNumChannels() == 2 && clip.sample_rate >= 44100 && clip.audio.getNumSamples() > clip.sample_rate;
+    for (int channel = 0; channel < clip.audio.getNumChannels(); ++channel) {
+      const float* data = clip.audio.getReadPointer(channel);
+      for (int i = 0; i < clip.audio.getNumSamples(); ++i) sane &= std::isfinite(data[i]) && std::abs(data[i]) <= 1.0f;
     }
+    return sane;
+  };
+  for (int i = 0; i < clips; ++i) {
+    const auto* clip = library->request(i);
+    expect(clip != nullptr, "Vinyl 1 to Vinyl 8 load from Factory/Samples/Tape");
+    if (!clip) return 1;
+    expect(clipIsSane(*clip), "recordings are stereo, at least 44.1 kHz, longer than a second and within full scale");
   }
+  // Damaged or foreign files must fail safely instead of crashing.
+  const auto temporary = juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("atlas-tape-test", ".wav");
+  temporary.replaceWithText("this is not a WAV file, but it is longer than a WAV header");
+  expect(!vital::TapeNoiseLibrary::load(temporary), "a file that is not a WAV is rejected");
   juce::MemoryBlock original;
-  folder.getChildFile("Vinyl 1.atape").loadFileAsData(original);
-  const auto temporary = juce::File::getSpecialLocation(juce::File::tempDirectory).getNonexistentChildFile("atlas-tape-test", ".atape");
-  for (size_t offset : { size_t(0), size_t(8), size_t(24), original.getSize() - 1 }) {
-    auto damaged = original; static_cast<uint8_t*>(damaged.getData())[offset] ^= 1;
-    temporary.replaceWithData(damaged.getData(), damaged.getSize());
-    expect(!vital::TapeNoiseLibrary::decode(temporary), "tampered header, IV, ciphertext and authentication tag must be rejected");
-  }
-  temporary.replaceWithData(original.getData(), original.getSize() - 17);
-  expect(!vital::TapeNoiseLibrary::decode(temporary), "truncated files must be rejected");
+  folder.getChildFile(vital::TapeNoiseLibrary::fileName(0)).loadFileAsData(original);
+  temporary.replaceWithData(original.getData(), original.getSize() / 2);
+  if (auto truncated = vital::TapeNoiseLibrary::load(temporary))
+    expect(clipIsSane(*truncated), "a recording cut short loads only finite samples");
+  temporary.replaceWithData(original.getData(), 40);
+  expect(!vital::TapeNoiseLibrary::load(temporary), "a recording cut inside its header is rejected");
   temporary.deleteFile();
-  expect(!vital::TapeNoiseLibrary::decode(folder.getChildFile("missing.atape")), "missing samples fail safely");
+  expect(!vital::TapeNoiseLibrary::load(folder.getChildFile("missing.wav")), "missing recordings fail safely");
 
   for (int rate : { 44100, 48000, 96000 }) for (int factor : { 1, 2, 4, 8 }) {
     Fixture f(library, rate, factor);
@@ -187,7 +183,7 @@ int main(int argc, char** argv) {
     Signal silence(24000, vital::poly_float(0));
     const auto first = render(f.module, silence);
     expect(rms(first) > 1e-5 && finite(first), "noise sounds without input when Follow is zero");
-    f.set("noise_source", 26);
+    f.set("noise_source", clips - 1);
     const auto changed = render(f.module, silence);
     expect(difference(first, changed) > 1e-4 && finite(changed), "noise selection switches recordings safely");
     f.set("noise_follow", 1); f.module.hardReset();

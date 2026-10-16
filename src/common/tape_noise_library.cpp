@@ -1,19 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "tape_noise_library.h"
-#include "tape_asset_key.h"
 #include "load_save.h"
 #include <mutex>
 
-#if JUCE_MAC
- #include <CommonCrypto/CommonCryptor.h>
- #include <CommonCrypto/CommonHMAC.h>
- #include <dlfcn.h>
-#elif JUCE_WINDOWS
+#if JUCE_WINDOWS
  #include <windows.h>
- #include <bcrypt.h>
 #else
- #include <openssl/evp.h>
- #include <openssl/hmac.h>
  #include <dlfcn.h>
 #endif
 
@@ -34,65 +26,6 @@ juce::File bundledDirectory() {
   const juce::File binary { juce::String(info.dli_fname) };
  #endif
   return binary.getParentDirectory().getSiblingFile("Resources").getChildFile("Tape");
-}
-
-bool decrypt(const juce::MemoryBlock& encrypted, juce::MemoryBlock& plain) {
-  const auto size = encrypted.getSize();
-  const auto* data = static_cast<const uint8_t*>(encrypted.getData());
-  if (size < 72 || size > 128 * 1024 * 1024 || (size - 56) % 16 != 0 ||
-      std::memcmp(data, "ATLASTP1", 8) != 0) return false;
-  uint8_t tag[32] {};
-  const size_t authenticated_size = size - 32, ciphertext_size = size - 56;
- #if JUCE_MAC
-  CCHmac(kCCHmacAlgSHA256, tape::asset_keys + 32, 32, data, authenticated_size, tag);
- #elif JUCE_WINDOWS
-  BCRYPT_ALG_HANDLE hash_algorithm = nullptr;
-  if (BCryptOpenAlgorithmProvider(&hash_algorithm, BCRYPT_SHA256_ALGORITHM, nullptr, BCRYPT_ALG_HANDLE_HMAC_FLAG) < 0) return false;
-  const auto hash_status = BCryptHash(hash_algorithm, const_cast<PUCHAR>(tape::asset_keys + 32), 32,
-                                    const_cast<PUCHAR>(data), static_cast<ULONG>(authenticated_size), tag, 32);
-  BCryptCloseAlgorithmProvider(hash_algorithm, 0);
-  if (hash_status < 0) return false;
- #else
-  unsigned int tag_size = 32;
-  if (!HMAC(EVP_sha256(), tape::asset_keys + 32, 32, data, authenticated_size, tag, &tag_size)) return false;
- #endif
-  // Authenticate the header, IV and ciphertext before decrypting or parsing.
-  unsigned int difference = 0;
-  for (int i = 0; i < 32; ++i) difference |= tag[i] ^ data[authenticated_size + i];
-  if (difference != 0) return false;
-  plain.setSize(ciphertext_size);
-  size_t decoded_size = 0;
- #if JUCE_MAC
-  if (CCCrypt(kCCDecrypt, kCCAlgorithmAES, kCCOptionPKCS7Padding, tape::asset_keys, 32, data + 8,
-              data + 24, ciphertext_size, plain.getData(), plain.getSize(), &decoded_size) != kCCSuccess) return false;
- #elif JUCE_WINDOWS
-  BCRYPT_ALG_HANDLE algorithm = nullptr;
-  BCRYPT_KEY_HANDLE key = nullptr;
-  if (BCryptOpenAlgorithmProvider(&algorithm, BCRYPT_AES_ALGORITHM, nullptr, 0) < 0) return false;
-  auto result = BCryptSetProperty(algorithm, BCRYPT_CHAINING_MODE, reinterpret_cast<PUCHAR>(const_cast<wchar_t*>(BCRYPT_CHAIN_MODE_CBC)), sizeof(BCRYPT_CHAIN_MODE_CBC), 0);
-  if (result >= 0) result = BCryptGenerateSymmetricKey(algorithm, &key, nullptr, 0, const_cast<PUCHAR>(tape::asset_keys), 32, 0);
-  uint8_t iv[16]; std::memcpy(iv, data + 8, 16);
-  ULONG length = 0;
-  if (result >= 0) result = BCryptDecrypt(key, const_cast<PUCHAR>(data + 24), static_cast<ULONG>(ciphertext_size), nullptr,
-                                         iv, 16, static_cast<PUCHAR>(plain.getData()), static_cast<ULONG>(plain.getSize()), &length, BCRYPT_BLOCK_PADDING);
-  if (key) BCryptDestroyKey(key);
-  BCryptCloseAlgorithmProvider(algorithm, 0);
-  if (result < 0) return false;
-  decoded_size = length;
- #else
-  auto* context = EVP_CIPHER_CTX_new();
-  if (!context) return false;
-  int length = 0, tail = 0;
-  auto* out = static_cast<unsigned char*>(plain.getData());
-  const bool ok = EVP_DecryptInit_ex(context, EVP_aes_256_cbc(), nullptr, tape::asset_keys, data + 8) == 1 &&
-      EVP_DecryptUpdate(context, out, &length, data + 24, static_cast<int>(ciphertext_size)) == 1 &&
-      EVP_DecryptFinal_ex(context, out + length, &tail) == 1;
-  EVP_CIPHER_CTX_free(context);
-  if (!ok) return false;
-  decoded_size = length + tail;
- #endif
-  plain.setSize(decoded_size);
-  return true;
 }
 }
 
@@ -126,12 +59,13 @@ const TapeNoiseLibrary::Clip* TapeNoiseLibrary::request(int index) noexcept {
 int TapeNoiseLibrary::status(int index) const noexcept {
   return status_[std::clamp(index, 0, kNumClips - 1)].load(std::memory_order_acquire);
 }
-std::unique_ptr<TapeNoiseLibrary::Clip> TapeNoiseLibrary::decode(const juce::File& file) {
-  if (file.getSize() < 72 || file.getSize() > 128 * 1024 * 1024) return {};
-  juce::MemoryBlock encrypted, plain;
-  if (!file.loadFileAsData(encrypted) || !decrypt(encrypted, plain)) return {};
+std::unique_ptr<TapeNoiseLibrary::Clip> TapeNoiseLibrary::load(const juce::File& file) {
+  // A WAV header alone is 44 bytes. The size cap keeps a damaged header from
+  // requesting gigabytes; the longest recording shipped stays far below it.
+  if (!file.existsAsFile() || file.getSize() < 44 || file.getSize() > 128 * 1024 * 1024) return {};
+  auto stream = file.createInputStream();
+  if (!stream) return {};
   juce::WavAudioFormat format;
-  auto stream = std::make_unique<juce::MemoryInputStream>(plain.getData(), plain.getSize(), false);
   std::unique_ptr<juce::AudioFormatReader> reader(format.createReaderFor(stream.release(), true));
   if (!reader || reader->lengthInSamples < 2 || reader->lengthInSamples > 32 * 1024 * 1024 ||
       reader->numChannels < 1 || reader->numChannels > 2 || reader->sampleRate < 8000 || reader->sampleRate > 384000) return {};
@@ -143,7 +77,7 @@ std::unique_ptr<TapeNoiseLibrary::Clip> TapeNoiseLibrary::decode(const juce::Fil
 }
 void TapeNoiseLibrary::run() {
   bool located = false;
-  // The clips inside the plug-in bundle. They are read directly when the
+  // The recordings inside the plug-in bundle. They are read directly when the
   // factory folder cannot be written (a sandboxed host, or a Documents folder
   // the host was refused) or a copy there is missing or damaged.
   juce::File bundled;
@@ -154,17 +88,21 @@ void TapeNoiseLibrary::run() {
       if (!explicit_directory_) {
         directory_ = factoryDirectory();
         bundled = bundledDirectory();
-        // Ship encrypted files only. The factory folder is the playback source
-        // when it can be written; otherwise the bundle is.
+        // The factory folder is the playback source when it can be written;
+        // otherwise the bundle is.
         if (bundled.isDirectory() && directory_.createDirectory().wasOk()) {
-          for (int index = 1; index <= kNumClips && !threadShouldExit(); ++index) {
-            const auto name = "Vinyl " + juce::String(index) + ".atape";
-            const auto source = bundled.getChildFile(name), destination = directory_.getChildFile(name);
+          for (int index = 0; index < kNumClips && !threadShouldExit(); ++index) {
+            const auto source = bundled.getChildFile(fileName(index));
+            const auto destination = directory_.getChildFile(fileName(index));
             if (source.existsAsFile() && !source.hasIdenticalContentTo(destination)) {
               juce::TemporaryFile replacement(destination);
               if (source.copyFileTo(replacement.getFile())) replacement.overwriteTargetFileWithTemporary();
             }
           }
+          // Earlier 2.0.0 betas copied 27 encrypted "Vinyl N.atape" clips here.
+          // Nothing reads them any more.
+          for (int index = 1; index <= 27; ++index)
+            directory_.getChildFile("Vinyl " + juce::String(index) + ".atape").deleteFile();
         }
       }
       located = true;
@@ -174,16 +112,15 @@ void TapeNoiseLibrary::run() {
       const double now = juce::Time::getMillisecondCounterHiRes();
       if (attempted[i] != 0 && now - attempted[i] < 1000) continue;
       attempted[i] = now;
-      const auto name = "Vinyl " + juce::String(i + 1) + ".atape";
-      clips_[i] = decode(directory_.getChildFile(name));
+      clips_[i] = load(directory_.getChildFile(fileName(i)));
       if (!clips_[i] && bundled.isDirectory())
-        clips_[i] = decode(bundled.getChildFile(name));
+        clips_[i] = load(bundled.getChildFile(fileName(i)));
       if (clips_[i]) {
         published_[i].store(clips_[i].get(), std::memory_order_release);
         status_[i].store(1, std::memory_order_release);
       }
       else if (status_[i].exchange(-1) != -1)
-        juce::Logger::writeToLog("Atlas Tape: missing or invalid encrypted noise Vinyl " + juce::String(i + 1));
+        juce::Logger::writeToLog("Atlas Tape: missing or invalid noise recording " + fileName(i));
     }
     wait(50);
   }

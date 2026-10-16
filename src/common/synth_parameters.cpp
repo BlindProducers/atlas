@@ -29,6 +29,7 @@
 #include "synth_lfo.h"
 #include "synth_oscillator.h"
 #include "synth_strings.h"
+#include "tape_controls.h"
 #include "voice_handler.h"
 #include "wavetable.h"
 #include "utils.h"
@@ -2234,3 +2235,6 @@ namespace vital {
   ValueDetailsLookup Parameters::lookup_;
 
 } // namespace vital
+
+static_assert(std::size(strings::kTapeNoiseNames) == vital::tape::kNumNoiseSounds,
+              "strings::kTapeNoiseNames names every Tape noise recording");
