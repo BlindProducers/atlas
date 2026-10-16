@@ -2275,6 +2275,20 @@ namespace {
     const File nested = temp_root.getChildFile("Nested");
     nested.createDirectory();
     nested.getChildFile("00 Nested.wav").create();
+#if !JUCE_WINDOWS
+    // macOS writes AppleDouble "._" copies of files on shared and removable
+    // volumes, and Finder leaves hidden folders behind: hidden files are never
+    // samples. Windows marks hidden files by attribute, not by name.
+    const File apple_double = temp_root.getChildFile("._02 Middle.flac");
+    const File hidden_folder = temp_root.getChildFile(".Trashes");
+    expect(apple_double.create().wasOk() && hidden_folder.createDirectory().wasOk() &&
+           hidden_folder.getChildFile("04 Deleted.wav").create().wasOk(),
+           "Hidden sample test files must be created");
+    Array<File> all_files;
+    LoadSave::getAllFilesOfTypeInDirectories(all_files, vital::kSampleExtensionsList, { temp_root });
+    expect(all_files.size() == 4 && !all_files.contains(apple_double),
+           "Library scans must skip hidden files and folders");
+#endif
 
     const auto shifted = [](const File& current, int direction) {
       return LoadSave::getShiftedFile(LoadSave::kSampleFolderName, vital::kSampleExtensionsList,

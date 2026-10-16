@@ -223,16 +223,30 @@ namespace container {
     cacheRootOverride() = folder;
   }
 
+  bool isValidHash(const std::string& hash) {
+    // The loader writes 32 lowercase hex digits. Anything else came from a
+    // damaged or hostile preset and must not name a folder: a hash of ".."
+    // would make the cache delete its parent.
+    if (hash.size() != 32)
+      return false;
+    for (const char c : hash) {
+      if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
+        return false;
+    }
+    return true;
+  }
+
   juce::File cacheFolder(const std::string& hash) {
-    return cacheRoot().getChildFile(juce::String(hash));
+    return cacheRoot().getChildFile(isValidHash(hash) ? juce::String(hash) : juce::String("Invalid"));
   }
 
   juce::File workingFolder(const std::string& hash) {
-    return cacheRoot().getChildFile("Working").getChildFile(juce::String(hash));
+    return cacheRoot().getChildFile("Working").getChildFile(isValidHash(hash) ? juce::String(hash)
+                                                                               : juce::String("Invalid"));
   }
 
   bool isCached(const std::string& hash) {
-    return !hash.empty() && cacheFolder(hash).getChildFile(kCompleteMarker).existsAsFile();
+    return isValidHash(hash) && cacheFolder(hash).getChildFile(kCompleteMarker).existsAsFile();
   }
 
   void touch(const std::string& hash) {
@@ -242,6 +256,10 @@ namespace container {
 
   bool extractToCache(const juce::File& container, const std::string& hash, const std::vector<FileInfo>& files,
                       const std::function<bool(float)>& progress, std::string& error) {
+    if (!isValidHash(hash)) {
+      error = "The preset's instrument reference is not valid.";
+      return false;
+    }
     std::lock_guard<std::mutex> lock(cacheWriteMutex());
     if (isCached(hash)) {
       touch(hash);

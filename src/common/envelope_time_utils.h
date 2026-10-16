@@ -52,8 +52,16 @@ namespace vital::envelope_time {
            suffix == "decay" || suffix == "release";
   }
 
+  // A stage shorter than half the shortest division is no time at all: it
+  // reads as -1, which the controls show as None and the envelope plays as
+  // the stage's free time, 0 for Delay and Hold.
+  inline constexpr float kNoneThresholdBeats = divisions[0].beats * 0.5f;
+
   inline int closestDivision(float seconds, float beats_per_second) {
-    const float target = 1.0f / std::max(seconds * std::max(beats_per_second, .0001f), .000001f);
+    const float beats = seconds * std::max(beats_per_second, .0001f);
+    if (beats < kNoneThresholdBeats)
+      return -1;
+    const float target = 1.0f / std::max(beats, .000001f);
     float distance = 1.0e30f;
     int closest = 0;
     for (int i = 0; i < static_cast<int>(divisions.size()); ++i) {

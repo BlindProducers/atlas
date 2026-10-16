@@ -16,6 +16,8 @@
 
 #include "file_source.h"
 
+#include <algorithm>
+
 FileSource::FileSourceKeyframe::FileSourceKeyframe(SampleBuffer* sample_buffer) {
   sample_buffer_ = sample_buffer;
   start_position_ = 0.0f;
@@ -121,7 +123,9 @@ void FileSource::FileSourceKeyframe::renderWaveBlend(vital::WaveFrame* wave_fram
   double window_ratio = window_size_ / vital::WaveFrame::kWaveformSize;
   int waveform_middle = vital::WaveFrame::kWaveformSize / 2;
   int start_index = start_position_ / window_ratio + window_size_ / 2.0f + waveform_middle;
-  start_index = start_index % vital::WaveFrame::kWaveformSize;
+  // A keyframe placed before the start of a short file gives a negative index.
+  start_index = ((start_index % vital::WaveFrame::kWaveformSize) + vital::WaveFrame::kWaveformSize) %
+                vital::WaveFrame::kWaveformSize;
 
   for (int i = 0; i < vital::WaveFrame::kWaveformSize; ++i) {
     double t = i / (vital::WaveFrame::kWaveformSize * 1.0);
@@ -364,8 +368,12 @@ void FileSource::loadBuffer(const float* buffer, int size, int sample_rate) {
 }
 
 void FileSource::detectPitch(int max_period) {
-  int start = (sample_buffer_.size - kPitchDetectMaxPeriod) / 3;
-  pitch_detector_.loadSignal(getDataBuffer() + start, kPitchDetectMaxPeriod);
+  // A file shorter than the analysis window is analysed whole, from its start.
+  const int length = std::min(sample_buffer_.size, kPitchDetectMaxPeriod);
+  if (length < 2)
+    return;
+  const int start = std::max(0, (sample_buffer_.size - kPitchDetectMaxPeriod) / 3);
+  pitch_detector_.loadSignal(getDataBuffer() + start, length);
   float period = pitch_detector_.matchPeriod(max_period);
   setWindowSize(period);
 }

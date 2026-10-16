@@ -186,10 +186,10 @@ namespace {
       return noteIsInArpDestinationZone(controls, arp, zone, message.getNoteNumber(),
                                         message.getFloatVelocity(), true);
     }
-    if (message.isNoteOff()) {
-      return noteIsInArpDestinationZone(controls, arp, zone, message.getNoteNumber(), 0.0f, false);
-    }
-    return false;
+    // Every instance sees every note-off: the destination may have been
+    // switched off, or its zone moved, since the key went down, and an
+    // instance ignores note-offs for keys it does not hold.
+    return message.isNoteOff();
   }
 } // namespace
 
@@ -245,6 +245,13 @@ SynthBase::SynthBase() : expired_(false) {
   for (int destination = 0; destination < kNumArpDestinations; ++destination) {
     const auto found = controls_.find("osc_" + std::to_string(destination + 1) + "_on");
     if (found != controls_.end()) arp_destination_osc_on_[destination] = found->second;
+  }
+  for (int arp = 0; arp < vital::kNumArpeggiators; ++arp) {
+    for (int destination = 0; destination < kNumArpDestinations; ++destination) {
+      const auto found = controls_.find("arp_" + std::to_string(arp + 1) + "_destination_osc_" +
+                                        std::to_string(destination + 1));
+      if (found != controls_.end()) arp_destination_controls_[arp][destination] = found->second;
+    }
   }
   const std::string compression_suffix = "spectral_compressor_compression";
   for (const auto& control : controls_) {
@@ -358,8 +365,13 @@ void SynthBase::scheduleSourcePreparation() {
 }
 
 void SynthBase::valueChanged(const std::string& name, vital::mono_float value) {
-  const bool changed = controls_[name]->value() != value;
-  controls_[name]->set(value);
+  // A host alias or a stale MIDI learn entry names a parameter that has no
+  // engine control; looking it up with operator[] would insert a null one.
+  const auto control = controls_.find(name);
+  if (control == controls_.end() || control->second == nullptr)
+    return;
+  const bool changed = control->second->value() != value;
+  control->second->set(value);
   if (changed && isSourceTypeControl(name))
     scheduleSourcePreparation();
   if (changed && isEffectSlotTypeControl(name))
@@ -784,6 +796,9 @@ void SynthBase::prepareSelectedSources() {
     }
   }
   prepareSourceEngines();
+  // The per-voice copies of the graph would otherwise clone a slot's new type
+  // module in their first process() after the change, on the audio thread.
+  engine_->syncVoiceGraphs();
 }
 
 void SynthBase::prepareSourceEngines() {
@@ -1394,6 +1409,7 @@ void SynthBase::buildScheduledMidiEvents(MidiBuffer& midi_messages, int start_sa
         const MidiBuffer& destination_input = midi_scheduling_buffers_.arp_input[arp][destination];
         MidiBuffer& segment_input = midi_scheduling_buffers_.arp_segment_input;
         MidiBuffer& arp_output = midi_scheduling_buffers_.arp_output;
+        const AtlasArpeggiator::Settings destination_settings = arpDestinationSettings(arp_settings[arp], arp, destination);
         int cursor = 0;
         while (cursor < num_samples) {
           int next_event = num_samples;
@@ -1427,7 +1443,7 @@ void SynthBase::buildScheduledMidiEvents(MidiBuffer& midi_messages, int start_sa
           const double quarters_per_sample = has_ppq_position ? bpm / (60.0 * engine_->getSampleRate()) : 0.0;
           arpeggiators_[arp][destination].process(segment_input, arp_output, segment_samples, bpm,
                                                   ppq_position + cursor * quarters_per_sample,
-                                                  has_ppq_position, arp_settings[arp]);
+                                                  has_ppq_position, destination_settings);
           for (const MidiMessageMetadata message : arp_output) {
             const MidiMessage midi_message = message.getMessage();
             const int event_sample = cursor + message.samplePosition;
@@ -1468,6 +1484,17 @@ void SynthBase::buildScheduledMidiEvents(MidiBuffer& midi_messages, int start_sa
 bool SynthBase::arpDestinationSounds(int destination) const {
   const vital::Value* on = arp_destination_osc_on_[static_cast<size_t>(destination)];
   return on == nullptr || on->value() >= 0.5f;
+}
+
+// A destination switched off while keys are held runs its instance disabled,
+// so it releases its generated notes and forgets the keys instead of playing
+// on with no way to receive their note-offs.
+AtlasArpeggiator::Settings SynthBase::arpDestinationSettings(const AtlasArpeggiator::Settings& base,
+                                                             int arp, int destination) const {
+  AtlasArpeggiator::Settings settings = base;
+  const vital::Value* selected = arp_destination_controls_[static_cast<size_t>(arp)][static_cast<size_t>(destination)];
+  settings.enabled = settings.enabled && (selected == nullptr || selected->value() >= 0.5f);
+  return settings;
 }
 
 void SynthBase::dispatchScheduledMidiEvent(const ScheduledMidiEvent& event) {
@@ -1529,8 +1556,14 @@ void SynthBase::processAudioAndMidi(AudioSampleBuffer* buffer, int channels, Mid
 
 void SynthBase::writeAudio(AudioSampleBuffer* buffer, int channels, int samples, int offset) {
   const vital::mono_float* engine_output = (const vital::mono_float*)engine_->output(0)->buffer;
+  // The engine renders a stereo pair in the first two lanes; further host
+  // channels (a surround bus) get silence rather than the other lanes.
   for (int channel = 0; channel < channels; ++channel) {
     float* channel_data = buffer->getWritePointer(channel, offset);
+    if (channel >= 2) {
+      FloatVectorOperations::clear(channel_data, samples);
+      continue;
+    }
 
     for (int i = 0; i < samples; ++i) {
       channel_data[i] = engine_output[vital::poly_float::kSize * i + channel];
@@ -1591,7 +1624,8 @@ void SynthBase::processMidi(MidiBuffer& midi_messages, int start_sample, int end
         for (int destination = 0; destination < kNumArpDestinations; ++destination) {
           MidiBuffer arp_output;
           arpeggiators_[arp][destination].process(arp_input[arp][destination], arp_output, num_samples,
-                                                  bpm, ppq_position, has_ppq_position, arp_settings[arp]);
+                                                  bpm, ppq_position, has_ppq_position,
+                                                  arpDestinationSettings(arp_settings[arp], arp, destination));
           for (const MidiMessageMetadata message : arp_output) {
             const MidiMessage midi_message = message.getMessage();
             const int voice_channel = kFirstAtlasArpDestinationVoiceChannel + destination;
@@ -1678,20 +1712,46 @@ void SynthBase::updateMemoryOutput(int samples, const vital::poly_float* audio) 
   memory_input_offset_ -= samples;
 }
 
+// The MIDI learn map is read by the audio thread while it handles CCs, so
+// the message thread changes it under the callback lock, and writes the
+// config file only after letting go of it.
 void SynthBase::armMidiLearn(const std::string& name) {
+  const ScopedLock lock(getCriticalSection());
   midi_manager_->armMidiLearn(name);
 }
 
 void SynthBase::cancelMidiLearn() {
+  const ScopedLock lock(getCriticalSection());
   midi_manager_->cancelMidiLearn();
 }
 
 void SynthBase::clearMidiLearn(const std::string& name) {
-  midi_manager_->clearMidiLearn(name);
+  {
+    const ScopedLock lock(getCriticalSection());
+    midi_manager_->clearMidiLearn(name);
+  }
+  saveMidiLearnMap();
+}
+
+void SynthBase::clearMidiLearnPrefix(const std::string& prefix) {
+  {
+    const ScopedLock lock(getCriticalSection());
+    midi_manager_->clearMidiLearnPrefix(prefix);
+  }
+  saveMidiLearnMap();
+}
+
+void SynthBase::swapMidiLearnPrefixes(const std::string& first, const std::string& second) {
+  {
+    const ScopedLock lock(getCriticalSection());
+    midi_manager_->swapMidiLearnPrefixes(first, second);
+  }
+  saveMidiLearnMap();
 }
 
 std::vector<std::pair<int, std::string>> SynthBase::midiLearnMappings() {
   std::vector<std::pair<int, std::string>> mappings;
+  const ScopedLock lock(getCriticalSection());
   for (const auto& controller : midi_manager_->getMidiLearnMap())
     for (const auto& destination : controller.second)
       mappings.push_back({ controller.first, destination.first });
@@ -1703,7 +1763,20 @@ std::string SynthBase::midiLearnArmedName() const {
 }
 
 void SynthBase::clearAllMidiLearn() {
-  midi_manager_->clearAllMidiLearn();
+  {
+    const ScopedLock lock(getCriticalSection());
+    midi_manager_->clearAllMidiLearn();
+  }
+  saveMidiLearnMap();
+}
+
+void SynthBase::saveMidiLearnMap() {
+  MidiManager::midi_map midi_learn_map;
+  {
+    const ScopedLock lock(getCriticalSection());
+    midi_learn_map = midi_manager_->getMidiLearnMap();
+  }
+  LoadSave::saveMidiMapConfig(midi_learn_map);
 }
 
 bool SynthBase::isMidiMapped(const std::string& name) {
@@ -1810,8 +1883,11 @@ void SynthBase::dispatchPendingGuiUpdates(SynthGuiInterface& gui_interface) {
       changed = changed || update.first != "pitch_wheel";
     }
   }
-  if (const std::string* learned = midi_learned_name_.exchange(nullptr, std::memory_order_acquire))
+  if (const std::string* learned = midi_learned_name_.exchange(nullptr, std::memory_order_acquire)) {
     gui_interface.notifyMidiLearned(*learned, midi_learned_id_.load(std::memory_order_relaxed));
+    // The audio thread learned the mapping; the file is written here.
+    saveMidiLearnMap();
+  }
   if (changed)
     gui_interface.notifyChange();
 }

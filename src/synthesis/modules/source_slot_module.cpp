@@ -326,6 +326,12 @@ namespace vital {
     // setSampleRate expects the base rate; a processor's stored rate already
     // includes its oversampling factor.
     module->setSampleRate(getSampleRate() / std::max(1, getOversampleAmount()));
+    // Grow the module's buffers through 2x now: a later quality change is
+    // applied on the audio thread and must find every capacity reserved.
+    const int oversample = std::max(1, getOversampleAmount());
+    module->setOversampleAmount(std::max(oversample, 2));
+    if (oversample < 2)
+      module->setOversampleAmount(oversample);
     module->enable(true);
     if (state.oscillator != nullptr) {
       for (int position = 0; position < kNumModulatorPositions; ++position)

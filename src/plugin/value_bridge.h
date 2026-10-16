@@ -87,7 +87,7 @@ class ValueBridge : public AudioProcessorParameterWithID {
 
     String getText(float value, int maximumStringLength) const override {
       if (isEnvelopeTimeSynced())
-        return String(vital::envelope_time::divisions[envelopeTimeDivision(value)].name).substring(0, maximumStringLength);
+        return envelopeTimeDivisionName(envelopeTimeDivision(value)).substring(0, maximumStringLength);
       float adjusted = convertToEngineValue(value);
       if (vital::suppressor::isFrequency(details_.name))
         return (String(vital::suppressor::positionHz(adjusted, getSuppressorSampleRate()), 2) + " Hz").substring(0, maximumStringLength);
@@ -115,18 +115,23 @@ class ValueBridge : public AudioProcessorParameterWithID {
       if (isEnvelopeTimeSynced()) {
         const String division_text = trimmed.toLowerCase().replace("dotted", "d").replace("triplet", "t")
                                             .removeCharacters(" ");
+        if (division_text == "none" || division_text == "off" || division_text == "0")
+          return valueForEnvelopeTimeDivision(0);
         for (int i = 0; i < static_cast<int>(vital::envelope_time::divisions.size()); ++i)
           if (division_text == vital::envelope_time::divisions[i].name)
-            return valueForEnvelopeTimeDivision(i);
+            return valueForEnvelopeTimeDivision(i + 1);
       }
       if (vital::scream::parameterIs(details_.name, "cutoff")) {
         float hz = trimmed.getFloatValue() * (trimmed.containsIgnoreCase("kHz") ? 1000.0f : 1.0f);
         return convertToPluginValue(vital::scream::cutoffFromHz(hz));
       }
       if (details_.string_lookup) {
-        for (int i = 0; i <= static_cast<int>(span_); ++i) {
+        // The names are indexed by engine value, as getText reads them.
+        const int first = static_cast<int>(std::round(details_.min));
+        const int last = static_cast<int>(std::round(details_.max));
+        for (int i = first; i <= last; ++i) {
           if (trimmed.equalsIgnoreCase(String(details_.string_lookup[i])))
-            return convertToPluginValue(details_.min + i);
+            return convertToPluginValue(static_cast<float>(i));
         }
       }
       if (usesRangePercentDisplay(details_))
@@ -137,7 +142,9 @@ class ValueBridge : public AudioProcessorParameterWithID {
            name_.startsWith("resonator_") || name_.contains("_resonator_")) &&
           String(details_.display_units).trim() == "Hz" && trimmed.containsIgnoreCase("kHz"))
         display_value *= 1000.0f;
-      if (trimmed.toLowerCase().contains("ms"))
+      // "ms" typed into a control that shows seconds; a control whose own unit
+      // is milliseconds (a limiter release, a delay time) keeps the number.
+      if (trimmed.toLowerCase().contains("ms") && String(details_.display_units).trim() == "secs")
         display_value *= 0.001f;
       else if (usesPercentDisplay() && trimmed.contains("%") &&
                details_.display_multiply == 1.0f && details_.max <= 1.0f)
@@ -218,13 +225,24 @@ class ValueBridge : public AudioProcessorParameterWithID {
     float envelopeBeatsPerSecond() const {
       return std::max(.0001f, envelope_beats_per_second_ != nullptr ? envelope_beats_per_second_->value() : 2.0f);
     }
+    // Division 0 is None, the stage's minimum (no time at all); division n is
+    // envelope_time::divisions[n - 1].
     int envelopeTimeDivision(float normalized) const {
-      return vital::envelope_time::closestDivision(skewValue(convertToEngineValue(normalized)), envelopeBeatsPerSecond());
+      return vital::envelope_time::closestDivision(skewValue(convertToEngineValue(normalized)),
+                                                   envelopeBeatsPerSecond()) + 1;
     }
     float valueForEnvelopeTimeDivision(int index) const {
-      index = std::clamp(index, 0, static_cast<int>(vital::envelope_time::divisions.size()) - 1);
+      if (index <= 0)
+        return convertToPluginValue(details_.min);
+      index = std::clamp(index - 1, 0, static_cast<int>(vital::envelope_time::divisions.size()) - 1);
       const float seconds = vital::envelope_time::divisions[index].beats / envelopeBeatsPerSecond();
       return convertToPluginValue(std::clamp(unskewValue(seconds), details_.min, details_.max));
+    }
+    static String envelopeTimeDivisionName(int index) {
+      if (index <= 0)
+        return "None";
+      index = std::clamp(index - 1, 0, static_cast<int>(vital::envelope_time::divisions.size()) - 1);
+      return vital::envelope_time::divisions[index].name;
     }
     int maximumEnvelopeTimeDivision() const {
       // Include the endpoint's nearest division: that is what the DSP plays

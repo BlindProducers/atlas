@@ -94,6 +94,10 @@ class MidiManager : public MidiInputCallback {
     void armMidiLearn(std::string name);
     void cancelMidiLearn();
     void clearMidiLearn(const std::string& name);
+    // Drops every mapping onto a control whose name starts with prefix.
+    void clearMidiLearnPrefix(const std::string& prefix);
+    // Exchanges the mappings of two effect slots when the slots are swapped.
+    void swapMidiLearnPrefixes(const std::string& first, const std::string& second);
     void midiInput(int control, vital::mono_float value);
     void processMidiMessage(const MidiMessage &midi_message, int sample_position = 0);
     bool isMidiMapped(const std::string& name) const;

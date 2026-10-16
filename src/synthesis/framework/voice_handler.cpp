@@ -787,6 +787,13 @@ namespace vital {
             if (voice_override_ == kKill && !legato_) {
               voice->kill(sample);
               new_voice = grabVoice(false);
+              // Every other voice is fading out or belongs to an arpeggiator:
+              // the next pressed key gets no voice until one frees up.
+              if (new_voice == nullptr) {
+                voice->setLiftVelocity(lift);
+                sortVoicePriority();
+                return;
+              }
             }
             else
               active_voices_.remove(voice);

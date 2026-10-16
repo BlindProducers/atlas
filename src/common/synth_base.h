@@ -165,6 +165,10 @@ class SynthBase : public MidiManager::Listener {
     void armMidiLearn(const std::string& name);
     void cancelMidiLearn();
     void clearMidiLearn(const std::string& name);
+    void clearMidiLearnPrefix(const std::string& prefix);
+    void swapMidiLearnPrefixes(const std::string& first, const std::string& second);
+    // Writes the MIDI learn map to the config file from a copy taken under the callback lock.
+    void saveMidiLearnMap();
     bool isMidiMapped(const std::string& name);
     // MIDI learn mappings are global (saved in the Atlas settings, not presets).
     std::vector<std::pair<int, std::string>> midiLearnMappings();
@@ -273,7 +277,11 @@ class SynthBase : public MidiManager::Listener {
     std::array<std::array<AtlasArpeggiator, 8>, vital::kNumArpeggiators> arpeggiators_;
     std::array<std::array<vital::Value*, 21>, vital::kNumArpeggiators> arpeggiator_controls_ {};
     std::array<vital::Value*, 8> arp_destination_osc_on_ {};
+    // arp_N_destination_osc_M: which oscillators each arp plays.
+    std::array<std::array<vital::Value*, 8>, vital::kNumArpeggiators> arp_destination_controls_ {};
     bool arpDestinationSounds(int destination) const;
+    AtlasArpeggiator::Settings arpDestinationSettings(const AtlasArpeggiator::Settings& base,
+                                                      int arp, int destination) const;
     MidiSchedulingBuffers midi_scheduling_buffers_;
     std::array<ScheduledMidiEvent, kMaxScheduledMidiEvents> scheduled_midi_events_;
     int scheduled_midi_event_count_ = 0;

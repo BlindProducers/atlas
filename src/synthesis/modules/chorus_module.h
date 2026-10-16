@@ -31,6 +31,7 @@ namespace vital {
 
       void init() override;
       void enable(bool enable) override;
+      void setSampleRate(int sample_rate) override;
 
       void processWithInput(const poly_float* audio_in, int num_samples) override;
       void correctToTime(double seconds) override;

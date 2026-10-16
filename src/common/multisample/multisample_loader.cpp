@@ -176,11 +176,19 @@ namespace multisample {
     sample->num_channels = std::max(1, std::min(2, static_cast<int>(reader->numChannels)));
     sample->frames = reader->lengthInSamples;
     sample->sample_rate = reader->sampleRate > 0.0 ? reader->sampleRate : 44100.0;
+    // A header can claim any length (a damaged RF64 even a negative one), and
+    // the reader would zero-fill past the end of the file. Refuse lengths no
+    // instrument sample has before sizing anything from them.
+    static constexpr int64_t kMaxFrames = int64_t(1) << 27;
+    if (sample->frames < 0 || sample->frames > kMaxFrames) {
+      error = "the audio file is too long";
+      return nullptr;
+    }
     try {
       for (int channel = 0; channel < sample->num_channels; ++channel)
         sample->channels[channel].resize(static_cast<size_t>(sample->frames));
     }
-    catch (const std::bad_alloc&) {
+    catch (const std::exception&) {
       error = "not enough memory";
       return nullptr;
     }

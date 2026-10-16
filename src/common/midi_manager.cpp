@@ -66,12 +66,38 @@ void MidiManager::cancelMidiLearn() {
   armed_value_ = nullptr;
 }
 
+// The map changes here are made by the message thread under the callback
+// lock (see SynthBase), which also writes the config file afterwards.
 void MidiManager::clearMidiLearn(const std::string& name) {
+  for (auto& controls : midi_learn_map_)
+    controls.second.erase(name);
+}
+
+void MidiManager::clearMidiLearnPrefix(const std::string& prefix) {
   for (auto& controls : midi_learn_map_) {
-    if (controls.second.count(name)) {
-      midi_learn_map_[controls.first].erase(name);
-      LoadSave::saveMidiMapConfig(this);
+    for (auto it = controls.second.begin(); it != controls.second.end();) {
+      if (it->first.rfind(prefix, 0) == 0)
+        it = controls.second.erase(it);
+      else
+        ++it;
     }
+  }
+}
+
+void MidiManager::swapMidiLearnPrefixes(const std::string& first, const std::string& second) {
+  for (auto& controls : midi_learn_map_) {
+    std::map<std::string, const vital::ValueDetails*> renamed;
+    for (const auto& entry : controls.second) {
+      std::string name = entry.first;
+      if (name.rfind(first, 0) == 0)
+        name = second + name.substr(first.size());
+      else if (name.rfind(second, 0) == 0)
+        name = first + name.substr(second.size());
+      // A renamed control keeps its mapping only if the name still exists.
+      if (name == entry.first || vital::Parameters::isParameter(name))
+        renamed[name] = name == entry.first ? entry.second : &vital::Parameters::getDetails(name);
+    }
+    controls.second = std::move(renamed);
   }
 }
 
@@ -81,7 +107,6 @@ std::string MidiManager::armedName() const {
 
 void MidiManager::clearAllMidiLearn() {
   midi_learn_map_.clear();
-  LoadSave::saveMidiMapConfig(this);
 }
 
 void MidiManager::midiInput(int midi_id, vital::mono_float value) {
@@ -90,9 +115,8 @@ void MidiManager::midiInput(int midi_id, vital::mono_float value) {
     midi_learn_map_[midi_id][learned_name] = armed_value_;
     armed_value_ = nullptr;
 
-    // TODO: Probably shouldn't write this config on the audio thread.
-    LoadSave::saveMidiMapConfig(this);
-
+    // The config file is written by the message thread once it is told
+    // about the new mapping (SynthBase::dispatchPendingGuiUpdates).
     if (listener_)
       listener_->valueMidiLearned(learned_name, midi_id);
   }

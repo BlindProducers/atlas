@@ -143,14 +143,19 @@ std::unique_ptr<TapeNoiseLibrary::Clip> TapeNoiseLibrary::decode(const juce::Fil
 }
 void TapeNoiseLibrary::run() {
   bool located = false;
+  // The clips inside the plug-in bundle. They are read directly when the
+  // factory folder cannot be written (a sandboxed host, or a Documents folder
+  // the host was refused) or a copy there is missing or damaged.
+  juce::File bundled;
   std::array<double, kNumClips> attempted {};
   while (!threadShouldExit()) {
     const uint32_t requested = requested_.exchange(0, std::memory_order_relaxed);
     if (requested && !located) {
       if (!explicit_directory_) {
         directory_ = factoryDirectory();
-        const auto bundled = bundledDirectory();
-        // Ship encrypted files only. The factory folder is the playback source.
+        bundled = bundledDirectory();
+        // Ship encrypted files only. The factory folder is the playback source
+        // when it can be written; otherwise the bundle is.
         if (bundled.isDirectory() && directory_.createDirectory().wasOk()) {
           for (int index = 1; index <= kNumClips && !threadShouldExit(); ++index) {
             const auto name = "Vinyl " + juce::String(index) + ".atape";
@@ -169,7 +174,10 @@ void TapeNoiseLibrary::run() {
       const double now = juce::Time::getMillisecondCounterHiRes();
       if (attempted[i] != 0 && now - attempted[i] < 1000) continue;
       attempted[i] = now;
-      clips_[i] = decode(directory_.getChildFile("Vinyl " + juce::String(i + 1) + ".atape"));
+      const auto name = "Vinyl " + juce::String(i + 1) + ".atape";
+      clips_[i] = decode(directory_.getChildFile(name));
+      if (!clips_[i] && bundled.isDirectory())
+        clips_[i] = decode(bundled.getChildFile(name));
       if (clips_[i]) {
         published_[i].store(clips_[i].get(), std::memory_order_release);
         status_[i].store(1, std::memory_order_release);

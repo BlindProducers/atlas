@@ -70,7 +70,7 @@ jobs:
           notes="The latest build of the dev branch, from commit ${GITHUB_SHA}: $(git log -1 --format=%s).
           Each push to dev replaces these files.
 
-          The .pkg installs the VST3 and the Audio Unit in /Library/Audio/Plug-Ins. It is not signed, so the first time macOS blocks it: open System Settings > Privacy & Security and click Open Anyway. The zips hold the bare plug-ins for copying by hand."
+          The .pkg installs the VST3 and the Audio Unit in /Library/Audio/Plug-Ins. It is not signed, so the first time macOS blocks it: open System Settings > Privacy & Security and click Open Anyway. The zips hold the bare plug-ins for copying by hand. They are not notarized either, so after unzipping, clear the quarantine flag (xattr -dr com.apple.quarantine Atlas.vst3, and the same for Atlas.component) or hosts refuse to load them."
           git tag -f "$tag" "$GITHUB_SHA"
           git push -f origin "refs/tags/$tag"
           if gh release view "$tag" > /dev/null 2>&1; then

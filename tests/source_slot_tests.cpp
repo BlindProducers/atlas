@@ -1036,8 +1036,12 @@ namespace {
            "a save without slot 7's type keeps the Spectral source, so its spectral pan moves");
     expect(slot_settings.count("osc_1_level") == 0 && slot_settings.count("osc_1_noise_level") == 0,
            "a wavetable slot drops a stray noise level");
-    expect(slot_modulations.size() == 1 && slot_modulations[0]["destination"] == "osc_6_level",
-           "routes into the active type's level move, the others are dropped");
+    // The array is positional (modulation_N_amount and friends stay in the
+    // settings), so a dropped route leaves an empty entry rather than moving
+    // the later routes onto other routes' amounts.
+    expect(slot_modulations.size() == 2 && slot_modulations[0]["destination"] == "osc_6_level" &&
+           slot_modulations[1]["source"] == "" && slot_modulations[1]["destination"] == "",
+           "routes into the active type's level move, the others become empty entries in place");
   }
 
 

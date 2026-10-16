@@ -367,7 +367,7 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void selectPresetFile(const File& file);
     void loadSelectedPreset();
     void choosePresetFile();
-    void loadPresetFile(const File& file, bool preview = false, bool updateBrowserFilters = false);
+    void loadPresetFile(File file, bool preview = false, bool updateBrowserFilters = false);
     void chooseBankFile();
     void importBankFile(const File& file);
     void chooseFolderToExportBank();
@@ -541,6 +541,9 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     String effectSlotPrefix(const String& sectionName, int slot) const;
     String effectSlotTitle(const String& sectionName, int slot) const;
     void swapEffectSlots(const String& sectionName, int firstSlot, int secondSlot);
+    // Moves the impulse response, Filter FX table and MIDI learn mappings
+    // keyed by the slot prefixes along with a swapped pair of slots.
+    void swapEffectSlotModuleState(const String& firstPrefix, const String& secondPrefix);
     void clearEffectSlot(const String& sectionName, int slot);
     void removeEffectSlot(const String& sectionName, int slot, const String& focusedTitle);
     void replaceEffectSlot(const String& sectionName, int slot, int effect);
@@ -799,12 +802,15 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
       // Suffixes after the slot prefix, e.g. "delay_feedback", with engine values.
       std::vector<std::pair<String, float>> parameters;
       json impulse_response;
+      json filter_table;
       std::vector<CopiedModulation> modulations;
     };
     CopiedEffectSlot copied_effect_slot_;
     std::vector<std::pair<String, Component::SafePointer<Button>>> fx_bus_toggles_;
     std::vector<CopiedLfoPoint> copied_lfo_points_;
     std::vector<CopiedLfoPoint> copied_lfo_shape_;
+    bool copied_lfo_shape_smooth_ = false;
+    int copied_lfo_shape_mode_ = 0;
     std::vector<float> selected_lfo_point_phases_;
     // The keyboard editor's items (points, performer shapes or steps) and the chosen one.
     std::vector<float> lfo_editor_item_phases_;

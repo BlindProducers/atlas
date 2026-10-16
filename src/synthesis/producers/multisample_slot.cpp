@@ -77,6 +77,8 @@ namespace vital {
       return;
 
     const float random = nextRandom();
+    // One serial per CC event: the regions it starts together never choke each other.
+    const uint64_t serial = nextSerial();
     for (int index : candidates) {
       const multisample::Region& region = instrument.regions[static_cast<size_t>(index)];
       const bool now_in = value >= region.on_low && value <= region.on_high;
@@ -88,7 +90,6 @@ namespace vital {
       if (!advanceSequence(index))
         continue;
 
-      const uint64_t serial = nextSerial();
       if (region.group_slot >= 0)
         triggerGroup(region.group_slot, serial);
       if (region.silent)
@@ -146,8 +147,10 @@ namespace vital {
       tail.checkChoke(*this, sample_rate);
       tail.follow(*this);
       const multisample::Region& region = *tail.region();
-      const double rate = std::exp2(tail.pitchOffset(region.pitch_keycenter) / 12.0) *
-                          region.sample_rate / std::max(1.0f, sample_rate);
+      // Clamped as the voice path clamps it: an absurd transpose must not
+      // give an infinite rate.
+      const double semitones = std::max(-96.0, std::min(96.0, static_cast<double>(tail.pitchOffset(region.pitch_keycenter))));
+      const double rate = std::exp2(semitones / 12.0) * region.sample_rate / std::max(1.0f, sample_rate);
       float pan_left = 1.0f;
       float pan_right = 1.0f;
       MultiSamplePlayer::panGains(MultiSamplePlayer::ccPan(region, *this), pan_left, pan_right);

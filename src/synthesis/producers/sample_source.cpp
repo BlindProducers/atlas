@@ -374,21 +374,35 @@ namespace vital {
     if (data.count("name"))
       name_ = data["name"].get<std::string>();
 
-    int length = data["length"];
-    int sample_rate = data["sample_rate"];
+    // A damaged or hand-edited preset can claim any length: keep to what the
+    // encoded data holds, and leave the sample alone when there is none.
+    static constexpr int kMaxSamples = 1 << 27;
+    const int claimed_length = data.count("length") && data["length"].is_number() ? data["length"].get<int>() : 0;
+    const int sample_rate = data.count("sample_rate") && data["sample_rate"].is_number()
+                                ? data["sample_rate"].get<int>() : 0;
+    if (claimed_length <= 0 || claimed_length > kMaxSamples || sample_rate <= 0 ||
+        !data.count("samples") || !data["samples"].is_string())
+      return;
 
-    MemoryOutputStream decoded(length * sizeof(int16_t));
+    MemoryOutputStream decoded;
     std::string wave_data = data["samples"];
     Base64::convertFromBase64(decoded, wave_data);
+    const int length = std::min<int>(claimed_length, static_cast<int>(decoded.getDataSize() / sizeof(int16_t)));
+    if (length <= 0)
+      return;
     std::unique_ptr<int16_t[]> pcm_data = std::make_unique<int16_t[]>(length);
     memcpy(pcm_data.get(), decoded.getData(), length * sizeof(int16_t));
     std::unique_ptr<mono_float[]> buffer = std::make_unique<mono_float[]>(length);
     utils::pcmToFloatData(buffer.get(), pcm_data.get(), length);
 
-    if (data.count("samples_stereo")) {
-      MemoryOutputStream decoded_stereo(length * sizeof(int16_t));
+    bool stereo = data.count("samples_stereo") && data["samples_stereo"].is_string();
+    MemoryOutputStream decoded_stereo;
+    if (stereo) {
       std::string wave_data_stereo = data["samples_stereo"];
       Base64::convertFromBase64(decoded_stereo, wave_data_stereo);
+      stereo = decoded_stereo.getDataSize() >= static_cast<size_t>(length) * sizeof(int16_t);
+    }
+    if (stereo) {
       std::unique_ptr<int16_t[]> pcm_data_stereo = std::make_unique<int16_t[]>(length);
       memcpy(pcm_data_stereo.get(), decoded_stereo.getData(), length * sizeof(int16_t));
 

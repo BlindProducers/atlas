@@ -64,7 +64,7 @@ namespace vital {
       void noteOn(int voice, int key, int velocity, float tuned_note, int offset);
       void noteOff(int voice, int offset);
       void startRegion(int voice, int region_index, int velocity, float random, int offset, float gain,
-                       bool ignore_note_off);
+                       bool ignore_note_off, uint64_t serial);
       MultiSamplePlayer& freePlayer(int voice);
 
       std::shared_ptr<MultiSampleSlot> slot_;

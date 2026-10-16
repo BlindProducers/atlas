@@ -397,6 +397,13 @@ void SynthPlugin::releaseResources() {
   cpu_last_render_ms_.store(0, std::memory_order_relaxed);
 }
 
+bool SynthPlugin::isBusesLayoutSupported(const BusesLayout& layouts) const {
+  // Atlas renders a stereo pair; a mono output takes its left channel. Wider
+  // layouts (a surround instrument track) would carry nothing in the rest.
+  const AudioChannelSet output = layouts.getMainOutputChannelSet();
+  return output == AudioChannelSet::stereo() || output == AudioChannelSet::mono();
+}
+
 double SynthPlugin::getCpuUsagePercent() const {
   const auto last_render = cpu_last_render_ms_.load(std::memory_order_relaxed);
   if (last_render == 0 || static_cast<uint32>(Time::getMillisecondCounter() - last_render) > 1000)

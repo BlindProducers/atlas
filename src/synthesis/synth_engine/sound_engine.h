@@ -114,6 +114,9 @@ namespace vital {
       MultiSampleSlot* getMultiSample(int index);
       // Message thread with processing paused: build every oscillator slot's active type module.
       bool prepareSelectedSources();
+      // Message thread with processing paused: bring every voice copy of the
+      // graph up to date with the slots' type modules.
+      void syncVoiceGraphs();
       LineGenerator* getLfoSource(int index);
 
       void sustainOn(int channel);

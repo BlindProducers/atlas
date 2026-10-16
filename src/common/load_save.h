@@ -17,6 +17,7 @@
 #pragma once
 
 #include "JuceHeader.h"
+#include "midi_manager.h"
 #include "nlohmann/json.hpp"
 
 #include <map>
@@ -29,7 +30,6 @@ namespace vital {
   class StringLayout;
 }
 
-class MidiManager;
 class SynthBase;
 
 class LoadSave {
@@ -153,6 +153,9 @@ class LoadSave {
     static void saveAuthenticated(bool authenticated);
     static void saveWindowSize(float window_size);
     static void saveMidiMapConfig(MidiManager* midi_manager);
+    // The map is read by the audio thread: copy it under the callback lock,
+    // then write the file from the copy with the lock released.
+    static void saveMidiMapConfig(const MidiManager::midi_map& midi_learn_map);
     static void loadConfig(MidiManager* midi_manager, vital::StringLayout* layout = nullptr);
 
     static std::wstring getComputerKeyboardLayout();
