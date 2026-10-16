@@ -78,6 +78,28 @@ namespace multisample {
       return file.getRelativePathFrom(root).replaceCharacter('\\', '/').toStdString();
     }
 
+    // The size and CRC of a file that is stored but not decoded, read in
+    // chunks so that a large sample never sits in memory whole.
+    bool checksumFile(const juce::File& file, std::vector<char>& buffer, int64_t& size, uint32_t& crc) {
+      juce::FileInputStream stream(file);
+      if (!stream.openedOk())
+        return false;
+      if (buffer.size() < static_cast<size_t>(1 << 20))
+        buffer.resize(1 << 20);
+      size = 0;
+      crc = 0;
+      while (!stream.isExhausted()) {
+        const int read = stream.read(buffer.data(), static_cast<int>(buffer.size()));
+        if (read < 0)
+          return false;
+        if (read == 0)
+          break;
+        crc = crc32(buffer.data(), static_cast<size_t>(read), crc);
+        size += read;
+      }
+      return true;
+    }
+
     // Applies the decoded audio to SFZ regions: data views, root keys from
     // the file, default loops and range clamping.
     void attachSample(Region& region, std::shared_ptr<const SampleData> data) {
@@ -154,11 +176,19 @@ namespace multisample {
     sample->num_channels = std::max(1, std::min(2, static_cast<int>(reader->numChannels)));
     sample->frames = reader->lengthInSamples;
     sample->sample_rate = reader->sampleRate > 0.0 ? reader->sampleRate : 44100.0;
+    // A header can claim any length (a damaged RF64 even a negative one), and
+    // the reader would zero-fill past the end of the file. Refuse lengths no
+    // instrument sample has before sizing anything from them.
+    static constexpr int64_t kMaxFrames = int64_t(1) << 27;
+    if (sample->frames < 0 || sample->frames > kMaxFrames) {
+      error = "the audio file is too long";
+      return nullptr;
+    }
     try {
       for (int channel = 0; channel < sample->num_channels; ++channel)
         sample->channels[channel].resize(static_cast<size_t>(sample->frames));
     }
-    catch (const std::bad_alloc&) {
+    catch (const std::exception&) {
       error = "not enough memory";
       return nullptr;
     }
@@ -314,6 +344,11 @@ namespace multisample {
 
       struct Job {
         juce::File file;
+        // A region plays it. Otherwise (a DecentSampler sample in a disabled
+        // group or tag) the file is stored and hashed but not decoded.
+        bool decode = true;
+        // The size and CRC are known: the file was read, or an earlier load knew them.
+        bool read = false;
         int64_t size = 0;
         uint32_t crc = 0;
         juce::Time modified;
@@ -321,13 +356,18 @@ namespace multisample {
         std::string error;
       };
       std::vector<Job> jobs;
+      int playable = 0;
       for (const auto& reference : parsed.samples) {
         Job job;
         job.file = reference.file;
+        job.decode = reference.played;
+        playable += reference.played ? 1 : 0;
         jobs.push_back(job);
       }
 
-      // Unchanged files reuse the previous load's audio.
+      // Unchanged files reuse the previous load's audio, and the size and CRC
+      // of the files it only stored. Audio decoded for a group that is now
+      // disabled is kept, so turning it on again decodes nothing.
       if (request.previous) {
         for (Job& job : jobs) {
           for (const auto& decoded : request.previous->decoded) {
@@ -337,6 +377,7 @@ namespace multisample {
               job.size = decoded.size;
               job.crc = decoded.crc;
               job.modified = decoded.modified;
+              job.read = true;
               break;
             }
           }
@@ -361,7 +402,7 @@ namespace multisample {
           if (index >= static_cast<int>(jobs.size()))
             break;
           Job& job = jobs[static_cast<size_t>(index)];
-          if (!job.data) {
+          if (job.decode && !job.data) {
             juce::MemoryBlock bytes;
             if (!job.file.existsAsFile() || !job.file.loadFileAsData(bytes)) {
               job.error = "missing";
@@ -370,6 +411,7 @@ namespace multisample {
               job.size = static_cast<int64_t>(bytes.getSize());
               job.modified = job.file.getLastModificationTime();
               job.crc = crc32(bytes.getData(), bytes.getSize());
+              job.read = true;
               std::string error;
               std::shared_ptr<SampleData> data = decodeSample(bytes.getData(), bytes.getSize(), error);
               if (data == nullptr)
@@ -380,6 +422,14 @@ namespace multisample {
                   over_budget = true;
                 job.data = data;
               }
+            }
+          }
+          else if (!job.decode && !job.read) {
+            if (!job.file.existsAsFile() || !checksumFile(job.file, scratch, job.size, job.crc))
+              job.error = "missing";
+            else {
+              job.modified = job.file.getLastModificationTime();
+              job.read = true;
             }
           }
           completed++;
@@ -457,7 +507,7 @@ namespace multisample {
 
       if (instrument->regions.empty()) {
         if (!instrument->missing_files.empty()) {
-          result->error = "None of the instrument's " + std::to_string(jobs.size()) +
+          result->error = "None of the instrument's " + std::to_string(playable) +
                           " samples could be loaded. First problem: " + instrument->missing_files.front();
         }
         else
@@ -466,14 +516,17 @@ namespace multisample {
         return result;
       }
 
-      // The files a container must hold: the text and every loaded sample.
+      // The files a container must hold: the text and every sample file that
+      // exists, whether a region plays it now or a disabled group names it,
+      // so that the hash and the stored library do not depend on the
+      // controls. Only files that were read: a missing one may resolve
+      // anywhere and must not move the root (or the hash) of the files that
+      // are stored.
       std::vector<juce::File> relative_files;
       for (const juce::File& file : parsed.text_files)
         relative_files.push_back(file);
-      // Only samples that loaded: a missing one may resolve anywhere and must
-      // not move the root (or the hash) of the files that are stored.
       for (size_t i = 0; i < parsed.samples.size(); ++i) {
-        if (!parsed.samples[i].absolute && jobs[i].data)
+        if (!parsed.samples[i].absolute && jobs[i].read)
           relative_files.push_back(parsed.samples[i].file);
       }
       const juce::File root = commonRoot(relative_files);
@@ -495,7 +548,7 @@ namespace multisample {
       size_t memory_bytes = 0;
       for (size_t i = 0; i < jobs.size(); ++i) {
         const Job& job = jobs[i];
-        if (!job.data)
+        if (!job.read)
           continue;
         const auto& reference = parsed.samples[i];
         FileInfo info;
@@ -507,8 +560,10 @@ namespace multisample {
         info.size = job.size;
         info.crc = job.crc;
         result->files.push_back(info);
-        memory_bytes += job.data->memoryBytes();
+        if (job.data)
+          memory_bytes += job.data->memoryBytes();
 
+        // A file that was only stored has no audio; its size and CRC are kept.
         LoadResult::Decoded decoded;
         decoded.file = job.file;
         decoded.modified = job.modified;

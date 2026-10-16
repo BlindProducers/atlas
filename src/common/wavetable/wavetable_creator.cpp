@@ -20,6 +20,8 @@
 #include "synth_constants.h"
 #include "wave_frame.h"
 #include "wave_line_source.h"
+
+#include <algorithm>
 #include "wave_source.h"
 #include "wavetable.h"
 
@@ -267,7 +269,8 @@ void WavetableCreator::initFromVocodedAudioFile(const float* audio_buffer, int n
   file_source->insertNewKeyframe(vital::kNumOscillatorWaveFrames - 1);
   file_source->getKeyframe(0)->setStartPosition(0);
   int samples_needed = file_source->getKeyframe(1)->getSamplesNeeded();
-  file_source->getKeyframe(1)->setStartPosition(num_samples - samples_needed);
+  // A file shorter than the window would put the last keyframe before 0.
+  file_source->getKeyframe(1)->setStartPosition(std::max(0, num_samples - samples_needed));
 
   new_group->addComponent(file_source);
   addGroup(new_group);
@@ -287,7 +290,7 @@ void WavetableCreator::initFromPitchedAudioFile(const float* audio_buffer, int n
   file_source->insertNewKeyframe(vital::kNumOscillatorWaveFrames - 1);
   file_source->getKeyframe(0)->setStartPosition(0);
   int samples_needed = file_source->getKeyframe(1)->getSamplesNeeded();
-  file_source->getKeyframe(1)->setStartPosition(num_samples - samples_needed);
+  file_source->getKeyframe(1)->setStartPosition(std::max(0, num_samples - samples_needed));
 
   new_group->addComponent(file_source);
   addGroup(new_group);

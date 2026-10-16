@@ -58,6 +58,7 @@ class SynthPlugin : public SynthBase, public AudioProcessor, public ValueBridge:
 
     void prepareToPlay(double sample_rate, int buffer_size) override;
     void releaseResources() override;
+    bool isBusesLayoutSupported(const BusesLayout& layouts) const override;
     void processBlock(AudioSampleBuffer&, MidiBuffer&) override;
 
     AudioProcessorEditor* createEditor() override;

@@ -653,7 +653,10 @@ void LoadSave::migrateFixedSourcesToSlots(json& settings, json& modulations) {
     if (source.sample_key != nullptr && settings.count(source.sample_key)) {
       json sample = settings[source.sample_key];
       settings.erase(source.sample_key);
-      settings[vital::source_types::slotPrefix(source.slot) + "sample"] = std::move(sample);
+      // Only a sample object moves to the slot; a null or stray value must
+      // not replace the sample the slot already holds.
+      if (sample.is_object())
+        settings[vital::source_types::slotPrefix(source.slot) + "sample"] = std::move(sample);
     }
     for (int arp = 1; arp <= 2; ++arp) {
       const std::string legacy = "arp_" + std::to_string(arp) + "_destination_" + source.prefix;
@@ -729,10 +732,39 @@ void LoadSave::migrateSlotTypeLevels(json& settings, json& modulations) {
             ++it;
           }
           else {
-            it = modulations.erase(it);
+            // Routes are positional (their amounts live in modulation_N_*
+            // controls), so a dropped route leaves an empty entry behind
+            // rather than shifting the later ones onto the wrong amounts.
+            *it = json::object({ { "source", "" }, { "destination", "" } });
+            ++it;
           }
         }
       }
+    }
+  }
+}
+
+namespace {
+  // Dev builds between d789d76 and 44fdd17 gated the analog aging amounts
+  // (defaults of 50%) behind an Age control that no longer exists. Fold Age
+  // into the amounts so those states keep the sound they had, and drop the
+  // removed controls.
+  void migrateAnalogAging(json& settings) {
+    if (!settings.is_object())
+      return;
+    for (int slot = 0; slot < vital::kNumOscillators; ++slot) {
+      const std::string prefix = vital::source_types::slotPrefix(slot) + "analog_";
+      const auto age = settings.find(prefix + "age");
+      if (age == settings.end())
+        continue;
+      const float amount = age->is_number() ? std::max(0.0f, std::min(1.0f, age->get<float>())) : 0.0f;
+      for (const char* control : { "drift", "voice_spread", "wear", "noise", "sag" }) {
+        const auto found = settings.find(prefix + control);
+        if (found != settings.end() && found->is_number())
+          *found = found->get<float>() * amount;
+      }
+      settings.erase(prefix + "age");
+      settings.erase(prefix + "tracking");
     }
   }
 }
@@ -886,8 +918,12 @@ void LoadSave::initSaveInfo(std::map<std::string, String>& save_info) {
 json LoadSave::updateFromOldVersion(json state) {
   json settings = state["settings"];
   json modulations = settings["modulations"];
-  json sample = settings["sample"];
-  json wavetables = settings["wavetables"];
+  // Reading a missing key through operator[] inserts null, and a null
+  // "sample" written back below would later be moved onto oscillator 5's
+  // sample, replacing it. Only a state that has one gets it written back.
+  const bool has_sample = settings.count("sample") > 0;
+  json sample = has_sample ? settings["sample"] : json();
+  json wavetables = settings.count("wavetables") ? settings["wavetables"] : json();
 
   std::string version = state["synth_version"];
 
@@ -1649,7 +1685,8 @@ json LoadSave::updateFromOldVersion(json state) {
   migrateVitalSourceDestinationLayout(settings);
 
   settings["modulations"] = modulations;
-  settings["sample"] = sample;
+  if (has_sample)
+    settings["sample"] = sample;
   state["settings"] = settings;
   return state;
 }
@@ -1682,6 +1719,7 @@ bool LoadSave::jsonToState(SynthBase* synth, std::map<std::string, String>& save
   json modulations = arrayFieldOrEmpty(settings, "modulations");
   migrateFixedSourcesToSlots(settings, modulations);
   migrateSlotTypeLevels(settings, modulations);
+  migrateAnalogAging(settings);
   json wavetables = arrayFieldOrEmpty(settings, "wavetables");
   json lfos = arrayFieldOrEmpty(settings, "lfos");
 
@@ -1983,7 +2021,7 @@ json LoadSave::getConfigJson() {
 
   try {
     json parsed = json::parse(config_file.loadFileAsString().toStdString(), nullptr, false);
-    if (parsed.is_discarded())
+    if (parsed.is_discarded() || !parsed.is_object())
       return json();
     return parsed;
   }
@@ -1999,7 +2037,7 @@ json LoadSave::getFavoritesJson() {
 
   try {
     json parsed = json::parse(favorites_file.loadFileAsString().toStdString(), nullptr, false);
-    if (parsed.is_discarded())
+    if (parsed.is_discarded() || !parsed.is_object())
       return json();
     return parsed;
   }
@@ -2154,8 +2192,10 @@ void LoadSave::saveLayoutConfig(vital::StringLayout* layout) {
 }
 
 void LoadSave::saveMidiMapConfig(MidiManager* midi_manager) {
-  MidiManager::midi_map midi_learn_map = midi_manager->getMidiLearnMap();
+  saveMidiMapConfig(midi_manager->getMidiLearnMap());
+}
 
+void LoadSave::saveMidiMapConfig(const MidiManager::midi_map& midi_learn_map) {
   json midi_mapping_data;
 
   for (auto& midi_mapping : midi_learn_map) {
@@ -2638,7 +2678,7 @@ std::vector<File> LoadSave::getDirectories(const String& folder_name) {
 
   Array<File> sub_folders;
   sub_folders.add(data_dir);
-  data_dir.findChildFiles(sub_folders, File::findDirectories, false);
+  data_dir.findChildFiles(sub_folders, File::findDirectories | File::ignoreHiddenFiles, false);
   for (const File& sub_folder : sub_folders) {
     File directory = sub_folder.getChildFile(folder_name);
     if (directory.exists() && directory.isDirectory())
@@ -2742,7 +2782,7 @@ int LoadSave::scanDownloadsForPresets() {
     return 0;
 
   Array<File> found;
-  downloads.findChildFiles(found, File::findFiles, false, vital::kPresetExtensionsList);
+  downloads.findChildFiles(found, File::findFiles | File::ignoreHiddenFiles, false, vital::kPresetExtensionsList);
 
   File destination = getUserPresetDirectory();
   int imported = 0;
@@ -2765,7 +2805,7 @@ void LoadSave::getAllFilesOfTypeInDirectories(Array<File>& files, const String& 
   files.clear();
   for (const File& directory : directories) {
     if (directory.exists() && directory.isDirectory())
-      directory.findChildFiles(files, File::findFiles, true, extensions);
+      directory.findChildFiles(files, File::findFiles | File::ignoreHiddenFiles, true, extensions);
   }
 }
 
@@ -2893,7 +2933,7 @@ File LoadSave::getShiftedFile(const String directory_name, const String& extensi
   // subfolders. Other asset types retain their existing library navigation.
   if (current_file.existsAsFile() && (directory_name == String(kSampleFolderName) || !current_is_atlas_content)) {
     Array<File> sibling_files;
-    current_file.getParentDirectory().findChildFiles(sibling_files, File::findFiles, false, extensions);
+    current_file.getParentDirectory().findChildFiles(sibling_files, File::findFiles | File::ignoreHiddenFiles, false, extensions);
     sibling_files.sort(file_sorter);
     const int sibling_index = sibling_files.indexOf(current_file);
     if (sibling_index >= 0 && !sibling_files.isEmpty())

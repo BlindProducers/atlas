@@ -38,6 +38,14 @@ namespace vital {
     }
   }
 
+  void ChorusModule::setSampleRate(int sample_rate) {
+    SynthModule::setSampleRate(sample_rate);
+    // The delays are idle processors: the router passes them the oversampling
+    // but not the rate, and they convert delay times with their own.
+    for (int i = 0; i < kMaxDelayPairs; ++i)
+      delays_[i]->setSampleRate(sample_rate);
+  }
+
   void ChorusModule::init() {
     static const cr::Value kDelayStyle(MultiDelay::kMono);
 

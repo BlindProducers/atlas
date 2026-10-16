@@ -42,6 +42,9 @@ class FxAutomationParameter : public AudioProcessorParameterWithID {
     }
 
     void setValue(float value) override {
+      // Hosts can send NaN; jlimit would pass it through to the engine control.
+      if (!std::isfinite(value))
+        return;
       const float normalized = jlimit(0.0f, 1.0f, value);
       current_value_.store(normalized, std::memory_order_relaxed);
 
@@ -79,8 +82,8 @@ class FxAutomationParameter : public AudioProcessorParameterWithID {
         return ValueBridge::rangePercentText(adjusted).substring(0, maximumStringLength);
       String result;
       if (details.string_lookup != nullptr) {
-        const int index = jlimit(0, static_cast<int>(std::round(details.max - details.min)),
-                                 static_cast<int>(std::round(adjusted - details.min)));
+        // Names are indexed by engine value, as ValueBridge reads them.
+        const int index = jlimit(0, static_cast<int>(std::round(details.max)), static_cast<int>(std::round(adjusted)));
         result = details.string_lookup[index];
       }
       else {
@@ -108,11 +111,12 @@ class FxAutomationParameter : public AudioProcessorParameterWithID {
         float hz = trimmed.getFloatValue() * (trimmed.containsIgnoreCase("kHz") ? 1000.0f : 1.0f);
         return convertToPluginValue(details, vital::scream::cutoffFromHz(hz));
       }
-      const float span = parameterSpan(details);
       if (details.string_lookup != nullptr) {
-        for (int i = 0; i <= static_cast<int>(span); ++i) {
+        const int first = static_cast<int>(std::round(details.min));
+        const int last = static_cast<int>(std::round(details.max));
+        for (int i = first; i <= last; ++i) {
           if (trimmed.equalsIgnoreCase(String(details.string_lookup[i])))
-            return convertToPluginValue(details, details.min + i);
+            return convertToPluginValue(details, static_cast<float>(i));
         }
       }
       if (ValueBridge::usesRangePercentDisplay(details))
@@ -122,7 +126,7 @@ class FxAutomationParameter : public AudioProcessorParameterWithID {
       if ((String(details.name).endsWith("defuse_frequency") || String(details.name).contains("resonator_")) &&
           String(details.display_units).trim() == "Hz" && trimmed.containsIgnoreCase("kHz"))
         display_value *= 1000.0f;
-      if (trimmed.toLowerCase().contains("ms"))
+      if (trimmed.toLowerCase().contains("ms") && String(details.display_units).trim() == "secs")
         display_value *= 0.001f;
       else if (usesPercentDisplay(details) && trimmed.contains("%") &&
                details.display_multiply == 1.0f && details.max <= 1.0f)

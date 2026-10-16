@@ -167,7 +167,13 @@ void PreparedEffectModule::requestPreparation() {
     worker_->request();
 }
 void PreparedEffectModule::prepareOnWorker() {
-  delete retired_.exchange(nullptr, std::memory_order_acq_rel);
+  if (auto* retired = retired_.exchange(nullptr, std::memory_order_acq_rel)) {
+    // The last configuration built may be the one just retired: a request
+    // for it again must build it again.
+    if (retired->configuration == completed_)
+      completed_ = 0;
+    delete retired;
+  }
   const auto requested = requested_.load(std::memory_order_acquire);
   if (!requested) {
     // Selection can change after preparation finishes but before the audio

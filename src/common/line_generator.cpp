@@ -18,6 +18,7 @@
 #include "poly_utils.h"
 #include "futils.h"
 
+#include <algorithm>
 #include <cmath>
 #include <thread>
 
@@ -227,9 +228,18 @@ bool LineGenerator::isValidJson(json data) {
 }
 
 void LineGenerator::jsonToState(json data) {
-  num_points_ = data["num_points"];
   json point_data = data["points"];
   json power_data = data["powers"];
+  // The arrays are fixed at kMaxPoints: a hand-edited or damaged file must
+  // not index past them, nor past the shorter arrays it carries.
+  const int stored_points = data["num_points"].is_number() ? data["num_points"].get<int>() : 0;
+  const int available_points = std::min(static_cast<int>(power_data.size()),
+                                        static_cast<int>(point_data.size() / 2));
+  if (available_points < 1) {
+    initLinear();
+    return;
+  }
+  num_points_ = std::max(1, std::min({ stored_points, available_points, kMaxPoints }));
   name_ = "";
   if (data.count("name"))
     name_ = data["name"].get<std::string>();
@@ -257,12 +267,13 @@ void LineGenerator::jsonToState(json data) {
       setShapeMode(kModeStepSequencer);
   }
 
-  int num_read = kMaxPoints;
-  num_read = std::min(num_read, static_cast<int>(power_data.size()));
-
-  for (int i = 0; i < num_read; ++i) {
-    points_[i] = std::pair<float, float>(point_data[2 * i], point_data[2 * i + 1]);
-    powers_[i] = power_data[i];
+  for (int i = 0; i < num_points_; ++i) {
+    const json& x = point_data[2 * i];
+    const json& y = point_data[2 * i + 1];
+    const json& power = power_data[i];
+    points_[i] = std::pair<float, float>(x.is_number() ? x.get<float>() : 0.0f,
+                                         y.is_number() ? y.get<float>() : 0.0f);
+    powers_[i] = power.is_number() ? power.get<float>() : 0.0f;
   }
 
   checkLineIsLinear();

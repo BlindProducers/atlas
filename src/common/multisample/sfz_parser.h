@@ -42,13 +42,19 @@ namespace multisample {
         std::string written;
         juce::File file;
         bool absolute = false;
+        // A region plays it. DecentSampler samples that only disabled groups
+        // and tags name are reported with `played` false: presets store and
+        // hash them so that enabling the group later finds them, but the
+        // loader does not decode them.
+        bool played = true;
       };
 
       struct Result {
         std::shared_ptr<Instrument> instrument;
         // The main file first, then every included file, each once.
         std::vector<juce::File> text_files;
-        // Every sample file the regions name, each once.
+        // Every sample file the instrument names, each once, whether or not
+        // a region plays it at the moment (see SampleReference::played).
         std::vector<SampleReference> samples;
         std::string error;
       };

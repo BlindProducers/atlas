@@ -118,6 +118,10 @@ namespace vital {
     }
 
     poly_float synced = poly_float(1.0f) / utils::max(closest_ratio * beats_per_second, 0.000001f);
+    // Below half the shortest division a stage is None: it keeps its free
+    // time (0 for Delay and Hold) instead of snapping up to 1/64t.
+    poly_mask none_mask = poly_float::lessThan(time * beats_per_second, envelope_time::kNoneThresholdBeats);
+    synced = utils::maskLoad(synced, time, none_mask);
     return utils::maskLoad(time, synced, sync_mask);
   }
 

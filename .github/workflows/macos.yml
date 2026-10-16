@@ -1,8 +1,14 @@
 # Builds the macOS VST3, AU and installer on every push to dev and publishes
-# them as the "dev build" pre-release on the Releases page. Each build
-# replaces the files of the one before, and the dev-build tag moves to the
-# commit it was built from.
+# them as the current beta pre-release on the Releases page (v2.0.0-beta.1
+# and so on, see ATLAS_PRERELEASE below). Each build replaces the files of
+# the one before, and the beta's tag moves to the commit it was built from;
+# bumping ATLAS_PRERELEASE starts a new release.
 name: macOS build
+
+env:
+  # The pre-release the dev branch publishes: its tag is v<version>-<this>,
+  # its title "Atlas <version> beta N". Bump it for the next beta.
+  ATLAS_PRERELEASE: beta.1
 
 on:
   push:
@@ -47,7 +53,7 @@ jobs:
       - name: Package
         run: |
           version=$(sed -n 's/^project(Atlas VERSION \([^ ]*\).*/\1/p' CMakeLists.txt)
-          name="Atlas-${version}-dev.${GITHUB_SHA::7}-macOS"
+          name="Atlas-${version}-${ATLAS_PRERELEASE}-macOS"
           installer/macos/build_pkg.sh build dist
           mv "dist/Atlas-${version}-macOS.pkg" "dist/${name}.pkg"
           ditto -c -k --sequesterRsrc --keepParent build/Atlas_artefacts/Release/VST3/Atlas.vst3 "dist/${name}-VST3.zip"
@@ -61,16 +67,24 @@ jobs:
             fi
           done
 
-      - name: Publish the dev build
+      - name: Publish the beta pre-release
         env:
           GH_TOKEN: ${{ github.token }}
+          REPOSITORY_URL: ${{ github.server_url }}/${{ github.repository }}
         run: |
-          tag=dev-build
-          title="Atlas ${ATLAS_VERSION} dev build (${GITHUB_SHA::7})"
-          notes="The latest build of the dev branch, from commit ${GITHUB_SHA}: $(git log -1 --format=%s).
-          Each push to dev replaces these files.
+          tag="v${ATLAS_VERSION}-${ATLAS_PRERELEASE}"
+          # beta.1 reads as "beta 1" in the title and notes.
+          beta="${ATLAS_PRERELEASE/./ }"
+          title="Atlas ${ATLAS_VERSION} ${beta}"
+          notes="Atlas ${ATLAS_VERSION} ${beta}, built from commit ${GITHUB_SHA} on the dev branch (${GITHUB_SHA::7}: $(git log -1 --format=%s)). Every push to dev replaces these files until the next beta.
 
-          The .pkg installs the VST3 and the Audio Unit in /Library/Audio/Plug-Ins. It is not signed, so the first time macOS blocks it: open System Settings > Privacy & Security and click Open Anyway. The zips hold the bare plug-ins for copying by hand."
+          This is a beta release. Atlas is still being developed and tested: expect rough edges, keep copies of the presets you care about, and tell us what works and what does not.
+
+          Atlas can get loud. Some oscillators, filters and effects reach well above 0 dBFS, so a limiter after Atlas, on the track or on the master, is recommended when you play it, especially on headphones.
+
+          Contributions are welcome: bug reports, feature requests, pull requests, presets, wavetables and documentation, at ${REPOSITORY_URL}. Atlas is built to be played and programmed with a keyboard and a screen reader, so reports from VoiceOver and Windows screen reader users are especially valuable.
+
+          The .pkg installs the VST3 and the Audio Unit in /Library/Audio/Plug-Ins. It is not signed, so the first time macOS blocks it: open System Settings > Privacy & Security and click Open Anyway. The zips hold the bare plug-ins for copying by hand. They are not notarized either, so after unzipping, clear the quarantine flag (xattr -dr com.apple.quarantine Atlas.vst3, and the same for Atlas.component) or hosts refuse to load them."
           git tag -f "$tag" "$GITHUB_SHA"
           git push -f origin "refs/tags/$tag"
           if gh release view "$tag" > /dev/null 2>&1; then

@@ -43,6 +43,8 @@ namespace multisample {
     juce::File cacheFolder(const std::string& hash);
     // Editable copies of cached SFZ text, by hash.
     juce::File workingFolder(const std::string& hash);
+    // True for the loader's own 32-digit hex hashes, the only form that may name a cache folder.
+    bool isValidHash(const std::string& hash);
     bool isCached(const std::string& hash);
     // Marks a cached instrument as just used (eviction is least recently used first).
     void touch(const std::string& hash);

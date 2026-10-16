@@ -1701,6 +1701,180 @@ namespace {
   }
 
 
+  // A group a button turns off, and one a tag disables, play nothing, but
+  // their samples are stored with the preset and hashed like the others: the
+  // hash does not follow the controls, and after a restore from the
+  // container turning the button on finds the files in the cache.
+  void disabledGroupRoundTrip() {
+    TempFolder temp;
+    container::setCacheRootForTesting(temp.folder.getChildFile("cache"));
+    const juce::File library = temp.folder.getChildFile("Library");
+    writeWav(library.getChildFile("Samples/close.wav"), 440.0, kRate * 2);
+    writeWav(library.getChildFile("Samples/layer.wav"), 660.0, kRate * 2);
+    writeWav(library.getChildFile("Samples/far.wav"), 330.0, kRate * 2);
+    const juce::File preset = library.getChildFile("Layers.dspreset");
+    writeText(preset,
+              "<DecentSampler><ui><tab name=\"main\">"
+              "<button label=\"Layer\" value=\"0\">"
+              "<state name=\"Off\"><binding level=\"group\" position=\"1\" parameter=\"ENABLED\" "
+              "translation=\"fixed_value\" translationValue=\"false\"/></state>"
+              "<state name=\"On\"><binding level=\"group\" position=\"1\" parameter=\"ENABLED\" "
+              "translation=\"fixed_value\" translationValue=\"true\"/></state></button>"
+              "</tab></ui><groups release=\"0.01\">"
+              "<group><sample path=\"Samples/close.wav\" rootNote=\"69\" loNote=\"60\" hiNote=\"71\"/></group>"
+              "<group><sample path=\"Samples/layer.wav\" rootNote=\"76\" loNote=\"72\" hiNote=\"83\"/></group>"
+              "<group tags=\"far\"><sample path=\"Samples/far.wav\" rootNote=\"57\" loNote=\"48\" hiNote=\"59\"/></group>"
+              "</groups><tags><tag name=\"far\" enabled=\"false\"/></tags></DecentSampler>");
+    auto decodedCount = [](const LoadResult& result) {
+      int count = 0;
+      for (const auto& entry : result.decoded)
+        count += entry.data ? 1 : 0;
+      return count;
+    };
+    auto audioOf = [](const LoadResult& result, const juce::File& file) {
+      for (const auto& entry : result.decoded) {
+        if (entry.file == file)
+          return entry.data;
+      }
+      return std::shared_ptr<const SampleData>();
+    };
+
+    // The parser reports every file; only the enabled group's is played.
+    SfzParser::Result parsed = DecentSamplerParser::parse(preset);
+    expect(parsed.error.empty(), "the layered preset parses: " + parsed.error);
+    int played = 0;
+    for (const auto& reference : parsed.samples)
+      played += reference.played ? 1 : 0;
+    expect(parsed.samples.size() == 3 && played == 1,
+           "three sample files are reported and one is played (got " + std::to_string(parsed.samples.size()) + " and " +
+           std::to_string(played) + ")");
+    expect(parsed.instrument && parsed.instrument->regions.size() == 1 && parsed.instrument->regions[0].lokey == 60,
+           "only the enabled group has a region");
+
+    // The loader stores and hashes all three and decodes the played one.
+    LoadRequest request;
+    request.file = preset;
+    auto off = loadInstrument(request, nullptr);
+    expect(off && off->error.empty(), "the layered preset loads: " + (off ? off->error : std::string()));
+    if (!off || !off->instrument)
+      return;
+    expect(off->files.size() == 4, "the text and three samples are listed (got " + std::to_string(off->files.size()) + ")");
+    for (const FileInfo& info : off->files)
+      expect(info.size > 0 && info.file.existsAsFile(), "a stored file has its size: " + info.relative);
+    expect(off->decoded.size() == 3 && decodedCount(*off) == 1, "one sample is decoded, two are only stored");
+    expect(off->instrument->missing_files.empty(), "files that are only stored are not reported missing");
+
+    // With the button on, the hash is the same, the layer is decoded and the
+    // other audio is reused.
+    LoadRequest on = request;
+    on.sfz_options.control_values[0] = 1.0;
+    on.previous = off;
+    auto with_layer = loadInstrument(on, nullptr);
+    expect(with_layer && with_layer->error.empty() && with_layer->instrument,
+           "the preset loads with the layer on: " + (with_layer ? with_layer->error : std::string()));
+    if (!with_layer || !with_layer->instrument)
+      return;
+    expect(with_layer->hash == off->hash, "the hash does not depend on the control");
+    expect(with_layer->files.size() == 4, "the same files are stored with the layer on");
+    expect(with_layer->instrument->regions.size() == 2 && !with_layer->instrument->attack_by_key[76].empty(),
+           "the enabled layer has a region");
+    expect(decodedCount(*with_layer) == 2, "the layer is decoded once it is enabled");
+    const juce::File close_file = library.getChildFile("Samples/close.wav");
+    expect(audioOf(*off, close_file) != nullptr && audioOf(*off, close_file) == audioOf(*with_layer, close_file),
+           "audio decoded before the change is reused");
+
+    // Turning it off again keeps the layer's audio for the next time.
+    LoadRequest off_again = request;
+    off_again.previous = with_layer;
+    auto back = loadInstrument(off_again, nullptr);
+    expect(back && back->error.empty() && back->instrument && back->instrument->regions.size() == 1 &&
+           back->hash == off->hash, "the layer turns off again");
+    const juce::File layer_file = library.getChildFile("Samples/layer.wav");
+    expect(back && audioOf(*back, layer_file) != nullptr && audioOf(*back, layer_file) == audioOf(*with_layer, layer_file),
+           "audio of a group turned off stays decoded");
+
+    // Saved with the layer off, the container still holds the layer's file.
+    const juce::File saved = temp.folder.getChildFile("Layers.atp");
+    std::string hash;
+    {
+      SynthPlugin plugin;
+      preparePlayback(plugin);
+      manager(plugin).loadFromUser(0, preset);
+      settle(plugin);
+      const auto status = manager(plugin).status(0);
+      expect(status.state == vital::multisample::SlotStatus::kLoaded, "the layered preset loads in a slot: " + status.error);
+      hash = manager(plugin).result(0) ? manager(plugin).result(0)->hash : "";
+      expect(hash == off->hash, "the slot's hash is the loader's");
+      const auto silent = render(plugin, kRate / 2, { { 0, juce::MidiMessage::noteOn(1, 76, 1.0f) } });
+      expect(rms(silent, kRate / 10, kRate / 2) < 1.0e-4, "the layer's key plays nothing while the button is off");
+      render(plugin, kRate / 4, { { 0, juce::MidiMessage::noteOff(1, 76) } });
+      expect(plugin.saveToFile(saved) && container::isContainer(saved), "the layered preset saves as a container");
+      juce::ZipFile zip(saved);
+      const std::string root = "multisample/" + hash + "/";
+      expect(zip.getIndexOfFileName(juce::String(root + "Samples/layer.wav")) >= 0, "the disabled group's sample is stored");
+      expect(zip.getIndexOfFileName(juce::String(root + "Samples/far.wav")) >= 0, "the disabled tag's sample is stored");
+      expect(zip.getNumEntries() == 5, "preset.json plus the four instrument files (got " +
+                                       std::to_string(zip.getNumEntries()) + ")");
+    }
+
+    // Without the library the container restores, and turning the button on
+    // finds the layer in the cache and plays it.
+    library.deleteRecursively();
+    container::setCacheRootForTesting(temp.folder.getChildFile("cache2"));
+    const juce::File again = temp.folder.getChildFile("Again.atp");
+    {
+      SynthPlugin plugin;
+      preparePlayback(plugin);
+      std::string error;
+      expect(plugin.loadFromFile(saved, error), "the layered container loads: " + error);
+      settle(plugin);
+      const auto status = manager(plugin).status(0);
+      expect(status.state == vital::multisample::SlotStatus::kLoaded, "the instrument comes from the container: " + status.error);
+      expect(container::isCached(hash) && container::cacheFolder(hash).getChildFile("Samples/layer.wav").existsAsFile(),
+             "the cache holds the disabled group's sample");
+      auto restored = manager(plugin).result(0);
+      expect(restored && restored->hash == hash && restored->files.size() == 4,
+             "the cached copy hashes and lists the same files");
+      plugin.checkOversampling();
+      manager(plugin).setControlValue(0, 0, 1.0);
+      settle(plugin);
+      auto enabled = manager(plugin).result(0);
+      expect(enabled && enabled->instrument && !enabled->instrument->attack_by_key[76].empty() &&
+             enabled->instrument->missing_files.empty(),
+             "the layer's sample is found in the cache once the button is on");
+      expect(enabled && enabled->hash == hash, "the hash is unchanged with the layer on");
+      const auto audio = render(plugin, kRate / 2, { { 0, juce::MidiMessage::noteOn(1, 76, 1.0f) } });
+      expect(rms(audio, kRate / 10, kRate / 2) > 0.01, "the layer plays from the cache");
+      close(frequency(audio, kRate / 10, kRate / 2), 660.0, "at its recorded pitch", 2.0);
+      render(plugin, kRate / 4, { { 0, juce::MidiMessage::noteOff(1, 76) } });
+
+      expect(plugin.saveToFile(again) && container::isContainer(again), "the restored preset saves as a container");
+      juce::ZipFile zip(again);
+      expect(zip.getNumEntries() == 5, "the re-saved container holds every file");
+    }
+
+    // A preset saved with the button on restores with the layer playing.
+    container::setCacheRootForTesting(temp.folder.getChildFile("cache3"));
+    {
+      SynthPlugin plugin;
+      preparePlayback(plugin);
+      std::string error;
+      expect(plugin.loadFromFile(again, error), "the preset saved with the layer on loads: " + error);
+      settle(plugin);
+      const auto status = manager(plugin).status(0);
+      expect(status.state == vital::multisample::SlotStatus::kLoaded, "it restores from its container: " + status.error);
+      auto restored = manager(plugin).result(0);
+      expect(restored && restored->instrument && restored->instrument->controls.size() == 1 &&
+             restored->instrument->controls[0].value == 1.0 && !restored->instrument->attack_by_key[76].empty() &&
+             restored->instrument->missing_files.empty(),
+             "the button is on and the layer has its sample");
+      plugin.checkOversampling();
+      const auto audio = render(plugin, kRate / 2, { { 0, juce::MidiMessage::noteOn(1, 76, 1.0f) } });
+      expect(rms(audio, kRate / 10, kRate / 2) > 0.01, "the layer plays after the restore");
+    }
+    container::setCacheRootForTesting({});
+  }
+
   // The instrument's knobs and menus: changing them rebuilds the regions, notes
   // already sounding play on, and the values are saved with the preset.
   int decentSamplerControls() {
@@ -1803,6 +1977,7 @@ namespace {
              "values apply to an instrument that is already loaded");
     }
     container::setCacheRootForTesting({});
+    disabledGroupRoundTrip();
     return finish("decentsampler controls");
   }
 

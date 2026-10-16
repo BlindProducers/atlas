@@ -97,6 +97,53 @@ void MidiManager::clearMidiLearn(const std::string& name) {
     LoadSave::saveMidiMapConfig(this);
 }
 
+void MidiManager::clearMidiLearnPrefix(const std::string& prefix) {
+  commitPendingMidiLearn();
+  bool removed = false;
+  {
+    const ScopedLock lock(synth_->getCriticalSection());
+    for (auto& controls : midi_learn_map_) {
+      for (auto it = controls.second.begin(); it != controls.second.end();) {
+        if (it->first.rfind(prefix, 0) == 0) {
+          it = controls.second.erase(it);
+          removed = true;
+        }
+        else
+          ++it;
+      }
+    }
+  }
+  if (removed)
+    LoadSave::saveMidiMapConfig(this);
+}
+
+void MidiManager::swapMidiLearnPrefixes(const std::string& first, const std::string& second) {
+  commitPendingMidiLearn();
+  bool changed = false;
+  {
+    const ScopedLock lock(synth_->getCriticalSection());
+    for (auto& controls : midi_learn_map_) {
+      std::map<std::string, const vital::ValueDetails*> renamed;
+      for (const auto& entry : controls.second) {
+        std::string name = entry.first;
+        if (name.rfind(first, 0) == 0)
+          name = second + name.substr(first.size());
+        else if (name.rfind(second, 0) == 0)
+          name = first + name.substr(second.size());
+        if (name == entry.first)
+          renamed[name] = entry.second;
+        // A renamed control keeps its mapping only if the name is a control.
+        else if (isLearnable(name))
+          renamed[name] = &vital::Parameters::getDetails(name);
+        changed = changed || name != entry.first;
+      }
+      controls.second = std::move(renamed);
+    }
+  }
+  if (changed)
+    LoadSave::saveMidiMapConfig(this);
+}
+
 std::string MidiManager::armedName() const {
   const vital::ValueDetails* armed = armed_value_.load();
   return armed != nullptr ? armed->name : std::string();

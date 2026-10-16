@@ -40,7 +40,11 @@ class Tuning {
     void setConstantTuning(float note);
     void setDefaultTuning();
     vital::mono_float convertMidiNote(int note) const;
-    void setStartMidiNote(int start_midi_note) { scale_start_midi_note_ = start_midi_note; }
+    // The note the first scale degree maps to; a value outside the MIDI range
+    // (a damaged .kbm) would index the tuning table out of bounds.
+    void setStartMidiNote(int start_midi_note) {
+      scale_start_midi_note_ = start_midi_note < 0 ? 0 : start_midi_note > 127 ? 127 : start_midi_note;
+    }
     void setReferenceNote(int reference_note) { reference_midi_note_ = reference_note; }
     void setReferenceFrequency(float frequency);
     void setReferenceNoteFrequency(int midi_note, float frequency);

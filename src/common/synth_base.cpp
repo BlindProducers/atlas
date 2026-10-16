@@ -378,8 +378,9 @@ void SynthBase::setVoiceReverbMemory(int filter, bool reserve) {
 
 void SynthBase::valueChanged(const std::string& name, vital::mono_float value) {
   // A name that is not a control (a MIDI-learn mapping saved by an older
-  // Atlas, for one) changes nothing. This can run on the audio thread, so it
-  // must neither insert into nor dereference a missing entry.
+  // Atlas, or a host alias, for one) changes nothing. This can run on the
+  // audio thread, so it must neither insert into nor dereference a missing
+  // entry.
   const auto found = controls_.find(name);
   if (found == controls_.end() || found->second == nullptr)
     return;
@@ -820,6 +821,9 @@ void SynthBase::prepareSelectedSources() {
     }
   }
   prepareSourceEngines();
+  // The per-voice copies of the graph would otherwise clone a slot's new type
+  // module in their first process() after the change, on the audio thread.
+  engine_->syncVoiceGraphs();
 }
 
 void SynthBase::prepareSourceEngines() {
@@ -1575,8 +1579,14 @@ void SynthBase::processAudioAndMidi(AudioSampleBuffer* buffer, int channels, Mid
 
 void SynthBase::writeAudio(AudioSampleBuffer* buffer, int channels, int samples, int offset) {
   const vital::mono_float* engine_output = (const vital::mono_float*)engine_->output(0)->buffer;
+  // The engine renders a stereo pair in the first two lanes; further host
+  // channels (a surround bus) get silence rather than the other lanes.
   for (int channel = 0; channel < channels; ++channel) {
     float* channel_data = buffer->getWritePointer(channel, offset);
+    if (channel >= 2) {
+      FloatVectorOperations::clear(channel_data, samples);
+      continue;
+    }
 
     for (int i = 0; i < samples; ++i) {
       channel_data[i] = engine_output[vital::poly_float::kSize * i + channel];
@@ -1725,6 +1735,9 @@ void SynthBase::updateMemoryOutput(int samples, const vital::poly_float* audio) 
   memory_input_offset_ -= samples;
 }
 
+// The MIDI learn map is read by the audio thread while it handles CCs. The
+// MidiManager changes it on the message thread under the callback lock, and
+// writes the config file only after letting go of it.
 void SynthBase::armMidiLearn(const std::string& name) {
   midi_manager_->armMidiLearn(name);
 }
@@ -1737,9 +1750,18 @@ void SynthBase::clearMidiLearn(const std::string& name) {
   midi_manager_->clearMidiLearn(name);
 }
 
+void SynthBase::clearMidiLearnPrefix(const std::string& prefix) {
+  midi_manager_->clearMidiLearnPrefix(prefix);
+}
+
+void SynthBase::swapMidiLearnPrefixes(const std::string& first, const std::string& second) {
+  midi_manager_->swapMidiLearnPrefixes(first, second);
+}
+
 std::vector<std::pair<int, std::string>> SynthBase::midiLearnMappings() {
   midi_manager_->commitPendingMidiLearn();
   std::vector<std::pair<int, std::string>> mappings;
+  const ScopedLock lock(getCriticalSection());
   for (const auto& controller : midi_manager_->getMidiLearnMap())
     for (const auto& destination : controller.second)
       mappings.push_back({ controller.first, destination.first });
@@ -1861,6 +1883,8 @@ void SynthBase::dispatchPendingGuiUpdates(SynthGuiInterface& gui_interface) {
       changed = changed || update.first != "pitch_wheel";
     }
   }
+  // The audio thread learned the mapping; commitPendingMidiLearn above
+  // added it to the map and wrote the file.
   if (const std::string* learned = midi_learned_name_.exchange(nullptr, std::memory_order_acquire))
     gui_interface.notifyMidiLearned(*learned, midi_learned_id_.load(std::memory_order_relaxed));
   if (changed)

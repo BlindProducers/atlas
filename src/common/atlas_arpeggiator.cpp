@@ -106,7 +106,11 @@ void AtlasArpeggiator::process(const MidiBuffer& input, MidiBuffer& output, int 
   const double quarters_per_sample = jlimit(1.0, 999.0, bpm) / (60.0 * sample_rate_);
   if (was_idle_) {
     const int start_sample = first_note_sample >= 0 ? first_note_sample : 0;
-    if (settings.retrigger == kRetriggerOff)
+    // Note retrigger already reset the step clock to the key in
+    // consumeInputMidi. The other modes start on the key as well: with Beat
+    // retrigger and the transport stopped, the clock would otherwise fire at
+    // sample 0, before the key, and again on the division that starts at it.
+    if (settings.retrigger != kRetriggerNote)
       resetSequence(start_sample);
     // With the transport stopped, the beat grid starts at the first note.
     beat_position_ = -start_sample * quarters_per_sample;
@@ -216,7 +220,7 @@ int AtlasArpeggiator::consumeInputMidi(const MidiBuffer& input, MidiBuffer& outp
 void AtlasArpeggiator::handleNoteOn(const MidiMessage& message) {
   const int note = message.getNoteNumber();
   const int channel = message.getChannel();
-  const int velocity = jlimit(1, 127, static_cast<int>(message.getVelocity() * 127.0f));
+  const int velocity = jlimit(1, 127, static_cast<int>(message.getVelocity()));
   physically_down_[static_cast<size_t>(jlimit(1, 16, channel) - 1)][static_cast<size_t>(note & 127)] = true;
 
   auto existing = std::find_if(held_notes_.begin(), held_notes_.end(), [note, channel](const HeldNote& held) {
@@ -541,7 +545,9 @@ int AtlasArpeggiator::choosePatternNote(const std::vector<int>& pattern, const S
   }
 
   if (style == kRandomOnce) {
-    if (random_once_pattern_.empty())
+    // Reshuffle when the chord changed, and when Steps, Distance, Octave or
+    // Offset changed the notes the shuffle was drawn from.
+    if (random_once_pattern_.empty() || random_once_source_ != pattern)
       rebuildRandomOncePattern(pattern);
     if (!random_once_pattern_.empty()) {
       const int repeats = jmax(1, settings.repeats);
@@ -572,7 +578,9 @@ int AtlasArpeggiator::outputChannel(const std::vector<HeldNote>& source_notes, c
 
 int AtlasArpeggiator::velocityForStep(const std::vector<HeldNote>& source_notes, const Settings& settings) {
   const float decay = settings.velocity_decay / 100.0f;
-  const float multiplier = std::pow(jlimit(0.0f, 1.0f, 1.0f - decay), static_cast<float>(jmax(0, pattern_index_)));
+  // Every step since the pattern (re)started is quieter by the decay: the
+  // first step plays at full velocity in every style, Chord Trigger included.
+  const float multiplier = std::pow(jlimit(0.0f, 1.0f, 1.0f - decay), static_cast<float>(jmax(0, loop_steps_ - 1)));
   const float source_scale = source_notes.empty() ? 1.0f : static_cast<float>(source_notes.front().velocity) / 127.0f;
   const float random_amount = jlimit(0.0f, 1.0f, settings.random_velocity);
   const float random_scale = 1.0f - random_.nextFloat() * random_amount;
@@ -616,6 +624,7 @@ void AtlasArpeggiator::addGeneratedNote(MidiBuffer& output, int note, int channe
 }
 
 void AtlasArpeggiator::rebuildRandomOncePattern(const std::vector<int>& pattern) {
+  random_once_source_ = pattern;
   random_once_pattern_ = pattern;
   for (int i = static_cast<int>(random_once_pattern_.size()) - 1; i > 0; --i)
     std::swap(random_once_pattern_[static_cast<size_t>(i)],

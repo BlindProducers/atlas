@@ -262,7 +262,8 @@ namespace vital {
 
   SpectralSource::SpectralSource(const SpectralSource& other) :
       Processor(other), sample_(other.sample_), analysis_cache_(other.analysis_cache_),
-      window_(other.window_), fft_(atlas::sharedFft(SpectralAnalysis::kFftOrder)) {
+      window_(other.window_), fft_(atlas::sharedFft(SpectralAnalysis::kFftOrder)),
+      modulation_(other.modulation_) {
     for (int lane = 0; lane < poly_float::kSize; ++lane) {
       lanes_[lane].analysis_valid = false;
       resetLane(lane);

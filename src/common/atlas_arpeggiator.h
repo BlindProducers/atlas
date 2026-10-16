@@ -154,6 +154,8 @@ class AtlasArpeggiator {
     std::vector<HeldNote> held_notes_;
     std::vector<ActiveNote> active_notes_;
     std::vector<int> random_once_pattern_;
+    // The pattern random_once_pattern_ was shuffled from.
+    std::vector<int> random_once_source_;
     std::vector<HeldNote> sorted_notes_;
     std::vector<HeldNote> sorted_by_order_;
     std::vector<int> pattern_notes_;

@@ -73,6 +73,9 @@ namespace multisample {
     spec.name = stringField(data, "name");
     spec.path = stringField(data, "path");
     spec.hash = stringField(data, "hash");
+    // The hash names the cache folder, so only the loader's own form passes.
+    if (!container::isValidHash(spec.hash))
+      spec.hash.clear();
     spec.entry = stringField(data, "entry");
     auto preset = data.find("sf2_preset");
     if (preset != data.end() && preset->is_object()) {

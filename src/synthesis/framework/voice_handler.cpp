@@ -809,9 +809,9 @@ namespace vital {
             if (voice_override_ == kKill && !legato_) {
               voice->kill(sample);
               new_voice = grabVoice(false);
-              // Every other voice is fading out: hand the held note to this
-              // one, as the Steal override does, instead of a voice that
-              // does not exist.
+              // Every other voice is fading out or belongs to an
+              // arpeggiator: hand the held note to this one, as the Steal
+              // override does, instead of a voice that does not exist.
               if (new_voice == nullptr) {
                 new_voice = voice;
                 active_voices_.remove(voice);

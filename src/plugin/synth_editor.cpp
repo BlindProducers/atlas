@@ -243,9 +243,8 @@ namespace {
       return false;
 
     const int octave = octave_text.getIntValue();
-    while (semitone < 0)
-      semitone += 12;
-    semitone %= 12;
+    // Cb4 is the B below C4 and B#3 the C above B3: an accidental carries
+    // into the next octave instead of wrapping within this one.
     midi_note = static_cast<float>((octave + 1) * 12 + semitone);
     return true;
   }
@@ -341,9 +340,9 @@ namespace {
           return bridge.convertToPluginValue(jlimit(details.min, details.max, midi_note));
         }
         if (displayAccessibleFrequencyValuesInHz()) {
-          const float frequency = trimmed.removeCharacters(" ").toLowerCase()
-                                         .removeCharacters("hz")
-                                         .getFloatValue();
+          const String lower = trimmed.removeCharacters(" ").toLowerCase();
+          const bool kilohertz = lower.endsWith("khz") || lower.endsWith("k");
+          const float frequency = lower.removeCharacters("khz").getFloatValue() * (kilohertz ? 1000.0f : 1.0f);
           if (frequency > 0.0f) {
             midi_note = vital::utils::frequencyToMidiNote(frequency);
             const auto& details = bridge.getDetails();
@@ -477,7 +476,9 @@ namespace {
       { "1/16 Dotted", 0.375f }, { "1/8 Triplet", 1.0f / 3.0f }, { "1/16", 0.25f },
       { "1/32 Dotted", 0.1875f }, { "1/16 Triplet", 1.0f / 6.0f }, { "1/32", 0.125f },
       { "1/64 Dotted", 0.09375f }, { "1/32 Triplet", 1.0f / 12.0f }, { "1/64", 0.0625f },
-      { "1/128 Dotted", 0.046875f }, { "1/64 Triplet", 1.0f / 24.0f }, { "1/128", 0.03125f }
+      // Vital's tempo table ends at 1/64, so no 1/128 entries: they would
+      // announce a length the LFO cannot take.
+      { "1/64 Triplet", 1.0f / 24.0f }
     };
     return divisions;
   }
@@ -956,7 +957,7 @@ namespace {
       if (!root.isDirectory())
         continue;
 
-      for (const auto& entry : RangedDirectoryIterator(root, true, wildcard, File::findFiles)) {
+      for (const auto& entry : RangedDirectoryIterator(root, true, wildcard, File::findFiles | File::ignoreHiddenFiles)) {
         if (cancelled && cancelled->load(std::memory_order_relaxed)) return;
         cache.push_back(entry.getFile());
       }
@@ -5276,7 +5277,7 @@ class AccessibleParameterRow : public Component {
             synced_envelope_time_ = synced;
             slider_.setRange(synced ? 0.0 : min_normalized_value_, maximum, synced ? 1.0 : 0.0);
             slider_.setHelpText(synced
-                ? "Use arrows to select the next musical duration, or Page keys to move ten divisions. d means dotted and t means triplet. Enter accepts values such as 1/4, 1/4d or 1/4t. Home selects the longest duration, End the shortest, and Backspace restores the default. Shift M opens the context menu."
+                ? "Use arrows to select the next musical duration, or Page keys to move ten divisions. d means dotted and t means triplet. Enter accepts values such as 1/4, 1/4d or 1/4t. Home selects the longest duration, End selects None, and Backspace restores the default. Shift M opens the context menu."
                 : "Use arrows to change time, Shift arrows for finer changes, and Page keys for larger changes. Enter accepts milliseconds or seconds. Home selects maximum, End minimum, and Backspace restores the default. Shift M opens the context menu.");
           }
         }
@@ -5406,7 +5407,7 @@ class AccessibleParameterRow : public Component {
       if (parameter_id.isEmpty())
         return;
 
-      const bool is_toggle = parameter_.isBoolean();
+      const bool is_toggle = use_toggle_control_;
       const int macro_index = macroIndexForControlId(parameter_id);
       const auto removable_modulations = modulation_removal_sources_callback_
           ? modulation_removal_sources_callback_(parameter_id)
@@ -5706,6 +5707,12 @@ class AccessibleSectionHeader : public Component, public AccessibleContextMenuTa
     }
 
     bool keyPressed(const KeyPress& key) override {
+      // Shift M opens the heading's menu before any other command claims the
+      // key: an effect slot's handler takes the bracket keys for moving it.
+      if (onContextMenuCommand && isModulationMenuKey(key)) {
+        onContextMenuCommand(*this);
+        return true;
+      }
       if (onKeyCommand && onKeyCommand(key, *this))
         return true;
       if (onContextMenuCommand && isContextMenuKey(key)) {
@@ -8550,6 +8557,7 @@ void SynthEditor::showKeyboardHelp() {
       "Effects chain (when an effect has focus)\n"
       "  Left bracket ( [ ) - Move effect earlier in the chain\n"
       "  Right bracket ( ] ) - Move effect later in the chain\n"
+      "  Shift+M on an effect's heading - Slot menu: copy, paste, replace or remove the effect\n"
       "  On an FX parameter, open its context menu and choose Automate to use the first free host slot\n"
       "\n"
       "LFO segment (MSEG) editor\n"
@@ -9599,8 +9607,10 @@ void SynthEditor::presetSelectionChanged(int row, bool allowAutoload) {
     safe_this->last_preset_autoload_ms_ = Time::getMillisecondCounterHiRes();
     safe_this->loadPresetFile(file, true, false);
     safe_this->last_preset_autoload_ms_ = Time::getMillisecondCounterHiRes();
-    // The selection may have moved again while this one loaded.
-    if (safe_this->selectedPresetFile() != safe_this->synth_.getActiveFile())
+    // The selection may have moved again while this one loaded. Compare with
+    // the file just tried, not the active one: a preset that failed to load
+    // must not be retried every interval.
+    if (safe_this->selectedPresetFile() != file)
       safe_this->presetSelectionChanged(safe_this->preset_table_.getSelectedRow(), true);
   });
 }
@@ -9732,7 +9742,11 @@ void SynthEditor::showPresetMetadataDialog() {
   save_patch_name_.setText(file.getFileNameWithoutExtension(), false);
   save_patch_author_.setText(item != nullptr ? item->author : LoadSave::getAuthorFromFile(file), false);
   save_patch_bank_.setText(item != nullptr ? item->bank : presetBankName(file), false);
-  save_patch_category_.setText(item != nullptr ? item->category : presetCategoryName(file), false);
+  // The folder, else the stored style, is the category. The browser's
+  // "Uncategorized" placeholder is not one: saved back it would move the file
+  // into a folder of that name and write it as the style.
+  const String path_category = presetPathCategoryName(file);
+  save_patch_category_.setText(path_category.isNotEmpty() ? path_category : LoadSave::getStyleFromFile(file), false);
   save_patch_tags_.setText(item != nullptr ? item->tags.joinIntoString(", ") : LoadSave::getTagsFromFile(file), false);
   save_patch_comments_.setText(item != nullptr ? item->comments : presetJsonStringField(file, "comments"), false);
   save_patch_prompt_.setText("Edit preset metadata. Category controls the folder and sound type; tags are independent searchable labels.",
@@ -10015,10 +10029,18 @@ void SynthEditor::choosePresetFile() {
   });
 }
 
-void SynthEditor::loadPresetFile(const File& file, bool preview, bool updateBrowserFilters) {
+void SynthEditor::loadPresetFile(File file, bool preview, bool updateBrowserFilters) {
+  if (!file.existsAsFile()) {
+    NativeMessageBox::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Unable to load preset",
+                                          "The preset file no longer exists. Refresh the preset list.");
+    postPluginAnnouncement("Preset file no longer exists", AccessibilityHandler::AnnouncementPriority::high);
+    return;
+  }
   const String parameter_id = focusedParameterId();
   const String accessible_title = focusedAccessibleTitle();
   auto* persistent_focus = persistentFocusedComponent();
+  // The table sits inside the rows, so persistentFocusedComponent never names it.
+  const bool loaded_from_table = preset_table_.hasKeyboardFocus(true);
   std::string error;
   if (!synth_.loadFromFile(file, error)) {
     NativeMessageBox::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Unable to load preset", error);
@@ -10038,7 +10060,7 @@ void SynthEditor::loadPresetFile(const File& file, bool preview, bool updateBrow
     filterPresetList();
   updatePresetSummary();
   restoreFocusAfterRebuild(parameter_id, persistent_focus, accessible_title);
-  if (preview || persistent_focus == &preset_table_) {
+  if (preview || loaded_from_table) {
     Component::SafePointer<SynthEditor> safe_this(this);
     Component::SafePointer<Component> preset_list_focus(&preset_table_);
     MessageManager::callAsync([safe_this, preset_list_focus] {
@@ -10132,7 +10154,7 @@ void SynthEditor::exportFolderAsBank(const File& sourceFolder, const File& desti
   }
 
   Array<File> files;
-  sourceFolder.findChildFiles(files, File::findFiles, true,
+  sourceFolder.findChildFiles(files, File::findFiles | File::ignoreHiddenFiles, true,
                               vital::kPresetExtensionsList + ";*." + vital::kWavetableExtension +
                               ";*." + vital::kLegacyWavetableExtension + ";" + vital::kSampleExtensionsList +
                               ";" + vital::kLfoExtensionsList + ";*." + vital::kFxExtension);
@@ -10415,6 +10437,28 @@ void SynthEditor::commitSavePresetDialog() {
   destination = destination.getChildFile(preset_name);
 
   hideSavePresetDialog();
+  // Save as must not replace another preset without asking: the dialog does
+  // not show what else is in the folder.
+  const File existing = destination.withFileExtension(vital::kPresetExtension);
+  if (existing.existsAsFile() && existing != synth_.getActiveFile()) {
+    Component::SafePointer<SynthEditor> safe_this(this);
+    NativeMessageBox::showAsync(MessageBoxOptions()
+                                    .withIconType(MessageBoxIconType::QuestionIcon)
+                                    .withTitle("Replace preset?")
+                                    .withMessage("A preset called " + preset_name + " already exists in " +
+                                                 existing.getParentDirectory().getFileName() + ". Replace it?")
+                                    .withButton("Replace")
+                                    .withButton("Cancel"),
+                                [safe_this, destination](int button) {
+      if (safe_this == nullptr)
+        return;
+      if (button == 0)
+        safe_this->savePresetFile(destination);
+      else
+        postPluginAnnouncement("Save cancelled", AccessibilityHandler::AnnouncementPriority::high);
+    });
+    return;
+  }
   savePresetFile(destination);
 }
 
@@ -10701,8 +10745,9 @@ String SynthEditor::lfoTimeDescription(float phase) const {
 }
 
 String SynthEditor::lfoTimeDescriptionFor(int lfo_index, float phase) const {
-  const int cycle_index = lfo_index == active_lfo_index_
-      ? lfo_cycle_index_ : lfoCycleIndexFromParameters(lfo_index);
+  // From the parameters, not the key handler's cached index: VoiceOver reads
+  // this text without a key press.
+  const int cycle_index = lfoCycleIndexFromParameters(lfo_index);
   const auto& divisions = msegTimeDivisions();
   const float cycle_quarter_notes = divisions[jlimit(0, static_cast<int>(divisions.size()) - 1,
                                                       cycle_index)].quarter_notes;
@@ -11448,16 +11493,23 @@ void SynthEditor::pasteLfoPoints() {
     points.push_back({ generator->getPoint(i), generator->getPower(i) });
 
   selected_lfo_point_phases_.clear();
+  std::vector<CopiedLfoPoint> pasted;
+  pasted.reserve(source.size());
   for (auto point : source) {
     point.point.first = jlimit(0.0f, 1.0f, paste_start + (point.point.first - source_start));
-    points.erase(std::remove_if(points.begin(), points.end(), [&point](const auto& existing) {
-      return std::abs(existing.point.first - point.point.first) <= 0.0005f;
-    }), points.end());
-    points.push_back(point);
+    pasted.push_back(point);
     selected_lfo_point_phases_.push_back(point.point.first);
   }
+  // Existing points at a pasted phase give way; pasted points that share a
+  // phase (the two points of a step) all stay, in their copied order.
+  points.erase(std::remove_if(points.begin(), points.end(), [&pasted](const auto& existing) {
+    return std::any_of(pasted.begin(), pasted.end(), [&existing](const auto& point) {
+      return std::abs(existing.point.first - point.point.first) <= 0.0005f;
+    });
+  }), points.end());
+  points.insert(points.end(), pasted.begin(), pasted.end());
 
-  std::sort(points.begin(), points.end(), [](const auto& a, const auto& b) {
+  std::stable_sort(points.begin(), points.end(), [](const auto& a, const auto& b) {
     return a.point.first < b.point.first;
   });
   const int count = jmin(static_cast<int>(points.size()), LineGenerator::kMaxPoints);
@@ -11484,6 +11536,9 @@ void SynthEditor::copyLfoShape() {
   copied_lfo_shape_.clear();
   for (int i = 0; i < generator->getNumPoints(); ++i)
     copied_lfo_shape_.push_back({ generator->getPoint(i), generator->getPower(i) });
+  // Smooth and S Curve segments live in the smooth flag, not in the points.
+  copied_lfo_shape_smooth_ = generator->smooth();
+  copied_lfo_shape_mode_ = generator->getShapeMode();
   postLfoAnnouncement("Copied LFO " + String(active_lfo_index_ + 1));
 }
 
@@ -11502,6 +11557,8 @@ void SynthEditor::pasteLfoShape() {
     generator->setPoint(i, copied_lfo_shape_[static_cast<size_t>(i)].point);
     generator->setPower(i, copied_lfo_shape_[static_cast<size_t>(i)].power);
   }
+  generator->setShapeMode(copied_lfo_shape_mode_);
+  generator->setSmooth(copied_lfo_shape_smooth_);
   generator->render();
   synth_.markStateChanged();
 
@@ -11519,6 +11576,8 @@ void SynthEditor::duplicateLfoShapeToNextSlot() {
   std::vector<CopiedLfoPoint> duplicate;
   for (int i = 0; i < source->getNumPoints(); ++i)
     duplicate.push_back({ source->getPoint(i), source->getPower(i) });
+  const bool smooth = source->smooth();
+  const int mode = source->getShapeMode();
 
   const int destination = (active_lfo_index_ + 1) % vital::kNumLfos;
   active_lfo_index_ = destination;
@@ -11529,6 +11588,8 @@ void SynthEditor::duplicateLfoShapeToNextSlot() {
       target->setPoint(i, duplicate[static_cast<size_t>(i)].point);
       target->setPower(i, duplicate[static_cast<size_t>(i)].power);
     }
+    target->setShapeMode(mode);
+    target->setSmooth(smooth);
     target->render();
   }
   lfo_cursor_phase_ = 0.0f;
@@ -11955,6 +12016,16 @@ void SynthEditor::deleteLfoPoint() {
     postLfoAnnouncement("No point at " + lfoTimeDescription(lfo_cursor_phase_));
     return;
   }
+  {
+    const int last_index = generator->getNumPoints() - 1;
+    indices.erase(std::remove_if(indices.begin(), indices.end(), [last_index](int index) {
+      return index <= 0 || index >= last_index;
+    }), indices.end());
+    if (indices.empty()) {
+      postLfoAnnouncement("The first and last points cannot be deleted");
+      return;
+    }
+  }
 
   std::sort(indices.begin(), indices.end(), std::greater<int>());
   const String deleted = indices.size() == 1 ? lfoPointDescription(indices.front()) : String();
@@ -12021,6 +12092,16 @@ void SynthEditor::moveLfoPointTime(float delta) {
     indices.push_back(cursor_index);
   if (generator == nullptr || indices.empty()) {
     postLfoAnnouncement("No point selected. Press A to add a point at " + lfoTimeDescription(lfo_cursor_phase_));
+    return;
+  }
+  // The first and last points pin the cycle's ends, as every other writer of
+  // the shape keeps them.
+  const int last_index = generator->getNumPoints() - 1;
+  indices.erase(std::remove_if(indices.begin(), indices.end(), [last_index](int index) {
+    return index <= 0 || index >= last_index;
+  }), indices.end());
+  if (indices.empty()) {
+    postLfoAnnouncement("The first and last points stay at the start and end of the cycle");
     return;
   }
 
@@ -12389,6 +12470,11 @@ void SynthEditor::pasteOscillatorClipboard(int targetOscillator, Component& targ
   }
 
   refreshVisibleModulationLabels();
+  if (!copied_oscillator_.wavetable.is_null()) {
+    wavetable_keyboard_state_[targetOscillator] = {};
+    if (wavetable_editor_visible_[targetOscillator])
+      rebuildWavetableEditor(targetOscillator, focusedAccessibleTitle());
+  }
   if (!copied_oscillator_.sample.is_null())
     refreshSampleNameLabel(targetOscillator);
   if (!copied_oscillator_.instrument.is_null()) {
@@ -12630,6 +12716,7 @@ void SynthEditor::swapEffectSlots(const String& sectionName, int firstSlot, int 
   setInternalParameterEngineValue(second_prefix + "type", first_type);
   setInternalParameterEngineValue(first_prefix + "type", second_type);
   synth_.swapFxAutomationPrefixes(first_prefix.toStdString(), second_prefix.toStdString());
+  swapEffectSlotModuleState(first_prefix, second_prefix);
 
   for (const auto& modulation : modulations) {
     synth_.connectModulation(modulation.source.toStdString(), modulation.new_destination.toStdString());
@@ -12648,6 +12735,59 @@ void SynthEditor::swapEffectSlots(const String& sectionName, int firstSlot, int 
   }
   synth_.pauseProcessing(false);
   refreshVisibleModulationLabels();
+}
+
+void SynthEditor::swapEffectSlotModuleState(const String& firstPrefix, const String& secondPrefix) {
+  // A Convolution Reverb's impulse response lives in the slot's module and a
+  // Filter FX table in a creator named after the slot; both stay behind when
+  // the parameters move unless they are exchanged too, as are the MIDI learn
+  // mappings, which are keyed by control name.
+  auto* first_convolution = convolutionModuleForPrefix(firstPrefix);
+  auto* second_convolution = convolutionModuleForPrefix(secondPrefix);
+  if (first_convolution != nullptr && second_convolution != nullptr) {
+    const ScopedLock lock(synth_.getCallbackLock());
+    const json first_ir = first_convolution->hasCustomIr() ? first_convolution->irStateToJson() : json();
+    const json second_ir = second_convolution->hasCustomIr() ? second_convolution->irStateToJson() : json();
+    const std::string first_file = first_convolution->getLastBrowsedFile();
+    const std::string second_file = second_convolution->getLastBrowsedFile();
+    const auto apply = [](vital::ConvolutionReverbModule& module, const json& ir, const std::string& file) {
+      if (!ir.is_null())
+        module.irStateFromJson(ir);
+      else if (module.hasCustomIr())
+        module.setDefaultIr();
+      module.setLastBrowsedFile(file);
+    };
+    apply(*first_convolution, second_ir, second_file);
+    apply(*second_convolution, first_ir, first_file);
+  }
+
+  const std::string first_table = (firstPrefix + "filter_fx").toStdString();
+  const std::string second_table = (secondPrefix + "filter_fx").toStdString();
+  WavetableCreator* first_creator = synth_.getFilterTableCreator(first_table, false);
+  WavetableCreator* second_creator = synth_.getFilterTableCreator(second_table, false);
+  if (first_creator != nullptr || second_creator != nullptr) {
+    const json first_state = first_creator != nullptr ? first_creator->stateToJson() : json();
+    const json second_state = second_creator != nullptr ? second_creator->stateToJson() : json();
+    const auto applyTable = [this](const std::string& prefix, const json& state) {
+      if (state.is_null()) {
+        synth_.resetFilterTable(prefix);
+        return;
+      }
+      if (WavetableCreator* creator = synth_.getFilterTableCreator(prefix, true)) {
+        try {
+          creator->jsonToState(state);
+          creator->render();
+        }
+        catch (const json::exception&) {
+          synth_.resetFilterTable(prefix);
+        }
+      }
+    };
+    applyTable(first_table, second_state);
+    applyTable(second_table, first_state);
+  }
+
+  synth_.swapMidiLearnPrefixes(firstPrefix.toStdString(), secondPrefix.toStdString());
 }
 
 void SynthEditor::clearEffectSlot(const String& sectionName, int slot) {
@@ -12682,7 +12822,18 @@ void SynthEditor::clearEffectSlot(const String& sectionName, int slot) {
     setInternalParameterEngineValue(id, vital::Parameters::getDetails(id.toStdString()).default_value);
   }
   setInternalParameterEngineValue(prefix + "enabled", 1.0f);
+  // The slot module's impulse response and Filter FX table, and the MIDI
+  // learn mappings onto the slot, belong to the removed effect: left behind
+  // they would be saved with every preset and reappear in the next effect.
+  if (auto* module = convolutionModuleForPrefix(prefix)) {
+    const ScopedLock lock(synth_.getCallbackLock());
+    if (module->hasCustomIr())
+      module->setDefaultIr();
+    module->setLastBrowsedFile({});
+  }
+  synth_.resetFilterTable((prefix + "filter_fx").toStdString());
   synth_.pauseProcessing(false);
+  synth_.clearMidiLearnPrefix(prefix.toStdString());
   if (!routes.empty()) {
     refreshVisibleModulationLabels();
   }
@@ -12819,6 +12970,10 @@ void SynthEditor::copyEffectSlotToClipboard(const String& sectionName, int slot,
         copied_effect_slot_.impulse_response = module->irStateToJson();
     }
   }
+  if (type - 1 == vital::constants::kFilterFx) {
+    if (WavetableCreator* creator = synth_.getFilterTableCreator((slot_prefix + "filter_fx").toStdString(), false))
+      copied_effect_slot_.filter_table = creator->stateToJson();
+  }
 
   if (includeModulations) {
     for (auto* route : synth_.getModulationConnections()) {
@@ -12887,6 +13042,20 @@ void SynthEditor::pasteEffectSlotClipboard(const String& targetSection, const St
       else if (module->hasCustomIr())
         module->setDefaultIr();
       module->setLastBrowsedFile({});
+    }
+  }
+  if (type - 1 == vital::constants::kFilterFx) {
+    const std::string table_prefix = (slot_prefix + "filter_fx").toStdString();
+    if (copied_effect_slot_.filter_table.is_null())
+      synth_.resetFilterTable(table_prefix);
+    else if (WavetableCreator* creator = synth_.getFilterTableCreator(table_prefix, true)) {
+      try {
+        creator->jsonToState(copied_effect_slot_.filter_table);
+        creator->render();
+      }
+      catch (const json::exception&) {
+        synth_.resetFilterTable(table_prefix);
+      }
     }
   }
   setInternalParameterEngineValue(slot_prefix + "enabled", copied_effect_slot_.enabled ? 1.0f : 0.0f);
@@ -13790,6 +13959,12 @@ void SynthEditor::connectModulationAndPromptForAmount(const String& sourceId, co
 
   const bool created = synth_.connectModulation(sourceId.toStdString(), destinationId.toStdString());
   const int connection = synth_.getConnectionIndex(sourceId.toStdString(), destinationId.toStdString());
+  if (connection < 0) {
+    // Every modulation slot is taken, or the engine refused the route.
+    postPluginAnnouncement("No free modulation slot: remove a modulation first",
+                           AccessibilityHandler::AnnouncementPriority::high);
+    return;
+  }
   if (created && connection >= 0) {
     const String prefix = "modulation_" + String(connection + 1) + "_";
     setParameterEngineValue(prefix + "amount", 0.0f);
@@ -14890,15 +15065,18 @@ void SynthEditor::loadWavetableFile(const File& file, int audioLoadStyle) {
   if (active_oscillator_ < 0)
     return;
 
+  const String focus_title = focusedAccessibleTitle();
   try {
     if (auto* creator = synth_.getWavetableCreator(active_oscillator_)) {
       String error;
       if (!loadWavetableIntoCreator(*creator, file, audioLoadStyle, error))
         throw std::runtime_error(error.toStdString());
       creator->setFileLoaded(file.getFullPathName().toStdString());
-      wavetable_keyboard_state_[active_oscillator_].frame = 0;
-      wavetable_keyboard_state_[active_oscillator_].harmonic = 1;
-      wavetable_keyboard_state_[active_oscillator_].selected_frames.clear();
+      // The new table has its own layers and frames; the editor's cursors and
+      // controls describe the old one until it is rebuilt.
+      wavetable_keyboard_state_[active_oscillator_] = {};
+      if (wavetable_editor_visible_[active_oscillator_])
+        rebuildWavetableEditor(active_oscillator_, focus_title);
       const auto extension = file.getFileExtension().toLowerCase();
       const bool is_audio_file = extension == ".wav" || extension == ".flac" || extension == ".aif" || extension == ".aiff";
       const String import_suffix = is_audio_file ? " as " + wavetableAudioLoadStyleName(audioLoadStyle) : "";
@@ -16355,7 +16533,8 @@ void SynthEditor::removeWavetableModifier(int oscillator, int component_index) {
     return;
   auto* creator = synth_.getWavetableCreator(oscillator);
   const String name = atlas::wavetable_edit::componentName(component);
-  creator->getGroup(wavetable_keyboard_state_[oscillator].layer)->removeComponent(component_index);
+  const int layer = jlimit(0, creator->numGroups() - 1, wavetable_keyboard_state_[oscillator].layer);
+  creator->getGroup(layer)->removeComponent(component_index);
   wavetable_keyboard_state_[oscillator].keyframes.clear();
   creator->render();
   synth_.markStateChanged();
@@ -16380,7 +16559,8 @@ void SynthEditor::moveWavetableModifier(int oscillator, int component_index, int
   if (component == nullptr)
     return;
   auto* creator = synth_.getWavetableCreator(oscillator);
-  auto* group = creator->getGroup(wavetable_keyboard_state_[oscillator].layer);
+  const int layer = jlimit(0, creator->numGroups() - 1, wavetable_keyboard_state_[oscillator].layer);
+  auto* group = creator->getGroup(layer);
   const int destination = component_index + (direction < 0 ? -1 : 1);
   if (destination < 1 || destination >= group->numComponents())
     return;
@@ -17118,6 +17298,8 @@ void SynthEditor::showWavetableActionsMenu(int oscillator, Component& target) {
           synth_.markStateChanged();
           refreshWavetableNameLabel(oscillator);
           wavetable_keyboard_state_[oscillator] = {};
+          if (wavetable_editor_visible_[oscillator])
+            rebuildWavetableEditor(oscillator, focusedAccessibleTitle());
           postPluginAnnouncement("Wavetable reset to the default", AccessibilityHandler::AnnouncementPriority::high);
         }
         break;
@@ -18202,7 +18384,15 @@ void SynthEditor::loadLfoPresetFile(int lfoIndex, const File& file) {
   }
 
   if (auto* generator = lfoGeneratorForIndex(lfoIndex)) {
-    generator->jsonToState(data);
+    try {
+      generator->jsonToState(data);
+    }
+    catch (const json::exception&) {
+      NativeMessageBox::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Unable to import LFO preset",
+                                            "The selected file is not a valid Atlas LFO preset.");
+      postPluginAnnouncement("Unable to import LFO preset", AccessibilityHandler::AnnouncementPriority::high);
+      return;
+    }
     generator->setLastBrowsedFile(file.getFullPathName().toStdString());
     const String prefix = "lfo_" + String(lfoIndex + 1) + "_";
     if (data.count("deform") && data["deform"].is_number())

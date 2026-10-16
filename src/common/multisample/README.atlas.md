@@ -62,7 +62,7 @@ Behaviour matches sfizz and FluidSynth where noted below.
 A `.dspreset` becomes the same regions an SFZ file would. Samples are found the
 same way, from the preset's folder, ignoring case when the exact path is missing.
 
-- **Structure:** `<groups>`, `<group>` and `<sample>`. Most attributes inherit from `<groups>` to `<group>` to `<sample>`. A group with `enabled="false"` plays nothing.
+- **Structure:** `<groups>`, `<group>` and `<sample>`. Most attributes inherit from `<groups>` to `<group>` to `<sample>`. A group with `enabled="false"` plays nothing, but its samples are still part of the instrument: the parser reports them (`SampleReference::played` false), and the loader stores and hashes them without decoding them, so a preset carries the whole library and a control that enables the group later finds its files. The same holds for samples a disabled tag silences.
 - **Mapping:** `rootNote`, `loNote`, `hiNote`, `loVel`, `hiVel`, `loCCN`/`hiCCN` (a value of -1 is off), and `trigger=attack|release|first|legato`. `continuous` plays like `attack` and is reported. `onLoCCN`/`onHiCCN` start CC-triggered regions.
 - **Round robins:** `seqMode=round_robin` uses `seqPosition` and `seqLength`. `random` and `true_random` split the random range by position. Without `seqLength`, the length is the highest `seqPosition` among the group's samples that share keys and velocities with the sample.
   - Without any `seqMode`, DecentSampler's default is `always`, which plays every matching zone. Samples that share keys and velocities but have different `seqPosition` values play as `round_robin` instead, and this is reported. Numbering takes without a mode is a mistake in the preset (DecentSampler's developer calls it a bug in its converters), and stacking the takes is louder and smears the attack. Claustrophobic Piano is one library written this way. An explicit `seqMode="always"` still stacks.
@@ -81,7 +81,7 @@ same way, from the preset's folder, ignoring case when the exact path is missing
   - `<labeled-knob>`, `<control>` and `<slider>` use their `value`, `<menu>` its selected `<option>` (counting from 1), and `<button>` its selected `<state>` (counting from 0).
   - Translations `linear` (with `translationOutputMin`/`Max` and `translationReversed`), `table` and `fixed_value`, after `factor`. Bindings with `enabled="false"` are skipped, and so are bindings with `triggerOnLoad="false"` until the user moves their control.
   - **In the editor:** each visible control with at least one binding Atlas applies appears in the Instrument group. A knob becomes a slider and a menu or button becomes a menu, titled by the control's `label`, then `parameterName` or `text`, then the `<label>` the panel shows on it: the one whose text (centred in its box) lies within the control's width, at its top edge or up to its height above it. Files list labels before or after their controls (Emerald Resonances puts them after), so position decides, and only a panel without coordinates falls back to a label just before the control. Controls with no name are numbered by kind among those listed ("Menu 1"). A 0 to 1 knob reads as a percentage, and `type="integer"` knobs step by whole numbers. Backspace returns a control to the file's value.
-  - **Changing a control** parses the preset again with the new value (`SfzParser::Options::control_values`) on the loading thread. The decoded audio is reused and the slot's status does not change. The engine swaps instruments softly: notes already sounding play on with the previous instrument, which the slot keeps until the next change, and new notes use the new one.
+  - **Changing a control** parses the preset again with the new value (`SfzParser::Options::control_values`) on the loading thread. The decoded audio is reused and the slot's status does not change. Samples of a group the change enables are decoded then, and the audio of a group it disables is kept for the next time. The hash and the files a preset stores are the same whatever the controls are set to. The engine swaps instruments softly: notes already sounding play on with the previous instrument, which the slot keeps until the next change, and new notes use the new one.
   - **Saving:** the values the user chose are stored by the control's position in the file (`controls` in the slot's instrument spec), in presets and host state. Loading the file again from disk starts from its own values.
   - Instrument level: `AMP_VOLUME`, `GLOBAL_TUNING`, `PAN`, the `ENV_*` stages, `AMP_VEL_TRACK`, `PITCH_KEY_TRACK`, `SAMPLE_START`/`END`, `LOOP_START`/`END`, `LO_NOTE`/`HI_NOTE`, `ROOT_NOTE` and `SILENCING_MODE`/`DECAY`.
   - Group level, by `position`/`groupIndex` or `groupTags`/`tags`: the same, plus `AMP_VOLUME`, `GROUP_TUNING`, `PAN` (the group pan offset), `ENABLED`, `AMP_ENV_ENABLED`, `LO_VEL` and `HI_VEL`.
@@ -121,10 +121,10 @@ same way, from the preset's folder, ignoring case when the exact path is missing
 
 - **Preset files:** a preset whose Multi-sample oscillators have instruments is written as a zip:
   - `preset.json` comes first.
-  - Then each instrument's files go under `multisample/<hash>/` in their original layout. Audio and SF2 files are stored uncompressed, exactly as they were; SFZ and DecentSampler text is compressed.
+  - Then each instrument's files go under `multisample/<hash>/` in their original layout. Audio and SF2 files are stored uncompressed, exactly as they were; SFZ and DecentSampler text is compressed. Every sample file the instrument names and that exists is stored, including DecentSampler samples in groups and tags that are disabled at the time; only missing files are left out.
   - SFZ and DecentSampler text is never rewritten. Samples outside the library's folder go under `_external/` and are mapped back through `path_overrides`.
   - Other presets stay plain JSON.
-- **The hash:** two FNV-1a hashes over each file's relative path, size and CRC32, so a library hashes the same wherever it lives.
+- **The hash:** two FNV-1a hashes over each file's relative path, size and CRC32, so a library hashes the same wherever it lives, and the same whatever its controls are set to. Presets and host state saved before Atlas stored the samples of disabled groups hash without those files. Such a preset still plays from its saved copy, which lacks them, so enabling one of those groups finds nothing until the instrument is loaded again from its library; host state restored from the original file reports the instrument as changed and plays the saved copy while the cache has it.
 - **Host (DAW) state:** stores the instrument's path and hash, not the audio. A restore tries, in order:
   1. The path. A changed file falls back to the saved copy and the user is told.
   2. The cache.
@@ -142,7 +142,7 @@ same way, from the preset's folder, ignoring case when the exact path is missing
 
 - Parsers: `--sfz-parser`, `--decentsampler-parser`, `--sf2-parser`, `--decode`.
 - DecentSampler end to end (load, pitch and level, container, restore, editing a cached copy): `--decentsampler-load`.
-- DecentSampler controls (rebuilds, held notes across a change, saving the values): `--decentsampler-controls`.
+- DecentSampler controls (rebuilds, held notes across a change, saving the values, and a group a button disables whose samples are stored, hashed and found again after a restore): `--decentsampler-controls`.
 - Playback through the plugin: `--pitch`, `--select`, `--envelope-mode`, `--release-trigger`, `--choke`, `--cc-trigger`.
 - Ping-pong loops in the player: `--pingpong-loop`.
 - SFZ curves, spaces around `=` and `ampeg_dynamic` with the sustain pedal: `--dynamic-envelope`.

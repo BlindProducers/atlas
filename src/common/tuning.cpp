@@ -18,6 +18,8 @@
 
 #include "utils.h"
 
+#include <algorithm>
+
 namespace {
   constexpr char kScalaFileExtension[] = ".scl";
   constexpr char kKeyboardMapExtension[] = ".kbm";
@@ -61,12 +63,12 @@ namespace {
   float readRatioToTranspose(const String& ratio) {
     StringArray tokens;
     tokens.addTokens(ratio, "/", "");
-    float value = tokens[0].getIntValue();
-
-    if (tokens.size() == 2)
-      value /= tokens[1].getIntValue();
-
-    return vital::utils::ratioToMidiTranspose(value);
+    const int numerator = tokens[0].getIntValue();
+    const int denominator = tokens.size() == 2 ? tokens[1].getIntValue() : 1;
+    // A zero or negative term is a malformed line; read it as a unison.
+    if (numerator <= 0 || denominator <= 0)
+      return 0.0f;
+    return vital::utils::ratioToMidiTranspose(static_cast<float>(numerator) / static_cast<float>(denominator));
   }
 
   String readTunSection(const String& line) {
@@ -313,7 +315,9 @@ Tuning::Tuning(File file) : Tuning() {
 void Tuning::loadScale(std::vector<float> scale) {
   scale_ = scale;
   if (scale.size() <= 1) {
-    setConstantTuning(kDefaultMidiReference);
+    // convertMidiNote adds the scale's start note back, so store the offset
+    // that lands every key on the default reference.
+    setConstantTuning(kDefaultMidiReference - scale_start_midi_note_);
     return;
   }
 
@@ -334,8 +338,9 @@ void Tuning::loadScale(std::vector<float> scale) {
     }
 
     int note_in_scale = mapping_position;
+    // A .kbm (or a preset's mapping) can name a degree the scale does not have.
     if (keyboard_mapping_.size())
-      note_in_scale = keyboard_mapping_[mapping_position];
+      note_in_scale = std::max(0, std::min(scale_size, keyboard_mapping_[mapping_position]));
 
     tuning_[i] = current_offset + scale[note_in_scale];
     mapping_position++;
@@ -363,8 +368,9 @@ void Tuning::setDefaultTuning() {
 }
 
 vital::mono_float Tuning::convertMidiNote(int note) const {
-  int scale_offset = note - scale_start_midi_note_;
-  return tuning_[kTuningCenter + scale_offset] + scale_start_midi_note_ + reference_midi_note_;
+  const int scale_offset = note - scale_start_midi_note_;
+  const int index = std::max(0, std::min(kTuningSize - 1, kTuningCenter + scale_offset));
+  return tuning_[index] + scale_start_midi_note_ + reference_midi_note_;
 }
 
 void Tuning::setReferenceFrequency(float frequency) {
@@ -403,7 +409,7 @@ json Tuning::stateToJson() const {
 }
 
 void Tuning::jsonToState(const json& data) {
-  scale_start_midi_note_ = data["scale_start_midi_note"];
+  setStartMidiNote(data["scale_start_midi_note"].get<int>());
   reference_midi_note_ = data["reference_midi_note"];
   std::string tuning_name = data["tuning_name"];
   tuning_name_ = tuning_name;

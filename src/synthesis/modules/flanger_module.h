@@ -38,6 +38,13 @@ namespace vital {
       virtual ~FlangerModule();
 
       void init() override;
+      // The delay is an idle processor: the router passes it the oversampling
+      // but not the rate, and it converts delay times with its own.
+      void setSampleRate(int sample_rate) override {
+        SynthModule::setSampleRate(sample_rate);
+        if (delay_)
+          delay_->setSampleRate(sample_rate);
+      }
       void hardReset() override { delay_->hardReset(); }
       void enable(bool enable) override {
         SynthModule::enable(enable);

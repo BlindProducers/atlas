@@ -165,6 +165,10 @@ class SynthBase : public MidiManager::Listener {
     void armMidiLearn(const std::string& name);
     void cancelMidiLearn();
     void clearMidiLearn(const std::string& name);
+    // Drops the mappings of an effect slot's controls, or exchanges two
+    // slots' mappings when the slots are swapped.
+    void clearMidiLearnPrefix(const std::string& prefix);
+    void swapMidiLearnPrefixes(const std::string& first, const std::string& second);
     bool isMidiMapped(const std::string& name);
     // MIDI learn mappings are global (saved in the Atlas settings, not presets).
     std::vector<std::pair<int, std::string>> midiLearnMappings();

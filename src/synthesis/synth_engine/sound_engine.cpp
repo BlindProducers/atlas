@@ -425,6 +425,13 @@ namespace vital {
     note_monitor_.setTuning(tuning);
   }
 
+  void SoundEngine::syncVoiceGraphs() {
+    // Setting the rate walks every voice copy and makes it match the voice
+    // router's processors, which is also how prepareToPlay syncs them.
+    const int oversample = std::max(1, voice_handler_->getOversampleAmount());
+    voice_handler_->setSampleRate(voice_handler_->getSampleRate() / oversample);
+  }
+
   void SoundEngine::checkOversampling() {
     const mono_float value = oversampling_->value();
     const int oversampling = value >= 0.0f && value <= 3.0f ? static_cast<int>(value) : 1;
