@@ -654,8 +654,12 @@ namespace multisample {
           for (const Group& group : groups_list_) {
             oscillators += group.oscillators;
             const std::string* enabled = own(group.overrides, group.attributes, { "enabled" });
-            if (enabled != nullptr && !toBool(*enabled))
+            if (enabled != nullptr && !toBool(*enabled)) {
+              // A control may enable the group later: its samples are still stored.
+              for (const Attributes& sample : group.samples)
+                noteSample(sample);
               continue;
+            }
             const std::string* group_volume = own({}, group.attributes, { "groupvolume", "volume" });
             const float group_gain = (group_volume ? linearGain(*group_volume) : 1.0f) * knobGain(group.overrides);
             const std::string* group_pan = own(group.overrides, group.attributes, { "grouppan" });
@@ -701,8 +705,10 @@ namespace multisample {
                 if (volume != tag_volumes_.end())
                   tag_gain *= volume->second;
               }
-              if (disabled)
+              if (disabled) {
+                noteSample(sample);
                 continue;
+              }
 
               Region region;
               const int root = parseKey(inherited(group, sample, "rootnote") ? *inherited(group, sample, "rootnote")
@@ -925,12 +931,34 @@ namespace multisample {
           const juce::File file = resolveInstrumentPath(written, roots_, options_.path_overrides, &absolute);
           region.sample_path = file.getFullPathName().toStdString();
           bool known = false;
-          for (const auto& reference : result_.samples)
-            known = known || reference.file == file;
+          for (auto& reference : result_.samples) {
+            if (reference.file == file) {
+              reference.played = true;
+              known = true;
+            }
+          }
           if (!known)
-            result_.samples.push_back({ written, file, absolute });
+            result_.samples.push_back({ written, file, absolute, true });
           region.buildVelocityCurve();
           result_.instrument->regions.push_back(std::move(region));
+        }
+
+        // Reports the file of a sample no region plays now because its group
+        // or tag is disabled. Presets store and hash the whole library, so a
+        // control that enables the group later finds the file, and the hash
+        // does not change with the controls.
+        void noteSample(const Attributes& sample) {
+          const std::string* path = find(sample, "path");
+          if (path == nullptr || path->empty())
+            return;
+          const std::string written = juce::String(*path).replaceCharacter('\\', '/').toStdString();
+          bool absolute = false;
+          const juce::File file = resolveInstrumentPath(written, roots_, options_.path_overrides, &absolute);
+          for (const auto& reference : result_.samples) {
+            if (reference.file == file)
+              return;
+          }
+          result_.samples.push_back({ written, file, absolute, false });
         }
 
         juce::File main_file_;

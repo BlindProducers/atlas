@@ -55,6 +55,9 @@ namespace multisample {
 
   struct LoadResult {
     std::shared_ptr<const Instrument> instrument;
+    // Every file a preset stores: the text files and each sample file that
+    // exists, including those DecentSampler groups and tags that are
+    // disabled name, so the set (and the hash) does not follow the controls.
     std::vector<FileInfo> files;
     // The entry file's path relative to the container root.
     std::string entry;
@@ -63,7 +66,9 @@ namespace multisample {
     // SF2 structure and samples, kept to switch presets without reloading.
     std::shared_ptr<const Sf2File> sf2;
     std::shared_ptr<const std::vector<int16_t>> sf2_pool;
-    // SFZ: decoded audio by file, kept so a text reload decodes nothing.
+    // SFZ and DecentSampler: decoded audio by file, kept so a text reload
+    // decodes nothing. `data` is null for a file that was stored but not
+    // decoded (a sample in a disabled group); its size and CRC are kept.
     struct Decoded {
       juce::File file;
       juce::Time modified;
