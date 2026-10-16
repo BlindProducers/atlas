@@ -27,7 +27,7 @@
       ValueDetails::kLinear, false, "%", "Tape Dropout Density", nullptr },
     { "tape_noise_enabled", 0x020107, 0.0, 1.0, 0.0, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Tape Noise Enabled", strings::kOffOnNames },
-    { "tape_noise_source", 0x020107, 0.0, 26.0, 0.0, 0.0, 1.0,
+    { "tape_noise_source", 0x020107, 0.0, tape::kNumNoiseSounds - 1.0, 0.0, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Tape Noise Sound", strings::kTapeNoiseNames },
     { "tape_noise_level", 0x020107, -60.0, 0.0, -24.0, 0.0, 1.0,
       ValueDetails::kLinear, false, " dB", "Tape Noise Level", nullptr },

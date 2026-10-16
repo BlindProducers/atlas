@@ -687,7 +687,8 @@ namespace strings {
   };
   const std::string kDefuseSpreadStyleNames[] = { "Octaves", "Linear" };
   const std::string kTapeSlopeNames[] = { "12 dB/oct", "24 dB/oct", "36 dB/oct", "48 dB/oct" };
-  const std::string kTapeNoiseNames[] = { "Vinyl 1", "Vinyl 2", "Vinyl 3", "Vinyl 4", "Vinyl 5", "Vinyl 6", "Vinyl 7", "Vinyl 8", "Vinyl 9", "Vinyl 10", "Vinyl 11", "Vinyl 12", "Vinyl 13", "Vinyl 14", "Vinyl 15", "Vinyl 16", "Vinyl 17", "Vinyl 18", "Vinyl 19", "Vinyl 20", "Vinyl 21", "Vinyl 22", "Vinyl 23", "Vinyl 24", "Vinyl 25", "Vinyl 26", "Vinyl 27" };
+  // One entry per recording in Factory/Samples/Tape (tape::kNumNoiseSounds).
+  const std::string kTapeNoiseNames[] = { "Vinyl 1", "Vinyl 2", "Vinyl 3", "Vinyl 4", "Vinyl 5", "Vinyl 6", "Vinyl 7", "Vinyl 8" };
   const std::string kTranceGateTriggerNames[] = { "Playback", "MIDI legato" };
   const std::string kTranceGateGridNames[] = { "1/1", "1/2", "1/4", "1/8", "1/16", "1/32", "1/64", "1/128" };
   const std::string kTranceGateModeNames[] = { "Long", "Medium", "Short", "Ramp Down (-inf)", "Ramp Up (0 dB)" };

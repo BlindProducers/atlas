@@ -223,28 +223,30 @@ target_link_libraries(Atlas PRIVATE
   PUBLIC
   juce::juce_recommended_config_flags)
 
-# Copy Tape ciphertext before the final signature, including AU bundles whose
-# linker signature alone does not seal resource files. Asset edits trigger relinking.
-file(GLOB ATLAS_TAPE_ASSETS CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/Factory/Samples/Tape/*.atape")
+# Copy the Tape effect's noise recordings before the final signature, including
+# AU bundles whose linker signature alone does not seal resource files. Asset
+# edits trigger relinking, and the bundle's folder is emptied first so that a
+# recording removed from Factory does not linger in a bundle built earlier.
+file(GLOB ATLAS_TAPE_ASSETS CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/Factory/Samples/Tape/*.wav")
 set_property(TARGET Atlas_VST3 APPEND PROPERTY LINK_DEPENDS "${ATLAS_TAPE_ASSETS}")
 if(APPLE)
   set_property(TARGET Atlas_AU APPEND PROPERTY LINK_DEPENDS "${ATLAS_TAPE_ASSETS}")
   foreach(format AU VST3)
     add_custom_command(TARGET Atlas_${format} POST_BUILD
+      COMMAND ${CMAKE_COMMAND} -E rm -rf "$<TARGET_BUNDLE_DIR:Atlas_${format}>/Contents/Resources/Tape"
       COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Factory/Samples/Tape"
         "$<TARGET_BUNDLE_DIR:Atlas_${format}>/Contents/Resources/Tape"
       COMMAND /usr/bin/codesign --force --sign - --timestamp=none "$<TARGET_BUNDLE_DIR:Atlas_${format}>"
       VERBATIM)
   endforeach()
 elseif(WIN32)
-  target_link_libraries(Atlas PRIVATE bcrypt)
   add_custom_command(TARGET Atlas_VST3 POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "$<TARGET_FILE_DIR:Atlas_VST3>/../Resources/Tape"
     COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Factory/Samples/Tape"
       "$<TARGET_FILE_DIR:Atlas_VST3>/../Resources/Tape" VERBATIM)
 else()
-  find_package(OpenSSL REQUIRED)
-  target_link_libraries(Atlas PRIVATE OpenSSL::Crypto)
   add_custom_command(TARGET Atlas_VST3 POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "$<TARGET_FILE_DIR:Atlas_VST3>/../Resources/Tape"
     COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Factory/Samples/Tape"
       "$<TARGET_FILE_DIR:Atlas_VST3>/../Resources/Tape" VERBATIM)
 endif()
