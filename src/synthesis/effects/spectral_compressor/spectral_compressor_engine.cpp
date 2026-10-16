@@ -60,13 +60,30 @@ namespace atlas::spectral_compressor {
       smoothed_initialised_ = true;
     }
     const float coefficient = stft::smoothingCoefficient(1.0f / float(sampleRate()), kControlSmoothingSeconds);
-    processStft(in_left, in_right, out_left, out_right, count,
-                [&](float dry_l, float dry_r, float wet_l, float wet_r, float& out_l, float& out_r) {
-                  mix_ += (target_mix - mix_) * coefficient;
-                  makeup_ += (target_makeup - makeup_) * coefficient;
-                  out_l = dry_l + (wet_l * makeup_ - dry_l) * mix_;
-                  out_r = dry_r + (wet_r * makeup_ - dry_r) * mix_;
-                });
+    processStftRuns(in_left, in_right, out_left, out_right, count, [&](auto run) {
+      // Once a smoothing step leaves Mix and Makeup where they are, every
+      // later step does too, so the run can treat them as constants. The
+      // stepped values are kept, so a -0 mix becomes +0 as it would per sample.
+      float mix = mix_, makeup = makeup_;
+      mix += (target_mix - mix) * coefficient;
+      makeup += (target_makeup - makeup) * coefficient;
+      if (mix == mix_ && makeup == makeup_) {
+        mix_ = mix;
+        makeup_ = makeup;
+        run([mix, makeup](float dry_l, float dry_r, float wet_l, float wet_r, float& out_l, float& out_r) {
+          out_l = dry_l + (wet_l * makeup - dry_l) * mix;
+          out_r = dry_r + (wet_r * makeup - dry_r) * mix;
+        });
+      }
+      else {
+        run([&](float dry_l, float dry_r, float wet_l, float wet_r, float& out_l, float& out_r) {
+          mix_ += (target_mix - mix_) * coefficient;
+          makeup_ += (target_makeup - makeup_) * coefficient;
+          out_l = dry_l + (wet_l * makeup_ - dry_l) * mix_;
+          out_r = dry_r + (wet_r * makeup_ - dry_r) * mix_;
+        });
+      }
+    });
   }
 
   void Engine::updateGains(const std::array<float, kNumBins>& power, std::array<float, kNumBins>& gain) {

@@ -69,16 +69,41 @@ namespace atlas::stft {
       template<class Combine>
       void processStft(const float* in_left, const float* in_right, float* out_left, float* out_right,
                        int count, Combine combine) {
-        for (int i = 0; i < count; ++i) {
-          const float dry_left = in_left_[position_], dry_right = in_right_[position_];
-          const float wet_left = out_left_[position_], wet_right = out_right_[position_];
-          in_left_[position_] = in_left[i];
-          in_right_[position_] = in_right[i];
-          out_left_[position_] = 0.0f;
-          out_right_[position_] = 0.0f;
-          combine(dry_left, dry_right, wet_left, wet_right, out_left[i], out_right[i]);
-          position_ = (position_ + 1) & (kFftSize - 1);
-          if (++hop_position_ == kHopSize) {
+        processStftRuns(in_left, in_right, out_left, out_right, count, [&](auto run) { run(combine); });
+      }
+
+      // Like processStft, but the samples go in runs up to the next hop and
+      // `begin_run(run)` is called before each one; it calls `run(combine)`
+      // once, so it can pick a cheaper combine while its controls hold still.
+      template<class BeginRun>
+      void processStftRuns(const float* in_left, const float* in_right, float* out_left, float* out_right,
+                           int count, BeginRun begin_run) {
+        for (int offset = 0; offset < count;) {
+          // position_ and hop_position_ wrap together, so up to the next hop
+          // the rings are contiguous. The input ring doubles as the dry path.
+          const int span = std::min(count - offset, kHopSize - hop_position_);
+          float* const dry_left = in_left_.data() + position_;
+          float* const dry_right = in_right_.data() + position_;
+          float* const wet_left = out_left_.data() + position_;
+          float* const wet_right = out_right_.data() + position_;
+          const float* const input_left = in_left + offset;
+          const float* const input_right = in_right + offset;
+          float* const output_left = out_left + offset;
+          float* const output_right = out_right + offset;
+          begin_run([&](auto combine) {
+            for (int i = 0; i < span; ++i) {
+              const float dl = dry_left[i], dr = dry_right[i], wl = wet_left[i], wr = wet_right[i];
+              dry_left[i] = input_left[i];
+              dry_right[i] = input_right[i];
+              wet_left[i] = 0.0f;
+              wet_right[i] = 0.0f;
+              combine(dl, dr, wl, wr, output_left[i], output_right[i]);
+            }
+          });
+          offset += span;
+          position_ = (position_ + span) & (kFftSize - 1);
+          hop_position_ += span;
+          if (hop_position_ == kHopSize) {
             hop_position_ = 0;
             processFrame();
           }
@@ -87,10 +112,15 @@ namespace atlas::stft {
 
     private:
       void processFrame() {
-        for (int i = 0; i < kFftSize; ++i) {
-          const int index = (position_ + i) & (kFftSize - 1);
-          fft_left_[i] = in_left_[index] * window_[i];
-          fft_right_[i] = in_right_[index] * window_[i];
+        // The ring from position_ to its end, then from its start.
+        const int tail = kFftSize - position_;
+        for (int i = 0; i < tail; ++i) {
+          fft_left_[i] = in_left_[position_ + i] * window_[i];
+          fft_right_[i] = in_right_[position_ + i] * window_[i];
+        }
+        for (int i = tail; i < kFftSize; ++i) {
+          fft_left_[i] = in_left_[i - tail] * window_[i];
+          fft_right_[i] = in_right_[i - tail] * window_[i];
         }
         fft_.performRealOnlyForwardTransform(fft_left_.data(), true);
         fft_.performRealOnlyForwardTransform(fft_right_.data(), true);
@@ -112,11 +142,15 @@ namespace atlas::stft {
         fft_.performRealOnlyInverseTransform(fft_right_.data());
         // Four overlapping squared Hann windows sum to 1.5.
         constexpr float kOverlapScale = 2.0f / 3.0f;
-        for (int i = 0; i < kFftSize; ++i) {
-          const int index = (position_ + i) & (kFftSize - 1);
+        for (int i = 0; i < tail; ++i) {
           const float scale = window_[i] * kOverlapScale;
-          out_left_[index] += fft_left_[i] * scale;
-          out_right_[index] += fft_right_[i] * scale;
+          out_left_[position_ + i] += fft_left_[i] * scale;
+          out_right_[position_ + i] += fft_right_[i] * scale;
+        }
+        for (int i = tail; i < kFftSize; ++i) {
+          const float scale = window_[i] * kOverlapScale;
+          out_left_[i - tail] += fft_left_[i] * scale;
+          out_right_[i - tail] += fft_right_[i] * scale;
         }
       }
 
