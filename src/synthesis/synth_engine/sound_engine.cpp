@@ -777,6 +777,12 @@ namespace vital {
       getSpeechSlot(i)->rewind();
   }
 
+  void SoundEngine::setSpeechSongPosition(double quarters, double quarters_per_second, double seconds,
+                                          double loop_start, double loop_end) {
+    for (int i = 0; i < kNumOscillators; ++i)
+      getSpeechSlot(i)->setSongPosition(quarters, quarters_per_second, seconds, loop_start, loop_end);
+  }
+
   void SoundEngine::controlChange(int controller, int value, int sample) {
     // All Controllers Off returns every CC to the instrument defaults.
     if (controller == 121)

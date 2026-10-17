@@ -516,6 +516,197 @@ namespace {
     return finish("sequence");
   }
 
+  // ---- Following the host transport -----------------------------------------------
+
+  struct SongPlayHead : public juce::AudioPlayHead {
+    bool playing = false;
+    double bpm = 120.0;
+    double ppq = 0.0;
+    bool looping = false;
+    double loop_start = 0.0;
+    double loop_end = 0.0;
+    juce::Optional<PositionInfo> getPosition() const override {
+      PositionInfo info;
+      info.setIsPlaying(playing);
+      info.setIsLooping(looping);
+      info.setLoopPoints(juce::AudioPlayHead::LoopPoints { loop_start, loop_end });
+      info.setBpm(bpm);
+      info.setPpqPosition(ppq);
+      info.setTimeInSeconds(ppq * 60.0 / bpm);
+      return info;
+    }
+  };
+
+  int transport() {
+    auto phrase = std::make_shared<vital::speech::Phrase>();
+    phrase->layers.emplace_back();
+    for (int i = 0; i < 5; ++i) {
+      vital::speech::Syllable syllable;
+      syllable.audio.assign(1000, 0.1f);
+      syllable.marks.push_back({ 500, 100, true });
+      phrase->layers.back().syllables.push_back(syllable);
+    }
+    vital::SpeechSlot slot;
+    slot.setPhrase(phrase);
+
+    // The host plays `blocks` blocks of 448 samples at 120 BPM from `from`
+    // quarters, looping from `loop_end` back to `loop_start` when it is after
+    // it, then stops; returns the syllable each note (a song position) sang.
+    constexpr double kQuartersPerSecond = 2.0;
+    constexpr int kBlock = 448;
+    constexpr double kBlockQuarters = kBlock * kQuartersPerSecond / kRate;
+    auto loop = [&](vital::SpeechSlot& target, const std::vector<double>& notes, double from, int blocks,
+                    double loop_start, double loop_end) {
+      std::vector<int> sung;
+      const bool looping = loop_end > loop_start;
+      double start = from;
+      for (int block = 0; block < blocks; ++block) {
+        target.setSongPosition(start, kQuartersPerSecond, kBlock / static_cast<double>(kRate), loop_start, loop_end);
+        const double end = start + kBlockQuarters;
+        for (double note : notes) {
+          if (note >= start && note < (looping ? std::min(end, loop_end) : end))
+            sung.push_back(target.takeSyllable((note - start) / kQuartersPerSecond));
+        }
+        // The loop returns inside the block.
+        if (looping && end > loop_end) {
+          for (double note : notes) {
+            if (note >= loop_start && note < loop_start + (end - loop_end))
+              sung.push_back(target.takeSyllable((note - loop_start + loop_end - start) / kQuartersPerSecond));
+          }
+        }
+        target.advanceClock(kBlock, kRate);
+        start = looping && end >= loop_end ? loop_start + (end - loop_end) : end;
+      }
+      target.advanceClock(kBlock, kRate);
+      return sung;
+    };
+    auto play = [&](const std::vector<double>& notes, double from, double to) {
+      return loop(slot, notes, from, static_cast<int>(std::ceil((to - from) / kBlockQuarters)), 0.0, 0.0);
+    };
+
+    const std::vector<double> song = { 0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0 };
+    expect(play(song, 0.0, 7.0) == std::vector<int>({ 0, 1, 2, 3, 4, 0, 1 }),
+           "playing from the start sings the syllables in turn");
+    expect(play(song, 2.5, 7.0) == std::vector<int>({ 3, 4, 0, 1 }),
+           "starting in the middle sings the syllables a play from the start would");
+    expect(play(song, 1.0, 3.5) == std::vector<int>({ 1, 2, 3 }), "and again after moving back");
+    expect(slot.takeSyllable(10.0) == 4, "with the transport stopped, a note takes the syllable after the song's");
+
+    // Starting at 1.5 while the note from 1.0 is held: the host chases it.
+    expect(play({ 1.5, 2.0, 3.0 }, 1.5, 3.5) == std::vector<int>({ 1, 2, 3 }),
+           "a held note the host chases where playback starts keeps its syllable");
+    expect(slot.songNotes() == song, "and is not remembered as a note");
+    {
+      vital::SpeechSlot fresh;
+      fresh.setPhrase(phrase);
+      expect(loop(fresh, { 0.5, 1.0 }, 0.5, 40, 0.0, 0.0) == std::vector<int>({ 0, 1 }) &&
+             fresh.songNotes() == std::vector<double>({ 0.5, 1.0 }),
+             "a note where playback starts in a stretch never played is a note");
+    }
+
+    // A loop from 1 to 3, starting at 0.5: the loop end falls inside a block.
+    const int two_cycles = static_cast<int>(6.4 / kBlockQuarters);
+    expect(loop(slot, song, 0.5, two_cycles, 1.0, 3.0) == std::vector<int>({ 1, 2, 1, 2, 1, 2 }),
+           "a loop sings the same syllables each time round");
+    expect(slot.songNotes() == song, "and forgets nothing after its end");
+    // A loop from 1.5 to 3: the host chases the note from 1.0 each time round.
+    const auto chased = loop(slot, { 1.5, 2.0 }, 1.5, two_cycles, 1.5, 3.0);
+    expect(chased == std::vector<int>({ 1, 2, 1, 2, 1, 2, 1, 2, 1 }),
+           "a held note the host chases where the loop returns keeps its syllable");
+    expect(slot.songNotes() == song, "and is not remembered either");
+
+    const std::vector<double> chord = { 0.0, 1.0, 1.0 + 0.01 * kQuartersPerSecond, 2.0, 3.0 };
+    expect(play(chord, 0.0, 4.0) == std::vector<int>({ 0, 1, 1, 2, 3 }), "a chord in the song shares a syllable");
+    expect(play(chord, 2.5, 4.0) == std::vector<int>({ 3 }), "and counts once after moving through the song");
+
+    // The note at 1.0 was deleted; playing over it forgets it.
+    const std::vector<double> edited = { 0.0, 2.0, 3.0, 4.0 };
+    expect(play(edited, 0.0, 1.5) == std::vector<int>({ 0 }), "an edited song plays");
+    expect(play(edited, 2.5, 3.5) == std::vector<int>({ 2 }), "a deleted note no longer counts");
+
+    slot.setPhrase(std::make_shared<vital::speech::Phrase>(*phrase));
+    expect(play(edited, 2.5, 3.5) == std::vector<int>({ 2 }), "new words keep the song's place");
+
+    vital::SpeechSlot copy;
+    copy.setSong(slot.songNotes(), slot.playedRanges());
+    expect(copy.songNotes() == slot.songNotes() && copy.songNotes().size() == 5 &&
+           copy.playedRanges() == slot.playedRanges() && slot.playedRanges().size() == 1,
+           "the song's notes and played stretches copy");
+
+    // Through the plugin: play four notes from the start, start at the third,
+    // then loop from 1 to 3.
+    SongPlayHead head;
+    std::vector<double> saved;
+    std::vector<vital::SpeechSlot::Range> saved_played;
+    juce::MemoryBlock state;
+    {
+      SynthPlugin plugin;
+      preparePlayback(plugin, "one two three four five");
+      plugin.setPlayHead(&head);
+      auto* speech = plugin.getEngine()->getSpeechSlot(0);
+      auto host = [&](double from, double to, const std::vector<double>& notes) {
+        head.playing = true;
+        head.ppq = from;
+        const double block_quarters = 128.0 * head.bpm / (60.0 * kRate);
+        auto add = [&](juce::MidiBuffer& midi, double quarters) {
+          const int offset = std::min(127, static_cast<int>(quarters / block_quarters * 128.0));
+          // The previous note ends as the next starts.
+          midi.addEvent(juce::MidiMessage::noteOff(1, 60), offset);
+          midi.addEvent(juce::MidiMessage::noteOn(1, 60, 1.0f), offset);
+        };
+        for (double elapsed = 0.0; elapsed < to - from; elapsed += block_quarters) {
+          juce::AudioBuffer<float> audio(2, 128);
+          audio.clear();
+          juce::MidiBuffer midi;
+          const double end = head.ppq + block_quarters;
+          for (double note : notes) {
+            if (note >= head.ppq && note < (head.looping ? std::min(end, head.loop_end) : end))
+              add(midi, note - head.ppq);
+            if (head.looping && end > head.loop_end && note >= head.loop_start &&
+                note < head.loop_start + (end - head.loop_end))
+              add(midi, note - head.loop_start + head.loop_end - head.ppq);
+          }
+          plugin.processBlock(audio, midi);
+          head.ppq = head.looping && end >= head.loop_end ? head.loop_start + (end - head.loop_end) : end;
+        }
+        head.playing = false;
+        juce::AudioBuffer<float> audio(2, 128);
+        juce::MidiBuffer midi;
+        plugin.processBlock(audio, midi);
+      };
+      host(0.0, 4.0, { 0.0, 1.0, 2.0, 3.0 });
+      expect(speech->songNotes().size() == 4, "the plugin remembers the song's notes");
+      host(1.5, 2.5, { 2.0 });
+      // The note at 2.0 sang "three", so the next live note sings "four".
+      expect(speech->takeSyllable(10.0) == 3, "starting playback mid-song sings that point's syllable");
+      head.looping = true;
+      head.loop_start = 1.0;
+      head.loop_end = 3.0;
+      host(1.0, 4.5, { 1.0, 2.0, 3.0 });
+      head.looping = false;
+      expect(speech->songNotes().size() == 4 && std::abs(speech->songNotes().back() - 3.0) < 1.0e-3,
+             "looping in the host forgets nothing after the loop");
+      expect(speech->takeSyllable(20.0) == 3, "the loop ended on the third note");
+      saved = speech->songNotes();
+      saved_played = speech->playedRanges();
+      plugin.getStateInformation(state);
+    }
+    {
+      SynthPlugin plugin;
+      plugin.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+      expect(plugin.getEngine()->getSpeechSlot(0)->songNotes() == saved &&
+             plugin.getEngine()->getSpeechSlot(0)->playedRanges() == saved_played && !saved_played.empty(),
+             "the host's project keeps the song's notes and played stretches");
+      SynthPlugin fresh;
+      juce::MemoryBlock empty;
+      fresh.getStateInformation(empty);
+      plugin.setStateInformation(empty.getData(), static_cast<int>(empty.getSize()));
+      expect(plugin.getEngine()->getSpeechSlot(0)->songNotes().empty() &&
+             plugin.getEngine()->getSpeechSlot(0)->playedRanges().empty(), "another project's state forgets them");
+    }
+    return finish("transport");
+  }
+
   // ---- Host state and parameters --------------------------------------------------
 
   int parameters() {
@@ -739,13 +930,15 @@ int main(int argc, char** argv) {
     return envelope();
   if (flag == "--legato")
     return legato();
+  if (flag == "--transport")
+    return transport();
   if (flag == "--parameters")
     return parameters();
   if (flag == "--editor")
     return editorTest();
   if (flag == "--render" && argc > 2)
     return renderSong(juce::File::getCurrentWorkingDirectory().getChildFile(argv[2]));
-  std::cerr << "usage: AtlasSpeechTests --syllables | --phrase | --pitch | --envelope | --legato | --sequence | --parameters | --editor | "
+  std::cerr << "usage: AtlasSpeechTests --syllables | --phrase | --pitch | --envelope | --legato | --sequence | --transport | --parameters | --editor | "
                "--render <file.wav>\n";
   return 2;
 }

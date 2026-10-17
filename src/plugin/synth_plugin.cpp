@@ -25,12 +25,17 @@
 #include "synth_strings.h"
 #include "multisample_manager.h"
 #include "speech_manager.h"
+#include "speech_slot.h"
 
 #include <limits>
 #include <optional>
 
 namespace {
   constexpr const char* kFxAutomationStateKey = "fx_automation_slots";
+  // Where in the song each Speech slot's notes start and which stretches
+  // have played (SpeechSlot), saved with the host's project rather than
+  // with presets.
+  constexpr const char* kSpeechSongKey = "speech_song";
 
   std::string fxBusPrefix(int bus) {
     return bus == 0 ? "" : "bus_" + std::to_string(bus) + "_";
@@ -455,6 +460,9 @@ void SynthPlugin::processBlock(AudioSampleBuffer& buffer, MidiBuffer& midi_messa
     if (position_info_.bpm)
       engine_->setBpm(position_info_.bpm);
 
+    const bool looping = position_info_.isLooping && position_info_.ppqLoopEnd > position_info_.ppqLoopStart;
+    song_loop_start_ = looping ? position_info_.ppqLoopStart : 0.0;
+    song_loop_end_ = looping ? position_info_.ppqLoopEnd : 0.0;
     if (is_playing && position_info_.bpm > 0.0) {
       double bps = position_info_.bpm / kSecondsPerMinute;
       last_seconds_time_ = position_info_.ppqPosition / bps;
@@ -465,7 +473,8 @@ void SynthPlugin::processBlock(AudioSampleBuffer& buffer, MidiBuffer& midi_messa
     engine_->allNotesOff(0);
     clearArpeggiators();
   }
-  // Playback sings the Speech text from its first syllable.
+  // Playback without a song position sings the Speech text from its first
+  // syllable; with one, the slots count the song's notes (SpeechSlot).
   if (!was_playing_ && is_playing)
     engine_->rewindSpeech();
   was_playing_ = is_playing;
@@ -971,6 +980,27 @@ void SynthPlugin::getStateInformation(MemoryBlock& dest_data) {
   json data = LoadSave::stateToJson(this, getCallbackLock());
   data["tuning"] = getTuning()->stateToJson();
   data[kFxAutomationStateKey] = fxAutomationAssignmentsToJson();
+  std::vector<double> song_notes[vital::kNumOscillators];
+  std::vector<vital::SpeechSlot::Range> song_played[vital::kNumOscillators];
+  bool any_song = false;
+  {
+    ScopedLock lock(getCallbackLock());
+    for (int i = 0; i < vital::kNumOscillators; ++i) {
+      song_notes[i] = engine_->getSpeechSlot(i)->songNotes();
+      song_played[i] = engine_->getSpeechSlot(i)->playedRanges();
+      any_song = any_song || !song_notes[i].empty() || !song_played[i].empty();
+    }
+  }
+  if (any_song) {
+    json slots = json::array();
+    for (int i = 0; i < vital::kNumOscillators; ++i) {
+      json played = json::array();
+      for (const vital::SpeechSlot::Range& range : song_played[i])
+        played.push_back({ range.start, range.end });
+      slots.push_back({ { "notes", song_notes[i] }, { "played", std::move(played) } });
+    }
+    data[kSpeechSongKey] = std::move(slots);
+  }
 
   // The JSON text and a terminating NUL, as MemoryOutputStream::writeString
   // wrote them, without its copies of the text.
@@ -1020,6 +1050,9 @@ void SynthPlugin::setStateInformation(const void* data, int size_in_bytes) {
       // jsonToState takes the state over; read the rest first.
       const bool has_fx_automation = json_data.is_object() && json_data.count(kFxAutomationStateKey);
       const bool has_tuning = json_data.is_object() && json_data.count("tuning");
+      const bool has_song = json_data.is_object() && json_data.count(kSpeechSongKey) &&
+                            json_data[kSpeechSongKey].is_array();
+      const json song = has_song ? std::move(json_data[kSpeechSongKey]) : json();
       const json fx_automation = has_fx_automation ? std::move(json_data[kFxAutomationStateKey]) : json();
       const json tuning = has_tuning ? std::move(json_data["tuning"]) : json();
       LoadSave::jsonToState(this, save_info_, std::move(json_data));
@@ -1032,6 +1065,25 @@ void SynthPlugin::setStateInformation(const void* data, int size_in_bytes) {
 
       if (has_tuning)
         getTuning()->jsonToState(tuning);
+
+      for (int i = 0; i < vital::kNumOscillators; ++i) {
+        std::vector<double> notes;
+        std::vector<vital::SpeechSlot::Range> played;
+        const json* slot = has_song && i < static_cast<int>(song.size()) && song[i].is_object() ? &song[i] : nullptr;
+        if (slot != nullptr && slot->count("notes") && (*slot)["notes"].is_array()) {
+          for (const json& note : (*slot)["notes"]) {
+            if (note.is_number())
+              notes.push_back(note.get<double>());
+          }
+        }
+        if (slot != nullptr && slot->count("played") && (*slot)["played"].is_array()) {
+          for (const json& range : (*slot)["played"]) {
+            if (range.is_array() && range.size() == 2 && range[0].is_number() && range[1].is_number())
+              played.push_back({ range[0].get<double>(), range[1].get<double>() });
+          }
+        }
+        engine_->getSpeechSlot(i)->setSong(std::move(notes), std::move(played));
+      }
     }
     catch (const json::exception& e) {
       std::string error = "There was an error open the preset. Preset file is corrupted.";

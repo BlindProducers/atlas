@@ -634,7 +634,7 @@ if(ATLAS_BUILD_TIMING_TESTS)
     JUCE_MODAL_LOOPS_PERMITTED=1 "ATLAS_TEST_ESPEAK_DATA=\"${ATLAS_ESPEAK_DATA_ROOT}\"")
   target_link_libraries(AtlasSpeechTests PRIVATE
     Atlas juce::juce_audio_utils juce::juce_dsp juce::juce_gui_extra juce::juce_recommended_config_flags)
-  foreach(speech_test syllables phrase pitch envelope legato sequence parameters editor)
+  foreach(speech_test syllables phrase pitch envelope legato sequence transport parameters editor)
     add_test(NAME atlas_speech_${speech_test} COMMAND AtlasSpeechTests --${speech_test})
   endforeach()
 

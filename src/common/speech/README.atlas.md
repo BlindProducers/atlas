@@ -60,19 +60,46 @@ hold point, while the key is down, the grains crossfade over 80 ms into the
 steady grain, repeated with 0.4% period jitter and 3% level shimmer per grain
 so it does not sound frozen. On release they crossfade back over 40 ms and
 the rest of the syllable plays from the hold point. After the last syllable
-the words start again; host playback starting and All Sound Off rewind them.
+the words start again; All Sound Off rewinds them.
 
-Syllables start on the voice handler's retrigger, not its voice event: with
-one voice and Legato on, a note played while another is held (and the note
-it returns to when that is released) retargets the voice without a
-retrigger, so the syllable carries on at the new pitch, a melisma. A note
-that moves more than half a semitone closer to another layer than to its own
-continues from that layer at the same place in the syllable.
+## Following the song
 
-The Amplitude Envelope mode, like Multi-sample's, OpenWurli's and OpenB3's:
-Voice (the default) lets the syllable shape its note and holds the voice open
-(`kHold`) until its last grain ends, so final consonants always sound;
-Envelope 1 follows Env 1, whose release can cut them.
+While the host plays, the syllables follow the song position, so starting
+playback or moving the playhead anywhere sings the syllable that a play from
+the beginning would. Each `SpeechSlot` remembers where in the song, in
+quarter notes, its notes started (the first note of each chord, up to
+`kMaxSongNotes`) and which stretches of the song have played (up to
+`kMaxPlayedRanges`), both reserved off the audio thread. Before every block
+the host plays, `SynthBase::processAudioAndMidi` gives the slots the block's
+song position and the host's loop; the slot forgets the notes it remembered
+in that stretch and marks it played, and each note that plays there is
+remembered again and sings the syllable counted by the notes before it
+(modulo the number of syllables). So the slot learns the song as it plays:
+until a stretch has played once, notes in it are not counted, and a note
+moved or deleted in the host is relearned the next time playback passes it.
+Positions are in quarter notes, so tempo changes do not move them, and
+changing the text keeps the song's place.
+
+Atlas works out positions inside a host block by counting forward from the
+block's start, so when the host's loop returns partway through a block, the
+positions after it wrap to the loop start rather than running past the loop
+end.
+
+Hosts that chase notes (Reaper, Cubase and others) send a note held across
+the point where playback starts, or where a loop returns, as a new note-on
+there. When the host starts or jumps (a block that does not begin where the
+last one ended, or the loop returning inside a block), a note-on exactly at
+that point (within `kSamePlace`) in a stretch already played, where no note
+was remembered starting, is taken as chased: it sings the syllable of the
+last note before it and is not remembered. In a stretch never played it
+counts as a note. A note newly added exactly at such a point is taken as
+chased until playback passes over it from before.
+
+With the transport stopped (or a host without a song position), each note
+takes the next syllable after the last one sung, and playback without a song
+position starts from the first. The notes and played stretches are saved
+with the host's project (`speech_song` in `SynthPlugin::getStateInformation`),
+not in presets.
 
 ## The menus
 
@@ -92,7 +119,9 @@ three voices), `--pitch` (the sung pitch at four notes, and a steady held
 vowel), `--envelope` (Voice sings the final consonant after release,
 Envelope 1 with no release cuts it), `--legato` (a mono legato note keeps
 its syllable, without Legato each note takes the next), `--sequence` (which
-syllable each note takes, chords, rewinding, phrase changes), `--parameters`
+syllable each note takes, chords, rewinding, phrase changes), `--transport`
+(syllables at song positions after moving the playhead, chased notes, loops
+returning inside a block, chords, edited notes, the host's saved state), `--parameters`
 (host state) and `--editor` (the text box and the two menus). The test binary
 reads the data from `build/espeak-ng`. `--render <file.wav>` writes the start
 of "Happy Birthday" to listen to; it is not a ctest.

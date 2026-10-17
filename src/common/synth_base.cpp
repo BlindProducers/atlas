@@ -1574,13 +1574,22 @@ void SynthBase::processAudioAndMidi(AudioSampleBuffer* buffer, int channels, Mid
   // still sounds, so what is played together stays in time.
   if (has_ppq_position)
     engine_->setVoiceClockOrigin(0.0);
+  // Speech syllables follow the song position while the host plays.
+  const double quarters_per_second = has_ppq_position ? host_bpm / 60.0 : 0.0;
+  auto render = [&](int from, int to) {
+    if (has_ppq_position)
+      engine_->setSpeechSongPosition(ppq_position + from * seconds_per_sample * quarters_per_second,
+                                     quarters_per_second, (to - from) * seconds_per_sample,
+                                     song_loop_start_, song_loop_end_);
+    processAudio(buffer, channels, to - from, start_sample + from);
+  };
   int cursor = 0;
   int event_index = 0;
   while (event_index < scheduled_midi_event_count_) {
     const int event_offset = std::min(num_samples, scheduled_midi_events_[event_index].sample_offset);
     if (event_offset > cursor) {
       engine_->correctToTime(start_seconds + cursor * seconds_per_sample);
-      processAudio(buffer, channels, event_offset - cursor, start_sample + cursor);
+      render(cursor, event_offset);
       cursor = event_offset;
     }
 
@@ -1599,7 +1608,7 @@ void SynthBase::processAudioAndMidi(AudioSampleBuffer* buffer, int channels, Mid
 
   if (cursor < num_samples) {
     engine_->correctToTime(start_seconds + cursor * seconds_per_sample);
-    processAudio(buffer, channels, num_samples - cursor, start_sample + cursor);
+    render(cursor, num_samples);
   }
 }
 

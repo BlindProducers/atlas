@@ -117,6 +117,11 @@ namespace vital {
       SpeechSlot* getSpeechSlot(int index);
       // Every Speech slot's next note sings its first syllable.
       void rewindSpeech();
+      // Before each block while the host plays: where the block starts in
+      // the song, in quarter notes, and the host's loop (`loop_end` <=
+      // `loop_start` without one), so Speech syllables follow the song.
+      void setSpeechSongPosition(double quarters, double quarters_per_second, double seconds,
+                                 double loop_start, double loop_end);
       // Message thread with processing paused: build every oscillator slot's active type module.
       bool prepareSelectedSources();
       // Message thread with processing paused: bring every voice copy of the

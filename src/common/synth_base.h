@@ -315,6 +315,10 @@ class SynthBase : public MidiManager::Listener {
     uint32_t scheduled_midi_sequence_ = 0;
     uint64_t scheduled_midi_overflow_count_ = 0;
     bool arpeggiators_were_enabled_ = false;
+    // The host's loop in quarter notes, for the Speech slots to follow the
+    // song across it; the end is not after the start when it does not loop.
+    double song_loop_start_ = 0.0;
+    double song_loop_end_ = 0.0;
 
     std::unique_ptr<WavetableCreator> wavetable_creators_[vital::kNumOscillators];
     bool wavetable_render_pending_[vital::kNumOscillators] = {};
