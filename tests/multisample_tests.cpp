@@ -21,6 +21,7 @@
 
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <functional>
 #include <iostream>
 #include <string>
@@ -526,6 +527,40 @@ namespace {
     folder.getChildFile("f.flac").loadFileAsData(flac);
     auto flac_data = decodeSample(flac.getData(), flac.getSize(), error);
     expect(flac_data != nullptr && flac_data->frames == 4800, "FLAC decodes");
+
+    // A WAV longer than 2^27 frames (DecentSampler instruments slice one long
+    // recording) decodes; written raw as 8-bit mono to keep the file small.
+    {
+      const int64_t long_frames = (int64_t(1) << 27) + 480000;
+      juce::MemoryOutputStream header;
+      header.write("RIFF", 4);
+      header.writeInt(static_cast<int>(36 + long_frames));
+      header.write("WAVEfmt ", 8);
+      header.writeInt(16);
+      header.writeShort(1);
+      header.writeShort(1);
+      header.writeInt(48000);
+      header.writeInt(48000);
+      header.writeShort(1);
+      header.writeShort(8);
+      header.write("data", 4);
+      header.writeInt(static_cast<int>(long_frames));
+      juce::MemoryBlock long_bytes(header.getData(), header.getDataSize());
+      const size_t header_size = long_bytes.getSize();
+      long_bytes.setSize(header_size + static_cast<size_t>(long_frames), false);
+      std::memset(static_cast<char*>(long_bytes.getData()) + header_size, 128, static_cast<size_t>(long_frames));
+      static_cast<uint8_t*>(long_bytes.getData())[long_bytes.getSize() - 1] = 255;
+      auto long_data = decodeSample(long_bytes.getData(), long_bytes.getSize(), error);
+      expect(long_data != nullptr && long_data->frames == long_frames, "a WAV over 2^27 frames decodes: " + error);
+      if (long_data)
+        expect(long_data->channels[0].back() > 32000, "the last frame of a long WAV is read");
+
+      // A header claiming more frames than the file holds is refused.
+      juce::MemoryBlock truncated(long_bytes.getData(), header_size + 4800);
+      error.clear();
+      expect(decodeSample(truncated.getData(), truncated.getSize(), error) == nullptr && !error.empty(),
+             "a WAV whose header claims more data than the file holds is refused");
+    }
 
     // CRC32 of "123456789" is the standard check value.
     expect(crc32("123456789", 9) == 0xCBF43926u, "CRC32 check value");

@@ -177,11 +177,27 @@ namespace multisample {
     sample->frames = reader->lengthInSamples;
     sample->sample_rate = reader->sampleRate > 0.0 ? reader->sampleRate : 44100.0;
     // A header can claim any length (a damaged RF64 even a negative one), and
-    // the reader would zero-fill past the end of the file. Refuse lengths no
-    // instrument sample has before sizing anything from them.
-    static constexpr int64_t kMaxFrames = int64_t(1) << 27;
-    if (sample->frames < 0 || sample->frames > kMaxFrames) {
-      error = "the audio file is too long";
+    // the reader would zero-fill past the end of the file. Check the length
+    // against the data before sizing anything from it. DecentSampler
+    // instruments often play slices of one long recording (an hour of 48 kHz
+    // audio is 173 million frames), so there is no fixed cap.
+    if (sample->frames < 0) {
+      error = "the audio data is damaged";
+      return nullptr;
+    }
+    const juce::String format = reader->getFormatName();
+    if (format == "WAV file" || format == "AIFF file") {
+      // Uncompressed: the file must hold every frame the header claims.
+      const int64_t frame_bytes = static_cast<int64_t>(reader->numChannels) *
+                                  std::max<int64_t>(1, reader->bitsPerSample / 8);
+      if (sample->frames > static_cast<int64_t>(size) / std::max<int64_t>(1, frame_bytes)) {
+        error = "the audio data is damaged";
+        return nullptr;
+      }
+    }
+    const double decoded_bytes = static_cast<double>(sample->frames) * sample->num_channels * sizeof(int16_t);
+    if (decoded_bytes > static_cast<double>(memoryBudget())) {
+      error = "the audio file is too long for this computer's memory";
       return nullptr;
     }
     try {

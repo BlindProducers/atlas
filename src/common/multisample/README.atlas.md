@@ -135,6 +135,7 @@ same way, from the preset's folder, ignoring case when the exact path is missing
   - It is trimmed, least recently used first, above 20 GB, never removing an instrument a slot uses.
   - Editing a cached SFZ or DecentSampler preset works on a copy of its text in `Working/<hash>`.
 - **Size limits:** JUCE's zip code has no ZIP64, so a container holds at most 4 GB and 65,000 files.
+  - A sample file has no length cap: DecentSampler instruments often slice one recording of most of an hour. A WAV or AIFF must hold every frame its header claims, and no file may decode to more than the instrument's memory budget (70% of RAM).
 
 ## Tests
 
