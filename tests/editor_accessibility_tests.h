@@ -1134,6 +1134,19 @@ namespace {
     expect(rows.containsIgnoreCase("Predelay tempo"), ("synced predelay shows the division row: " + rows).toStdString());
   }
 
+  // The groups between a parameter's row and its effect slot, innermost first.
+  String effectRowGroups(SynthEditor& editor, const String& id) {
+    auto* control = editor.controlForParameter(id);
+    if (control == nullptr)
+      return "no row";
+    StringArray titles;
+    for (auto* parent = control->getParentComponent();
+         parent != nullptr && !parent->getProperties().contains("FxSlot"); parent = parent->getParentComponent())
+      if (parent->getProperties().contains("SectionName"))
+        titles.add(parent->getTitle());
+    return titles.joinIntoString(" in ");
+  }
+
   // The EQ gives each band its own group. Mid Side EQ nests the bands of each
   // channel in a Mid group and a Side group.
   void testEqualizerBandGroups() {
@@ -1144,20 +1157,8 @@ namespace {
     editor.updateFullGui();
     pumpEditorEvents();
 
-    // The groups between a row and its effect slot, innermost first.
-    auto groupsOf = [&](const String& id) {
-      auto* control = editor.controlForParameter(id);
-      if (control == nullptr)
-        return String("no row");
-      StringArray titles;
-      for (auto* parent = control->getParentComponent();
-           parent != nullptr && !parent->getProperties().contains("FxSlot"); parent = parent->getParentComponent())
-        if (parent->getProperties().contains("SectionName"))
-          titles.add(parent->getTitle());
-      return titles.joinIntoString(" in ");
-    };
     auto check = [&](const String& id, const String& expected) {
-      const String found = groupsOf(id);
+      const String found = effectRowGroups(editor, id);
       expect(found == expected, (id + " sits in \"" + expected + "\" (found \"" + found + "\")").toStdString());
     };
     check("fx_slot_1_enabled", "");
@@ -1195,6 +1196,56 @@ namespace {
            group("2 mid side eq side") < group("2 mid side eq side low band") &&
            group("2 mid side eq side low band") < row("fx_slot_2_mid_side_eq_side_eq_low_mode"),
            "Mid Side EQ reads the Mid group's bands, then the Side group's");
+  }
+
+  // The compressor keeps its global controls at the top of the slot and gives
+  // each band its own group below them.
+  void testCompressorBandGroups() {
+    SynthPlugin synth;
+    synth.parameterChanged("fx_slot_1_type", vital::constants::kCompressor + 1);
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    pumpEditorEvents();
+
+    const std::initializer_list<const char*> global_rows = {
+      "enabled", "compressor_enabled_bands", "compressor_attack", "compressor_release", "compressor_mix" };
+    const std::initializer_list<const char*> band_rows = {
+      "upper_threshold", "upper_ratio", "lower_threshold", "lower_ratio", "gain" };
+    const std::pair<const char*, const char*> bands[] = {
+      { "low", "Low band" }, { "band", "Mid band" }, { "high", "High band" } };
+
+    auto check = [&](const String& id, const String& expected) {
+      const String found = effectRowGroups(editor, id);
+      expect(found == expected, (id + " sits in \"" + expected + "\" (found \"" + found + "\")").toStdString());
+    };
+    for (const auto* control : global_rows)
+      check("fx_slot_1_" + String(control), "");
+    for (const auto& [prefix, title] : bands)
+      for (const auto* control : band_rows)
+        check("fx_slot_1_compressor_" + String(prefix) + "_" + control, title);
+
+    // Keyboard order: Enabled and the global rows, then each band's heading
+    // and its rows, from low to high.
+    const auto& order = editor.getKeyboardFocusOrder();
+    auto position = [&](Component* control) {
+      const auto found = std::find(order.begin(), order.end(), control);
+      return found == order.end() ? -1 : int(found - order.begin());
+    };
+    std::vector<int> sequence;
+    for (const auto* control : global_rows)
+      sequence.push_back(position(editor.controlForParameter("fx_slot_1_" + String(control))));
+    for (const auto& [prefix, title] : bands) {
+      sequence.push_back(position(editorSection(editor, "Chain and routing slot 1 compressor " + String(title).toLowerCase())));
+      for (const auto* control : band_rows)
+        sequence.push_back(position(editor.controlForParameter("fx_slot_1_compressor_" + String(prefix) + "_" + control)));
+    }
+    StringArray positions;
+    for (int index : sequence)
+      positions.add(String(index));
+    expect(sequence.front() >= 0 &&
+           std::adjacent_find(sequence.begin(), sequence.end(), std::greater_equal<int>()) == sequence.end(),
+           ("the compressor reads Enabled, Enabled Bands, Attack, Release and Mix, then each band's heading and rows "
+            "from low to high (positions " + positions.joinIntoString(" ") + ")").toStdString());
   }
 
   // Return on an oscillator row opens the value field; Return or Escape there

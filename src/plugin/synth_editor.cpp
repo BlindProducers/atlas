@@ -13326,6 +13326,30 @@ void SynthEditor::addEffectSlotGroups(const String& sectionName, Component& pare
       grouped_rows = true;
     }
 
+    // The compressor keeps its global controls at the top of the slot, then
+    // gives each band its own group. The crossovers sit at 120 Hz and 2.5 kHz;
+    // Enabled Bands decides whether the Low and High bands run, and the Mid
+    // band takes whatever they leave.
+    if (effect_id == "compressor") {
+      for (const auto* control : { "enabled_bands", "attack", "release", "mix" }) {
+        if (const auto found = by_suffix.find(control); found != by_suffix.end())
+          add_parameter_row(*found->second, *slot_ptr, *slot_ptr, slot_y, width);
+      }
+      const auto band = [](const String& title, const String& range, const String& band_prefix) {
+        StringArray suffixes;
+        for (const auto* control : { "upper_threshold", "upper_ratio", "lower_threshold", "lower_ratio", "gain" })
+          suffixes.add(band_prefix + control);
+        return RowGroup { title, range + ", with upper and lower thresholds and ratios, and gain", suffixes, {} };
+      };
+      for (const auto& group : { band("Low band", "Below 120 Hz, in Multiband and Low Band modes", "low_"),
+                                 band("Mid band", "Always on: 120 Hz to 2.5 kHz in Multiband mode, everything above 120 Hz "
+                                                  "in Low Band mode, everything below 2.5 kHz in High Band mode, and the "
+                                                  "whole signal in Single Band mode", "band_"),
+                                 band("High band", "Above 2.5 kHz, in Multiband and High Band modes", "high_") })
+        place_group(group, *slot_ptr, slot_y, group_width, group_key, place_group);
+      grouped_rows = true;
+    }
+
     for (const auto& entry : effect_parameters) {
       if (grouped_rows)
         break;
