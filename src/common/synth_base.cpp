@@ -23,6 +23,7 @@
 
 #include "sample_source.h"
 #include "sound_engine.h"
+#include "value_switch.h"
 #include "load_save.h"
 #include "memory.h"
 #include "modulation_connection_processor.h"
@@ -83,8 +84,18 @@ namespace {
     "retrigger_division", "play_order", "loop", "octave"
   };
 
-  AtlasArpeggiator::Settings arpeggiatorSettings(const std::array<vital::Value*, 21>& controls) {
-    const auto value = [&](int index, float fallback) {
+  // The value an arpeggiator control has after the engine's modulation, or
+  // null for a control modulation cannot reach.
+  const vital::Output* modulatedControl(vital::SoundEngine& engine, const std::string& name) {
+    vital::ValueSwitch* modulation_switch = engine.getMonoModulationSwitch(name);
+    return modulation_switch ? modulation_switch->output(vital::ValueSwitch::kSwitch) : nullptr;
+  }
+
+  AtlasArpeggiator::Settings arpeggiatorSettings(const std::array<vital::Value*, 21>& controls,
+                                                 const std::array<const vital::Output*, 21>& modulations) {
+    const auto value = [&](int index, float fallback) -> float {
+      if (modulations[index])
+        return modulations[index]->buffer[0][0];
       return controls[index] ? controls[index]->value() : fallback;
     };
     AtlasArpeggiator::Settings settings;
@@ -183,8 +194,10 @@ SynthBase::SynthBase() : expired_(false) {
   for (int arp = 0; arp < vital::kNumArpeggiators; ++arp) {
     const std::string prefix = "arp_" + std::to_string(arp + 1) + "_";
     for (size_t i = 0; i < kArpeggiatorControlNames.size(); ++i) {
-      const auto found = controls_.find(prefix + kArpeggiatorControlNames[i]);
+      const std::string name = prefix + kArpeggiatorControlNames[i];
+      const auto found = controls_.find(name);
       if (found != controls_.end()) arpeggiator_controls_[arp][i] = found->second;
+      arpeggiator_modulations_[arp][i] = modulatedControl(*engine_, name);
     }
   }
   auto findControl = [this](const std::string& name) -> vital::Value* {
@@ -1381,7 +1394,7 @@ void SynthBase::buildScheduledMidiEvents(MidiBuffer& midi_messages, int start_sa
       // releases any generated note still waiting for its note-off.
       AtlasArpeggiator::Settings disabled_settings[vital::kNumArpeggiators];
       for (int arp = 0; arp < vital::kNumArpeggiators; ++arp)
-        disabled_settings[arp] = arpeggiatorSettings(arpeggiator_controls_[arp]);
+        disabled_settings[arp] = arpeggiatorSettings(arpeggiator_controls_[arp], arpeggiator_modulations_[arp]);
       MidiBuffer& empty_input = midi_scheduling_buffers_.arp_segment_input;
       MidiBuffer& arp_output = midi_scheduling_buffers_.arp_output;
       empty_input.clear();
@@ -1408,7 +1421,7 @@ void SynthBase::buildScheduledMidiEvents(MidiBuffer& midi_messages, int start_sa
   else {
     AtlasArpeggiator::Settings arp_settings[vital::kNumArpeggiators];
     for (int arp = 0; arp < vital::kNumArpeggiators; ++arp)
-      arp_settings[arp] = arpeggiatorSettings(arpeggiator_controls_[arp]);
+      arp_settings[arp] = arpeggiatorSettings(arpeggiator_controls_[arp], arpeggiator_modulations_[arp]);
     const double bpm = host_bpm > 0.0 ? host_bpm :
         60.0 * controlValue(controls_, "beats_per_minute", 2.0f);
     for (auto& arp_group : arpeggiators_) {
@@ -1613,7 +1626,7 @@ void SynthBase::processMidi(MidiBuffer& midi_messages, int start_sample, int end
     AtlasArpeggiator::Settings arp_settings[vital::kNumArpeggiators];
     bool any_arp_enabled = false;
     for (int arp = 0; arp < vital::kNumArpeggiators; ++arp) {
-      arp_settings[arp] = arpeggiatorSettings(arpeggiator_controls_[arp]);
+      arp_settings[arp] = arpeggiatorSettings(arpeggiator_controls_[arp], arpeggiator_modulations_[arp]);
       any_arp_enabled = any_arp_enabled || arp_settings[arp].enabled;
     }
     if (any_arp_enabled) {

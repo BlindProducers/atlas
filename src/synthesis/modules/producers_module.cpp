@@ -65,9 +65,12 @@ namespace vital {
     for (int arp = 0; arp < kNumArpeggiators; ++arp) {
       const std::string prefix = "arp_" + std::to_string(arp + 1) + "_";
       arp_on_[arp] = createBaseControl(prefix + "on");
-      createBaseControl(prefix + "time_mode");
-      createBaseControl(prefix + "sync_rate");
-      createBaseControl(prefix + "free_rate");
+      // The arpeggiator runs outside the voices (SynthBase) and reads these
+      // three as the engine's modulation leaves them, so an LFO, envelope or
+      // wheel can drive its speed.
+      createMonoModControl(prefix + "time_mode");
+      createMonoModControl(prefix + "sync_rate");
+      createMonoModControl(prefix + "free_rate");
       createBaseControl(prefix + "style");
       createBaseControl(prefix + "play_order");
       createBaseControl(prefix + "gate");

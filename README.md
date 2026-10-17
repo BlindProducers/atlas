@@ -120,7 +120,8 @@ slots of its own.
   polarity, stereo, a curve and a remap shape. A slot in use has a Clear modulation
   slot button.
 - **Two arpeggiators** with styles, steps, octave, gate, repeats, velocity and hold, at
-  tempo-synced or free rates, each playing the oscillators you choose.
+  tempo-synced or free rates, each playing the oscillators you choose. An LFO,
+  envelope, wheel or other source can modulate the rate and the time mode.
 
 ## Building
 
