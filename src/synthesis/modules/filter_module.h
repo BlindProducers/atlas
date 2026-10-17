@@ -75,6 +75,11 @@ namespace vital {
       void prepareTableFilter();
       TableFilter* getTableFilter() { return table_filter_; }
       int getLatencySamples() const override;
+      // The Reverb model's delay memory, for this filter and its voice copies
+      // (see ReverbFilter::reserveMemory), and whether a voice ran that model
+      // without it since the last call.
+      void setReverbMemory(bool reserve);
+      bool takeReverbMemoryRequest();
 
     protected:
       void setModel(int new_model);

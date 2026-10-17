@@ -18,8 +18,95 @@
 
 #include "JuceHeader.h"
 
+// JUCE's FFT has a fast engine only on Apple platforms (vDSP); elsewhere its
+// scalar fallback took about a third of a wavetable voice's CPU. PFFFT
+// (third_party/pffft) replaces it on Windows. The CMake option ATLAS_USE_PFFFT
+// turns it on elsewhere too (it builds pffft.c and defines this for every
+// target, which must all agree).
+#ifndef ATLAS_USE_PFFFT
+  #if JUCE_WINDOWS
+    #define ATLAS_USE_PFFFT 1
+  #else
+    #define ATLAS_USE_PFFFT 0
+  #endif
+#endif
+
+#if ATLAS_USE_PFFFT
+  #include "pffft/pffft.h"
+  #include <cstdint>
+  #include <cstring>
+  #if JUCE_WINDOWS
+    #include <malloc.h>
+    #define ATLAS_FFT_ALLOCA _alloca
+  #else
+    #include <alloca.h>
+    #define ATLAS_FFT_ALLOCA alloca
+  #endif
+#endif
+
 namespace vital {
-  #if INTEL_IPP
+  #if ATLAS_USE_PFFFT
+
+  // The same layout and scaling as juce::dsp::FFT's real transforms: bins 0
+  // to N/2 as interleaved real and imaginary parts (DC and Nyquist with no
+  // imaginary part), the forward transform unscaled, the inverse scaled by
+  // 1/N with the buffer's second half cleared, as JUCE's vDSP engine leaves
+  // it. Scratch memory is taken on the stack for each call, so one object can
+  // serve several threads, as FFT<bits>::transform() does.
+  class FourierTransform {
+    public:
+      FourierTransform(int bits) : size_(1 << bits), setup_(pffft_new_setup(1 << bits, PFFFT_REAL)) {
+        jassert(setup_ != nullptr);
+      }
+
+      ~FourierTransform() {
+        if (setup_ != nullptr)
+          pffft_destroy_setup(setup_);
+      }
+
+      void transformRealForward(float* data) {
+        float* buffer = alignScratch(ATLAS_FFT_ALLOCA(scratchBytes()));
+        float* work = buffer + size_;
+        std::memcpy(buffer, data, size_ * sizeof(float));
+        pffft_transform_ordered(setup_, buffer, buffer, work, PFFFT_FORWARD);
+        // PFFFT keeps the Nyquist bin's real part where DC's imaginary part goes.
+        data[0] = buffer[0];
+        data[1] = 0.0f;
+        std::memcpy(data + 2, buffer + 2, (size_ - 2) * sizeof(float));
+        data[size_] = buffer[1];
+        data[size_ + 1] = 0.0f;
+      }
+
+      void transformRealInverse(float* data) {
+        float* buffer = alignScratch(ATLAS_FFT_ALLOCA(scratchBytes()));
+        float* work = buffer + size_;
+        buffer[0] = data[0];
+        buffer[1] = data[size_];
+        std::memcpy(buffer + 2, data + 2, (size_ - 2) * sizeof(float));
+        pffft_transform_ordered(setup_, buffer, buffer, work, PFFFT_BACKWARD);
+        const float scale = 1.0f / size_;
+        for (int i = 0; i < size_; ++i)
+          data[i] = buffer[i] * scale;
+        std::memset(data + size_, 0, size_ * sizeof(float));
+      }
+
+    private:
+      static constexpr size_t kAlignment = 16;
+
+      size_t scratchBytes() const { return 2 * size_ * sizeof(float) + kAlignment; }
+
+      static float* alignScratch(void* memory) {
+        const auto address = reinterpret_cast<std::uintptr_t>(memory);
+        return reinterpret_cast<float*>((address + kAlignment - 1) & ~std::uintptr_t(kAlignment - 1));
+      }
+
+      int size_;
+      PFFFT_Setup* setup_;
+
+      JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(FourierTransform)
+  };
+
+  #elif INTEL_IPP
 
   #include "ipps.h"
 

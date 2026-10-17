@@ -556,6 +556,21 @@ namespace vital {
     if (voice == nullptr)
       voice = grabVoiceOfType(Voice::kTriggering, false, true);
 
+    // Arpeggiator voices sit outside the polyphony limit and can fill the
+    // whole pool with their tails. A key played on a slot the arpeggiator
+    // does not play then takes one of them rather than going unheard.
+    if (voice == nullptr)
+      voice = grabVoiceOfType(Voice::kReleased, true);
+
+    if (voice == nullptr)
+      voice = grabVoiceOfType(Voice::kSustained, true);
+
+    if (voice == nullptr)
+      voice = grabVoiceOfType(Voice::kHeld, true);
+
+    if (voice == nullptr)
+      voice = grabVoiceOfType(Voice::kTriggering, true);
+
     return voice;
   }
 
@@ -764,10 +779,17 @@ namespace vital {
 
   void VoiceHandler::noteOff(int note, mono_float lift, int sample, int channel) {
     if (isAtlasInternalArpChannel(channel)) {
+      // Each arpeggiator note-off ends one note-on. Releasing a voice that is
+      // already ringing out would restart its release from where it is, so
+      // repeated notes of one pitch kept every older tail alive and filled
+      // the voice pool.
       for (Voice* voice : active_voices_) {
-        if (voice->state().midi_note == note && voice->state().channel == channel) {
+        const Voice::KeyState key_state = voice->key_state();
+        if (voice->state().midi_note == note && voice->state().channel == channel &&
+            voice->state().event != kVoiceKill && key_state != Voice::kReleased && key_state != Voice::kDead) {
           voice->deactivate(sample);
           voice->setLiftVelocity(lift);
+          break;
         }
       }
       return;
@@ -787,6 +809,13 @@ namespace vital {
             if (voice_override_ == kKill && !legato_) {
               voice->kill(sample);
               new_voice = grabVoice(false);
+              // Every other voice is fading out or belongs to an
+              // arpeggiator: hand the held note to this one, as the Steal
+              // override does, instead of a voice that does not exist.
+              if (new_voice == nullptr) {
+                new_voice = voice;
+                active_voices_.remove(voice);
+              }
             }
             else
               active_voices_.remove(voice);

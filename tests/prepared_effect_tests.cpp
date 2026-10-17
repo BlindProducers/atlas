@@ -47,12 +47,15 @@
 #include "value_switch.h"
 #include "synth_oscillator.h"
 #include "smooth_value.h"
+#include "fourier_transform.h"
 #include <cstdlib>
 #include <new>
 #if JUCE_MAC
 #include <execinfo.h>
 #include <mach/mach.h>
 #include <unistd.h>
+#elif JUCE_WINDOWS
+#include <malloc.h>
 #endif
 #include <atomic>
 #include <functional>
@@ -68,12 +71,26 @@ thread_local size_t audio_allocations = 0;
 // effect preparation worker's.
 std::atomic<bool> count_all_allocations { false };
 std::atomic<size_t> counted_allocations { 0 }, counted_bytes { 0 };
+// With ATLAS_LARGE_ALLOCATION_KIB set, construction measurements also count
+// the allocations at least that large by size, to show what dominates.
+constexpr int kLargeAllocationSizes = 512;
+std::atomic<size_t> large_allocation_threshold { 0 };
+std::atomic<size_t> large_allocation_size[kLargeAllocationSizes] {}, large_allocation_count[kLargeAllocationSizes] {};
 #if JUCE_MAC
 void* allocation_stacks[12][20] {};
 int allocation_depths[12] {};
 #endif
 }
 namespace {
+void countLargeAllocation(std::size_t size) {
+  for (int i = 0; i < kLargeAllocationSizes; ++i) {
+    size_t expected = 0;
+    if (large_allocation_size[i].compare_exchange_strong(expected, size) || expected == size) {
+      large_allocation_count[i].fetch_add(1, std::memory_order_relaxed);
+      return;
+    }
+  }
+}
 void countAllocation(std::size_t size) {
   if (track_allocations) {
 #if JUCE_MAC
@@ -84,6 +101,8 @@ void countAllocation(std::size_t size) {
   if (count_all_allocations.load(std::memory_order_relaxed)) {
     counted_allocations.fetch_add(1, std::memory_order_relaxed);
     counted_bytes.fetch_add(size, std::memory_order_relaxed);
+    const size_t threshold = large_allocation_threshold.load(std::memory_order_relaxed);
+    if (threshold > 0 && size >= threshold) countLargeAllocation(size);
   }
 }
 }
@@ -93,23 +112,38 @@ void* operator new(std::size_t size) {
   throw std::bad_alloc();
 }
 void* operator new[](std::size_t size) { return ::operator new(size); }
-// Processor output buffers use the aligned forms.
+// Processor output buffers use the aligned forms. Windows has no
+// posix_memalign, and its aligned blocks must go back through _aligned_free.
 void* operator new(std::size_t size, std::align_val_t alignment) {
   countAllocation(size);
+  const std::size_t bytes = std::max(size, size_t(1));
+  const std::size_t align = std::max(std::size_t(alignment), sizeof(void*));
+#if JUCE_WINDOWS
+  if (void* memory = _aligned_malloc(bytes, align)) return memory;
+#else
   void* memory = nullptr;
-  if (posix_memalign(&memory, std::max(std::size_t(alignment), sizeof(void*)), std::max(size, size_t(1))) == 0)
-    return memory;
+  if (posix_memalign(&memory, align, bytes) == 0) return memory;
+#endif
   throw std::bad_alloc();
 }
 void* operator new[](std::size_t size, std::align_val_t alignment) { return ::operator new(size, alignment); }
+namespace {
+void freeAligned(void* memory) noexcept {
+#if JUCE_WINDOWS
+  _aligned_free(memory);
+#else
+  std::free(memory);
+#endif
+}
+}
 void operator delete(void* memory) noexcept { std::free(memory); }
 void operator delete[](void* memory) noexcept { std::free(memory); }
 void operator delete(void* memory, std::size_t) noexcept { std::free(memory); }
 void operator delete[](void* memory, std::size_t) noexcept { std::free(memory); }
-void operator delete(void* memory, std::align_val_t) noexcept { std::free(memory); }
-void operator delete[](void* memory, std::align_val_t) noexcept { std::free(memory); }
-void operator delete(void* memory, std::size_t, std::align_val_t) noexcept { std::free(memory); }
-void operator delete[](void* memory, std::size_t, std::align_val_t) noexcept { std::free(memory); }
+void operator delete(void* memory, std::align_val_t) noexcept { freeAligned(memory); }
+void operator delete[](void* memory, std::align_val_t) noexcept { freeAligned(memory); }
+void operator delete(void* memory, std::size_t, std::align_val_t) noexcept { freeAligned(memory); }
+void operator delete[](void* memory, std::size_t, std::align_val_t) noexcept { freeAligned(memory); }
 
 namespace {
 int failures = 0;
@@ -464,8 +498,17 @@ void realtimeTransitions() {
   plugin.processBlock(audio, midi);
 }
 
-// Memory the process actually touched, as Activity Monitor reports it.
+#if JUCE_WINDOWS
+// Defined at the end of this file, after <windows.h>, so its macros reach nothing else.
+double windowsPrivateWorkingSetMiB();
+double windowsCommitMiB();
+#endif
+// Memory the process actually touched, as Activity Monitor reports it (on
+// Windows, the private working set Task Manager shows).
 double footprintMiB() {
+#if JUCE_WINDOWS
+  return windowsPrivateWorkingSetMiB();
+#else
 #if JUCE_MAC
   task_vm_info_data_t info {};
   mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
@@ -473,6 +516,16 @@ double footprintMiB() {
     return info.phys_footprint / 1048576.0;
 #endif
   return 0;
+#endif
+}
+// Windows also charges untouched allocations against the system's commit
+// limit (Task Manager's commit size); other systems report 0.
+double commitMiB() {
+#if JUCE_WINDOWS
+  return windowsCommitMiB();
+#else
+  return 0;
+#endif
 }
 struct Measurement { double ms; size_t allocations, bytes; double footprint; };
 template<class Function> Measurement measureConstruction(Function function) {
@@ -484,6 +537,19 @@ template<class Function> Measurement measureConstruction(Function function) {
   const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
   count_all_allocations = false;
   return { ms, counted_allocations.load(), counted_bytes.load(), footprintMiB() - footprint };
+}
+// Prints (largest total first) and clears the sizes ATLAS_LARGE_ALLOCATION_KIB counted.
+void reportLargeAllocations(const char* stage) {
+  if (large_allocation_threshold.load() == 0) return;
+  std::vector<std::pair<size_t, size_t>> sizes;
+  for (int i = 0; i < kLargeAllocationSizes; ++i) {
+    if (const size_t size = large_allocation_size[i].exchange(0))
+      sizes.push_back({ size, large_allocation_count[i].exchange(0) });
+  }
+  std::sort(sizes.begin(), sizes.end(), [](const auto& a, const auto& b) { return a.first * a.second > b.first * b.second; });
+  for (const auto& [size, count] : sizes)
+    std::cout << stage << " large allocation KiB=" << size / 1024.0 << " bytes=" << size << " count=" << count
+              << " total_MiB=" << size * count / 1048576.0 << '\n';
 }
 
 struct EffectFactoryProbe : vital::ReorderableEffectChain {
@@ -497,6 +563,8 @@ struct EffectFactoryProbe : vital::ReorderableEffectChain {
 void constructionCost(bool chain_only, int shell_type = -1) {
   using namespace vital;
   cr::Value bpm(2), keytrack(0);
+  if (const char* large = std::getenv("ATLAS_LARGE_ALLOCATION_KIB"))
+    large_allocation_threshold = size_t(std::max(1, std::atoi(large))) * 1024;
   if (shell_type >= 0) {
     EffectFactoryProbe probe(bpm.output(), keytrack.output());
     std::vector<std::unique_ptr<SynthModule>> modules;
@@ -523,6 +591,7 @@ void constructionCost(bool chain_only, int shell_type = -1) {
     });
     std::cout << "one effect chain ms=" << built.ms << " allocations=" << built.allocations
               << " requested_MiB=" << built.bytes / 1048576.0 << " footprint_MiB=" << built.footprint << '\n';
+    reportLargeAllocations("chain");
     return;
   }
   std::unique_ptr<SynthPlugin> plugin;
@@ -533,12 +602,18 @@ void constructionCost(bool chain_only, int shell_type = -1) {
   const auto whole = measureConstruction([&] { plugin = std::make_unique<SynthPlugin>(); });
   std::cout << "plugin construction ms=" << whole.ms << " allocations=" << whole.allocations
             << " requested_MiB=" << whole.bytes / 1048576.0 << " footprint_MiB=" << whole.footprint << '\n';
+  reportLargeAllocations("construction");
   const auto prepared = measureConstruction([&] {
     plugin->setPlayConfigDetails(0, 2, 48000, 512);
     plugin->prepareToPlay(48000, 512);
   });
   std::cout << "plugin prepareToPlay ms=" << prepared.ms << " allocations=" << prepared.allocations
             << " requested_MiB=" << prepared.bytes / 1048576.0 << " footprint_MiB=" << prepared.footprint << '\n';
+  reportLargeAllocations("prepareToPlay");
+  large_allocation_threshold = 0;
+#if JUCE_WINDOWS
+  std::cout << "plugin prepared commit_MiB=" << commitMiB() << '\n';
+#endif
   // Keeps the prepared instance alive so heap tools (heap, malloc_history) can attribute its memory.
   if (const char* hold = std::getenv("ATLAS_CONSTRUCTION_HOLD_SECONDS")) {
     std::cout << "holding pid=" << getpid() << " total_footprint_MiB=" << footprintMiB() << std::endl;
@@ -547,6 +622,11 @@ void constructionCost(bool chain_only, int shell_type = -1) {
   {
     juce::AudioBuffer<float> audio(2, 512);
     juce::MidiBuffer midi;
+    for (int block = 0; block < 100; ++block) plugin->processBlock(audio, midi);
+    const auto idle = measureConstruction([&] {
+      for (int block = 0; block < 1000; ++block) plugin->processBlock(audio, midi);
+    });
+    std::cout << "plugin processBlock without notes us_per_block=" << idle.ms << '\n';
     midi.addEvent(juce::MidiMessage::noteOn(1, 60, .5f), 0);
     plugin->processBlock(audio, midi);
     midi.clear();
@@ -576,11 +656,13 @@ void constructionCost(bool chain_only, int shell_type = -1) {
         for (int block = 0; block < 100; ++block) plugin->processBlock(audio, midi);
     }
     juce::MemoryBlock state;
-    plugin->getStateInformation(state);
+    const auto saved = measureConstruction([&] { plugin->getStateInformation(state); });
+    std::cout << "plugin getStateInformation ms=" << saved.ms << " KiB=" << state.getSize() / 1024
+              << " allocations=" << saved.allocations << '\n';
     const auto restore = measureConstruction([&] {
       plugin->setStateInformation(state.getData(), int(state.getSize()));
     });
-    std::cout << "plugin setStateInformation ms=" << restore.ms << '\n';
+    std::cout << "plugin setStateInformation ms=" << restore.ms << " allocations=" << restore.allocations << '\n';
   }
   const auto destroyed = measureConstruction([&] { plugin.reset(); });
   std::cout << "plugin destruction ms=" << destroyed.ms << '\n';
@@ -941,18 +1023,326 @@ int compareRenders(const std::string& baseline_directory, const std::string& can
     const auto* y = static_cast<const float*>(b.getData());
     const size_t count = a.getSize() / sizeof(float);
     size_t first = count;
-    double largest = 0.0;
+    double largest = 0.0, signal_power = 0.0, difference_power = 0.0;
     for (size_t i = 0; i < count; ++i) {
       const double difference = std::abs(double(x[i]) - double(y[i]));
       if (difference > 0.0 && first == count) first = i;
       largest = std::max(largest, difference);
+      signal_power += double(x[i]) * double(x[i]);
+      difference_power += difference * difference;
     }
+    // How far below the signal the difference is, in dB.
+    const double below_db = signal_power > 0.0 && difference_power > 0.0 ?
+        10.0 * std::log10(signal_power / difference_power) : 0.0;
     std::cout << (timing_dependent ? "timing-dependent " : "DIFFERS ") << name << " first_sample=" << first
-              << " max_difference=" << largest << '\n';
+              << " max_difference=" << largest << " difference_below_signal_db=" << below_db << '\n';
     failed += timing_dependent ? 0 : 1;
   }
   std::cout << "compared=" << compared << " differing=" << failed << '\n';
   return failed == 0 ? 0 : 1;
+}
+
+// CPU per host block (512 samples at 48 kHz, an eight-note chord) with each
+// effect alone in the first main slot at its default settings, best of five
+// runs after the effect has settled. With `only`, just the matching effects.
+void effectCpu(const std::string& only) {
+  using namespace vital;
+  constexpr int kBlock = 512;
+  auto measure = [&](int type) {
+    SynthPlugin plugin;
+    plugin.setPlayConfigDetails(0, 2, 48000, kBlock);
+    plugin.prepareToPlay(48000, kBlock);
+    if (type >= 0)
+      selectEffect(plugin, "fx_slot_1_", type);
+    plugin.getEngine()->prepareSelectedEffects();
+    // Impulse responses and tape noise load on background threads.
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(250);
+    juce::AudioBuffer<float> audio(2, kBlock);
+    juce::MidiBuffer midi;
+    for (int note : { 48, 55, 60, 64, 67, 71, 74, 79 })
+      midi.addEvent(juce::MidiMessage::noteOn(1, note, .8f), 0);
+    for (int block = 0; block < 200; ++block) {
+      audio.clear();
+      plugin.processBlock(audio, midi);
+      midi.clear();
+    }
+    double best = std::numeric_limits<double>::max();
+    for (int round = 0; round < 5; ++round) {
+      const auto start = std::chrono::steady_clock::now();
+      for (int block = 0; block < 100; ++block) {
+        audio.clear();
+        plugin.processBlock(audio, midi);
+      }
+      best = std::min(best, std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count() / 100);
+    }
+    return best;
+  };
+  const double base = measure(-1);
+  std::cout << "no effect us_per_block=" << base << std::endl;
+  for (int type = 0; type < constants::kNumEffects; ++type) {
+    const std::string name = strings::kEffectOrder[type];
+    if (!only.empty() && name.find(only) == std::string::npos)
+      continue;
+    const double cost = measure(type);
+    std::cout << "effect=" << name << " us_per_block=" << cost << " effect_us=" << cost - base << std::endl;
+  }
+}
+
+// The arpeggiator's cost in realtime blocks of 512 at 48 kHz: a preset (or the
+// default patch) holding a four-note chord, with and without Arp 1 at 1/16 and
+// a Distortion, Reverb, Chorus and Delay chain. Prints the mean and worst
+// block time against the block's budget, and the most voices at once.
+void arpeggiatorCpu(const std::string& preset_path) {
+  using namespace vital;
+  constexpr int kBlock = 512;
+  constexpr int kBlocks = 1000;
+  struct Result { double mean_us = 0, worst_us = 0; int max_voices = 0; };
+  auto run = [&](bool arp, bool effects, float release_seconds = -1.0f) {
+    SynthPlugin plugin;
+    plugin.setPlayConfigDetails(0, 2, 48000, kBlock);
+    plugin.prepareToPlay(48000, kBlock);
+    if (!preset_path.empty()) {
+      std::string error;
+      expect(plugin.loadFromFile(juce::File(preset_path), error), "the preset loads");
+    }
+    if (arp) {
+      plugin.valueChanged("arp_1_on", 1.0f);
+      plugin.valueChanged("arp_1_sync_rate", 13.0f);  // 1/16
+    }
+    if (release_seconds > 0.0f)
+      plugin.valueChanged("env_1_release", std::pow(release_seconds, 0.25f));
+    if (effects) {
+      const int chain[] = { constants::kDistortion, constants::kReverb, constants::kChorus, constants::kDelay };
+      for (int slot = 0; slot < 4; ++slot)
+        selectEffect(plugin, "fx_slot_" + std::to_string(slot + 1) + "_", chain[slot]);
+    }
+    plugin.getEngine()->prepareSelectedEffects();
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(200);
+    juce::AudioBuffer<float> audio(2, kBlock);
+    juce::MidiBuffer midi;
+    for (int note : { 48, 55, 60, 64 })
+      midi.addEvent(juce::MidiMessage::noteOn(1, note, .8f), 0);
+    Result result;
+    for (int block = 0; block < kBlocks; ++block) {
+      audio.clear();
+      const auto start = std::chrono::steady_clock::now();
+      plugin.processBlock(audio, midi);
+      const double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count();
+      midi.clear();
+      result.mean_us += us / kBlocks;
+      result.worst_us = std::max(result.worst_us, us);
+      result.max_voices = std::max(result.max_voices, plugin.getEngine()->getNumActiveVoices());
+    }
+    return result;
+  };
+  std::cout << "block budget us=" << kBlock * 1.0e6 / 48000 << std::endl;
+  for (bool effects : { false, true }) {
+    for (bool arp : { false, true }) {
+      const Result result = run(arp, effects);
+      std::cout << "arp=" << arp << " effects=" << effects << " mean_us=" << result.mean_us
+                << " worst_us=" << result.worst_us << " max_voices=" << result.max_voices << std::endl;
+    }
+  }
+  // A release longer than the time between repeats of a pitch: each tail
+  // should end after its own release, so about notes/s x release voices ring.
+  for (float release : { 0.5f, 1.0f }) {
+    const Result result = run(true, false, release);
+    std::cout << "arp=1 effects=0 release_s=" << release << " mean_us=" << result.mean_us
+              << " worst_us=" << result.worst_us << " max_voices=" << result.max_voices << std::endl;
+  }
+}
+
+// CPU per host block (512 samples at 48 kHz, default 2x quality) of the
+// voice filters' heaviest models against Analog, with Filter 1 on and 1, 2 or
+// 8 held notes; best of five runs of 100 blocks.
+void voiceFilterCpu() {
+  using namespace vital;
+  constexpr int kBlock = 512;
+  struct Case { const char* name; int model; float reverb_cutoff_hz; };
+  const Case cases[] = { { "analog", constants::kAnalog, 0.0f },
+                         { "reverb_100hz", constants::kReverbFilter, 100.0f },
+                         { "reverb_500hz", constants::kReverbFilter, 500.0f },
+                         { "scream", constants::kScreamFilter, 0.0f } };
+  const int chord[] = { 48, 55, 60, 64, 67, 71, 74, 79 };
+  for (int notes : { 1, 2, 8 }) {
+    for (const auto& filter : cases) {
+      SynthPlugin plugin;
+      plugin.setPlayConfigDetails(0, 2, 48000, kBlock);
+      plugin.prepareToPlay(48000, kBlock);
+      plugin.valueChanged("filter_1_on", 1.0f);
+      plugin.valueChanged("filter_1_model", float(filter.model));
+      if (filter.reverb_cutoff_hz > 0.0f)
+        plugin.valueChanged("filter_1_reverb_cutoff", std::log2(filter.reverb_cutoff_hz));
+      juce::AudioBuffer<float> audio(2, kBlock);
+      juce::MidiBuffer midi;
+      for (int i = 0; i < notes; ++i)
+        midi.addEvent(juce::MidiMessage::noteOn(1, chord[i], .8f), 0);
+      for (int block = 0; block < 100; ++block) {
+        audio.clear();
+        plugin.processBlock(audio, midi);
+        midi.clear();
+      }
+      double best = std::numeric_limits<double>::max();
+      for (int round = 0; round < 5; ++round) {
+        const auto start = std::chrono::steady_clock::now();
+        for (int block = 0; block < 100; ++block) {
+          audio.clear();
+          plugin.processBlock(audio, midi);
+        }
+        best = std::min(best, std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count() / 100);
+      }
+      std::cout << "filter=" << filter.name << " notes=" << notes << " us_per_block=" << best
+                << " voices=" << plugin.getEngine()->getNumActiveVoices() << std::endl;
+    }
+  }
+}
+
+// Time of one transform of the sizes Atlas uses on the audio thread: the
+// wavetable oscillator's 2048-point real inverse (vital::FourierTransform),
+// and juce::dsp::FFT at 2048 and 8192 points (spectral effects).
+void fftCpu() {
+  auto time = [](const char* name, int iterations, auto&& function) {
+    for (int i = 0; i < iterations / 10; ++i) function();
+    double best = std::numeric_limits<double>::max();
+    for (int round = 0; round < 5; ++round) {
+      const auto start = std::chrono::steady_clock::now();
+      for (int i = 0; i < iterations; ++i) function();
+      best = std::min(best, std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count() / iterations);
+    }
+    std::cout << name << " us=" << best << std::endl;
+  };
+  juce::Random random(7);
+  {
+    constexpr int kBits = 11, kSize = 1 << kBits;
+    vital::FourierTransform transform(kBits);
+    std::vector<float> spectrum(2 * kSize + 2), data(2 * kSize + 2);
+    for (int i = 0; i < kSize + 2; ++i) spectrum[i] = random.nextFloat() - .5f;
+    time("wavetable inverse 2048 (copy+transformRealInverse)", 20000, [&] {
+      std::copy(spectrum.begin(), spectrum.end(), data.begin());
+      transform.transformRealInverse(data.data());
+    });
+    time("wavetable forward 2048 (copy+transformRealForward)", 20000, [&] {
+      std::copy(spectrum.begin(), spectrum.end(), data.begin());
+      transform.transformRealForward(data.data());
+    });
+  }
+  for (int order : { 11, 13 }) {
+    juce::dsp::FFT fft(order);
+    const int size = 1 << order;
+    std::vector<float> input(2 * size), data(2 * size);
+    for (int i = 0; i < size; ++i) input[i] = random.nextFloat() - .5f;
+    const std::string label = "juce::dsp::FFT real forward+inverse " + std::to_string(size);
+    time(label.c_str(), order == 11 ? 20000 : 4000, [&] {
+      std::copy(input.begin(), input.end(), data.begin());
+      fft.performRealOnlyForwardTransform(data.data(), true);
+      fft.performRealOnlyInverseTransform(data.data());
+    });
+  }
+}
+
+// How long a host's audio thread waits for Atlas's callback lock while the
+// message thread restores state, loads a preset, loads, saves and clears an
+// FX bus, and synthesizes the patch to a wavetable. A second thread plays the
+// host: each block takes the lock, then renders unless processing is
+// suspended, as JUCE's VST3 wrapper does. Notes are held throughout.
+void callbackLockWait() {
+  using namespace vital;
+  constexpr int kBlock = 512;
+  SynthPlugin plugin;
+  plugin.setPlayConfigDetails(0, 2, 48000, kBlock);
+  plugin.prepareToPlay(48000, kBlock);
+  const int heavy[] = { constants::kReverb, constants::kConvolutionReverb, constants::kDelay,
+                        constants::kSpectralGate, constants::kTape, constants::kGlitchDelay };
+  auto stateWith = [&](int rotation) {
+    for (int slot = 0; slot < 6; ++slot) {
+      const std::string prefix = "fx_slot_" + std::to_string(slot + 1) + "_";
+      const int type = heavy[(slot + rotation) % 6];
+      selectEffect(plugin, prefix, type);
+      setEffectParameters(plugin, prefix, type, uint32_t(rotation));
+    }
+    juce::MemoryBlock state;
+    plugin.getStateInformation(state);
+    return state;
+  };
+  const juce::MemoryBlock state_a = stateWith(0), state_b = stateWith(3);
+  // A bus of ten effects to save, load and clear.
+  const int bus_effects[] = { constants::kChorus, constants::kCompressor, constants::kDelay, constants::kDistortion,
+                              constants::kEq, constants::kFilterFx, constants::kPhaser, constants::kReverb,
+                              constants::kSpectralCompressor, constants::kGlitchDelay };
+  for (int slot = 0; slot < 10; ++slot) {
+    const std::string prefix = "bus_1_fx_slot_" + std::to_string(slot + 1) + "_";
+    selectEffect(plugin, prefix, bus_effects[slot]);
+    setEffectParameters(plugin, prefix, bus_effects[slot], 5);
+  }
+  const json bus_preset = plugin.fxBusPreset(1);
+  juce::TemporaryFile preset_file(".atp");
+  preset_file.getFile().replaceWithText(state_b.toString());
+  plugin.setStateInformation(state_a.getData(), int(state_a.getSize()));
+  juce::MessageManager::getInstance()->runDispatchLoopUntil(300);
+
+  std::atomic<bool> running { true };
+  std::atomic<double> worst_wait_ms { 0.0 };
+  std::atomic<int> blocks { 0 };
+  std::thread host([&] {
+    juce::AudioBuffer<float> audio(2, kBlock);
+    juce::MidiBuffer midi;
+    for (int note : { 48, 55, 60, 64 })
+      midi.addEvent(juce::MidiMessage::noteOn(1, note, .8f), 0);
+    while (running.load()) {
+      const auto start = std::chrono::steady_clock::now();
+      {
+        const juce::ScopedLock lock(plugin.getCallbackLock());
+        const double waited = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+        double worst = worst_wait_ms.load();
+        while (waited > worst && !worst_wait_ms.compare_exchange_weak(worst, waited)) {}
+        if (!plugin.isSuspended()) {
+          audio.clear();
+          plugin.processBlock(audio, midi);
+          midi.clear();
+        }
+      }
+      blocks.fetch_add(1);
+      std::this_thread::sleep_for(std::chrono::milliseconds(2));
+    }
+  });
+  auto measure = [&](const char* name, auto&& action) {
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(200);
+    worst_wait_ms = 0.0;
+    const int first_block = blocks.load();
+    const auto start = std::chrono::steady_clock::now();
+    action();
+    const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(50);
+    std::cout << name << " ms=" << ms << " worst_lock_wait_ms=" << worst_wait_ms.load()
+              << " host_blocks=" << blocks.load() - first_block << std::endl;
+    // Processing is paused (or only read) throughout: the host's audio
+    // thread gets silence from Atlas, never a wait as long as a block.
+    expect(worst_wait_ms.load() < 10.0, std::string(name) + " keeps the host's audio thread waiting");
+  };
+  for (int pass = 0; pass < 2; ++pass) {
+    measure("setStateInformation (effects rebuilt)", [&] {
+      plugin.setStateInformation(state_b.getData(), int(state_b.getSize()));
+    });
+    measure("setStateInformation (back)", [&] {
+      plugin.setStateInformation(state_a.getData(), int(state_a.getSize()));
+    });
+    measure("editor preset load (loadFromFile)", [&] {
+      std::string error;
+      plugin.loadFromFile(preset_file.getFile(), error);
+    });
+    measure("FX bus load (10 effects)", [&] {
+      juce::String error;
+      plugin.loadFxBusPreset(2, bus_preset, error);
+    });
+    measure("FX bus preset save (10 effects)", [&] { plugin.fxBusPreset(2); });
+    measure("FX bus clear", [&] { plugin.clearFxBus(2); });
+  }
+  measure("synthesize preset to wavetable", [&] {
+    std::vector<float> capture(4 * 48000);
+    plugin.renderAudioForResynthesis(capture.data(), int(capture.size()), 16);
+  });
+  running = false;
+  host.join();
 }
 
 // Saving, loading into a fresh instance and saving again gives identical state,
@@ -960,6 +1350,17 @@ int compareRenders(const std::string& baseline_directory, const std::string& can
 // and FX automation assignments to them.
 void stateRoundTrip() {
   using namespace vital;
+  {
+    // Every effect of every slot and bus has its controls; their defaults
+    // are left out (loading restores a missing control to its default).
+    SynthPlugin fresh;
+    fresh.setPlayConfigDetails(0, 2, 48000, 512);
+    fresh.prepareToPlay(48000, 512);
+    juce::MemoryBlock state;
+    fresh.getStateInformation(state);
+    std::cout << "default state KiB=" << state.getSize() / 1024 << std::endl;
+    expect(state.getSize() < 512 * 1024, "a default state leaves parked effects' default values out");
+  }
   json first;
   {
     SynthPlugin plugin;
@@ -1035,7 +1436,11 @@ void editorMemory() {
   const double start = last;
   auto report = [&](const char* stage) {
     const double now = footprintMiB();
-    std::cout << stage << " total_MiB=" << now << " step_MiB=" << now - last << " since_start_MiB=" << now - start << std::endl;
+    std::cout << stage << " total_MiB=" << now << " step_MiB=" << now - last << " since_start_MiB=" << now - start;
+#if JUCE_WINDOWS
+    std::cout << " commit_MiB=" << commitMiB();
+#endif
+    std::cout << std::endl;
     last = now;
   };
   report("process start");
@@ -1169,6 +1574,26 @@ int main(int argc, char** argv) {
   }
   if (argc > 3 && String(argv[1]) == "--compare")
     return compareRenders(argv[2], argv[3]);
+  if (argc > 1 && String(argv[1]) == "--effect-cpu") {
+    effectCpu(argc > 2 ? argv[2] : "");
+    return failures ? 1 : 0;
+  }
+  if (argc > 1 && String(argv[1]) == "--arp-cpu") {
+    arpeggiatorCpu(argc > 2 ? argv[2] : "");
+    return failures ? 1 : 0;
+  }
+  if (argc > 1 && String(argv[1]) == "--filter-cpu") {
+    voiceFilterCpu();
+    return failures ? 1 : 0;
+  }
+  if (argc > 1 && String(argv[1]) == "--fft-cpu") {
+    fftCpu();
+    return failures ? 1 : 0;
+  }
+  if (argc > 1 && String(argv[1]) == "--lock-wait") {
+    callbackLockWait();
+    return failures ? 1 : 0;
+  }
   if (argc > 3 && String(argv[1]) == "--render") {
     renderScenarios(argv[2], argv[3], argc > 4 ? argv[4] : "");
     return failures ? 1 : 0;
@@ -1197,3 +1622,35 @@ int main(int argc, char** argv) {
   parkedEffectWiring();
   return failures ? 1 : 0;
 }
+
+#if JUCE_WINDOWS
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <psapi.h>
+#pragma comment(lib, "psapi.lib")
+namespace {
+// PROCESS_MEMORY_COUNTERS_EX2 (Windows 10 1809 and later), declared here
+// because the SDK hides it behind version macros.
+struct MemoryCounters {
+  PROCESS_MEMORY_COUNTERS_EX base;
+  SIZE_T PrivateWorkingSetSize;
+  ULONG64 SharedCommitUsage;
+};
+bool readMemoryCounters(MemoryCounters& counters) {
+  counters = {};
+  counters.base.cb = sizeof(counters);
+  return GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&counters),
+                              sizeof(counters)) != 0;
+}
+double windowsPrivateWorkingSetMiB() {
+  MemoryCounters counters;
+  return readMemoryCounters(counters) ? counters.PrivateWorkingSetSize / 1048576.0 : 0;
+}
+double windowsCommitMiB() {
+  MemoryCounters counters;
+  return readMemoryCounters(counters) ? counters.base.PrivateUsage / 1048576.0 : 0;
+}
+}
+#endif

@@ -4,8 +4,10 @@
 #include "../effects/spectral_lock/spectral_retune_engine.h"
 namespace vital {
 struct SpectralLockModule::Engines {
-  std::array<atlas::spectral_lock::Engine, poly_float::kSize / 2> pairs;
-  std::array<atlas::spectral_lock::retune::Engine, poly_float::kSize / 2> retune;
+  // The voice handler sums both voices into both SIMD pairs, so lanes 2-3 repeat
+  // lanes 0-1: one stereo engine per mode processes lanes 0-1 and fills both pairs.
+  atlas::spectral_lock::Engine filterbank;
+  atlas::spectral_lock::retune::Engine retune;
   std::array<std::array<float, kMaxBufferSize * kMaxOversample>, 4> scratch {};
   atlas::spectral_lock::Parameters parameters;  // the latest block's, for resets
 };
@@ -33,20 +35,18 @@ void SpectralLockModule::init() {
   SynthModule::init();
 }
 void SpectralLockModule::prepare() {
-  for (auto& engine : engines_->pairs)
-    engine.prepare(getSampleRate(), kMaxBufferSize * kMaxOversample);
-  for (auto& engine : engines_->retune)
-    engine.prepare(getSampleRate());
+  engines_->filterbank.prepare(getSampleRate(), kMaxBufferSize * kMaxOversample);
+  engines_->retune.prepare(getSampleRate());
   last_mode_ = -1;
 }
 void SpectralLockModule::resetEngines(int mode) {
   // Nothing of the other mode's past may leak in after a switch: the engine
   // taking over starts from silence, as it would after a hard reset.
   if (mode == 1) {
-    for (auto& engine : engines_->retune) engine.reset();
+    engines_->retune.reset();
   }
   else {
-    for (auto& engine : engines_->pairs) engine.reset(engines_->parameters);
+    engines_->filterbank.reset(engines_->parameters);
   }
 }
 void SpectralLockModule::processWithInput(const poly_float* input, int samples) {
@@ -78,48 +78,41 @@ void SpectralLockModule::processWithInput(const poly_float* input, int samples) 
     r.amount = p.amount; r.pitch = p.pitch; r.bend = p.bend; r.bendRange = p.bendRange;
     r.rangeLo = p.rangeLo; r.rangeHi = p.rangeHi; r.mix = p.mix; r.root = p.root; r.scale = p.scale;
     r.transients = value(13, 0, 1); r.reach = std::round(value(14, 1, 12));
-    for (int pair = 0; pair < poly_float::kSize / 2; ++pair) {
-      auto& engine = engines_->retune[pair];
-      for (int offset = 0; offset < samples;) {
-        const int count = std::min(kMaxBufferSize * kMaxOversample, samples - offset);
-        float* in_left = engines_->scratch[0].data();
-        float* in_right = engines_->scratch[1].data();
-        float* out_left = engines_->scratch[2].data();
-        float* out_right = engines_->scratch[3].data();
-        for (int i = 0; i < count; ++i) {
-          in_left[i] = input[offset + i][pair * 2];
-          in_right[i] = input[offset + i][pair * 2 + 1];
-        }
-        engine.process(in_left, in_right, out_left, out_right, count, r);
-        for (int i = 0; i < count; ++i) {
-          output()->buffer[offset + i].set(pair * 2, out_left[i]);
-          output()->buffer[offset + i].set(pair * 2 + 1, out_right[i]);
-        }
-        offset += count;
+    auto& engine = engines_->retune;
+    for (int offset = 0; offset < samples;) {
+      const int count = std::min(kMaxBufferSize * kMaxOversample, samples - offset);
+      float* in_left = engines_->scratch[0].data();
+      float* in_right = engines_->scratch[1].data();
+      float* out_left = engines_->scratch[2].data();
+      float* out_right = engines_->scratch[3].data();
+      for (int i = 0; i < count; ++i) {
+        in_left[i] = input[offset + i][0];
+        in_right[i] = input[offset + i][1];
       }
+      engine.process(in_left, in_right, out_left, out_right, count, r);
+      for (int i = 0; i < count; ++i)
+        output()->buffer[offset + i] = poly_float(out_left[i], out_right[i], out_left[i], out_right[i]);
+      offset += count;
     }
     return;
   }
-  for (int pair = 0; pair < poly_float::kSize / 2; ++pair) {
-    for (int offset = 0; offset < samples;) {
-      const int count = std::min(kMaxBufferSize * kMaxOversample, samples - offset);
-      float* channels[] = { engines_->scratch[0].data(), engines_->scratch[1].data() };
-      for (int i = 0; i < count; ++i)
-        for (int ch = 0; ch < 2; ++ch)
-          channels[ch][i] = input[offset + i][pair * 2 + ch];
-      juce::AudioBuffer<float> buffer(channels, 2, count);
-      engines_->pairs[pair].process(buffer, p);
-      for (int i = 0; i < count; ++i)
-        for (int ch = 0; ch < 2; ++ch)
-          output()->buffer[offset + i].set(pair * 2 + ch, channels[ch][i]);
-      offset += count;
-    }
+  for (int offset = 0; offset < samples;) {
+    const int count = std::min(kMaxBufferSize * kMaxOversample, samples - offset);
+    float* channels[] = { engines_->scratch[0].data(), engines_->scratch[1].data() };
+    for (int i = 0; i < count; ++i)
+      for (int ch = 0; ch < 2; ++ch)
+        channels[ch][i] = input[offset + i][ch];
+    juce::AudioBuffer<float> buffer(channels, 2, count);
+    engines_->filterbank.process(buffer, p);
+    for (int i = 0; i < count; ++i)
+      output()->buffer[offset + i] = poly_float(channels[0][i], channels[1][i], channels[0][i], channels[1][i]);
+    offset += count;
   }
 }
 void SpectralLockModule::hardReset() {
   // Runs on the audio thread: clear state without reallocating.
-  for (auto& engine : engines_->retune) engine.reset();
-  for (auto& engine : engines_->pairs) engine.reset(engines_->parameters);
+  engines_->retune.reset();
+  engines_->filterbank.reset(engines_->parameters);
 }
 void SpectralLockModule::enable(bool on) {
   if (enabled() != on) hardReset();

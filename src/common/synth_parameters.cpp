@@ -1287,7 +1287,7 @@ namespace vital {
     { "mpe_enabled", 0x000501, 0.0, 1.0, 0.0, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "MPE Enabled", strings::kOffOnNames },
     { "view_spectrogram", 0x000803, 0.0, 2.0, 0.0, 0.0, 1.0,
-      ValueDetails::kIndexed, false, "", "View Spectrogram", strings::kOffOnNames },
+      ValueDetails::kIndexed, false, "", "View Spectrogram", nullptr },
     { "effect_chain_slot_27", 0x02010a, 0.0, constants::kNumEffects - 1, constants::kTranceGate, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Effect Chain Slot 27", strings::kEffectOrder },
     { "effect_chain_slot_26", 0x020109, 0.0, constants::kNumEffects - 1, constants::kSuppressor, 0.0, 1.0,
@@ -1592,7 +1592,7 @@ namespace vital {
     { "destination", 0x000500, 0.0, constants::kNumDestinations - 1, 0.0, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Destination", strings::kDestinationNames },
     { "view_2d", 0x000402, 0.0, 2.0, 1.0, 0.0, 1.0,
-      ValueDetails::kIndexed, false, "", "View 2D", strings::kOffOnNames },
+      ValueDetails::kIndexed, false, "", "View 2D", nullptr },
     // Analog oscillator type, appended by version to preserve every existing host parameter ID.
     { "type", 0x020113, 0.0, source_types::kNumTypes - 1, source_types::kWavetable, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Type", strings::kOscillatorTypeNames },

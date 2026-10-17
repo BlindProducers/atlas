@@ -70,6 +70,43 @@ namespace {
     }
   }
 
+  // The engine's sums give a line history only once it needs a delay: until
+  // then it passes its input through undelayed, and asks for it.
+  void testHistoryOnDemand() {
+    vital::LatencyCompensatedSum sum(2, 8192, false);
+    vital::Output first, second;
+    sum.plug(&first, 0); sum.plug(&second, 1);
+    const int aligned[] = { 0, 0 }, delayed[] = { 0, 300 };
+    sum.setInputLatencies(aligned);
+    expect(!sum.needsHistory(), "aligned paths need no compensation history");
+    allocations.store(0); tracking.store(true);
+    const int reported = sum.setInputLatencies(delayed);
+    first.buffer[0] = 1.0f; second.buffer[0] = 0.0f;
+    sum.process(1);
+    tracking.store(false);
+    expect(allocations.load() == 0, "a line meeting its first delay allocates nothing on the audio thread");
+    expect(reported == 300 && sum.needsHistory(), "a line asks for history the first time it needs a delay");
+    expect(sum.output()->buffer[0][0] == 1.0f, "a line without history passes its input through");
+    sum.reserveNeededHistory();
+    expect(!sum.needsHistory(), "reserving gives the line its history");
+    sum.setInputLatencies(delayed);
+    sum.hardReset();
+    bool identical = true;
+    for (int offset = 0; offset < 600;) {
+      const int count = std::min(127, 600 - offset);
+      for (int i = 0; i < count; ++i) {
+        first.buffer[i] = offset + i == 13 ? vital::poly_float(.1f, .2f, .3f, .4f) : 0.0f;
+        second.buffer[i] = offset + i == 313 ? vital::poly_float(.4f, .3f, .2f, .1f) : 0.0f;
+      }
+      sum.process(count);
+      for (int i = 0; i < count; ++i)
+        for (int lane = 0; lane < vital::poly_float::kSize; ++lane)
+          identical &= sum.output()->buffer[i][lane] == (offset + i == 313 ? .5f : 0.0f);
+      offset += count;
+    }
+    expect(identical, "a line given its history aligns parallel impulses exactly");
+  }
+
   void set(SynthPlugin& plugin, const std::string& name, float value) {
     plugin.getControls().at(name)->set(value);
   }
@@ -308,6 +345,7 @@ namespace {
 int main() {
   juce::ScopedJuceInitialiser_GUI juce;
   testDelayStorage();
+  testHistoryOnDemand();
   testHostReporting();
   testRenderedAlignment();
   testRenderedAlignment(vital::constants::kSpectralLock, 0);

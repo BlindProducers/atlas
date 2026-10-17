@@ -91,17 +91,21 @@ int testResonatorUi(SynthPlugin& synth, SynthPlugin& restored) {
 
     auto* tune = dynamic_cast<ParameterSlider*>(componentWithTitle(*slot, "Tune"));
     if (!tune || tune->getAdjustmentStep() != 1) return fail("Tune must move in semitones");
-    auto handler = tune->createAccessibilityHandler();
-    auto* value = handler->getValueInterface();
-    value->setValueAsString("440 Hz");
-    if (std::abs(value->getCurrentValue() - 69.0) > 1e-3 || !value->getCurrentValueAsString().contains("440"))
-      return fail("Tune text entry or MIDI note value is wrong");
-    tune->keyPressed(KeyPress(KeyPress::rightKey));
-    if (std::abs(std::exp2(restored.getControls().at(prefix + "tune")->value()) - 440.0 * std::exp2(1.0 / 12.0)) > 0.05)
-      return fail("Tune arrows must change one semitone");
-    value->setValueAsString("2 kHz");
-    if (std::abs(std::exp2(restored.getControls().at(prefix + "tune")->value()) - 2000.0) > 0.5)
-      return fail("Tune text entry must accept kHz");
+    {
+      // The handler must go before a rebuild deletes the slider: on Windows
+      // its destructor reports the removal to the slider's parent.
+      auto handler = tune->createAccessibilityHandler();
+      auto* value = handler->getValueInterface();
+      value->setValueAsString("440 Hz");
+      if (std::abs(value->getCurrentValue() - 69.0) > 1e-3 || !value->getCurrentValueAsString().contains("440"))
+        return fail("Tune text entry or MIDI note value is wrong");
+      tune->keyPressed(KeyPress(KeyPress::rightKey));
+      if (std::abs(std::exp2(restored.getControls().at(prefix + "tune")->value()) - 440.0 * std::exp2(1.0 / 12.0)) > 0.05)
+        return fail("Tune arrows must change one semitone");
+      value->setValueAsString("2 kHz");
+      if (std::abs(std::exp2(restored.getControls().at(prefix + "tune")->value()) - 2000.0) > 0.5)
+        return fail("Tune text entry must accept kHz");
+    }
 
     auto* priority = dynamic_cast<ParameterSlider*>(componentWithTitle(*slot, "Note Priority"));
     if (!priority || !priority->getTextFromValue(priority->getValue()).contains("Lowest"))

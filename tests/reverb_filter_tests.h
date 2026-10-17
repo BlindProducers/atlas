@@ -3,6 +3,7 @@
 #include "filter_module.h"
 #include "reverb_filter.h"
 #include "filters_module.h"
+#include "prepared_effect_module.h"
 #include <complex>
 #include "../src/synthesis/utilities/value_switch.h"
 
@@ -128,6 +129,117 @@ void testVoiceReset() {
   copy->process(128);
   for (int i = 0; i < 128; ++i)
     expect(copy->output()->buffer[i][2] == 0, "Cloned reverb filters start with independent empty history");
+}
+// The voice filters release their Reverb memory while another model is
+// selected. Offline, a filter without it reserves it within the block, so the
+// sound is unchanged; in realtime it passes audio through and asks for it.
+void testMemoryOnDemand() {
+  struct Rig {
+    vital::ReverbFilter filter;
+    vital::Output audio, reset, cutoff, keytrack;
+    vital::cr::Value resonance { .8f }, damp { .2f }, bass { .5f };
+    Rig() {
+      filter.plug(&audio, vital::ReverbFilter::kAudio); filter.plug(&reset, vital::ReverbFilter::kReset);
+      filter.plug(&cutoff, vital::ReverbFilter::kCutoffLog); filter.plug(&keytrack, vital::ReverbFilter::kKeytrack);
+      filter.plug(&resonance, vital::ReverbFilter::kResonance); filter.plug(&damp, vital::ReverbFilter::kDamp);
+      filter.plug(&bass, vital::ReverbFilter::kBassPreserve);
+      filter.setSampleRate(48000);
+      for (int i = 0; i < 128; ++i) cutoff.buffer[i] = std::log2(900.f);
+    }
+    void render(vital::Processor& processor, int block) {
+      for (int i = 0; i < 128; ++i) audio.buffer[i] = .1f * std::sin((block * 128 + i) * .13f);
+      processor.process(128);
+    }
+  };
+  auto same = [](vital::Processor& a, vital::Processor& b) {
+    for (int i = 0; i < 128; ++i)
+      for (int lane = 0; lane < vital::poly_float::kSize; ++lane)
+        if (a.output()->buffer[i][lane] != b.output()->buffer[i][lane]) return false;
+    return true;
+  };
+  Rig always, on_demand;
+  on_demand.filter.releaseMemory();
+  // A voice copy made while released has no memory either.
+  std::unique_ptr<vital::Processor> copy(on_demand.filter.clone());
+  bool identical = true;
+  for (int b = 0; b < 40; ++b) {
+    always.render(always.filter, b);
+    on_demand.render(on_demand.filter, b);
+    identical = identical && same(always.filter, on_demand.filter);
+  }
+  expect(identical, "Offline, a released Reverb filter reserves its memory and sounds as before");
+  expect(!on_demand.filter.takeMemoryRequest(), "Offline processing needs no request for Reverb memory");
+  {
+    vital::RealtimeEffectScope realtime(true);
+    copy->process(128);
+  }
+  expect(!on_demand.filter.takeMemoryRequest(), "Reserving Reverb memory also gives it to the filter's voice copies");
+
+  on_demand.filter.releaseMemory();
+  tracked_allocations.store(0); track_allocations.store(true);
+  {
+    vital::RealtimeEffectScope realtime(true);
+    on_demand.render(on_demand.filter, 40);
+  }
+  track_allocations.store(false);
+  expect(tracked_allocations.load() == 0, "A realtime Reverb filter without memory allocates nothing");
+  bool dry = true;
+  for (int i = 0; i < 128; ++i)
+    for (int lane = 0; lane < vital::poly_float::kSize; ++lane)
+      dry = dry && on_demand.filter.output()->buffer[i][lane] == on_demand.audio.buffer[i][lane];
+  expect(dry, "A realtime Reverb filter without memory passes its input through");
+  expect(on_demand.filter.takeMemoryRequest(), "A realtime Reverb filter without memory asks for it");
+  expect(!on_demand.filter.takeMemoryRequest(), "A Reverb memory request is taken once");
+
+  on_demand.filter.reserveMemory();
+  always.filter.hardReset();
+  on_demand.filter.hardReset();
+  identical = true;
+  for (int b = 0; b < 20; ++b) {
+    vital::RealtimeEffectScope realtime(true);
+    always.render(always.filter, b);
+    on_demand.render(on_demand.filter, b);
+    identical = identical && same(always.filter, on_demand.filter);
+  }
+  expect(identical, "A Reverb filter given its memory again sounds as one that always had it");
+}
+// Selecting the voice Reverb model from the message thread reserves its
+// memory before the audio thread runs it: realtime blocks neither pass the
+// voices through dry nor allocate to reserve it.
+void testVoiceMemoryOnSelection() {
+  SynthPlugin synth;
+  synth.setPlayConfigDetails(0, 2, 48000, 128);
+  synth.prepareToPlay(48000, 128);
+  auto c = synth.getControls();
+  c.at("osc_1_on")->set(1);
+  c.at("osc_1_destination")->set(vital::constants::kFilter1);
+  c.at("filter_1_on")->set(1);
+  AudioSampleBuffer audio(2, 128);
+  MidiBuffer midi;
+  midi.addEvent(MidiMessage::noteOn(1, 60, .7f), 0);
+  for (int b = 0; b < 20; ++b) { audio.clear(); synth.processBlock(audio, midi); midi.clear(); }
+  synth.parameterChanged("filter_1_model", vital::constants::kReverbFilter);
+  tracked_allocations.store(0); track_allocations.store(true);
+  for (int b = 0; b < 20; ++b) { audio.clear(); synth.processBlock(audio, midi); }
+  track_allocations.store(false);
+  expect(tracked_allocations.load() == 0, "Selecting the voice Reverb model reserves its memory before realtime blocks run it");
+  synth.parameterChanged("filter_1_model", vital::constants::kAnalog);
+  for (int b = 0; b < 4; ++b) { audio.clear(); synth.processBlock(audio, midi); }
+  synth.parameterChanged("filter_1_model", vital::constants::kReverbFilter);
+  tracked_allocations.store(0); track_allocations.store(true);
+  for (int b = 0; b < 4; ++b) { audio.clear(); synth.processBlock(audio, midi); }
+  track_allocations.store(false);
+  expect(tracked_allocations.load() == 0, "Selecting Reverb again after leaving it reserves its memory before realtime blocks");
+  // How long leaving and selecting the model hold the callback lock, freeing
+  // and reserving every voice's memory once the delay lines have been used.
+  for (int b = 0; b < 800; ++b) { audio.clear(); synth.processBlock(audio, midi); }
+  auto start = std::chrono::steady_clock::now();
+  synth.parameterChanged("filter_1_model", vital::constants::kAnalog);
+  const double release_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+  start = std::chrono::steady_clock::now();
+  synth.parameterChanged("filter_1_model", vital::constants::kReverbFilter);
+  const double reserve_ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+  std::cout << "Voice Reverb memory: release ms=" << release_ms << " reserve ms=" << reserve_ms << '\n';
 }
 std::vector<float> renderPluginFilter(bool fx, int quality, float resonance, bool dry = false) {
   SynthPlugin synth;
@@ -326,8 +438,8 @@ void testPresetRoundtrip() {
   }
 }
 int run() {
-  testAudioAndRealtime(); testModulation(); testVoiceReset(); testPluginResonance();
-  testBassResponse(); testReleaseTails(); testForcedTailKill(); testPresetRoundtrip();
+  testAudioAndRealtime(); testModulation(); testVoiceReset(); testMemoryOnDemand(); testVoiceMemoryOnSelection();
+  testPluginResonance(); testBassResponse(); testReleaseTails(); testForcedTailKill(); testPresetRoundtrip();
   if (!failures) std::cout << "Atlas Reverb filter tests passed\n";
   return failures ? 1 : 0;
 }

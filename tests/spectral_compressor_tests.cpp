@@ -187,17 +187,18 @@ namespace {
     module.getControls().at("spectral_compressor_release")->set(25.0f);
     module.getControls().at("spectral_compressor_smooth")->set(50.0f);
     module.getControls().at("spectral_compressor_tilt")->set(-3.0f);
+    // The voice handler gives both SIMD pairs the same stereo signal, so the
+    // module runs one engine on lanes 0/1 and mirrors it into lanes 2/3.
     const int count_total = int(kRate / 2);
     const auto a = sine(count_total, 1000.0, -6.0), b = sine(count_total, 300.0, -30.0);
-    const auto c = sine(count_total, 2500.0, -12.0), d = sine(count_total, 80.0, -3.0);
     std::vector<vital::poly_float> input(count_total);
-    for (int i = 0; i < count_total; ++i) input[i] = vital::poly_float(a[i], b[i], c[i], d[i]);
+    for (int i = 0; i < count_total; ++i) input[i] = vital::poly_float(a[i], b[i], a[i], b[i]);
     Parameters p;
     p.downward = 1.0f; p.upward = 0.4f; p.target_db = -24.0f;
-    Engine first, second;
-    first.prepare(kRate); second.prepare(kRate);
-    first.setParameters(p); second.setParameters(p);
-    std::vector<float> l0(count_total), r0(count_total), l1(count_total), r1(count_total);
+    Engine reference;
+    reference.prepare(kRate);
+    reference.setParameters(p);
+    std::vector<float> left(count_total), right(count_total);
     const int blocks[] = { 1, 17, 64, 127, 63, 33, 128 };
     double worst = 0.0; bool finite = true;
     double module_seconds = 0.0;
@@ -209,19 +210,18 @@ namespace {
       module_seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
       tracking = false;
       expect(allocations == 0, "processing allocates no memory");
-      first.process(a.data() + offset, b.data() + offset, l0.data() + offset, r0.data() + offset, count);
-      second.process(c.data() + offset, d.data() + offset, l1.data() + offset, r1.data() + offset, count);
+      reference.process(a.data() + offset, b.data() + offset, left.data() + offset, right.data() + offset, count);
       for (int i = 0; i < count; ++i) {
         const vital::poly_float out = module.output()->buffer[i];
         for (int lane = 0; lane < 4; ++lane) finite = finite && std::isfinite(out[lane]);
-        worst = std::max({ worst, double(std::abs(out[0] - l0[offset + i])), double(std::abs(out[1] - r0[offset + i])),
-                           double(std::abs(out[2] - l1[offset + i])), double(std::abs(out[3] - r1[offset + i])) });
+        worst = std::max({ worst, double(std::abs(out[0] - left[offset + i])), double(std::abs(out[1] - right[offset + i])),
+                           double(std::abs(out[2] - left[offset + i])), double(std::abs(out[3] - right[offset + i])) });
       }
       offset += count;
     }
-    std::cout << "spectral compressor CPU: " << number(module_seconds * 1000.0 / (double(count_total) / kRate)) << " ms per second of audio (two stereo pairs)\n";
+    std::cout << "spectral compressor CPU: " << number(module_seconds * 1000.0 / (double(count_total) / kRate)) << " ms per second of audio\n";
     expect(finite, "finite output on every lane");
-    expect(worst == 0.0, "each SIMD stereo pair matches its own engine exactly, worst " + number(worst));
+    expect(worst == 0.0, "lanes 0/1 match a standalone engine exactly and lanes 2/3 mirror them, worst " + number(worst));
   }
 }
 

@@ -8,20 +8,38 @@
 #include <vector>
 
 namespace vital {
-  // Align parallel paths before summing them. Storage is reserved at graph
-  // construction; only the currently required delay is read/written. Invalid
+  // Align parallel paths before summing them. Each line's history is sized for
+  // the longest delay it can need. With `reserve_now` false, a line gets it
+  // the first time it needs a delay (reserveNeededHistory, off the audio
+  // thread): most patches never do, and Windows charges even untouched memory
+  // to the system. Only the currently required delay is read/written. Invalid
   // history is represented by a count, avoiding large clears on the audio thread.
   class LatencyCompensatedSum : public VariableAdd {
     public:
-      LatencyCompensatedSum(int inputs, int maximum_delay) : VariableAdd(inputs), lines_(inputs) {
+      LatencyCompensatedSum(int inputs, int maximum_delay, bool reserve_now = true) :
+          VariableAdd(inputs), lines_(inputs) {
         for (auto& line : lines_) {
           line.capacity = maximum_delay;
-          if (maximum_delay > 0)
+          if (reserve_now && maximum_delay > 0)
             line.history.reset(new float[static_cast<size_t>(maximum_delay) * poly_float::kSize]);
         }
       }
 
       Processor* clone() const override { VITAL_ASSERT(false); return nullptr; }
+
+      // Whether a line needs a delay it has no history for yet; until it has,
+      // it passes its input through undelayed.
+      bool needsHistory() const {
+        for (const auto& line : lines_)
+          if (line.wanted > 0 && line.history == nullptr) return true;
+        return false;
+      }
+      // Allocates; call with processing stopped or the callback lock held, or offline.
+      void reserveNeededHistory() {
+        for (auto& line : lines_)
+          if (line.wanted > 0 && line.history == nullptr)
+            line.history.reset(new float[static_cast<size_t>(line.capacity) * poly_float::kSize]);
+      }
 
       // Negative latency denotes a disconnected input. Returns the latency at
       // the sum output, in samples at this processor's effective sample rate.
@@ -37,6 +55,9 @@ namespace vital {
           VITAL_ASSERT(delay <= line.capacity);
           // Release builds: never index past the reserved history.
           delay = std::min(delay, line.capacity);
+          line.wanted = delay;
+          if (line.history == nullptr)
+            delay = 0;
           if (line.delay != delay || line.connected != connected) {
             line.position = line.valid = 0;
             line.delay = delay;
@@ -88,6 +109,7 @@ namespace vital {
       struct DelayLine {
         std::unique_ptr<float[]> history;
         int capacity = 0;
+        int wanted = 0;
         int delay = 0;
         int position = 0;
         int valid = 0;

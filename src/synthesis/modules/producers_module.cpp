@@ -31,6 +31,7 @@ namespace vital {
   ProducersModule::ProducersModule(const Output* beats_per_second) :
       SynthModule(kNumInputs, kNumOutputs),
       oscillator_routes_(std::make_shared<std::vector<OscillatorRoute>>()),
+      playhead_routed_slots_(std::make_shared<unsigned>(0)),
       portamento_glide_zones_(nullptr), zone_crossfade_(nullptr),
       filter1_on_(nullptr), filter2_on_(nullptr) {
     // Routes change on the audio thread; never allocate there.
@@ -154,30 +155,56 @@ namespace vital {
     return false;
   }
 
-  bool ProducersModule::anyArpDestinationOn() const {
-    for (int arp = 0; arp < kNumArpeggiators; ++arp) {
-      for (int destination = 0; destination < kNumArpDestinations; ++destination) {
-        if (arpDestinationOn(arp, destination))
-          return true;
-      }
-    }
-    return false;
-  }
-
   poly_float ProducersModule::getSourcePlaybackMask(int destination, poly_float zone_mask) const {
     poly_float channel = input(kChannel)->at(0);
-    if (!anyArpDestinationOn())
-      return zone_mask;
-
     poly_mask internal_arp_mask = poly_float::equal(channel, kFirstArpDestinationChannel);
     for (int i = 1; i < kNumArpDestinations; ++i)
       internal_arp_mask |= poly_float::equal(channel, kFirstArpDestinationChannel + i);
-
+    // An arpeggiator note plays only the slot its channel names, also while it
+    // rings out after the arpeggiator stops. It used to take on every slot
+    // then, each of a step's voices at once.
+    poly_mask plays = poly_float::equal(channel, kFirstArpDestinationChannel + destination);
+    // Keyboard notes play the slot unless an arpeggiator plays it.
     if (!sourceHasActiveArp(destination))
-      return zone_mask & ~internal_arp_mask;
+      plays |= poly_float::notEqual(zone_mask, 0.0f) & ~internal_arp_mask;
+    // Combine masks, never 1.0f & mask sums: MSVC's /fp:fast (19.44) compiles
+    // x + (1.0f & (a == b)) as x - (a == b), which is NaN wherever a == b.
+    return poly_float(1.0f) & plays;
+  }
 
-    poly_mask destination_mask = poly_float::equal(channel, kFirstArpDestinationChannel + destination);
-    return poly_float(1.0f) & destination_mask;
+  unsigned ProducersModule::slotsToRender(const ZoneGain* zone_gains, const bool* audible,
+                                          const unsigned* dependencies) const {
+    constexpr unsigned kAllSlots = (1u << kNumOscillators) - 1;
+    poly_float channel = input(kChannel)->at(0);
+    poly_mask internal_arp_mask = poly_float::equal(channel, kFirstArpDestinationChannel);
+    for (int i = 1; i < kNumArpDestinations; ++i)
+      internal_arp_mask |= poly_float::equal(channel, kFirstArpDestinationChannel + i);
+    // Keyboard notes (or a lane last used by one) keep every slot running, as
+    // a zone or a glide can bring any of them in.
+    if ((~internal_arp_mask).anyMask())
+      return kAllSlots;
+
+    unsigned needed = 0;
+    for (int i = 0; i < kNumOscillators; ++i) {
+      if (audible[i] && (poly_float::notEqual(zone_gains[i].start, 0.0f).anyMask() ||
+                         poly_float::notEqual(zone_gains[i].end, 0.0f).anyMask()))
+        needed |= 1u << i;
+    }
+    if (needed == 0)
+      return 0;
+
+    for (const OscillatorRoute& route : *oscillator_routes_)
+      needed |= 1u << route.source;
+    needed |= *playhead_routed_slots_ & kAllSlots;
+    // What the needed slots read through FM, RM, sync or routes into them.
+    for (unsigned previous = 0; previous != needed;) {
+      previous = needed;
+      for (int i = 0; i < kNumOscillators; ++i) {
+        if (needed & (1u << i))
+          needed |= dependencies[i];
+      }
+    }
+    return needed & kAllSlots;
   }
 
   poly_float ProducersModule::getZoneMask(Value* key_start, Value* key_end,
@@ -278,7 +305,34 @@ namespace vital {
         dependencies[route.destination] |= 1u << route.source;
     }
 
-    unsigned processed = 0;
+    bool any_source_solo = false;
+    for (int i = 0; i < kNumOscillators; ++i)
+      any_source_solo = any_source_solo || slot_solo_[i]->value() >= 0.5f;
+
+    // Zone crossfade smooths the gain when a producer enters or leaves its zone during a glide.
+    poly_mask zone_reset_mask = getResetMask(kReset);
+    mono_float crossfade_seconds = zone_crossfade_->value();
+    bool crossfade_on = portamento_glide_zones_->value() != 0.0f && crossfade_seconds > 0.0f;
+    mono_float zone_max_move = crossfade_on ? (num_samples / (crossfade_seconds * getSampleRate())) : 0.0f;
+
+    // The zone gains come first: they decide which slots the voice renders.
+    ZoneGain zone_gains[kNumOscillators];
+    poly_float source_masks[kNumOscillators];
+    bool audible[kNumOscillators];
+    for (int i = 0; i < kNumOscillators; ++i) {
+      audible[i] = !(any_source_solo && slot_solo_[i]->value() < 0.5f);
+      if (!audible[i])
+        continue;
+      source_masks[i] = getSourcePlaybackMask(i,
+          getZoneMask(slot_key_zone_start_[i], slot_key_zone_end_[i],
+                      slot_velocity_zone_start_[i], slot_velocity_zone_end_[i]));
+      zone_gains[i] = advanceZoneGain(slot_zone_gain_[i], source_masks[i],
+                                      zone_reset_mask, crossfade_on, zone_max_move);
+    }
+    const unsigned rendered = slotsToRender(zone_gains, audible, dependencies);
+
+    // A slot the voice doesn't need counts as done, so the order below skips it.
+    unsigned processed = ~rendered & ((1u << kNumOscillators) - 1);
     auto render = [&](int slot) {
       runOscillatorRoutes(slot, true, num_samples);
       getLocalProcessor(slots_[slot])->process(num_samples);
@@ -287,6 +341,8 @@ namespace vital {
     };
 
     int num_processed = 0;
+    for (int i = 0; i < kNumOscillators; ++i)
+      num_processed += (processed >> i) & 1u;
     int index = 0;
     for (int i = 0; i < kNumOscillators * kNumOscillators && num_processed < kNumOscillators; ++i) {
       const unsigned slot_bit = 1u << index;
@@ -330,31 +386,12 @@ namespace vital {
       return filterSourceDestination(destination->value(), routing, filter1_on, filter2_on);
     };
 
-    bool any_source_solo = false;
-    for (int i = 0; i < kNumOscillators; ++i)
-      any_source_solo = any_source_solo || slot_solo_[i]->value() >= 0.5f;
-
-    // Zone crossfade smooths the gain when a producer enters or leaves its zone during a glide.
-    poly_mask zone_reset_mask = getResetMask(kReset);
-    mono_float crossfade_seconds = zone_crossfade_->value();
-    bool crossfade_on = portamento_glide_zones_->value() != 0.0f && crossfade_seconds > 0.0f;
-    mono_float zone_max_move = crossfade_on ? (num_samples / (crossfade_seconds * getSampleRate())) : 0.0f;
-
-    // First the zone gains, and whether a Multi-sample instrument holds a voice open.
-    ZoneGain zone_gains[kNumOscillators];
-    bool audible[kNumOscillators];
+    // Whether a Multi-sample instrument holds the voice open.
     poly_float instrument_hold = 0.0f;
     for (int i = 0; i < kNumOscillators; ++i) {
-      audible[i] = !(any_source_solo && slot_solo_[i]->value() < 0.5f);
-      if (!audible[i])
-        continue;
-      poly_float source_mask = getSourcePlaybackMask(i,
-          getZoneMask(slot_key_zone_start_[i], slot_key_zone_end_[i],
-                      slot_velocity_zone_start_[i], slot_velocity_zone_end_[i]));
-      zone_gains[i] = advanceZoneGain(slot_zone_gain_[i], source_mask,
-                                      zone_reset_mask, crossfade_on, zone_max_move);
-      instrument_hold = utils::max(instrument_hold,
-                                   slots_[i]->output(SourceSlotModule::kHold)->buffer[0] * source_mask);
+      if (audible[i] && (rendered & (1u << i)) != 0)
+        instrument_hold = utils::max(instrument_hold,
+                                     slots_[i]->output(SourceSlotModule::kHold)->buffer[0] * source_masks[i]);
     }
 
     // The voice amplitude follows Env 1, raised to full while an instrument in
@@ -385,7 +422,8 @@ namespace vital {
     }
 
     for (int i = 0; i < kNumOscillators; ++i) {
-      if (!audible[i])
+      // A slot the voice didn't render has no gain in it.
+      if (!audible[i] || (rendered & (1u << i)) == 0)
         continue;
 
       const poly_float* buffer = slots_[i]->output(SourceSlotModule::kLevelled)->buffer;

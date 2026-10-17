@@ -5,16 +5,31 @@
 #include <cmath>
 
 namespace vital {
-  void MultiSampleSlot::setInstrument(std::shared_ptr<const multisample::Instrument> instrument) {
+  void MultiSampleSlot::setInstrument(std::shared_ptr<const multisample::Instrument> instrument, bool keep_sounding) {
+    const bool keep = keep_sounding && instrument_ != nullptr && instrument != nullptr;
+    // Notes of the instrument before this one stop either way: it is freed.
+    oldest_live_ = keep ? generation_ : generation_ + 1;
+    retired_ = keep ? std::move(instrument_) : nullptr;
     instrument_ = std::move(instrument);
     generation_++;
+
     const size_t num_regions = instrument_ ? instrument_->regions.size() : 0;
-    sequence_counters_.assign(num_regions, 0);
-    group_stamps_.assign(instrument_ ? static_cast<size_t>(instrument_->num_group_slots) : 0, 0);
-    last_keyswitch_ = instrument_ ? instrument_->sw_default : -1;
-    for (MultiSamplePlayer& tail : tails_)
-      tail.clear();
-    tails_generation_ = generation_;
+    const size_t num_groups = instrument_ ? static_cast<size_t>(instrument_->num_group_slots) : 0;
+    if (keep) {
+      // The same file: round robins, chokes and the keyswitch carry on.
+      if (sequence_counters_.size() != num_regions)
+        sequence_counters_.assign(num_regions, 0);
+      group_stamps_.resize(num_groups, 0);
+    }
+    else {
+      sequence_counters_.assign(num_regions, 0);
+      group_stamps_.assign(num_groups, 0);
+      last_keyswitch_ = instrument_ ? instrument_->sw_default : -1;
+    }
+    for (MultiSamplePlayer& tail : tails_) {
+      if (!isLive(tail))
+        tail.clear();
+    }
   }
 
   float MultiSampleSlot::ccValue(int cc) const {
@@ -62,6 +77,8 @@ namespace vital {
       return;
 
     const float random = nextRandom();
+    // One serial per CC event: the regions it starts together never choke each other.
+    const uint64_t serial = nextSerial();
     for (int index : candidates) {
       const multisample::Region& region = instrument.regions[static_cast<size_t>(index)];
       const bool now_in = value >= region.on_low && value <= region.on_high;
@@ -73,7 +90,6 @@ namespace vital {
       if (!advanceSequence(index))
         continue;
 
-      const uint64_t serial = nextSerial();
       if (region.group_slot >= 0)
         triggerGroup(region.group_slot, serial);
       if (region.silent)
@@ -102,6 +118,7 @@ namespace vital {
       start.random = random;
       start.offset = offset;
       start.serial = serial;
+      start.generation = generation_;
       start.ignore_note_off = true;
       start.sample_rate = sample_rate;
       target->start(start, *this);
@@ -110,11 +127,6 @@ namespace vital {
 
   bool MultiSampleSlot::renderTails(float* left, float* right, int num_samples, float sample_rate, int oversample) {
     const multisample::Instrument* instrument = instrument_.get();
-    if (tails_generation_ != generation_) {
-      for (MultiSamplePlayer& tail : tails_)
-        tail.clear();
-      tails_generation_ = generation_;
-    }
     if (instrument == nullptr)
       return false;
 
@@ -133,9 +145,12 @@ namespace vital {
       if (!tail.active())
         continue;
       tail.checkChoke(*this, sample_rate);
+      tail.follow(*this);
       const multisample::Region& region = *tail.region();
-      const double rate = std::exp2(tail.pitchOffset(region.pitch_keycenter) / 12.0) *
-                          region.sample_rate / std::max(1.0f, sample_rate);
+      // Clamped as the voice path clamps it: an absurd transpose must not
+      // give an infinite rate.
+      const double semitones = std::max(-96.0, std::min(96.0, static_cast<double>(tail.pitchOffset(region.pitch_keycenter))));
+      const double rate = std::exp2(semitones / 12.0) * region.sample_rate / std::max(1.0f, sample_rate);
       float pan_left = 1.0f;
       float pan_right = 1.0f;
       MultiSamplePlayer::panGains(MultiSamplePlayer::ccPan(region, *this), pan_left, pan_right);

@@ -496,13 +496,16 @@ namespace vital {
     #endif
     }
 
+    // Truncates toward zero on every platform, as NEON's vcvtq_s32_f32 does.
+    // _mm_cvtps_epi32 rounds to nearest instead, so x86 builds used to pick other
+    // LFO tempo divisions, wavetable frames and lookup points than arm64 macOS.
     force_inline poly_int toInt(poly_float floats) {
       VITAL_ASSERT(poly_float::kSize == poly_int::kSize);
 
     #if VITAL_AVX2
-      return _mm256_cvtps_epi32(floats.value);
+      return _mm256_cvttps_epi32(floats.value);
     #elif VITAL_SSE2
-      return _mm_cvtps_epi32(floats.value);
+      return _mm_cvttps_epi32(floats.value);
     #elif VITAL_NEON
       return vreinterpretq_u32_s32(vcvtq_s32_f32(floats.value));
     #endif

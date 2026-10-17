@@ -47,7 +47,7 @@ namespace container {
     }
 
     bool isTextFile(const juce::String& name) {
-      return name.endsWithIgnoreCase(".sfz") || name.endsWithIgnoreCase(".sfzh") ||
+      return name.endsWithIgnoreCase(".sfz") || name.endsWithIgnoreCase(".sfzh") || name.endsWithIgnoreCase(".dspreset") ||
              name.endsWithIgnoreCase(".txt") || name.endsWithIgnoreCase(".json");
     }
 
@@ -223,16 +223,30 @@ namespace container {
     cacheRootOverride() = folder;
   }
 
+  bool isValidHash(const std::string& hash) {
+    // The loader writes 32 lowercase hex digits. Anything else came from a
+    // damaged or hostile preset and must not name a folder: a hash of ".."
+    // would make the cache delete its parent.
+    if (hash.size() != 32)
+      return false;
+    for (const char c : hash) {
+      if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
+        return false;
+    }
+    return true;
+  }
+
   juce::File cacheFolder(const std::string& hash) {
-    return cacheRoot().getChildFile(juce::String(hash));
+    return cacheRoot().getChildFile(isValidHash(hash) ? juce::String(hash) : juce::String("Invalid"));
   }
 
   juce::File workingFolder(const std::string& hash) {
-    return cacheRoot().getChildFile("Working").getChildFile(juce::String(hash));
+    return cacheRoot().getChildFile("Working").getChildFile(isValidHash(hash) ? juce::String(hash)
+                                                                               : juce::String("Invalid"));
   }
 
   bool isCached(const std::string& hash) {
-    return !hash.empty() && cacheFolder(hash).getChildFile(kCompleteMarker).existsAsFile();
+    return isValidHash(hash) && cacheFolder(hash).getChildFile(kCompleteMarker).existsAsFile();
   }
 
   void touch(const std::string& hash) {
@@ -242,6 +256,10 @@ namespace container {
 
   bool extractToCache(const juce::File& container, const std::string& hash, const std::vector<FileInfo>& files,
                       const std::function<bool(float)>& progress, std::string& error) {
+    if (!isValidHash(hash)) {
+      error = "The preset's instrument reference is not valid.";
+      return false;
+    }
     std::lock_guard<std::mutex> lock(cacheWriteMutex());
     if (isCached(hash)) {
       touch(hash);
@@ -324,6 +342,33 @@ namespace container {
     return true;
   }
 
+  // Copies in pieces, so a cancel (closing the plugin) stops a copy of a
+  // large SoundFont within moments rather than after the whole file.
+  static bool copyFileCancellable(const juce::File& source, const juce::File& target,
+                           const std::function<bool()>& cancelled) {
+    juce::FileInputStream input(source);
+    if (!input.openedOk())
+      return false;
+    target.deleteFile();
+    juce::FileOutputStream output(target);
+    if (!output.openedOk())
+      return false;
+    std::vector<char> buffer(4 << 20);
+    for (;;) {
+      if (cancelled && cancelled())
+        return false;
+      const int read = input.read(buffer.data(), static_cast<int>(buffer.size()));
+      if (read < 0)
+        return false;
+      if (read == 0)
+        break;
+      if (!output.write(buffer.data(), static_cast<size_t>(read)))
+        return false;
+    }
+    output.flush();
+    return !output.getStatus().failed() && input.isExhausted();
+  }
+
   bool populateCache(const std::string& hash, const std::vector<FileInfo>& files, int64_t max_copy_bytes,
                      const std::function<bool()>& cancelled) {
     std::lock_guard<std::mutex> lock(cacheWriteMutex());
@@ -349,8 +394,10 @@ namespace container {
       const juce::File target = partial.getChildFile(juce::String(info.relative));
       target.getParentDirectory().createDirectory();
       std::error_code code;
-      std::filesystem::create_hard_link(std::filesystem::path(info.file.getFullPathName().toStdString()),
-                                        std::filesystem::path(target.getFullPathName().toStdString()), code);
+      // u8path: a plain std::string path is read in the ANSI code page on Windows,
+      // which breaks (or throws on) any path with characters outside it.
+      std::filesystem::create_hard_link(std::filesystem::u8path(info.file.getFullPathName().toStdString()),
+                                        std::filesystem::u8path(target.getFullPathName().toStdString()), code);
       if (code) {
         to_copy.push_back(&info);
         copy_bytes += info.size;
@@ -361,7 +408,7 @@ namespace container {
       return false;
     }
     for (const FileInfo* info : to_copy) {
-      if ((cancelled && cancelled()) || !info->file.copyFileTo(partial.getChildFile(juce::String(info->relative)))) {
+      if (!copyFileCancellable(info->file, partial.getChildFile(juce::String(info->relative)), cancelled)) {
         partial.deleteRecursively();
         return false;
       }
@@ -373,7 +420,8 @@ namespace container {
     return true;
   }
 
-  void pruneCache(int64_t budget_bytes, const std::set<std::string>& in_use) {
+  void pruneCache(int64_t budget_bytes, const std::set<std::string>& in_use,
+                  const std::function<bool()>& cancelled) {
     std::lock_guard<std::mutex> lock(cacheWriteMutex());
     const juce::File root = cacheRoot();
     if (!root.isDirectory())
@@ -387,6 +435,8 @@ namespace container {
     std::vector<Entry> entries;
     int64_t total = 0;
     for (const auto& item : juce::RangedDirectoryIterator(root, false, "*", juce::File::findDirectories)) {
+      if (cancelled && cancelled())
+        return;
       const juce::File folder = item.getFile();
       const juce::String name = folder.getFileName();
       if (name.endsWith(".partial")) {
@@ -402,7 +452,7 @@ namespace container {
     }
     std::sort(entries.begin(), entries.end(), [](const Entry& a, const Entry& b) { return a.used < b.used; });
     for (const Entry& entry : entries) {
-      if (total <= budget_bytes)
+      if (total <= budget_bytes || (cancelled && cancelled()))
         break;
       const std::string hash = entry.folder.getFileName().toStdString();
       if (in_use.count(hash))

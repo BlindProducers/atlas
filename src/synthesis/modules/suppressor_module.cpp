@@ -4,7 +4,7 @@
 
 namespace vital {
   struct SuppressorModule::Engines {
-    std::array<atlas::suppressor::Engine, poly_float::kSize / 2> pairs;
+    atlas::suppressor::Engine engine;
     std::array<std::array<float, kMaxBufferSize * kMaxOversample>, 4> scratch {};
   };
 
@@ -24,8 +24,7 @@ namespace vital {
   }
 
   void SuppressorModule::prepare() {
-    for (auto& engine : engines_->pairs)
-      engine.prepare(getSampleRate());
+    engines_->engine.prepare(getSampleRate());
   }
 
   void SuppressorModule::processWithInput(const poly_float* input, int samples) {
@@ -45,31 +44,27 @@ namespace vital {
     parameters.slope = value(5, 0, 100) / 100.0f;
     parameters.delta = delta_->value() > 0.5f;
 
-    for (int pair = 0; pair < poly_float::kSize / 2; ++pair) {
-      auto& engine = engines_->pairs[pair];
-      engine.setParameters(parameters);
-      for (int offset = 0; offset < samples;) {
-        const int count = std::min(kMaxBufferSize * kMaxOversample, samples - offset);
-        float* in_left = engines_->scratch[0].data();
-        float* in_right = engines_->scratch[1].data();
-        float* out_left = engines_->scratch[2].data();
-        float* out_right = engines_->scratch[3].data();
-        for (int i = 0; i < count; ++i) {
-          in_left[i] = input[offset + i][pair * 2];
-          in_right[i] = input[offset + i][pair * 2 + 1];
-        }
-        engine.process(in_left, in_right, out_left, out_right, count);
-        for (int i = 0; i < count; ++i) {
-          output()->buffer[offset + i].set(pair * 2, out_left[i]);
-          output()->buffer[offset + i].set(pair * 2 + 1, out_right[i]);
-        }
-        offset += count;
+    auto& engine = engines_->engine;
+    engine.setParameters(parameters);
+    for (int offset = 0; offset < samples;) {
+      const int count = std::min(kMaxBufferSize * kMaxOversample, samples - offset);
+      float* in_left = engines_->scratch[0].data();
+      float* in_right = engines_->scratch[1].data();
+      float* out_left = engines_->scratch[2].data();
+      float* out_right = engines_->scratch[3].data();
+      for (int i = 0; i < count; ++i) {
+        in_left[i] = input[offset + i][0];
+        in_right[i] = input[offset + i][1];
       }
+      engine.process(in_left, in_right, out_left, out_right, count);
+      for (int i = 0; i < count; ++i)
+        output()->buffer[offset + i] = poly_float(out_left[i], out_right[i], out_left[i], out_right[i]);
+      offset += count;
     }
   }
 
   void SuppressorModule::hardReset() {
-    for (auto& engine : engines_->pairs) engine.reset();
+    engines_->engine.reset();
   }
   void SuppressorModule::enable(bool on) {
     if (enabled() != on) hardReset();

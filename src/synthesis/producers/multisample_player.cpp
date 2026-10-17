@@ -12,9 +12,21 @@ namespace vital {
     constexpr float kMultiSampleFadeSeconds = 0.006f;
     constexpr float kMultiSampleScale = 1.0f / 32768.0f;
 
+    // A CC's value, 0..1, through the modulation's curve when it has one.
+    float shapedCc(const multisample::CcMod& mod, const MultiSampleSlot& slot) {
+      const float value = std::max(0.0f, std::min(127.0f, slot.ccValue(mod.cc)));
+      const multisample::Instrument* instrument = slot.get();
+      if (mod.curve < 0 || instrument == nullptr || mod.curve >= static_cast<int>(instrument->curve_tables.size()))
+        return value / 127.0f;
+      const auto& table = instrument->curve_tables[static_cast<size_t>(mod.curve)];
+      const int index = std::min(126, static_cast<int>(value));
+      const float t = value - static_cast<float>(index);
+      return table[static_cast<size_t>(index)] + t * (table[static_cast<size_t>(index) + 1] - table[static_cast<size_t>(index)]);
+    }
+
     float applyMultiSampleMods(float value, const std::vector<multisample::CcMod>& mods, const MultiSampleSlot& slot) {
       for (const multisample::CcMod& mod : mods)
-        value += mod.amount * slot.ccValue(mod.cc) / 127.0f;
+        value += mod.amount * shapedCc(mod, slot);
       return value;
     }
 
@@ -29,7 +41,7 @@ namespace vital {
   float MultiSamplePlayer::ccGain(const multisample::Region& region, const MultiSampleSlot& slot) {
     float gain = 1.0f;
     for (const multisample::CcMod& mod : region.amplitude_cc)
-      gain *= std::max(0.0f, mod.amount * slot.ccValue(mod.cc) / 127.0f);
+      gain *= std::max(0.0f, mod.amount * shapedCc(mod, slot));
     if (!region.volume_cc.empty())
       gain *= std::pow(10.0f, applyMultiSampleMods(0.0f, region.volume_cc, slot) / 20.0f);
     return gain;
@@ -51,6 +63,7 @@ namespace vital {
     region_ = &region;
     active_ = true;
     serial_ = start.serial;
+    generation_ = start.generation;
     sample_rate_ = std::max(1.0f, start.sample_rate);
     ignore_note_off_ = start.ignore_note_off || region.loop_mode == multisample::LoopMode::kOneShot;
 
@@ -64,6 +77,9 @@ namespace vital {
     looping_ = !start.ignore_note_off && loop_end_ > loop_start_ + 1 &&
                (region.loop_mode == multisample::LoopMode::kContinuous ||
                 region.loop_mode == multisample::LoopMode::kSustain);
+    alternate_ = region.loop_alternate && loop_end_ > loop_start_ + 2;
+    turned_ = false;
+    direction_ = 1.0;
     start_delay_ = std::max(0, start.offset) + static_cast<int>(region.delay * sample_rate_);
     note_off_at_ = -1;
     last_rate_ = 0.0;
@@ -106,6 +122,26 @@ namespace vital {
     level_ = start_level;
   }
 
+  void MultiSamplePlayer::follow(const MultiSampleSlot& slot) {
+    if (!active_ || region_ == nullptr || !region_->ampeg_dynamic)
+      return;
+    const multisample::Region& region = *region_;
+    if (!region.ampeg_cc.release.empty()) {
+      const float seconds = std::max(0.001f, applyMultiSampleMods(region.ampeg.release, region.ampeg_cc.release, slot));
+      if (seconds != release_seconds_) {
+        release_seconds_ = seconds;
+        // A release under way goes on from its level at the new rate.
+        if (stage_ == kRelease)
+          release_multiplier_ = std::pow(kMultiSampleSilence, 1.0f / std::max(1.0f, seconds * sample_rate_));
+      }
+    }
+    if (!region.ampeg_cc.sustain.empty()) {
+      sustain_ = std::max(0.0f, std::min(1.0f, applyMultiSampleMods(region.ampeg.sustain, region.ampeg_cc.sustain, slot)));
+      if (stage_ == kSustain)
+        level_ = std::max(sustain_, kMultiSampleSilence);
+    }
+  }
+
   void MultiSamplePlayer::noteOff(int offset) {
     if (!active_ || ignore_note_off_)
       return;
@@ -123,8 +159,11 @@ namespace vital {
     const float samples = std::max(1.0f, seconds * sample_rate_);
     release_multiplier_ = std::pow(kMultiSampleSilence, 1.0f / samples);
     stage_ = kRelease;
-    if (region_ != nullptr && region_->loop_mode == multisample::LoopMode::kSustain)
+    if (region_ != nullptr && region_->loop_mode == multisample::LoopMode::kSustain) {
+      // Out of the loop, the sample plays on forward to its end.
       looping_ = false;
+      direction_ = 1.0;
+    }
   }
 
   void MultiSamplePlayer::choke(float sample_rate) {
@@ -244,9 +283,17 @@ namespace vital {
     float current_right = last_right_;
     double rate = rate_start;
     const int64_t loop_length = loop_end_ - loop_start_;
+    // Ping-pong loops turn on their first and last frames.
+    const int64_t loop_last = loop_end_ - 1;
 
     auto readAt = [&](const int16_t* data, int64_t index) -> float {
-      if (looping_ && index >= loop_end_)
+      if (looping_ && alternate_) {
+        if (index > loop_last)
+          index = 2 * loop_last - index;
+        else if (turned_ && index < loop_start_)
+          index = 2 * loop_start_ - index;
+      }
+      else if (looping_ && index >= loop_end_)
         index -= loop_length;
       index = std::max<int64_t>(0, std::min(frames - 1, index));
       return data[index];
@@ -288,7 +335,8 @@ namespace vital {
       for (int channel = 0; channel < num_channels; ++channel) {
         const int16_t* data = channel == 0 ? data_left : data_right;
         float xm1, x0, x1, x2;
-        if (index >= 1 && index + 2 < frames && !(looping_ && index + 2 >= loop_end_)) {
+        const bool near_loop = looping_ && (index + 2 >= loop_end_ || (alternate_ && turned_ && index - 1 < loop_start_));
+        if (index >= 1 && index + 2 < frames && !near_loop) {
           xm1 = data[index - 1];
           x0 = data[index];
           x1 = data[index + 1];
@@ -318,6 +366,27 @@ namespace vital {
       left[i] += sample_left * amplitude * current_left;
       right[i] += sample_right * amplitude * current_right;
 
+      if (looping_ && alternate_) {
+        position_ += rate * direction_;
+        const double first = static_cast<double>(loop_start_);
+        const double last = static_cast<double>(loop_last);
+        // Reflect off the ends; a rate wider than the loop bounces more than once.
+        for (int bounce = 0; bounce < 8 && (position_ > last || (turned_ && position_ < first)); ++bounce) {
+          if (position_ > last) {
+            position_ = 2.0 * last - position_;
+            direction_ = -1.0;
+            turned_ = true;
+          }
+          else {
+            position_ = 2.0 * first - position_;
+            direction_ = 1.0;
+          }
+        }
+        position_ = std::min(last, position_);
+        if (turned_)
+          position_ = std::max(first, position_);
+        continue;
+      }
       position_ += rate;
       if (looping_ && position_ >= static_cast<double>(loop_end_))
         position_ -= static_cast<double>(loop_length) * std::floor((position_ - loop_start_) / loop_length);

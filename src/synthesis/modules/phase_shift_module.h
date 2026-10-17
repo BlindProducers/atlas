@@ -34,6 +34,9 @@ namespace vital {
       void processWithInput(const poly_float* audio_in, int num_samples) override;
       void hardReset() override;
       void enable(bool enable) override;
+      // The wet path comes out one frame after its input went in, and the dry
+      // path is held back by the same amount, so the chain can compensate.
+      int getLatencySamples() const override { return kFftSize - 1; }
 
       Processor* clone() const override { VITAL_ASSERT(false); return nullptr; }
 
@@ -48,6 +51,8 @@ namespace vital {
       static constexpr int kChannels = 2;
 
       void createWindow();
+      void clearSpectralState();
+      poly_float delayDry(poly_float in);
       void processFrame(mono_float depth_frames, mono_float tone);
       void delaySpectrum(int channel, std::vector<std::complex<float>>& spectrum,
                          mono_float depth_frames, mono_float tone);

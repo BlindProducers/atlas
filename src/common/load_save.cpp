@@ -19,6 +19,8 @@
 #include "multisample_manager.h"
 #include <mutex>
 #include "source_types.h"
+#include "legacy_source_aliases.h"
+#include "utf8_text.h"
 #include "convolution_reverb_module.h"
 #include "modulation_connection_processor.h"
 #include "sound_engine.h"
@@ -72,11 +74,7 @@ namespace {
     return true;
   }
 
-  bool getJsonFloat(const json& data, const std::string& field, float& value) {
-    if (!data.count(field))
-      return false;
-
-    const json& json_value = data[field];
+  bool jsonNumber(const json& json_value, float& value) {
     if (json_value.is_number())
       value = json_value.get<float>();
     else if (json_value.is_boolean())
@@ -85,6 +83,26 @@ namespace {
       return false;
 
     return std::isfinite(value);
+  }
+
+  bool getJsonFloat(const json& data, const std::string& field, float& value) {
+    const auto found = data.find(field);
+    if (found == data.end())
+      return false;
+
+    return jsonNumber(*found, value);
+  }
+
+  // A parameter of an effect slot: fx_slot_N_... or bus_N_fx_slot_N_...
+  bool isEffectSlotControl(const std::string& name) {
+    size_t position = 0;
+    if (name.compare(0, 4, "bus_") == 0) {
+      position = name.find('_', 4);
+      if (position == std::string::npos)
+        return false;
+      ++position;
+    }
+    return name.compare(position, 8, "fx_slot_") == 0;
   }
 
   float clampControlValue(const vital::ValueDetails& details, float value) {
@@ -334,10 +352,26 @@ void LoadSave::convertPcmToFloatBuffer(json& data, const std::string& field) {
 }
 
 json LoadSave::stateToJson(SynthBase* synth, const CriticalSection& critical_section) {
-  json settings_data;
+  json settings_data = json::object();
   vital::control_map& controls = synth->getControls();
-  for (auto& control : controls)
-    settings_data[control.first] = control.second->value();
+  // Every effect of every slot of every chain has its controls (60,000 and
+  // more). An effect's parameter is saved only where it differs from its
+  // default, which loading restores for any control a state leaves out; the
+  // rest is saved as before. The controls and the parameter details are
+  // maps sorted by name, so they are walked together.
+  const auto& details = vital::Parameters::detailsByName();
+  auto detail = details.begin();
+  json::object_t& settings_object = settings_data.get_ref<json::object_t&>();
+  for (auto& control : controls) {
+    const vital::mono_float value = control.second->value();
+    if (isEffectSlotControl(control.first)) {
+      while (detail != details.end() && detail->first < control.first)
+        ++detail;
+      if (detail != details.end() && detail->first == control.first && value == detail->second.default_value)
+        continue;
+    }
+    settings_object.emplace_hint(settings_object.end(), control.first, value);
+  }
 
   // A slot's sample is saved while a sample-based type uses it; the built-in
   // default is not written (loading restores it).
@@ -368,7 +402,7 @@ json LoadSave::stateToJson(SynthBase* synth, const CriticalSection& critical_sec
     }
   }
   if (!convolution_irs.empty())
-    settings_data["convolution_irs"] = convolution_irs;
+    settings_data["convolution_irs"] = std::move(convolution_irs);
 
   json modulations;
   vital::ModulationConnectionBank& modulation_bank = synth->getModulationBank();
@@ -382,10 +416,10 @@ json LoadSave::stateToJson(SynthBase* synth, const CriticalSection& critical_sec
     if (!line_mapping->linear())
       modulation_data["line_mapping"] = line_mapping->stateToJson();
 
-    modulations.push_back(modulation_data);
+    modulations.push_back(std::move(modulation_data));
   }
 
-  settings_data["modulations"] = modulations;
+  settings_data["modulations"] = std::move(modulations);
 
   if (synth->getWavetableCreator(0)) {
     json wavetables;
@@ -394,7 +428,7 @@ json LoadSave::stateToJson(SynthBase* synth, const CriticalSection& critical_sec
       wavetables.push_back(wavetable_creator->stateToJson());
     }
 
-    settings_data["wavetables"] = wavetables;
+    settings_data["wavetables"] = std::move(wavetables);
   }
 
   // Filter Table wavetables, keyed by filter prefix.
@@ -405,7 +439,7 @@ json LoadSave::stateToJson(SynthBase* synth, const CriticalSection& critical_sec
         filter_tables[prefix] = creator->stateToJson();
     }
     if (!filter_tables.empty())
-      settings_data["filter_tables"] = filter_tables;
+      settings_data["filter_tables"] = std::move(filter_tables);
   }
 
   json lfos;
@@ -414,7 +448,7 @@ json LoadSave::stateToJson(SynthBase* synth, const CriticalSection& critical_sec
     lfos.push_back(lfo_source->stateToJson());
   }
 
-  settings_data["lfos"] = lfos;
+  settings_data["lfos"] = std::move(lfos);
 
   json data;
   data["synth_version"] = ProjectInfo::versionString;
@@ -428,17 +462,32 @@ json LoadSave::stateToJson(SynthBase* synth, const CriticalSection& critical_sec
     std::string name = synth->getMacroName(i).toStdString();
     data["macro" + std::to_string(i + 1)] = name;
   }
-  data["settings"] = settings_data;
+  data["settings"] = std::move(settings_data);
   return data;
 }
 
 void LoadSave::loadControls(SynthBase* synth, const json& data) {
-  vital::control_map controls = synth->getControls();
-  for (auto& control : controls) {
-    std::string name = control.first;
+  // The controls, their details and the saved settings are all maps sorted by
+  // name: walk them together rather than look tens of thousands of names up.
+  const vital::control_map& controls = synth->getControls();
+  const auto& all_details = vital::Parameters::detailsByName();
+  auto detail = all_details.begin();
+  const bool has_settings = data.is_object();
+  auto setting = data.begin();
+  for (const auto& control : controls) {
+    while (detail != all_details.end() && detail->first < control.first)
+      ++detail;
+    if (detail == all_details.end() || detail->first != control.first)
+      continue;
+    const vital::ValueDetails& details = detail->second;
     float value = 0.0f;
-    vital::ValueDetails details = vital::Parameters::getDetails(name);
-    if (getJsonFloat(data, name, value)) {
+    bool saved = false;
+    if (has_settings) {
+      while (setting != data.end() && setting.key() < control.first)
+        ++setting;
+      saved = setting != data.end() && setting.key() == control.first && jsonNumber(*setting, value);
+    }
+    if (saved) {
       control.second->set(clampControlValue(details, value));
     }
     else {
@@ -446,7 +495,9 @@ void LoadSave::loadControls(SynthBase* synth, const json& data) {
     }
   }
 
-  synth->modWheelGuiChanged(controls["mod_wheel"]->value());
+  const auto mod_wheel = controls.find("mod_wheel");
+  if (mod_wheel != controls.end())
+    synth->modWheelGuiChanged(mod_wheel->second->value());
 }
 
 void LoadSave::loadModulations(SynthBase* synth, const json& modulations) {
@@ -505,7 +556,7 @@ void LoadSave::loadSlotSamples(SynthBase* synth, const json& settings) {
     if (sample == nullptr)
       continue;
     const std::string key = vital::source_types::slotPrefix(slot) + "sample";
-    const json json_sample = objectFieldOrEmpty(settings, key.c_str());
+    json json_sample = objectFieldOrEmpty(settings, key.c_str());
     if (!json_sample.is_object() || json_sample.empty()) {
       // Rebuilding the default noise sample costs a few milliseconds per slot
       // and changes nothing when the slot already holds it.
@@ -514,7 +565,7 @@ void LoadSave::loadSlotSamples(SynthBase* synth, const json& settings) {
       continue;
     }
     try {
-      sample->jsonToState(json_sample);
+      sample->jsonToState(std::move(json_sample));
     }
     catch (const json::exception&) { }
   }
@@ -602,7 +653,10 @@ void LoadSave::migrateFixedSourcesToSlots(json& settings, json& modulations) {
     if (source.sample_key != nullptr && settings.count(source.sample_key)) {
       json sample = settings[source.sample_key];
       settings.erase(source.sample_key);
-      settings[vital::source_types::slotPrefix(source.slot) + "sample"] = std::move(sample);
+      // Only a sample object moves to the slot; a null or stray value must
+      // not replace the sample the slot already holds.
+      if (sample.is_object())
+        settings[vital::source_types::slotPrefix(source.slot) + "sample"] = std::move(sample);
     }
     for (int arp = 1; arp <= 2; ++arp) {
       const std::string legacy = "arp_" + std::to_string(arp) + "_destination_" + source.prefix;
@@ -678,10 +732,39 @@ void LoadSave::migrateSlotTypeLevels(json& settings, json& modulations) {
             ++it;
           }
           else {
-            it = modulations.erase(it);
+            // Routes are positional (their amounts live in modulation_N_*
+            // controls), so a dropped route leaves an empty entry behind
+            // rather than shifting the later ones onto the wrong amounts.
+            *it = json::object({ { "source", "" }, { "destination", "" } });
+            ++it;
           }
         }
       }
+    }
+  }
+}
+
+namespace {
+  // Dev builds between d789d76 and 44fdd17 gated the analog aging amounts
+  // (defaults of 50%) behind an Age control that no longer exists. Fold Age
+  // into the amounts so those states keep the sound they had, and drop the
+  // removed controls.
+  void migrateAnalogAging(json& settings) {
+    if (!settings.is_object())
+      return;
+    for (int slot = 0; slot < vital::kNumOscillators; ++slot) {
+      const std::string prefix = vital::source_types::slotPrefix(slot) + "analog_";
+      const auto age = settings.find(prefix + "age");
+      if (age == settings.end())
+        continue;
+      const float amount = age->is_number() ? std::max(0.0f, std::min(1.0f, age->get<float>())) : 0.0f;
+      for (const char* control : { "drift", "voice_spread", "wear", "noise", "sag" }) {
+        const auto found = settings.find(prefix + control);
+        if (found != settings.end() && found->is_number())
+          *found = found->get<float>() * amount;
+      }
+      settings.erase(prefix + "age");
+      settings.erase(prefix + "tracking");
     }
   }
 }
@@ -772,7 +855,7 @@ void LoadSave::loadLfos(SynthBase* synth, const json& lfos) {
   }
 }
 
-void LoadSave::loadSaveState(std::map<std::string, String>& state, json data) {
+void LoadSave::loadSaveState(std::map<std::string, String>& state, const json& data) {
   if (data.count("preset_name") && data["preset_name"].is_string()) {
     std::string preset_name = data["preset_name"];
     state["preset_name"] = preset_name;
@@ -835,8 +918,12 @@ void LoadSave::initSaveInfo(std::map<std::string, String>& save_info) {
 json LoadSave::updateFromOldVersion(json state) {
   json settings = state["settings"];
   json modulations = settings["modulations"];
-  json sample = settings["sample"];
-  json wavetables = settings["wavetables"];
+  // Reading a missing key through operator[] inserts null, and a null
+  // "sample" written back below would later be moved onto oscillator 5's
+  // sample, replacing it. Only a state that has one gets it written back.
+  const bool has_sample = settings.count("sample") > 0;
+  json sample = has_sample ? settings["sample"] : json();
+  json wavetables = settings.count("wavetables") ? settings["wavetables"] : json();
 
   std::string version = state["synth_version"];
 
@@ -1598,7 +1685,8 @@ json LoadSave::updateFromOldVersion(json state) {
   migrateVitalSourceDestinationLayout(settings);
 
   settings["modulations"] = modulations;
-  settings["sample"] = sample;
+  if (has_sample)
+    settings["sample"] = sample;
   state["settings"] = settings;
   return state;
 }
@@ -1623,12 +1711,15 @@ bool LoadSave::jsonToState(SynthBase* synth, std::map<std::string, String>& save
   
   int compare_versions = compareVersionStrings(version, ProjectInfo::versionString);
   if ((has_version && compare_versions < 0) || data["settings"].count("sub_octave"))
-    data = updateFromOldVersion(data);
+    data = updateFromOldVersion(std::move(data));
   
-  json settings = objectFieldOrEmpty(data, "settings");
+  // The settings hold every control (tens of thousands of entries): move
+  // them out rather than copy.
+  json settings = jsonHasObject(data, "settings") ? std::move(data["settings"]) : json::object();
   json modulations = arrayFieldOrEmpty(settings, "modulations");
   migrateFixedSourcesToSlots(settings, modulations);
   migrateSlotTypeLevels(settings, modulations);
+  migrateAnalogAging(settings);
   json wavetables = arrayFieldOrEmpty(settings, "wavetables");
   json lfos = arrayFieldOrEmpty(settings, "lfos");
 
@@ -1805,7 +1896,51 @@ std::string LoadSave::getLicense(json data) {
   return "";
 }
 
+namespace {
+  File& configFileOverride() {
+    static File file;
+    return file;
+  }
+
+  void makeStringsUtf8(json& value) {
+    if (value.is_string()) {
+      const std::string& text = value.get_ref<const std::string&>();
+      if (!vital::text::isValidUtf8(text))
+        value = vital::text::utf8FromLegacyText(text);
+    }
+    else if (value.is_array()) {
+      for (json& item : value)
+        makeStringsUtf8(item);
+    }
+    else if (value.is_object()) {
+      json fixed = json::object();
+      for (auto it = value.begin(); it != value.end(); ++it) {
+        json item = std::move(it.value());
+        makeStringsUtf8(item);
+        fixed[vital::text::utf8FromLegacyText(it.key())] = std::move(item);
+      }
+      value = std::move(fixed);
+    }
+  }
+} // namespace
+
+std::string LoadSave::dumpState(json& data) {
+  try {
+    return data.dump();
+  }
+  catch (const json::exception&) {
+    makeStringsUtf8(data);
+    return data.dump();
+  }
+}
+
+void LoadSave::setConfigFileForTesting(const File& file) {
+  configFileOverride() = file;
+}
+
 File LoadSave::getConfigFile() {
+  if (configFileOverride() != File())
+    return configFileOverride();
 #if defined(JUCE_DATA_STRUCTURES_H_INCLUDED)
   PropertiesFile::Options config_options;
   config_options.applicationName = "Atlas";
@@ -1886,7 +2021,7 @@ json LoadSave::getConfigJson() {
 
   try {
     json parsed = json::parse(config_file.loadFileAsString().toStdString(), nullptr, false);
-    if (parsed.is_discarded())
+    if (parsed.is_discarded() || !parsed.is_object())
       return json();
     return parsed;
   }
@@ -1902,7 +2037,7 @@ json LoadSave::getFavoritesJson() {
 
   try {
     json parsed = json::parse(favorites_file.loadFileAsString().toStdString(), nullptr, false);
-    if (parsed.is_discarded())
+    if (parsed.is_discarded() || !parsed.is_object())
       return json();
     return parsed;
   }
@@ -2057,8 +2192,10 @@ void LoadSave::saveLayoutConfig(vital::StringLayout* layout) {
 }
 
 void LoadSave::saveMidiMapConfig(MidiManager* midi_manager) {
-  MidiManager::midi_map midi_learn_map = midi_manager->getMidiLearnMap();
+  saveMidiMapConfig(midi_manager->getMidiLearnMap());
+}
 
+void LoadSave::saveMidiMapConfig(const MidiManager::midi_map& midi_learn_map) {
   json midi_mapping_data;
 
   for (auto& midi_mapping : midi_learn_map) {
@@ -2095,21 +2232,33 @@ void LoadSave::loadConfig(MidiManager* midi_manager, vital::StringLayout* layout
     layout->setUpKey(octave_controls.second);
   }
 
-  // Midi Learn Map
-  if (data.count("midi_learn")) {
+  // Midi Learn Map. The config is shared by every Atlas build, so a mapping
+  // may name a parameter that is no longer a control of this one (the fixed
+  // Sample, Granular, Spectral and Noise sources became slots 5-8). Translate
+  // those, and drop whatever still names no control or is malformed: a
+  // controller must never reach a control that does not exist.
+  if (data.count("midi_learn") && data["midi_learn"].is_array()) {
     MidiManager::midi_map midi_learn_map = midi_manager->getMidiLearnMap();
-
-    json midi_mapping_data = data["midi_learn"];
-    for (json& midi_map_data : midi_mapping_data) {
-      int source = midi_map_data["source"];
-
-      if (midi_map_data.count("destinations")) {
-        json destinations_data = midi_map_data["destinations"];
-        for (json& midi_destination : destinations_data) {
-          std::string dest = midi_destination["destination"];
-          midi_learn_map[source][dest] = &vital::Parameters::getDetails(dest);
+    try {
+      for (const json& midi_map_data : data["midi_learn"]) {
+        if (!midi_map_data.is_object() || !midi_map_data.count("source") ||
+            !midi_map_data["source"].is_number_integer() || !midi_map_data.count("destinations") ||
+            !midi_map_data["destinations"].is_array())
+          continue;
+        const int source = midi_map_data["source"].get<int>();
+        for (const json& midi_destination : midi_map_data["destinations"]) {
+          if (!midi_destination.is_object() || !midi_destination.count("destination") ||
+              !midi_destination["destination"].is_string())
+            continue;
+          std::string dest = midi_destination["destination"].get<std::string>();
+          if (!midi_manager->isLearnable(dest))
+            dest = vital::source_types::legacySourceAliasTarget(dest);
+          if (!dest.empty() && midi_manager->isLearnable(dest))
+            midi_learn_map[source][dest] = &vital::Parameters::getDetails(dest);
         }
       }
+    }
+    catch (const json::exception&) {
     }
     midi_manager->setMidiLearnMap(midi_learn_map);
   }
@@ -2529,7 +2678,7 @@ std::vector<File> LoadSave::getDirectories(const String& folder_name) {
 
   Array<File> sub_folders;
   sub_folders.add(data_dir);
-  data_dir.findChildFiles(sub_folders, File::findDirectories, false);
+  data_dir.findChildFiles(sub_folders, File::findDirectories | File::ignoreHiddenFiles, false);
   for (const File& sub_folder : sub_folders) {
     File directory = sub_folder.getChildFile(folder_name);
     if (directory.exists() && directory.isDirectory())
@@ -2633,7 +2782,7 @@ int LoadSave::scanDownloadsForPresets() {
     return 0;
 
   Array<File> found;
-  downloads.findChildFiles(found, File::findFiles, false, vital::kPresetExtensionsList);
+  downloads.findChildFiles(found, File::findFiles | File::ignoreHiddenFiles, false, vital::kPresetExtensionsList);
 
   File destination = getUserPresetDirectory();
   int imported = 0;
@@ -2656,7 +2805,7 @@ void LoadSave::getAllFilesOfTypeInDirectories(Array<File>& files, const String& 
   files.clear();
   for (const File& directory : directories) {
     if (directory.exists() && directory.isDirectory())
-      directory.findChildFiles(files, File::findFiles, true, extensions);
+      directory.findChildFiles(files, File::findFiles | File::ignoreHiddenFiles, true, extensions);
   }
 }
 
@@ -2784,7 +2933,7 @@ File LoadSave::getShiftedFile(const String directory_name, const String& extensi
   // subfolders. Other asset types retain their existing library navigation.
   if (current_file.existsAsFile() && (directory_name == String(kSampleFolderName) || !current_is_atlas_content)) {
     Array<File> sibling_files;
-    current_file.getParentDirectory().findChildFiles(sibling_files, File::findFiles, false, extensions);
+    current_file.getParentDirectory().findChildFiles(sibling_files, File::findFiles | File::ignoreHiddenFiles, false, extensions);
     sibling_files.sort(file_sorter);
     const int sibling_index = sibling_files.indexOf(current_file);
     if (sibling_index >= 0 && !sibling_files.isEmpty())

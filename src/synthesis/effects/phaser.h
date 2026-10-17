@@ -57,6 +57,12 @@ namespace vital {
         ProcessorRouter::setOversampleAmount(oversample);
         cutoff_.ensureBufferSize(oversample * kMaxBufferSize);
       }
+      // The filter is an idle processor: the router passes it the oversampling
+      // but not the rate, and it computes its coefficients with its own.
+      void setSampleRate(int sample_rate) override {
+        ProcessorRouter::setSampleRate(sample_rate);
+        phaser_filter_->setSampleRate(sample_rate);
+      }
 
     private:
       Output cutoff_;

@@ -31,6 +31,7 @@
 #include <vector>
 
 class AccessibleParameterRow;
+class AccessibleSectionHeader;
 class CpuUsageMeter;
 class LineGenerator;
 class WaveSource;
@@ -41,6 +42,27 @@ class ValueBridge;
 
 namespace vital {
   class ConvolutionReverbModule;
+}
+
+// Key names for help texts and menus. Command is a key of its own only on
+// macOS; elsewhere JUCE reports Ctrl as the command modifier, and there is no
+// VoiceOver to open a context menu.
+namespace atlas::keys {
+  inline String commandName() {
+#if JUCE_MAC
+    return "Command";
+#else
+    return "Ctrl";
+#endif
+  }
+
+  inline String contextMenuKeys() {
+#if JUCE_MAC
+    return "Shift M, the right bracket key, or VoiceOver Shift M";
+#else
+    return "Shift M or Shift F10";
+#endif
+  }
 }
 
 struct PresetBrowserItem {
@@ -66,15 +88,45 @@ struct PresetFacetItem {
   bool active = false;
 };
 
-class PresetTableListBox : public TableListBox {
+// A list keeps the keyboard focus while the arrow, Page and Home/End keys move
+// its selection. JUCE reports the new selection to Windows screen readers on
+// the list rather than on the row, so NVDA says nothing; onSelectionKey runs
+// after those keys, even at either end of the list, so the editor can say the row.
+template <typename ListType>
+class SelectionKeyList : public ListType {
   public:
-    using TableListBox::TableListBox;
+    using ListType::ListType;
+
+    std::function<void()> onSelectionKey;
+
+    bool keyPressed(const KeyPress& key) override {
+      if (!ListType::keyPressed(key))
+        return false;
+      if (onSelectionKey && isSelectionKey(key))
+        onSelectionKey();
+      return true;
+    }
+
+  private:
+    static bool isSelectionKey(const KeyPress& key) {
+      for (const int code : { KeyPress::upKey, KeyPress::downKey, KeyPress::pageUpKey,
+                              KeyPress::pageDownKey, KeyPress::homeKey, KeyPress::endKey }) {
+        if (key.isKeyCode(code))
+          return true;
+      }
+      return false;
+    }
+};
+
+class PresetTableListBox : public SelectionKeyList<TableListBox> {
+  public:
+    using SelectionKeyList::SelectionKeyList;
 
     std::function<bool(const KeyPress&)> onKeyPressed;
     std::function<void()> onFocusGained;
 
     void focusGained(FocusChangeType cause) override {
-      TableListBox::focusGained(cause);
+      SelectionKeyList::focusGained(cause);
       if (onFocusGained)
         onFocusGained();
     }
@@ -82,8 +134,20 @@ class PresetTableListBox : public TableListBox {
     bool keyPressed(const KeyPress& key) override {
       if (onKeyPressed && onKeyPressed(key))
         return true;
-      return TableListBox::keyPressed(key);
+      return SelectionKeyList::keyPressed(key);
     }
+};
+
+// A toggle that says its new state after the user flips it. JUCE reports a
+// toggle's change to Windows screen readers only as a new value, which NVDA
+// never speaks for a check box; VoiceOver reads the change itself, so this
+// speaks on Windows only (see SpokenToggleButton::clicked).
+class SpokenToggleButton : public ToggleButton {
+  public:
+    using ToggleButton::ToggleButton;
+
+  protected:
+    void clicked() override;
 };
 
 class AccessibleComboBox : public ComboBox {
@@ -174,7 +238,7 @@ class WavetableKeyboardComponent : public Component {
     WavetableKeyboardComponent() {
       setWantsKeyboardFocus(true);
       setDescription("Keyboard wavetable editor with starting waveforms, frame selection, harmonic editing, and interpolation.");
-      setHelpText("Keys 1 through 6 apply Sine, Saturated sine, Triangle, Square, Pulse, or Saw to the current frame selection. Left and right move between frames. Shift left and right extend frame selection. Home and End move to the first and last frame. S toggles frame selection. R clears selection. Command A or Shift A selects all frames. Comma and period move between harmonics. Page Up and Page Down move by ten harmonics. Up and Down change harmonic level by one percent; hold Shift for five percent. J and L change harmonic phase by one degree; hold Shift for fifteen degrees. Backspace clears the harmonic. F removes the fundamental. Zero removes DC. N normalizes. A adds a frame. E or Delete deletes frames. C and V copy and paste frames. I cycles interpolation modes.");
+      setHelpText("Keys 1 through 6 apply Sine, Saturated sine, Triangle, Square, Pulse, or Saw to the current frame selection. Left and right move between frames. Shift left and right extend frame selection. Home and End move to the first and last frame. S toggles frame selection. R clears selection. " + atlas::keys::commandName() + " A or Shift A selects all frames. Comma and period move between harmonics. Page Up and Page Down move by ten harmonics. Up and Down change harmonic level by one percent; hold Shift for five percent. J and L change harmonic phase by one degree; hold Shift for fifteen degrees. Backspace clears the harmonic. F removes the fundamental. Zero removes DC. N normalizes. A adds a frame. E or Delete deletes frames. C and V copy and paste frames. I cycles interpolation modes.");
     }
 
     bool keyPressed(const KeyPress& key) override {
@@ -218,6 +282,7 @@ class WavetableKeyboardComponent : public Component {
 namespace vital {
 namespace multisample {
   struct PresetName;
+  struct LoadResult;
 }
 }
 
@@ -300,6 +365,8 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void clearSectionComponents();
     std::unique_ptr<AccessibleParameterRow> createAccessibleParameterRow(AudioProcessorParameter& parameter,
                                                                          const String& sectionName);
+    std::unique_ptr<AccessibleParameterRow> buildAccessibleParameterRow(AudioProcessorParameter& parameter,
+                                                                        const String& sectionName);
     int sampleLoopPointLength(const String& parameterId) const;
     void toggleSampleLoopFineTune();
     void wireSampleLoopFineTune(AccessibleParameterRow& row);
@@ -313,6 +380,7 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     bool refreshOscillatorModeRowsIfNeeded();
     bool refreshZoneCrossfadeRowIfNeeded();
     bool refreshEnvelopeAnalogRowsIfNeeded();
+    int currentGlideZones() const;
     String focusedParameterId() const;
     String focusedAccessibleTitle() const;
     // The SectionName of the focused control or its nearest group, so a rebuild
@@ -341,7 +409,28 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     // Opens a file chooser and, once it closes, puts keyboard and screen reader
     // focus back on the control that opened it, or on its replacement.
     void launchFileChooser(FileChooser& chooser, int flags, std::function<void(const FileChooser&)> callback);
+    // On Windows a rebuild that a choice deciding the rows starts (an
+    // oscillator's Type, a filter's Model, an effect's mode, or Envelope 1's
+    // Analog switch) keeps the focused row of such a choice and the groups
+    // around it, and the new rows take them
+    // back in place of fresh copies (makeSectionHeader, createAccessibleParameterRow).
+    // NVDA then stays on the same control in the same groups and reads only its
+    // new value, instead of every group around it and the control again, which
+    // the next quick step cut short. Call before the old rows are cleared, and
+    // releaseKeptFocus once focus is back.
+    void keepFocusedSwitchingRow();
+    void releaseKeptFocus();
+    std::unique_ptr<AccessibleSectionHeader> makeSectionHeader(const String& title, int groupRank, bool topLevel,
+                                                               const String& sectionKey = {});
     void moveToSection(int direction);
+    // Comma and period on an effects chain (Windows): from the chain into
+    // Slot 1, Slot 2 and on through the slots that hold an effect, then to the
+    // next element, and back the same way. False when the step leaves the
+    // chain, which is then the element moveToSection steps on from.
+    bool moveThroughEffectSlots(int direction);
+    // Focuses the header of the effect at `position` (0 for Slot 1) in the
+    // chain `sectionName`; false when there is none.
+    bool focusEffectSlotHeader(const String& sectionName, int position);
     void showNavigationMenu();
     void armOrCancelMidiLearn(const String& parameterId);
     void showAccessibilitySettingsMenu();
@@ -381,7 +470,7 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void selectPresetFile(const File& file);
     void loadSelectedPreset();
     void choosePresetFile();
-    void loadPresetFile(const File& file, bool preview = false, bool updateBrowserFilters = false);
+    void loadPresetFile(File file, bool preview = false, bool updateBrowserFilters = false);
     void chooseBankFile();
     void importBankFile(const File& file);
     void chooseFolderToExportBank();
@@ -511,8 +600,15 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void syncInstrumentPresetMenu(int oscillator);
     String instrumentStatusTitle(int oscillator) const;
     String instrumentDetails(int oscillator) const;
-    // 0 nothing loaded, 1 SFZ, 2 SF2 with one preset, 3 SF2 with several.
+    // 0 nothing loaded, 1 SFZ or DecentSampler, 2 SF2 with one preset, 3 SF2
+    // with several, 4 DecentSampler with controls.
     int multiSampleUiState(int oscillator) const;
+    // A slider for each knob of the instrument and a menu for each menu and button.
+    void addInstrumentControlRows(int oscillator, const vital::multisample::LoadResult& result,
+                                  const std::function<Component*(std::unique_ptr<Component>, int)>& place,
+                                  const String& section_name);
+    // Keeps those rows on the values the slot plays; another instrument rebuilds them.
+    void syncInstrumentControls(int oscillator);
     // The Braids synthesis mode a slot has selected, 0 to 47.
     int braidsModel(int oscillator) const;
     // A section row with every callback wired (modulation, MIDI learn, value entry, automation).
@@ -548,6 +644,9 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     String effectSlotPrefix(const String& sectionName, int slot) const;
     String effectSlotTitle(const String& sectionName, int slot) const;
     void swapEffectSlots(const String& sectionName, int firstSlot, int secondSlot);
+    // Moves the impulse response, Filter FX table and MIDI learn mappings
+    // keyed by the slot prefixes along with a swapped pair of slots.
+    void swapEffectSlotModuleState(const String& firstPrefix, const String& secondPrefix);
     void clearEffectSlot(const String& sectionName, int slot);
     void removeEffectSlot(const String& sectionName, int slot, const String& focusedTitle);
     void replaceEffectSlot(const String& sectionName, int slot, int effect);
@@ -713,6 +812,15 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
 
     std::map<String, TranceGateEditor::State> trance_gate_editor_states_;
     SynthPlugin& synth_;
+    // This instance's section and preset browser state (SynthPlugin::EditorMemory):
+    // reopening the window returns to them, other Atlas instances keep their own.
+    String& last_section_name_;
+    String& last_preset_path_;
+    String& last_preset_search_;
+    String& last_preset_library_;
+    String& last_preset_bank_;
+    String& last_preset_category_;
+    String& last_preset_tag_;
     void addCpuMeter(Component& parent, int x, int& y, int width, int& focusOrder);
     std::unique_ptr<CpuUsageMeter> cpu_meter_;
     Label title_;
@@ -752,6 +860,18 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     Component rows_container_;
     std::vector<std::unique_ptr<Component>> section_headers_;
     std::vector<std::unique_ptr<AccessibleParameterRow>> rows_;
+    // What keepFocusedSwitchingRow holds while a rebuild runs: the row, its
+    // parameter (compared, never read, as a rebuild may replace its bridge),
+    // its control, and its groups, outermost first, of which the rebuild has
+    // taken back the first kept_switching_groups_taken_.
+    std::unique_ptr<AccessibleParameterRow> kept_switching_row_;
+    String kept_switching_parameter_id_;
+    const AudioProcessorParameter* kept_switching_parameter_ = nullptr;
+    Component* kept_switching_control_ = nullptr;
+    std::vector<std::unique_ptr<AccessibleSectionHeader>> kept_switching_groups_;
+    size_t kept_switching_groups_taken_ = 0;
+    // An effect's mode changed: the rebuild it queued keeps the focused row.
+    bool keep_switching_row_on_rebuild_ = false;
     std::vector<std::unique_ptr<ValueBridge>> internal_fx_bridges_;
     bool fine_tune_sample_loop_ = false;
     std::map<String, std::vector<AudioProcessorParameter*>> sections_;
@@ -809,12 +929,15 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
       // Suffixes after the slot prefix, e.g. "delay_feedback", with engine values.
       std::vector<std::pair<String, float>> parameters;
       json impulse_response;
+      json filter_table;
       std::vector<CopiedModulation> modulations;
     };
     CopiedEffectSlot copied_effect_slot_;
     std::vector<std::pair<String, Component::SafePointer<Button>>> fx_bus_toggles_;
     std::vector<CopiedLfoPoint> copied_lfo_points_;
     std::vector<CopiedLfoPoint> copied_lfo_shape_;
+    bool copied_lfo_shape_smooth_ = false;
+    int copied_lfo_shape_mode_ = 0;
     std::vector<float> selected_lfo_point_phases_;
     // The keyboard editor's items (points, performer shapes or steps) and the chosen one.
     std::vector<float> lfo_editor_item_phases_;
@@ -935,6 +1058,8 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     File preset_metadata_file_;
     int preset_list_generation_ = 0;
     bool save_patch_dialog_visible_ = false;
+    // Where focus was when the save or metadata form opened; it goes back there when the form closes.
+    Component::SafePointer<Component> save_patch_return_focus_;
     bool updating_preset_list_ = false;
     bool updating_routing_controls_ = false;
     bool wavetable_browser_cache_valid_ = false;

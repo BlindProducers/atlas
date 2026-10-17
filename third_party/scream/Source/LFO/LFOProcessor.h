@@ -1,5 +1,7 @@
 #pragma once
 #include "LFOData.h"
+#include <algorithm>
+#include <cmath>
 #include <vector>
 
 // Sync rate values in beats (matching original)

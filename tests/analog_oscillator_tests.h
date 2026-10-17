@@ -527,8 +527,10 @@ namespace analog_oscillator_tests {
   }
 
   void testAging() {
-    constexpr int rate = 48000, samples = 9600;
-    auto make = [rate](int note, float drift, float spread, const std::string& salt = "osc_1") {
+    // Static, so the lambdas below can use them without capturing them: MSVC
+    // asks for a capture where Clang does not.
+    static constexpr int rate = 48000, samples = 9600;
+    auto make = [](int note, float drift, float spread, const std::string& salt = "osc_1") {
       auto f = std::make_unique<AnalogFixture>(rate, A::kSine);
       f->oscillator->setVoiceCardSalt(salt);
       f->set(O::kMidiNote, note);

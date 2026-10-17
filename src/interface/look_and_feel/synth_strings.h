@@ -475,12 +475,19 @@ namespace strings {
     "Odd Harmonics",
   };
 
+  // The filter style parameter ranges 0 to 9 for host compatibility; the
+  // models use the first six, and the rest read as numbered styles.
   const std::string kFilterStyleNames[] = {
     "12dB",
     "24dB",
     "Notch Blend",
     "Notch Spread",
-    "B/P/N"
+    "B/P/N",
+    "Shelving",
+    "Style 7",
+    "Style 8",
+    "Style 9",
+    "Style 10"
   };
 
   const std::string kDiodeStyleNames[] = {

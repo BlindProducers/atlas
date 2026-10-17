@@ -36,9 +36,8 @@ namespace vital {
   }
 
   void MultiSampleSource::startRegion(int voice, int region_index, int velocity, float random, int offset,
-                                      float gain, bool ignore_note_off) {
+                                      float gain, bool ignore_note_off, uint64_t serial) {
     const multisample::Region& region = slot_->get()->regions[static_cast<size_t>(region_index)];
-    const uint64_t serial = slot_->nextSerial();
     if (region.group_slot >= 0)
       slot_->triggerGroup(region.group_slot, serial);
     if (region.silent)
@@ -52,6 +51,7 @@ namespace vital {
     start.offset = offset;
     start.gain = gain;
     start.serial = serial;
+    start.generation = slot_->generation();
     start.ignore_note_off = ignore_note_off;
     start.sample_rate = static_cast<float>(getSampleRate());
     freePlayer(voice).start(start, *slot_);
@@ -75,6 +75,9 @@ namespace vital {
     slot_->noteOnKey(key);
 
     const float random = slot_->nextRandom();
+    // One serial per note-on: the regions it starts together (a stereo pair,
+    // the mics of a multi-mic kit) never choke each other.
+    const uint64_t serial = slot_->nextSerial();
     for (int index : instrument->attack_by_key[static_cast<size_t>(key)]) {
       const multisample::Region& region = instrument->regions[static_cast<size_t>(index)];
       if (velocity < region.lovel || velocity > region.hivel || !slot_->passesKeySwitch(region))
@@ -84,7 +87,7 @@ namespace vital {
         continue;
       if (!slot_->passesGates(region) || random < region.lorand || random >= region.hirand)
         continue;
-      startRegion(voice, index, velocity, random, offset, 1.0f, false);
+      startRegion(voice, index, velocity, random, offset, 1.0f, false, serial);
     }
   }
 
@@ -106,6 +109,7 @@ namespace vital {
     const float held_seconds = static_cast<float>(std::max<int64_t>(0, state.held_samples + offset)) /
                                static_cast<float>(getSampleRate());
     const float random = slot_->nextRandom();
+    const uint64_t serial = slot_->nextSerial();
     for (int index : releases) {
       const multisample::Region& region = instrument->regions[static_cast<size_t>(index)];
       if (state.velocity < region.lovel || state.velocity > region.hivel || !slot_->passesKeySwitch(region))
@@ -115,7 +119,7 @@ namespace vital {
       if (!slot_->passesGates(region) || random < region.lorand || random >= region.hirand)
         continue;
       const float gain = region.rt_decay > 0.0f ? std::pow(10.0f, -region.rt_decay * held_seconds / 20.0f) : 1.0f;
-      startRegion(voice, index, state.velocity, random, offset, gain, true);
+      startRegion(voice, index, state.velocity, random, offset, gain, true, serial);
     }
   }
 
@@ -126,11 +130,17 @@ namespace vital {
     const float sample_rate = static_cast<float>(getSampleRate());
 
     if (slot_ != nullptr && slot_->generation() != generation_) {
-      // The instrument changed: players point into the old one.
+      // The instrument changed. Players of a freed one stop; after a control
+      // change the previous one is kept, and its notes play on.
+      // A held note of a stopped instrument starts no release samples.
+      const bool replaced = !slot_->isLiveGeneration(generation_);
       for (VoiceState& state : voices_) {
-        for (MultiSamplePlayer& player : state.players)
-          player.clear();
-        state.held = false;
+        for (MultiSamplePlayer& player : state.players) {
+          if (!slot_->isLive(player))
+            player.clear();
+        }
+        if (replaced)
+          state.held = false;
       }
       generation_ = slot_->generation();
     }
@@ -191,6 +201,7 @@ namespace vital {
           if (!player.active())
             continue;
           player.checkChoke(*slot_, sample_rate);
+          player.follow(*slot_);
           const multisample::Region& region = *player.region();
           const double semitones = player.pitchOffset(state.tuned_note) + bend + shift_input[lane];
           const double rate = std::exp2(std::max(-96.0, std::min(96.0, semitones)) / 12.0) *

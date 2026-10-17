@@ -9,6 +9,7 @@
 #include "source_types.h"
 #include "synth_strings.h"
 #include "file_source.h"
+#include "line_generator.h"
 #include "load_save.h"
 #include "phase_modifier.h"
 #include "wave_source.h"
@@ -200,6 +201,46 @@ namespace {
            "a note played while another sounds joins the running clock instead of restarting it");
   }
 
+  // As in a preset made on a Mac: LFO 5 holds 0.5, then 1, then 0 across two
+  // bars and pushes LFO 3's Tempo (1/8) up by that much of a division. As on
+  // the arm64 build, LFO 3 runs at 1/16 only while the push is 1. x86 builds
+  // used to round 0.5 up too and ran at 1/16 for seven of the eight beats.
+  void testLfoTempoModulatedByAnotherLfo() {
+    SynthPlugin synth;
+    prepare(synth);
+    auto& controls = synth.getControls();
+    controls.at("lfo_3_sync")->set(1.0f);        // tempo
+    controls.at("lfo_3_tempo")->set(9.0f);       // 1/8
+    controls.at("lfo_5_sync")->set(1.0f);
+    controls.at("lfo_5_tempo")->set(5.0f);       // 2/1: one cycle every two bars
+    synth.getLfoSource(4)->jsonToState({
+      { "num_points", 4 },
+      { "points", { 0.0f, 0.5f, 0.75f, 0.0f, 0.875f, 1.0f, 1.0f, 0.5f } },
+      { "powers", { 20.0f, 20.0f, 20.0f, 0.0f } },   // held steps
+      { "smooth", false }
+    });
+    connect(synth, "lfo_5", "lfo_3_tempo", 1.0f / 12.0f);   // full scale is one division
+    connect(synth, "lfo_3", "osc_1_wave_frame");            // an LFO runs only while it modulates something
+
+    const float beats_per_second = controls.at("beats_per_minute")->value();
+    const float eighth = vital::constants::kSyncedFrequencyRatios[9] * beats_per_second;
+    const float sixteenth = vital::constants::kSyncedFrequencyRatios[10] * beats_per_second;
+    const int blocks = static_cast<int>(8.0f / beats_per_second * 48000.0f) / 128;
+    int at_eighth = 0, at_sixteenth = 0;
+    for (int block = 0; block < blocks; ++block) {
+      MidiBuffer midi;
+      if (block == 0)
+        midi.addEvent(MidiMessage::noteOn(1, 48, 1.0f), 0);
+      renderMidi(synth, midi);
+      const float frequency = synth.getStatusOutput("lfo_3_frequency")->value()[0];
+      at_eighth += std::abs(frequency - eighth) < 1.0e-3f ? 1 : 0;
+      at_sixteenth += std::abs(frequency - sixteenth) < 1.0e-3f ? 1 : 0;
+    }
+    expect(at_eighth + at_sixteenth == blocks, "LFO 3 runs at 1/8 or 1/16 throughout");
+    close(at_sixteenth / static_cast<float>(blocks), 0.125f,
+          "LFO 3 runs at 1/16 only for the beat LFO 5 holds 1", 0.02f);
+  }
+
   void testSameSampleNoteOnOffDoesNotStick() {
     SynthPlugin synth;
     prepare(synth);
@@ -248,6 +289,87 @@ namespace {
       renderMidi(synth, empty);
     expect(synth.getEngine()->getNumPressedNotes() == 0,
            "Switching the arpeggiator off must release the step note it was playing");
+  }
+
+  // Each oscillator slot has its own arpeggiator, and every note one plays
+  // takes a voice. With all eight destinations on by default, a step used to
+  // start eight voices however few slots sounded, each rendering every slot,
+  // and arpeggiated patches ran out of CPU.
+  void testArpeggiatorVoicesFollowSoundingSlots() {
+    SynthPlugin synth;
+    prepare(synth);
+    auto& controls = synth.getControls();
+    for (int slot = 1; slot <= vital::kNumOscillators; ++slot)
+      controls.at("osc_" + std::to_string(slot) + "_on")->set(slot <= 2 ? 1.0f : 0.0f);
+    controls.at("env_1_release")->set(std::pow(0.01f, 0.25f));
+    controls.at("arp_1_on")->set(1.0f);
+    controls.at("arp_1_time_mode")->set(1.0f);
+    controls.at("arp_1_free_rate")->set(2.0f);  // a step every half second
+    MidiBuffer hold;
+    hold.addEvent(MidiMessage::noteOn(1, 60, 1.0f), 0);
+    renderMidi(synth, hold);
+    MidiBuffer empty;
+    renderMidi(synth, empty);
+    expect(synth.getEngine()->getNumActiveVoices() == 2, "An arpeggiator step takes one voice per sounding slot");
+
+    controls.at("osc_2_on")->set(0.0f);
+    for (int i = 0; i < 40; ++i)
+      renderMidi(synth, empty);
+    expect(synth.getEngine()->getNumActiveVoices() == 1,
+           "Switching a slot off stops the note its arpeggiator was playing");
+
+    MidiBuffer release;
+    release.addEvent(MidiMessage::noteOff(1, 60), 0);
+    renderMidi(synth, release);
+    for (int i = 0; i < 200; ++i)
+      renderMidi(synth, empty);
+    expect(synth.getEngine()->getNumActiveVoices() == 0, "Arpeggiator voices end after the key is released");
+  }
+
+  // A step's voices each play one slot. Switching the arpeggiator off while
+  // they rang out used to give each of them every slot at once, so the tails
+  // jumped in level.
+  void testArpeggiatorTailsKeepTheirSlot() {
+    SynthPlugin synth;
+    prepare(synth);
+    auto& controls = synth.getControls();
+    for (int slot = 1; slot <= vital::kNumOscillators; ++slot)
+      controls.at("osc_" + std::to_string(slot) + "_on")->set(slot <= 4 ? 1.0f : 0.0f);
+    controls.at("env_1_release")->set(1.0f);  // one second
+    controls.at("arp_1_on")->set(1.0f);
+    controls.at("arp_1_time_mode")->set(1.0f);
+    controls.at("arp_1_free_rate")->set(2.0f);
+    controls.at("arp_1_gate")->set(10.0f);  // the step's note ends after 50 ms
+    // The engine's output, as these tests set up no host channels.
+    auto blockPeak = [&synth](MidiBuffer midi) {
+      AudioBuffer<float> audio(2, 128);
+      synth.processBlock(audio, midi);
+      float peak = 0.0f;
+      for (int i = 0; i < 128; ++i)
+        for (int lane = 0; lane < 2; ++lane)
+          peak = std::max(peak, std::abs(synth.getEngine()->output()->buffer[i][lane]));
+      return peak;
+    };
+    MidiBuffer hold;
+    hold.addEvent(MidiMessage::noteOn(1, 60, 1.0f), 0);
+    blockPeak(hold);
+    MidiBuffer release;
+    release.addEvent(MidiMessage::noteOff(1, 60), 0);
+    blockPeak(release);
+    for (int i = 0; i < 30; ++i)
+      blockPeak({});
+    const float ringing = blockPeak({});
+    controls.at("arp_1_on")->set(0.0f);
+    float after = 0.0f;
+    for (int i = 0; i < 4; ++i)
+      after = std::max(after, blockPeak({}));
+    // The engine clamps its output to +-2.1, so a NaN reads as 2.1 here; the
+    // meter before the clamp shows it.
+    const float meter = synth.getStatusOutput("peak_meter")->value()[0];
+    expect(ringing > 0.01f, "The arpeggiator's step rings out (peak " + std::to_string(ringing) + ")");
+    expect(after <= ringing * 1.05f && std::isfinite(meter),
+           "Switching the arpeggiator off leaves its ringing notes as they were (peak " +
+           std::to_string(ringing) + " then " + std::to_string(after) + ", meter " + std::to_string(meter) + ")");
   }
 
 
@@ -507,8 +629,26 @@ namespace {
         }
         auto handler = meter->createAccessibilityHandler();
         auto* value = handler->getValueInterface();
+#if JUCE_WINDOWS
+        // NVDA beeps at every change of a progress bar, so Windows gets a quiet readout.
+        expect(value == nullptr && handler->getRole() == AccessibilityRole::staticText,
+               "On Windows the CPU meter is a plain readout, not a progress bar");
+        render(active, 128, true);
+        const double load = active.getCpuUsagePercent();
+        expect(load > 0.0 && handler->getTitle() == "CPU Usage, " + String(load, 1) + " percent",
+               "The CPU readout's name gives the current percentage");
+        expect(handler->getDescription().isEmpty(), "The CPU readout has no generic description");
+        active.releaseResources();
+        expect(handler->getTitle() == "CPU Usage, 0.0 percent",
+               "The CPU readout's name updates to zero when processing stops");
+        prepare(active);
+        render(active, 128, true);
+        expect(handler->getTitle() != "CPU Usage, 0.0 percent",
+               "The CPU readout's name updates when processing resumes");
+#else
         expect(value != nullptr && value->isReadOnly() && value->getCurrentValueAsString().endsWith("%"),
                "CPU percentage is exposed as a read-only screen-reader value");
+#endif
         if (value != nullptr) {
           render(active, 128, true);
           const double before = value->getCurrentValue();
@@ -595,8 +735,10 @@ namespace {
 }
 
 #include "editor_accessibility_tests.h"
+#include "editor_speech_tests.h"
 #include "oscillator_modulation_tests.h"
 #include "arpeggiator_tests.h"
+#include "release_hardening_tests.h"
 
 int main(int argc, char** argv) {
   ScopedJuceInitialiser_GUI juce;
@@ -655,6 +797,57 @@ int main(int argc, char** argv) {
       std::cout << "Atlas arpeggiator tests passed\n";
     return failures == 0 ? 0 : 1;
   }
+  if (argc > 2 && String(argv[1]) == "--state-dump") {
+    // Diagnostics only: writes a fresh instance's saved state to a file.
+    SynthPlugin synth;
+    synth.setPlayConfigDetails(0, 2, 48000, 512);
+    synth.prepareToPlay(48000, 512);
+    MemoryBlock state;
+    // With a second file: restore that state first (an older save, say).
+    if (argc > 3 && File(String(argv[3])).loadFileAsData(state))
+      synth.setStateInformation(state.getData(), int(state.getSize()));
+    state.reset();
+    synth.getStateInformation(state);
+    File(String(argv[2])).replaceWithData(state.getData(), state.getSize());
+    std::cout << "state bytes=" << state.getSize() << std::endl;
+    return 0;
+  }
+  if (argc > 1 && String(argv[1]) == "--editor-timing") {
+    // Timing only: what opening and running the editor costs the message thread.
+    const auto ms = [](auto&& function) {
+      const auto start = Time::getMillisecondCounterHiRes();
+      function();
+      return Time::getMillisecondCounterHiRes() - start;
+    };
+    std::unique_ptr<SynthPlugin> synth;
+    std::cout << "plugin constructed ms=" << ms([&] { synth = std::make_unique<SynthPlugin>(); }) << std::endl;
+    synth->setPlayConfigDetails(0, 2, 48000, 512);
+    std::cout << "prepareToPlay ms=" << ms([&] { synth->prepareToPlay(48000, 512); }) << std::endl;
+    for (int pass = 0; pass < 2; ++pass) {
+      std::unique_ptr<SynthEditor> editor;
+      std::cout << "editor constructed ms=" << ms([&] { editor = std::make_unique<SynthEditor>(*synth); }) << std::endl;
+      // The 20 Hz timer's first tick lands right after the window appears.
+      std::cout << "first timer tick ms=" << ms([&] { editor->pollStateNow(); }) << std::endl;
+      std::cout << "editor shown ms=" << ms([&] {
+        editor->addToDesktop(ComponentPeer::windowHasTitleBar);
+        editor->setVisible(true);
+        MessageManager::getInstance()->runDispatchLoopUntil(10);
+      }) << std::endl;
+      MessageManager::getInstance()->runDispatchLoopUntil(500);
+      constexpr int kTicks = 100;
+      std::cout << "timer tick ms=" << ms([&] { for (int i = 0; i < kTicks; ++i) editor->pollStateNow(); }) / kTicks
+                << std::endl;
+      std::cout << "full refresh ms=" << ms([&] { editor->updateFullGui(); }) << std::endl;
+      std::cout << "editor closed ms=" << ms([&] {
+        synth->editorBeingDeleted(editor.get());
+        editor.reset();
+      }) << std::endl;
+    }
+    std::cout << "plugin destroyed ms=" << ms([&] { synth.reset(); }) << std::endl;
+    return 0;
+  }
+  if (argc > 1 && String(argv[1]) == "--release-hardening")
+    return runReleaseHardeningTests();
   if (argc > 1 && String(argv[1]) == "--oscillator-modulation") {
     testOscillatorSourcesReachOnlyAudioRateControls();
     testOscillatorRoutesFollowTheirSourceWithinTheBlock();
@@ -666,6 +859,16 @@ int main(int argc, char** argv) {
       std::cout << "Atlas oscillator modulation tests passed\n";
     return failures == 0 ? 0 : 1;
   }
+  if (argc > 1 && String(argv[1]) == "--editor-speech") {
+    testKeyboardEditorsAnnounceNavigation();
+    testListsSayTheSelectedRow();
+    testTogglesSayTheirState();
+    testUiaNotificationOnJuceElement();
+    testAnnouncementsReachNvda();
+    if (failures == 0)
+      std::cout << "Atlas editor speech tests passed\n";
+    return failures == 0 ? 0 : 1;
+  }
   if (argc > 1 && String(argv[1]) == "--editor-accessibility") {
     testPresetGroupWorksWithoutKeyboardFocus();
     testWavetableEditorReturnsFocusToItsOscillator();
@@ -674,12 +877,18 @@ int main(int argc, char** argv) {
     testLevelsAndAmountsReadAsPercent();
     testSlotTypeRowsFollowTheType();
     testWavetableEditingOnASlotSwitchedToWavetable();
+    testSwitchingChoiceKeepsItsControl();
+    testAnalogSwitchKeepsItsControl();
     testEffectMoveKeepsFocusAcrossTimerTick();
+    testSectionKeysStepThroughEffectSlots();
+    testShiftMOpensEveryContextMenu();
+    testSaveFormClosesWithEscape();
     testOscillatorRowGroups();
     testOscillatorRowsNameTheirOscillatorNumber();
     testArpeggiatorDestinationsAreAGroup();
     testWavetableEditorLayersAndInterpolation();
     testPresetAutoloadAndRefresh();
+    testEditorStateIsPerInstance();
     testConvolutionPredelayRows();
     testEqualizerBandGroups();
     testCompressorBandGroups();
@@ -706,8 +915,11 @@ int main(int argc, char** argv) {
   testMacroLevelMatchesDirectLevel();
   testSameSampleNoteOnOffDoesNotStick();
   testArpeggiatorEnableAndDisableReleaseNotes();
+  testArpeggiatorVoicesFollowSoundingSlots();
+  testArpeggiatorTailsKeepTheirSlot();
   testGranularGridFollowsPluginClock();
   testSyncedLfoNotesWithTransportStoppedAndPlaying();
+  testLfoTempoModulatedByAnotherLfo();
   if (failures == 0)
     std::cout << "Atlas macro tests passed\n";
   return failures == 0 ? 0 : 1;

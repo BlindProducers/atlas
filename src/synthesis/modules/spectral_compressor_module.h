@@ -6,7 +6,8 @@
 #include <memory>
 
 namespace vital {
-  // Atlas controls around the Spectral Compressor engine, one stereo engine per SIMD pair.
+  // Atlas controls around the Spectral Compressor engine. Only the left and right
+  // lanes reach the host, so those are processed and lanes 2-3 mirror them.
   class SpectralCompressorModule : public SynthModule {
     public:
       explicit SpectralCompressorModule(std::string prefix = "");

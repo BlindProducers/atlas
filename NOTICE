@@ -43,8 +43,15 @@ their sources.
   type, the Scanner Vibrato effect and Analogue Rotary's OpenB3 Whirl model
   (src/synthesis/effects/openb3, ported from C to C++). OpenB3 and setBfree
   are not affiliated with Hammond or Leslie.
+- NVDA's controller interface by NV Access (LGPL 2.1,
+  https://github.com/nvaccess/nvda): the interface definition Atlas builds its
+  NVDA speech client from on Windows (third_party/nvda_controller).
 - nlohmann json (MIT), moodycamel concurrentqueue (simplified BSD) and KISS FFT
   (BSD-3), as submodules under third_party.
+- PFFFT by Julien Pommier, based on FFTPACKv4 by Paul Swarztrauber (NCAR), under
+  the FFTPACK licence (BSD style, Copyright (c) 2004 the University Corporation
+  for Atmospheric Research): the oscillators' FFT on Windows (third_party/pffft,
+  licence text at the top of each file).
 - The Tape effect's noise recordings "Vinyl 1" to "Vinyl 8"
   (Factory/Samples/Tape; the README.atlas.md there maps each file to its source
   and lists the changes made). From freesound.org: "Vinyl noise" by

@@ -19,6 +19,12 @@ project(Atlas VERSION 2.0.0 LANGUAGES ${ATLAS_PROJECT_LANGUAGES})
 if(MSVC)
   # Keep Atlas and all static dependencies on the same self-contained CRT.
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+  # MSVC only declares M_PI and the other <cmath> constants with this macro.
+  add_compile_definitions(_USE_MATH_DEFINES)
+  # JUCE turns on /MP, which starts one compiler per core inside each project.
+  # The unity files need several GB each, so cap it like --parallel caps make.
+  set(ATLAS_MSVC_COMPILE_JOBS 4 CACHE STRING "Compiler processes per Visual Studio project (/MP)")
+  set(CMAKE_VS_GLOBALS "CL_MPCount=${ATLAS_MSVC_COMPILE_JOBS}")
 endif()
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
@@ -82,6 +88,28 @@ set(ATLAS_OPENB3_SOURCES
   src/synthesis/effects/openb3/tonewheel_organ.cpp
   src/synthesis/effects/openb3/scanner_vibrato.cpp
   src/synthesis/effects/openb3/whirl.cpp)
+
+# PFFFT replaces JUCE's scalar FFT fallback for the oscillators
+# (src/common/fourier_transform.h, third_party/pffft). On by default where JUCE
+# has no fast FFT engine; turning it on for macOS puts both on the same FFT.
+if(WIN32)
+  set(ATLAS_USE_PFFFT_DEFAULT ON)
+else()
+  set(ATLAS_USE_PFFFT_DEFAULT OFF)
+endif()
+option(ATLAS_USE_PFFFT "Use PFFFT for the oscillators' FFT" ${ATLAS_USE_PFFFT_DEFAULT})
+if(ATLAS_USE_PFFFT)
+  target_sources(Atlas PRIVATE third_party/pffft/pffft.c)
+endif()
+# fourier_transform.h chooses the platform default itself; only a different
+# choice needs the definition, on Atlas and every target built against it.
+if((ATLAS_USE_PFFFT AND NOT WIN32) OR (NOT ATLAS_USE_PFFFT AND WIN32))
+  if(ATLAS_USE_PFFFT)
+    target_compile_definitions(Atlas PUBLIC ATLAS_USE_PFFFT=1)
+  else()
+    target_compile_definitions(Atlas PUBLIC ATLAS_USE_PFFFT=0)
+  endif()
+endif()
 
 target_sources(Atlas PRIVATE
   # Spectral effects keep IEEE semantics outside the fast-math synthesis unity build.
@@ -240,6 +268,55 @@ if(APPLE)
       VERBATIM)
   endforeach()
 elseif(WIN32)
+  # Announcements go to NVDA through its controller interface. MIDL generates
+  # the RPC client stub from NVDA's interface definition with the flags NVDA's
+  # own client build uses (see third_party/nvda_controller/README.atlas.md).
+  # MIDL comes with the Windows SDK the generator selected (or a developer
+  # prompt set up), in the SDK's bin/<version>/<host> folder.
+  set(ATLAS_WINDOWS_SDK_VERSION "${CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION}")
+  if(NOT ATLAS_WINDOWS_SDK_VERSION)
+    string(REGEX REPLACE "[\\/]$" "" ATLAS_WINDOWS_SDK_VERSION "$ENV{WindowsSDKVersion}")
+  endif()
+  set(ATLAS_PROGRAM_FILES_X86 "ProgramFiles(x86)")
+  set(ATLAS_MIDL_HINTS)
+  foreach(root "$ENV{WindowsSdkDir}" "${CMAKE_WINDOWS_KITS_10_DIR}"
+               "$ENV{${ATLAS_PROGRAM_FILES_X86}}/Windows Kits/10" "$ENV{ProgramFiles}/Windows Kits/10")
+    if(root)
+      foreach(host x64 arm64 x86)
+        list(APPEND ATLAS_MIDL_HINTS "${root}/bin/${ATLAS_WINDOWS_SDK_VERSION}/${host}")
+      endforeach()
+    endif()
+  endforeach()
+  find_program(ATLAS_MIDL midl HINTS ${ATLAS_MIDL_HINTS} REQUIRED)
+  if(CMAKE_CXX_COMPILER_ARCHITECTURE_ID MATCHES "ARM64")
+    set(ATLAS_MIDL_ENV arm64)
+  elseif(CMAKE_SIZEOF_VOID_P EQUAL 8)
+    set(ATLAS_MIDL_ENV x64)
+  else()
+    set(ATLAS_MIDL_ENV win32)
+  endif()
+  get_filename_component(ATLAS_CL_DIR "${CMAKE_C_COMPILER}" DIRECTORY)
+  set(ATLAS_NVDA_DIR "${CMAKE_SOURCE_DIR}/third_party/nvda_controller")
+  set(ATLAS_NVDA_STUB_DIR "${CMAKE_CURRENT_BINARY_DIR}/nvda_controller")
+  file(MAKE_DIRECTORY "${ATLAS_NVDA_STUB_DIR}")
+  add_custom_command(
+    OUTPUT "${ATLAS_NVDA_STUB_DIR}/nvdaController.h" "${ATLAS_NVDA_STUB_DIR}/nvdaController_c.c"
+    COMMAND ${CMAKE_COMMAND} "-DMIDL=${ATLAS_MIDL}" "-DCL_DIR=${ATLAS_CL_DIR}" "-DMIDL_ENV=${ATLAS_MIDL_ENV}"
+      "-DSOURCE_DIR=${ATLAS_NVDA_DIR}" "-DOUTPUT_DIR=${ATLAS_NVDA_STUB_DIR}"
+      -P "${ATLAS_NVDA_DIR}/generate_stub.cmake"
+    DEPENDS "${ATLAS_NVDA_DIR}/nvdaController.idl" "${ATLAS_NVDA_DIR}/nvdaController.acf"
+      "${ATLAS_NVDA_DIR}/generate_stub.cmake"
+    COMMENT "Generating the NVDA controller client stub"
+    VERBATIM)
+  # Zeroed buffers come straight from VirtualAlloc; kept out of the unity
+  # files so <windows.h> never reaches the DSP code.
+  target_sources(Atlas PRIVATE
+    src/plugin/windows_screen_reader.cpp
+    src/synthesis/framework/zeroed_buffer.cpp
+    "${ATLAS_NVDA_STUB_DIR}/nvdaController_c.c")
+  target_include_directories(Atlas PRIVATE "${ATLAS_NVDA_STUB_DIR}")
+  target_link_libraries(Atlas PRIVATE rpcrt4)
+
   add_custom_command(TARGET Atlas_VST3 POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E rm -rf "$<TARGET_FILE_DIR:Atlas_VST3>/../Resources/Tape"
     COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Factory/Samples/Tape"
@@ -309,6 +386,7 @@ if(ATLAS_BUILD_TIMING_TESTS)
   add_test(NAME atlas_filter_routing COMMAND AtlasTimingTests --filter-routing)
   add_test(NAME atlas_release_velocity_glide COMMAND AtlasTimingTests --release-velocity-glide)
   add_test(NAME atlas_analog_oscillator COMMAND AtlasTimingTests --analog-oscillator)
+  add_test(NAME atlas_fourier_transform COMMAND AtlasTimingTests --fourier-transform)
   add_test(NAME atlas_analog_oscillator_controls COMMAND AtlasTimingTests --analog-oscillator-controls)
 
   juce_add_console_app(AtlasCpuTests PRODUCT_NAME "Atlas CPU Tests")
@@ -347,6 +425,11 @@ if(ATLAS_BUILD_TIMING_TESTS)
   # cost of processing with light effects; `--construction chain` measures one chain.
   add_test(NAME atlas_effect_construction COMMAND AtlasPreparedEffectTests --construction)
   set_tests_properties(atlas_effect_construction PROPERTIES LABELS cpu)
+  # Saving, restoring and saving again gives the same state.
+  add_test(NAME atlas_state_round_trip COMMAND AtlasPreparedEffectTests --state-round-trip)
+  # Preset loads, state restores and FX bus loads and saves never make the
+  # host's audio thread wait on Atlas's callback lock.
+  add_test(NAME atlas_callback_lock_wait COMMAND AtlasPreparedEffectTests --lock-wait)
 
   juce_add_console_app(AtlasLatencyTests PRODUCT_NAME "Atlas Latency Tests")
   juce_generate_juce_header(AtlasLatencyTests)
@@ -414,9 +497,13 @@ if(ATLAS_BUILD_TIMING_TESTS)
     Atlas juce::juce_audio_utils juce::juce_dsp juce::juce_gui_extra juce::juce_recommended_config_flags)
   add_test(NAME atlas_macros COMMAND AtlasMacroTests)
   add_test(NAME atlas_editor_accessibility COMMAND AtlasMacroTests --editor-accessibility)
+  add_test(NAME atlas_editor_speech COMMAND AtlasMacroTests --editor-speech)
   add_test(NAME atlas_editor_rebuild_focus COMMAND AtlasMacroTests --editor-rebuild-focus)
   add_test(NAME atlas_oscillator_modulation COMMAND AtlasMacroTests --oscillator-modulation)
   add_test(NAME atlas_arpeggiator COMMAND AtlasMacroTests --arpeggiator)
+  # Voice allocation with arpeggiator tails, MIDI learn, state restore and
+  # what the host is told (the 2026-10-14 audit).
+  add_test(NAME atlas_release_hardening COMMAND AtlasMacroTests --release-hardening)
 
   juce_add_console_app(AtlasDefuseTests PRODUCT_NAME "Atlas Defuse Tests")
   juce_generate_juce_header(AtlasDefuseTests)
@@ -475,8 +562,9 @@ if(ATLAS_BUILD_TIMING_TESTS)
     JUCE_MODAL_LOOPS_PERMITTED=1)
   target_link_libraries(AtlasMultiSampleTests PRIVATE
     Atlas juce::juce_audio_utils juce::juce_dsp juce::juce_gui_extra juce::juce_recommended_config_flags)
-  foreach(multisample_test sfz-parser sf2-parser decode pitch select envelope-mode release-trigger choke
-          cc-trigger container host-state sf2-preset-switch editor)
+  foreach(multisample_test sfz-parser sf2-parser decentsampler-parser decentsampler-load decentsampler-controls
+          pingpong-loop dynamic-envelope decode pitch select envelope-mode release-trigger choke cc-trigger container
+          host-state sf2-preset-switch sf2-encoding editor)
     add_test(NAME atlas_multisample_${multisample_test} COMMAND AtlasMultiSampleTests --${multisample_test})
   endforeach()
 
@@ -914,4 +1002,17 @@ if(ATLAS_BUILD_TIMING_TESTS)
       set_tests_properties(${atlas_test} PROPERTIES TIMEOUT ${ATLAS_TEST_TIMEOUT})
     endif()
   endforeach()
+
+  # A program's main thread gets 8 MB of stack on macOS but 1 MB on Windows,
+  # and some tests build large fixtures (a whole SynthPlugin, spectral
+  # sources) on the stack. MSVC's frames run larger than Clang's, so give the
+  # test programs 16 MB there; untouched stack costs nothing.
+  if(MSVC)
+    get_property(atlas_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+    foreach(atlas_target IN LISTS atlas_targets)
+      if(atlas_target MATCHES "^Atlas.*(Tests|Stress)$")
+        target_link_options(${atlas_target} PRIVATE /STACK:16777216)
+      endif()
+    endforeach()
+  endif()
 endif()

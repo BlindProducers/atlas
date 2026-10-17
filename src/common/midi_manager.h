@@ -19,6 +19,7 @@
 #include "JuceHeader.h"
 #include "common.h"
 
+#include <atomic>
 #include <string>
 #include <map>
 
@@ -94,7 +95,17 @@ class MidiManager : public MidiInputCallback {
     void armMidiLearn(std::string name);
     void cancelMidiLearn();
     void clearMidiLearn(const std::string& name);
+    // Drops every mapping onto a control whose name starts with prefix.
+    void clearMidiLearnPrefix(const std::string& prefix);
+    // Exchanges the mappings of two effect slots when the slots are swapped.
+    void swapMidiLearnPrefixes(const std::string& first, const std::string& second);
     void midiInput(int control, vital::mono_float value);
+    // A parameter this synth has a control for, so a controller can drive it.
+    bool isLearnable(const std::string& name) const;
+    // A learn completes on the audio thread, which only hands the mapping
+    // over (and plays it from then on). This adds it to the map and saves the
+    // config file. Message thread only.
+    void commitPendingMidiLearn();
     void processMidiMessage(const MidiMessage &midi_message, int sample_position = 0);
     bool isMidiMapped(const std::string& name) const;
 
@@ -122,10 +133,13 @@ class MidiManager : public MidiInputCallback {
 
     void setMpeEnabled(bool enabled) { mpe_enabled_ = enabled; }
 
+    // The map is only changed on the message thread, under the synth's
+    // callback lock, so reading it there needs no lock.
     midi_map getMidiLearnMap() { return midi_learn_map_; }
     // The parameter waiting for a controller, or empty.
     std::string armedName() const;
     void clearAllMidiLearn();
+    // Only while the synth is being built, before any audio runs.
     void setMidiLearnMap(const midi_map& midi_learn_map) { midi_learn_map_ = midi_learn_map; }
 
     // MidiInputCallback
@@ -156,7 +170,13 @@ class MidiManager : public MidiInputCallback {
     int current_folder_;
     int current_preset_;
 
-    const vital::ValueDetails* armed_value_;
+    void applyMidiValue(const std::string& name, const vital::ValueDetails& details, vital::mono_float value);
+
+    std::atomic<const vital::ValueDetails*> armed_value_;
+    // A mapping learned on the audio thread that the message thread has not
+    // added to midi_learn_map_ yet.
+    std::atomic<const vital::ValueDetails*> learned_value_ { nullptr };
+    std::atomic<int> learned_midi_id_ { -1 };
     midi_map midi_learn_map_;
 
     int msb_pressure_values_[vital::kNumMidiChannels];

@@ -27,6 +27,7 @@
 
 namespace vital {
   class AudioRateEnvelope;
+  class FilterModule;
   class FiltersModule;
   class LegatoFilter;
   class LineMap;
@@ -58,6 +59,12 @@ namespace vital {
       Wavetable* getWavetable(int index) { return producers_->getWavetable(index); }
       // Filter Table: the table Filter 1 (0) or Filter 2 (1) reads, shared by all voices.
       void setFilterTable(int index, Wavetable* table);
+      // The voices' Reverb filter memory (about 330 MB at 48 kHz per filter)
+      // exists only while that filter selects the Reverb model. Update and set
+      // run on the message thread with processing locked, or offline.
+      void updateReverbMemory();
+      void setReverbMemory(int index, bool reserve);
+      bool takeReverbMemoryRequest();
       Sample* getSample(int index) { return producers_->getSample(index); }
       SourceSlotModule* getSourceSlot(int index) { return producers_->slot(index); }
       // Message thread with processing paused: build every slot's active type module.
@@ -81,6 +88,10 @@ namespace vital {
       }
 
     private:
+      // Filter 1 (0) or 2 (1); null before init().
+      FilterModule* voiceFilter(int index);
+      // Tells the producers which slots' playheads the enabled routes read.
+      void updatePlayheadRoutes();
       void createNoteArticulation();
       void createProducers();
       void createModulators();

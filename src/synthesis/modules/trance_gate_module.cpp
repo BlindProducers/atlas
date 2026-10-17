@@ -81,14 +81,18 @@ namespace vital {
       if (std::abs(position - boundary) < 1.0e-9) position = boundary;
       const double whole_steps = std::floor(position);
       const auto& step = steps[trance_gate::stepIndex(whole_steps, start, stop)];
+      // The voice handler sums both voices into both SIMD pairs, so lanes 2-3
+      // repeat lanes 0-1: only lanes 0-1 are computed, and lanes 2-3 copy them.
       poly_float gain;
-      for (int lane = 0; lane < poly_float::kSize; ++lane) {
+      for (int lane = 0; lane < 2; ++lane) {
         const double target = trance_gate::targetGain(step, envelopes[lane], position - whole_steps, duration);
         gain_[lane] += (target - gain_[lane]) * smoothing;
         // Linear dry/wet blending preserves unity. Smooth only Mix edits;
         // the original StepGate gain smoothing remains unchanged at 100% wet.
         smoothed_mix_[lane] += (mix_targets[lane] - smoothed_mix_[lane]) * mix_smoothing;
-        gain.set(lane, static_cast<float>((1.0 - smoothed_mix_[lane]) + smoothed_mix_[lane] * gain_[lane]));
+        const float value = static_cast<float>((1.0 - smoothed_mix_[lane]) + smoothed_mix_[lane] * gain_[lane]);
+        gain.set(lane, value);
+        gain.set(lane + 2, value);
       }
       output()->buffer[sample] = audio[sample] * gain;
     }

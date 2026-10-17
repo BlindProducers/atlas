@@ -272,7 +272,8 @@ namespace envelope_regressions {
         ax->setValue(ax->getCurrentValue() + ax->getRange().getInterval());
         check(ax->getRange().getInterval() == 1, "VoiceOver must increment a complete duration");
         slider->keyPressed(KeyPress(KeyPress::homeKey)); check(slider->getValue() == slider->getMaximum(), "Home must select longest duration");
-        slider->keyPressed(KeyPress(KeyPress::endKey)); check(slider->getValue() == 0, "End must select shortest duration");
+        slider->keyPressed(KeyPress(KeyPress::endKey)); check(slider->getValue() == 0, "End must select None, the shortest setting");
+        check(bridge->getText(bridge->getValue(), 128) == "None", "a synced stage at its minimum reads None");
         for (int index = 0; index <= bridge->maximumEnvelopeTimeDivision(); ++index) {
           const float value = bridge->valueForEnvelopeTimeDivision(index);
           check(bridge->envelopeTimeDivision(value) == index, "every displayed duration must be reachable by the DSP");

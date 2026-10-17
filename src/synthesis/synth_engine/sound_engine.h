@@ -23,6 +23,7 @@
 #include "trance_gate_clock.h"
 #include "note_monitor.h"
 
+#include <atomic>
 #include <memory>
 
 class LineGenerator;
@@ -114,6 +115,9 @@ namespace vital {
       MultiSampleSlot* getMultiSample(int index);
       // Message thread with processing paused: build every oscillator slot's active type module.
       bool prepareSelectedSources();
+      // Message thread with processing paused: bring every voice copy of the
+      // graph up to date with the slots' type modules.
+      void syncVoiceGraphs();
       LineGenerator* getLfoSource(int index);
 
       void sustainOn(int channel);
@@ -128,6 +132,8 @@ namespace vital {
       force_inline int getOversamplingAmount() const { return last_oversampling_amount_; }
 
       void checkOversampling();
+      // Both also give the voice filters' Reverb model its memory, or free it,
+      // as their models stand (see SynthVoiceHandler::updateReverbMemory).
       void prepareSelectedEffects();
       void reserveSelectedEffectControls();
       // See ReorderableEffectChain: parks the effects no slot selects, and
@@ -135,13 +141,24 @@ namespace vital {
       // processing stopped or the callback lock held.
       void parkUnselectedEffects();
       bool wireModulationDestination(const std::string& name);
+      // Whether the audio thread met a selected effect whose controls are not
+      // reserved, a voice Reverb filter without its memory, or a latency
+      // compensation line without the history its delay needs.
       bool takeEffectControlReservationRequest();
+      // Voice filter 0 or 1's Reverb memory; message thread, callback lock held.
+      void setVoiceReverbMemory(int filter, bool reserve);
+      // Aligns parallel paths for the current effect latencies. Off the audio
+      // thread it also gives compensation lines the history their delays need.
       void updateEffectLatency();
       // Host-rate samples, after parallel routing has been compensated.
       int getLatencySamples() const override { return effect_latency_samples_; }
 
     private:
       void setOversamplingAmount(int oversampling_amount, int sample_rate);
+      void applyEffectLatency();
+      bool latencyHistoryNeeded() const;
+      // Allocates; processing stopped or the callback lock held, or offline.
+      void reserveLatencyHistory();
 
       std::shared_ptr<ConvolutionIrWorker> convolution_worker_;
       std::unique_ptr<MultiSampleMidiState> multisample_midi_state_;
@@ -158,6 +175,7 @@ namespace vital {
       LatencyCompensatedSum* main_chain_input_;
       LatencyCompensatedSum* output_total_;
       int effect_latency_samples_ = 0;
+      std::atomic<bool> latency_history_requested_ { false };
 
       int last_oversampling_amount_;
       int last_sample_rate_;

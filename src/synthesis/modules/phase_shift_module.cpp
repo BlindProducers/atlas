@@ -54,21 +54,42 @@ namespace vital {
   }
 
   void PhaseShiftModule::hardReset() {
-    for (int channel = 0; channel < kChannels; ++channel) {
+    for (int channel = 0; channel < kChannels; ++channel)
       std::fill(input_ring_[channel].begin(), input_ring_[channel].end(), 0.0f);
+    input_write_ = 0;
+    clearSpectralState();
+  }
+
+  // Clears the wet path but keeps the input ring, which delays the dry path:
+  // leaving the effect must not open a gap in the dry signal.
+  void PhaseShiftModule::clearSpectralState() {
+    for (int channel = 0; channel < kChannels; ++channel) {
       std::fill(output_ring_[channel].begin(), output_ring_[channel].end(), 0.0f);
       std::fill(fft_buffers_[channel].begin(), fft_buffers_[channel].end(), std::complex<float>());
       std::fill(fft_work_buffers_[channel].begin(), fft_work_buffers_[channel].end(), std::complex<float>());
       std::fill(spectral_history_[channel].begin(), spectral_history_[channel].end(), std::complex<float>());
     }
 
-    input_write_ = 0;
     output_read_ = 0;
     hop_counter_ = 0;
     history_write_frame_ = 0;
     mix_amount_ = 1.0f;
     // State is clear; the next active block snaps the mix to its target.
     idle_ = true;
+  }
+
+  // Writes a sample into the input ring and returns the one it displaces,
+  // kFftSize - 1 samples old: the dry signal aligned with the wet path, whose
+  // frames start from that oldest sample.
+  poly_float PhaseShiftModule::delayDry(poly_float in) {
+    for (int channel = 0; channel < kChannels; ++channel)
+      input_ring_[channel][input_write_] = in[channel];
+    input_write_ = (input_write_ + 1) % kFftSize;
+
+    poly_float delayed = in;
+    for (int channel = 0; channel < kChannels; ++channel)
+      delayed.set(channel, input_ring_[channel][input_write_]);
+    return delayed;
   }
 
   mono_float PhaseShiftModule::logMappedIndex(int bin) const {
@@ -129,7 +150,7 @@ namespace vital {
 
     for (int i = 0; i < kFftSize; ++i) {
       int write_index = (output_read_ + i) % kOutputRingSize;
-      ring[write_index] -= spectrum[i].real() * window_[i] * kOverlapScale;
+      ring[write_index] += spectrum[i].real() * window_[i] * kOverlapScale;
     }
   }
 
@@ -158,18 +179,23 @@ namespace vital {
 
     mono_float target_amount = utils::clamp(amount_->buffer[0][0], 0.0f, 1.0f);
     mono_float target_mix = utils::clamp(mix_->buffer[0][0], 0.0f, 1.0f);
+    poly_float* audio_out = output()->buffer;
 
+    // The dry path always runs through the input ring, so the effect's
+    // latency is the same whether it is working or idle, and the mix never
+    // combines two different moments of the signal.
     if (target_amount <= 0.0001f || target_mix <= 0.0001f) {
       // Clear the ~2 MB of spectral history once on entering the idle state,
       // not on every block while idle.
       if (!idle_)
-        hardReset();
-      utils::copyBuffer(output()->buffer, audio_in, num_samples);
+        clearSpectralState();
+      for (int sample = 0; sample < num_samples; ++sample)
+        audio_out[sample] = delayDry(audio_in[sample]);
       return;
     }
     if (idle_) {
-      // The rings are empty after a reset; start at the target mix instead of
-      // ramping down from the reset value of 1.
+      // The output ring is empty after a reset; start at the target mix
+      // instead of ramping down from the reset value of 1.
       idle_ = false;
       mix_amount_ = target_mix;
     }
@@ -179,24 +205,20 @@ namespace vital {
     mono_float current_mix = mix_amount_;
     mono_float mix_delta = (target_mix - current_mix) * (1.0f / num_samples);
 
-    poly_float* audio_out = output()->buffer;
     for (int sample = 0; sample < num_samples; ++sample) {
       current_mix += mix_delta;
 
-      for (int channel = 0; channel < kChannels; ++channel)
-        input_ring_[channel][input_write_] = audio_in[sample][channel];
-
-      input_write_ = (input_write_ + 1) % kFftSize;
+      const poly_float dry = delayDry(audio_in[sample]);
       if (++hop_counter_ >= kHopSize) {
         hop_counter_ = 0;
         processFrame(depth_frames, tone);
       }
 
-      poly_float output = audio_in[sample];
+      poly_float output = dry;
       for (int channel = 0; channel < kChannels; ++channel) {
         float wet = output_ring_[channel][output_read_];
         output_ring_[channel][output_read_] = 0.0f;
-        output.set(channel, audio_in[sample][channel] + (wet - audio_in[sample][channel]) * current_mix);
+        output.set(channel, dry[channel] + (wet - dry[channel]) * current_mix);
       }
 
       output_read_ = (output_read_ + 1) % kOutputRingSize;
