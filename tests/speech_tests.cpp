@@ -726,6 +726,28 @@ namespace {
     return finish("envelope");
   }
 
+  // A voice the voice handler kills to make room fades out, even with the
+  // Phrase split, where a released note would sing the rest of its text.
+  int voiceKill() {
+    SynthPlugin plugin;
+    preparePlayback(plugin, "one two three four five six seven eight");
+    setControl(plugin, "osc_1_speech_split", static_cast<float>(vital::speech::kSplitPhrase));
+    setControl(plugin, "polyphony", 2.0f);
+    std::vector<MidiEvent> events;
+    for (int note = 0; note < 6; ++note) {
+      events.push_back({ note * kRate / 10, juce::MidiMessage::noteOn(1, 60 + note, 1.0f) });
+      events.push_back({ note * kRate / 10 + kRate / 20, juce::MidiMessage::noteOff(1, 60 + note) });
+    }
+    const auto audio = render(plugin, kRate * 6 / 10, events);
+    expect(finite(audio), "the taps are finite");
+    const int voices = plugin.getEngine()->getNumActiveVoices();
+    expect(voices <= 3, "killed voices stop singing (" + std::to_string(voices) + " voices after six taps)");
+    render(plugin, kRate / 10, {});
+    const int later = plugin.getEngine()->getNumActiveVoices();
+    expect(later <= 2, "two voices sing with polyphony 2 (" + std::to_string(later) + ")");
+    return finish("voice-kill");
+  }
+
   // ---- Mono legato ----------------------------------------------------------------
 
   int legato() {
@@ -1267,6 +1289,8 @@ int main(int argc, char** argv) {
     return spoken();
   if (flag == "--voice-controls")
     return voiceControls();
+  if (flag == "--voice-kill")
+    return voiceKill();
   if (flag == "--legato")
     return legato();
   if (flag == "--transport")

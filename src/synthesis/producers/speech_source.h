@@ -33,7 +33,9 @@ namespace vital {
   //
   // With the Voice envelope mode the syllable shapes the note and holds the
   // voice open until its last consonant ends; with Envelope 1 the slot
-  // follows Env 1 like the wavetable oscillators.
+  // follows Env 1 like the wavetable oscillators. A voice the voice handler
+  // kills (to free it for a new note) fades out over kVoiceKillTime instead
+  // of singing on.
   //
   // Slot FM bends the note's pitch at audio rate: it scales how fast grains
   // are laid, never how fast the syllable is read, so the formants and the
@@ -146,6 +148,10 @@ namespace vital {
         bool holding = false;
         // Grains are still being laid (the syllable has not ended).
         bool singing = false;
+        // Output samples left of a voice kill's fade, and its length; the
+        // voice falls silent and stops when it ends.
+        int kill_remaining = 0;
+        int kill_length = 0;
         // How much of each grain is the steady vowel, 0 to 1.
         float steady = 0.0f;
         // Output samples until the next grain.

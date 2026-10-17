@@ -129,6 +129,7 @@ namespace vital {
     state.held = true;
     state.holding = false;
     state.singing = syllable >= 0;
+    state.kill_remaining = 0;
     state.steady = 0.0f;
     state.countdown = 0.0;
     state.vibrato_time = 0.0;
@@ -310,17 +311,21 @@ namespace vital {
         state.syllable = -1;
         state.singing = false;
         state.held = false;
+        state.kill_remaining = 0;
       }
 
       int start_at = -1;
       int release_at = -1;
+      int kill_at = -1;
       if (events->trigger_mask[lane]) {
         const int event = static_cast<int>(events->trigger_value[lane]);
         const int offset = std::max(0, std::min(count - 1, static_cast<int>(events->trigger_offset[lane])));
         if (event == kVoiceOn)
           start_at = offset;
-        else if (event == kVoiceOff || event == kVoiceKill)
+        else if (event == kVoiceOff)
           release_at = offset;
+        else if (event == kVoiceKill)
+          release_at = kill_at = offset;
       }
 
       // A phrase freed since this note started takes its grains with it,
@@ -409,6 +414,10 @@ namespace vital {
           state.held = false;
           state.holding = false;
         }
+        if (i == kill_at && state.kill_remaining == 0) {
+          state.kill_length = std::max(1, static_cast<int>(kVoiceKillTime * sample_rate));
+          state.kill_remaining = state.kill_length;
+        }
 
         if (syllable != nullptr && state.singing) {
           while (state.countdown <= 0.0 && !syllable->marks.empty())
@@ -430,7 +439,16 @@ namespace vital {
           }
         }
 
-        const float value = state.num_grains > 0 ? renderGrains(state) : 0.0f;
+        float value = state.num_grains > 0 ? renderGrains(state) : 0.0f;
+        if (state.kill_remaining > 0) {
+          value *= static_cast<float>(state.kill_remaining) / state.kill_length;
+          if (--state.kill_remaining == 0) {
+            // Killed: silent from here, so the voice handler can free it.
+            state.num_grains = 0;
+            state.singing = false;
+            syllable = nullptr;
+          }
+        }
         raw[i].set(lane, value);
         raw[i].set(lane + 1, value);
       }
