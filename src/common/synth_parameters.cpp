@@ -17,6 +17,7 @@
 #include "synth_parameters.h"
 #include "source_types.h"
 #include "braids_engine.h"
+#include "speech_voices.h"
 
 #include "compressor.h"
 #include "distortion.h"
@@ -1930,6 +1931,20 @@ namespace vital {
       ValueDetails::kLinear, false, "", "OpenB3 Tune", nullptr },
   };
 
+  // Speech oscillator type (espeak-ng): registered once per slot as
+  // osc_N_speech_*. The text it sings is slot state, not a parameter; these
+  // choose the voice espeak-ng renders it with.
+  const ValueDetails ValueDetailsLookup::speech_slot_parameter_list[] = {
+    { "speech_language", 0x000000, 0.0, speech::kNumLanguages - 1, speech::kDefaultLanguage, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Speech Language", strings::kSpeechLanguageNames },
+    { "speech_variant", 0x000000, 0.0, speech::kNumVariants - 1, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Speech Variant", strings::kSpeechVariantNames },
+    // Voice: each syllable shapes its note and sings to its last consonant
+    // after release. Envelope 1: the slot follows Env 1.
+    { "speech_amp_env", 0x000000, 0.0, 1.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Speech Amplitude Envelope", strings::kSpeechAmpEnvNames },
+  };
+
   const ValueDetails ValueDetailsLookup::mod_parameter_list[] = {
     { "amount", 0x000000, -1.0, 1.0, 0.0, 0.0, 1.0,
       ValueDetails::kLinear, false, "", "Amount", nullptr },
@@ -2168,6 +2183,12 @@ namespace vital {
     for (int osc = 0; osc < kNumOscillators; ++osc) {
       addParameterGroup(b3_slot_parameter_list, num_b3_parameters, osc, kOscIdPrefix,
                         kOscNamePrefix, kOpenB3Version);
+    }
+    static constexpr int kSpeechVersion = 0x020126;
+    const int num_speech_parameters = sizeof(speech_slot_parameter_list) / sizeof(ValueDetails);
+    for (int osc = 0; osc < kNumOscillators; ++osc) {
+      addParameterGroup(speech_slot_parameter_list, num_speech_parameters, osc, kOscIdPrefix,
+                        kOscNamePrefix, kSpeechVersion);
     }
 
     int num_filter_parameters = sizeof(filter_parameter_list) / sizeof(ValueDetails);

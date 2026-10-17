@@ -43,6 +43,12 @@ their sources.
   type, the Scanner Vibrato effect and Analogue Rotary's OpenB3 Whirl model
   (src/synthesis/effects/openb3, ported from C to C++). OpenB3 and setBfree
   are not affiliated with Hammond or Leslie.
+- eSpeak NG by Reece H. Dunn and its contributors, based on eSpeak by Jonathan
+  Duddington (GPL v3 or later, https://github.com/espeak-ng/espeak-ng), with
+  ucd-tools (GPL v3 or later), NV Speech Player by NV Access (GPL v3 or later)
+  and Unicode character data (Unicode licence, COPYING.UCD): the Speech
+  oscillator type's voice, and the espeak-ng-data folder in the plug-in bundles
+  (the third_party/espeak-ng submodule).
 - NVDA's controller interface by NV Access (LGPL 2.1,
   https://github.com/nvaccess/nvda): the interface definition Atlas builds its
   NVDA speech client from on Windows (third_party/nvda_controller).

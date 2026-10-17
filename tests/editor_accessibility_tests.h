@@ -1915,7 +1915,9 @@ namespace {
       };
       visit(*section);
       // Multi-sample keeps its instrument controls on buttons; its parameter rows are few.
-      const int minimum_rows = type == vital::source_types::kMultiSample ? 8 : 10;
+      // Speech has its text box and two menus besides the slot's own rows.
+      const int minimum_rows = type == vital::source_types::kMultiSample ? 8
+                             : type == vital::source_types::kSpeech ? 7 : 10;
       expect(rows > minimum_rows, type_name + " shows its controls");
       expect(misnamed.isEmpty(), type_name + " rows read the oscillator number, not its name: " +
                                      misnamed.joinIntoString(", ").toStdString());

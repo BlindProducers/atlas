@@ -31,6 +31,7 @@
 #include "modulation_connection_processor.h"
 #include "futils.h"
 #include "multisample_slot.h"
+#include "speech_slot.h"
 
 #include <cstdlib>
 
@@ -422,6 +423,9 @@ namespace vital {
     const bool voices_rendered = getNumActiveVoices() > 0;
     VoiceHandler::process(num_samples);
     mixMultiSampleTails(num_samples, voices_rendered);
+    // Speech slots time note-ons to group a chord on one syllable.
+    for (int i = 0; i < kNumOscillators; ++i)
+      producers_->slot(i)->getSpeech()->advanceClock(num_samples, getSampleRate());
     int num_voices = getNumActiveVoices();
     num_voices_.buffer[0] = num_voices;
     note_retriggered_.clearTrigger();

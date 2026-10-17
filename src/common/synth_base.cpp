@@ -18,6 +18,8 @@
 #include "multisample_container.h"
 #include "multisample_manager.h"
 #include "multisample_slot.h"
+#include "speech_manager.h"
+#include "speech_slot.h"
 #include "source_types.h"
 #include "source_slot_module.h"
 
@@ -152,6 +154,27 @@ SynthBase::SynthBase() : expired_(false) {
         ScopedLock lock(getCriticalSection());
         target->setInstrument(std::move(instrument), keep_sounding);
       });
+  speech_manager_ = std::make_unique<vital::speech::Manager>(
+      [this](int slot, std::shared_ptr<const vital::speech::Phrase> phrase) {
+        vital::SpeechSlot* target = engine_->getSpeechSlot(slot);
+        // Free the phrases it drops outside the lock.
+        std::shared_ptr<const vital::speech::Phrase> previous = target->phrase();
+        std::shared_ptr<const vital::speech::Phrase> retired = target->retired();
+        ScopedLock lock(getCriticalSection());
+        target->setPhrase(std::move(phrase));
+      },
+      [this](int slot) {
+        vital::speech::Manager::Voice voice;
+        const std::string prefix = vital::source_types::slotPrefix(slot);
+        auto value = [this](const std::string& name, float fallback) {
+          const auto found = controls_.find(name);
+          return found == controls_.end() ? fallback : found->second->value();
+        };
+        voice.active = static_cast<int>(value(prefix + "type", 0.0f) + 0.5f) == vital::source_types::kSpeech;
+        voice.language = static_cast<int>(value(prefix + "speech_language", 0.0f) + 0.5f);
+        voice.variant = static_cast<int>(value(prefix + "speech_variant", 0.0f) + 0.5f);
+        return voice;
+      });
 
   mod_connections_.reserve(vital::kMaxModulationConnections);
 
@@ -222,6 +245,7 @@ SynthBase::SynthBase() : expired_(false) {
     }
   }
   prepareMidiSchedulingBuffers();
+  speech_manager_->startWatching();
 
   Startup::doStartupChecks(midi_manager_.get());
   if (LoadSave::shouldScanDownloads())
@@ -929,6 +953,7 @@ void SynthBase::initEngine() {
   clearPendingGuiUpdates();
   clearModulations();
   multisample_manager_->clearAll();
+  speech_manager_->clearAll();
   if (getWavetableCreator(0)) {
     for (int i = 0; i < vital::kNumOscillators; ++i)
       getWavetableCreator(i)->init();

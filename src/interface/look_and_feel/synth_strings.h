@@ -231,6 +231,26 @@ namespace strings {
     "Braids",
     "OpenWurli",
     "OpenB3",
+    "Speech",
+  };
+
+  // The Speech oscillator's espeak-ng languages and voice variants, in the
+  // order of src/common/speech_voices.inc (presets store the positions).
+  const std::string kSpeechLanguageNames[] = {
+#define SPEECH_LANGUAGE(name, identifier) name,
+#define SPEECH_VARIANT(name, identifier)
+#include "speech_voices.inc"
+#undef SPEECH_LANGUAGE
+#undef SPEECH_VARIANT
+  };
+
+  const std::string kSpeechVariantNames[] = {
+    "Default",
+#define SPEECH_LANGUAGE(name, identifier)
+#define SPEECH_VARIANT(name, identifier) name,
+#include "speech_voices.inc"
+#undef SPEECH_LANGUAGE
+#undef SPEECH_VARIANT
   };
 
   const std::string kMultiSampleAmpEnvNames[] = {
@@ -245,6 +265,11 @@ namespace strings {
 
   const std::string kOpenB3AmpEnvNames[] = {
     "Organ",
+    "Envelope 1",
+  };
+
+  const std::string kSpeechAmpEnvNames[] = {
+    "Voice",
     "Envelope 1",
   };
 

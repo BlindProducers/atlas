@@ -594,6 +594,17 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
                                   const String& section_name);
     // Keeps those rows on the values the slot plays; another instrument rebuilds them.
     void syncInstrumentControls(int oscillator);
+    // Speech oscillators: the Speech controls group, with the text box for
+    // the words to sing above the language and variant menus.
+    void addSpeechControlsGroup(int oscillator, Component& parent, int& y, int x, int width,
+                                int& focus_order, const String& section_name,
+                                const GroupRowAppender& appendRows = {});
+    // Hands the text box's words to the slot when they changed.
+    void commitSpeechText(int oscillator, const String& text);
+    // Announces a finished render the text box asked for and keeps the text
+    // boxes on the slots' text.
+    void refreshSpeechStatus();
+    String speechStatusDescription(int oscillator);
     // The Braids synthesis mode a slot has selected, 0 to 47.
     int braidsModel(int oscillator) const;
     // A section row with every callback wired (modulation, MIDI learn, value entry, automation).
@@ -995,6 +1006,12 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
       uint32 announced_at = 0;
     };
     std::array<InstrumentAnnouncementState, vital::kNumOscillators> instrument_announcements_ {};
+    struct SpeechAnnouncementState {
+      uint32_t revision = 0;
+      // The text box committed new words: say how the render went.
+      bool announce = false;
+    };
+    std::array<SpeechAnnouncementState, vital::kNumOscillators> speech_announcements_ {};
     std::unique_ptr<FileChooser> lfo_chooser_;
     std::unique_ptr<FileChooser> fx_chooser_;
     std::unique_ptr<FileChooser> fx_bus_chooser_;

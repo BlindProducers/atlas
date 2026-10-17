@@ -27,6 +27,7 @@
 #include "synth_voice_handler.h"
 #include "multisample_midi_state.h"
 #include "multisample_slot.h"
+#include "speech_slot.h"
 #include "source_slot_module.h"
 #include "peak_meter.h"
 #include "operators.h"
@@ -573,6 +574,7 @@ namespace vital {
     voice_handler_->allSoundsOff();
     for (int i = 0; i < kNumOscillators; ++i)
       voice_handler_->getSourceSlot(i)->getMultiSample()->resetVoicesState();
+    rewindSpeech();
     for (int i = 0; i < kNumBuses; ++i)
       bus_effect_chains_[i]->hardReset();
     effect_chain_->hardReset();
@@ -764,6 +766,15 @@ namespace vital {
 
   MultiSampleSlot* SoundEngine::getMultiSample(int index) {
     return voice_handler_->getSourceSlot(index)->getMultiSample();
+  }
+
+  SpeechSlot* SoundEngine::getSpeechSlot(int index) {
+    return voice_handler_->getSourceSlot(index)->getSpeech();
+  }
+
+  void SoundEngine::rewindSpeech() {
+    for (int i = 0; i < kNumOscillators; ++i)
+      getSpeechSlot(i)->rewind();
   }
 
   void SoundEngine::controlChange(int controller, int value, int sample) {

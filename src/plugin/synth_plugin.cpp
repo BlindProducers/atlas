@@ -24,6 +24,7 @@
 #include "convolution_reverb_module.h"
 #include "synth_strings.h"
 #include "multisample_manager.h"
+#include "speech_manager.h"
 
 #include <limits>
 #include <optional>
@@ -423,6 +424,11 @@ void SynthPlugin::processBlock(AudioSampleBuffer& buffer, MidiBuffer& midi_messa
     multisample_manager_->waitForPendingLoads(300000);
     multisample_manager_->processPendingResults(false);
   }
+  // Likewise for Speech text still being rendered.
+  if (isNonRealtime() && speech_manager_->hasPendingWork()) {
+    speech_manager_->waitForPendingWork(300000);
+    speech_manager_->processPendingResults(false);
+  }
 
   updateHostLatency();
 
@@ -459,6 +465,9 @@ void SynthPlugin::processBlock(AudioSampleBuffer& buffer, MidiBuffer& midi_messa
     engine_->allNotesOff(0);
     clearArpeggiators();
   }
+  // Playback sings the Speech text from its first syllable.
+  if (!was_playing_ && is_playing)
+    engine_->rewindSpeech();
   was_playing_ = is_playing;
   engine_->setTransportPlaying(is_playing);
 

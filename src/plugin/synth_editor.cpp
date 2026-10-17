@@ -17,6 +17,7 @@
 #include "synth_editor.h"
 #include "multisample_container.h"
 #include "multisample_manager.h"
+#include "speech_manager.h"
 #include "delay.h"
 
 #include "synth_plugin.h"
@@ -3145,6 +3146,21 @@ namespace {
       if (suffix == "tune") return "Fine tune the organ in cents.";
     }
 
+    if (legacy_id.startsWith("speech_")) {
+      const String suffix = legacy_id.fromFirstOccurrenceOf("speech_", false, false);
+      if (suffix == "language")
+        return "Choose the language espeak-ng reads the words in. It decides how they are pronounced and split "
+               "into syllables.";
+      if (suffix == "variant")
+        return "Choose an espeak-ng voice variant, such as a different speaker or the Klatt synthesizer. Default "
+               "is the language's own voice.";
+      if (suffix == "amp_env")
+        return "Choose what shapes each note. Voice lets each syllable shape its note: its vowel holds while the "
+               "key is down, and after release the syllable sings on to its last consonant, keeping the voice "
+               "open. Envelope 1 shapes the voice with Envelope 1 instead, so a short release can cut a final "
+               "consonant.";
+    }
+
     if (legacy_id.startsWith("wurli_")) {
       const String suffix = legacy_id.fromFirstOccurrenceOf("wurli_", false, false);
       if (suffix == "amp_env")
@@ -4840,7 +4856,10 @@ class AccessibleParameterRow : public Component {
            !is_off_on(bridge->getDetails().string_lookup));
       const bool spectral_lock_control = parameter_id.startsWith("spectral_lock_") || parameter_id.contains("_spectral_lock_");
       const bool row_switching_choice = isRowSwitchingChoice(parameter_id);
-      use_combo_control_ = row_switching_choice ||
+      // Speech's language and variant lists are long: a menu reads them best.
+      const bool speech_voice_control = parameter_id.endsWith("_speech_language") ||
+                                        parameter_id.endsWith("_speech_variant");
+      use_combo_control_ = row_switching_choice || speech_voice_control ||
                            (spectral_lock_control && (parameter_id.endsWith("_root") || parameter_id.endsWith("_scale")));
       const bool tape_control = parameter_id.startsWith("tape_") || parameter_id.contains("_tape_");
       const bool suppressor_control = parameter_id.startsWith("suppressor_") || parameter_id.contains("_suppressor_");
@@ -7396,6 +7415,13 @@ void SynthEditor::addOscillatorSectionContent(int oscillator, const String& sect
                                   add_rows_to(dynamic_cast<AccessibleSectionHeader*>(&group),
                                               rows_in(OscillatorRowGroup::kType), inner_y, inner_width);
                                 });
+  }
+  else if (slot_type == vital::source_types::kSpeech) {
+    addSpeechControlsGroup(oscillator, parent, y, x, width, focus_order, section_name,
+                           [&](Component& group, int& inner_y, int inner_width) {
+                             add_rows_to(dynamic_cast<AccessibleSectionHeader*>(&group),
+                                         rows_in(OscillatorRowGroup::kType), inner_y, inner_width);
+                           });
   }
   else {
     add_group(OscillatorRowGroup::kType, type_name + " controls", type_name.toLowerCase() + " controls",
@@ -17699,6 +17725,141 @@ void SynthEditor::addMultiSampleControlsGroup(int oscillator, Component& parent,
   y += group_y + 10;
 }
 
+void SynthEditor::addSpeechControlsGroup(int oscillator, Component& parent, int& y, int x, int width,
+                                         int& focus_order, const String& section_name,
+                                         const GroupRowAppender& append_rows) {
+  auto group = makeSectionHeader("Speech controls", groupRank("Oscillators"), false, section_name + " speech controls");
+  auto* group_ptr = group.get();
+  group_ptr->setDescription("The words " + section_name + " sings and the espeak-ng voice that sings them");
+  group_ptr->setExplicitFocusOrder(focus_order++);
+  parent.addAndMakeVisible(group_ptr);
+  if (auto* accessible_parent = dynamic_cast<AccessibleSectionHeader*>(&parent))
+    accessible_parent->addAccessibleChild(group_ptr);
+  row_focus_order_.push_back(group_ptr);
+  section_headers_.push_back(std::move(group));
+
+  int group_y = group_ptr->headerHeight() + 8;
+  auto* manager = synth_.getSpeechManager();
+  auto editor = std::make_unique<TextEditor>();
+  auto* editor_ptr = editor.get();
+  editor_ptr->setTitle(String(oscillator + 1) + " Text to sing");
+  editor_ptr->setDescription(speechStatusDescription(oscillator));
+  editor_ptr->setHelpText("Type the words, then press Enter. Each note sings the next syllable, and the notes of a "
+                          "chord sing one syllable together. Escape restores the words.");
+  editor_ptr->setTextToShowWhenEmpty("Type the words to sing", Colours::grey);
+  editor_ptr->setMultiLine(false);
+  editor_ptr->setReturnKeyStartsNewLine(false);
+  editor_ptr->setInputRestrictions(vital::speech::Manager::kMaxTextLength);
+  editor_ptr->setWantsKeyboardFocus(true);
+  if (manager != nullptr)
+    editor_ptr->setText(String::fromUTF8(manager->text(oscillator).c_str()), dontSendNotification);
+  editor_ptr->getProperties().set("SpeechText", oscillator);
+  Component::SafePointer<TextEditor> safe_editor(editor_ptr);
+  editor_ptr->onReturnKey = [this, oscillator, safe_editor] {
+    if (safe_editor != nullptr)
+      commitSpeechText(oscillator, safe_editor->getText());
+  };
+  editor_ptr->onFocusLost = editor_ptr->onReturnKey;
+  editor_ptr->onEscapeKey = [this, oscillator, safe_editor] {
+    auto* speech = synth_.getSpeechManager();
+    if (safe_editor == nullptr || speech == nullptr)
+      return;
+    safe_editor->setText(String::fromUTF8(speech->text(oscillator).c_str()), dontSendNotification);
+    postPluginAnnouncement("Words restored", AccessibilityHandler::AnnouncementPriority::medium);
+  };
+  editor_ptr->setExplicitFocusOrder(focus_order++);
+  editor_ptr->setBounds(10, group_y, jmax(200, width - 20), 38);
+  group_ptr->addAndMakeVisible(editor_ptr);
+  group_ptr->addAccessibleChild(editor_ptr);
+  row_focus_order_.push_back(editor_ptr);
+  section_headers_.push_back(std::move(editor));
+  group_y += 44;
+
+  if (append_rows)
+    append_rows(*group_ptr, group_y, width);
+  group_ptr->setBounds(x, y, width, group_y + 2);
+  y += group_y + 10;
+}
+
+void SynthEditor::commitSpeechText(int oscillator, const String& text) {
+  auto* manager = synth_.getSpeechManager();
+  if (manager == nullptr || !isPositiveAndBelow(oscillator, vital::kNumOscillators))
+    return;
+  const std::string words = text.trim().toStdString();
+  if (words == manager->text(oscillator))
+    return;
+  manager->setText(oscillator, words);
+  synth_.markStateChanged();
+  if (words.empty()) {
+    speech_announcements_[static_cast<size_t>(oscillator)].announce = false;
+    postPluginAnnouncement("Oscillator " + String(oscillator + 1) + " words cleared",
+                           AccessibilityHandler::AnnouncementPriority::medium);
+  }
+  else {
+    // The render finishes in a moment; refreshSpeechStatus reports it.
+    speech_announcements_[static_cast<size_t>(oscillator)].announce = true;
+  }
+}
+
+String SynthEditor::speechStatusDescription(int oscillator) {
+  auto* manager = synth_.getSpeechManager();
+  const String base = "Words Oscillator " + String(oscillator + 1) + " sings";
+  if (manager == nullptr)
+    return base;
+  const auto status = manager->status(oscillator);
+  switch (status.state) {
+    case vital::speech::SlotStatus::kRendering:
+      return base + ", preparing the voice";
+    case vital::speech::SlotStatus::kReady:
+      return base + ", " + String(status.syllables) + (status.syllables == 1 ? " syllable" : " syllables");
+    case vital::speech::SlotStatus::kFailed:
+      return base + ", " + String::fromUTF8(status.error.c_str());
+    case vital::speech::SlotStatus::kEmpty:
+    default:
+      return base;
+  }
+}
+
+void SynthEditor::refreshSpeechStatus() {
+  auto* manager = synth_.getSpeechManager();
+  if (manager == nullptr)
+    return;
+  for (int oscillator = 0; oscillator < vital::kNumOscillators; ++oscillator) {
+    const auto status = manager->status(oscillator);
+    auto& announced = speech_announcements_[static_cast<size_t>(oscillator)];
+    if (status.revision == announced.revision)
+      continue;
+    announced.revision = status.revision;
+
+    const String description = speechStatusDescription(oscillator);
+    const String text = String::fromUTF8(manager->text(oscillator).c_str());
+    for (auto& component : section_headers_) {
+      auto* editor = dynamic_cast<TextEditor*>(component.get());
+      const var& property = component != nullptr ? component->getProperties()["SpeechText"] : var();
+      if (editor == nullptr || property.isVoid() || static_cast<int>(property) != oscillator)
+        continue;
+      editor->setDescription(description);
+      // A preset or the host changed the words: show them, unless the user is typing.
+      if (!editor->hasKeyboardFocus(true) && editor->getText() != text)
+        editor->setText(text, dontSendNotification);
+    }
+
+    if (!announced.announce || status.state == vital::speech::SlotStatus::kRendering)
+      continue;
+    announced.announce = false;
+    const String prefix = "Oscillator " + String(oscillator + 1);
+    if (status.state == vital::speech::SlotStatus::kReady) {
+      postPluginAnnouncement(prefix + " sings " + String(status.syllables) +
+                                 (status.syllables == 1 ? " syllable" : " syllables"),
+                             AccessibilityHandler::AnnouncementPriority::medium);
+    }
+    else if (status.state == vital::speech::SlotStatus::kFailed) {
+      postPluginAnnouncement(prefix + " cannot sing the words: " + String::fromUTF8(status.error.c_str()),
+                             AccessibilityHandler::AnnouncementPriority::high);
+    }
+  }
+}
+
 namespace {
   String instrumentControlLabel(const vital::multisample::Control& control) {
     const String label = String::fromUTF8(control.label.c_str()).trim();
@@ -19004,6 +19165,7 @@ void SynthEditor::timerCallback() {
     allQwertyNotesOff();
   refreshConvolutionIrLoads();
   refreshMultiSampleStatus();
+  refreshSpeechStatus();
   if (cpu_meter_ != nullptr && cpu_meter_->isShowing())
     cpu_meter_->refresh();
   synth_.dispatchPendingGuiUpdates(*this);

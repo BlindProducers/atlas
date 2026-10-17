@@ -49,6 +49,9 @@ namespace vital {
 namespace multisample {
   class Manager;
 }
+namespace speech {
+  class Manager;
+}
 }
 
 class SynthBase : public MidiManager::Listener {
@@ -109,6 +112,8 @@ class SynthBase : public MidiManager::Listener {
     // The container preset being read, while its state is applied (its
     // instruments' files are inside it).
     const File& multiSampleContainer() const { return multisample_container_; }
+    // Renders each Speech oscillator slot's text with espeak-ng.
+    vital::speech::Manager* getSpeechManager() { return speech_manager_.get(); }
     // Builds the engine for each oscillator slot's selected type and drops
     // modulation routes into parameters of the types it left. Message thread;
     // callers pause processing around it.
@@ -279,6 +284,7 @@ class SynthBase : public MidiManager::Listener {
     // Declared after the engine so it is destroyed first.
     std::unique_ptr<vital::multisample::Manager> multisample_manager_;
     File multisample_container_;
+    std::unique_ptr<vital::speech::Manager> speech_manager_;
     std::unique_ptr<MidiManager> midi_manager_;
     std::unique_ptr<MidiKeyboardState> keyboard_state_;
     std::array<std::array<AtlasArpeggiator, 8>, vital::kNumArpeggiators> arpeggiators_;

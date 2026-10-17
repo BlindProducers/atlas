@@ -40,12 +40,35 @@ set(ATLAS_JUCE_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/third_party/JUCE8" CACHE PATH
 foreach(dependency "${ATLAS_JUCE_SOURCE}/CMakeLists.txt"
                    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/nlohmann_json/include/nlohmann/json.hpp"
                    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/concurrentqueue/concurrentqueue.h"
-                   "${CMAKE_CURRENT_SOURCE_DIR}/third_party/kissfft/kissfft.hh")
+                   "${CMAKE_CURRENT_SOURCE_DIR}/third_party/kissfft/kissfft.hh"
+                   "${CMAKE_CURRENT_SOURCE_DIR}/third_party/espeak-ng/CMakeLists.txt")
   if(NOT EXISTS "${dependency}")
     message(FATAL_ERROR "Missing ${dependency}. Fetch the submodules with: git submodule update --init")
   endif()
 endforeach()
 add_subdirectory("${ATLAS_JUCE_SOURCE}" JUCE)
+
+# espeak-ng (GPL-3.0-or-later) speaks the Speech oscillator's text: its
+# static library, the espeak-ng program that compiles its data, and the data
+# (phonemes, intonations and every language's dictionary) that the bundles
+# carry in Resources/espeak-ng-data. No audio output, MBROLA or async mode.
+set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
+set(BUILD_SHARED_LIBS OFF)
+set(COMPILE_INTONATIONS ON)
+set(ENABLE_TESTS OFF)
+set(BUILD_TESTING OFF)
+set(USE_MBROLA OFF)
+set(USE_LIBSONIC OFF)
+set(USE_LIBPCAUDIO OFF)
+set(USE_ASYNC OFF)
+set(USE_KLATT ON)
+set(USE_SPEECHPLAYER ON)
+set(ESPEAK_COMPAT OFF)
+set(ESPEAK_BUILD_MANPAGES OFF)
+add_subdirectory(third_party/espeak-ng espeak-ng EXCLUDE_FROM_ALL)
+unset(BUILD_SHARED_LIBS)
+# The folder espeak_Initialize takes: it holds espeak-ng-data.
+set(ATLAS_ESPEAK_DATA_ROOT "${CMAKE_CURRENT_BINARY_DIR}/espeak-ng")
 # Every Atlas target includes nlohmann json as "nlohmann/json.hpp".
 include_directories(third_party/nlohmann_json/include)
 
@@ -213,6 +236,7 @@ set_source_files_properties(${ATLAS_BRAIDS_SOURCES} PROPERTIES
 target_include_directories(Atlas PRIVATE
   src/common
   src/common/multisample
+  src/common/speech
   src/common/wavetable
   src/interface/look_and_feel
   src/plugin
@@ -248,8 +272,11 @@ target_link_libraries(Atlas PRIVATE
   juce::juce_audio_utils
   juce::juce_dsp
   juce::juce_gui_extra
+  espeak-ng
   PUBLIC
   juce::juce_recommended_config_flags)
+# espeak-ng's compiled data, which the bundles copy below.
+add_dependencies(Atlas data)
 
 # Copy the Tape effect's noise recordings before the final signature, including
 # AU bundles whose linker signature alone does not seal resource files. Asset
@@ -264,6 +291,9 @@ if(APPLE)
       COMMAND ${CMAKE_COMMAND} -E rm -rf "$<TARGET_BUNDLE_DIR:Atlas_${format}>/Contents/Resources/Tape"
       COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Factory/Samples/Tape"
         "$<TARGET_BUNDLE_DIR:Atlas_${format}>/Contents/Resources/Tape"
+      COMMAND ${CMAKE_COMMAND} -E rm -rf "$<TARGET_BUNDLE_DIR:Atlas_${format}>/Contents/Resources/espeak-ng-data"
+      COMMAND ${CMAKE_COMMAND} -E copy_directory "${ATLAS_ESPEAK_DATA_ROOT}/espeak-ng-data"
+        "$<TARGET_BUNDLE_DIR:Atlas_${format}>/Contents/Resources/espeak-ng-data"
       COMMAND /usr/bin/codesign --force --sign - --timestamp=none "$<TARGET_BUNDLE_DIR:Atlas_${format}>"
       VERBATIM)
   endforeach()
@@ -320,12 +350,18 @@ elseif(WIN32)
   add_custom_command(TARGET Atlas_VST3 POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E rm -rf "$<TARGET_FILE_DIR:Atlas_VST3>/../Resources/Tape"
     COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Factory/Samples/Tape"
-      "$<TARGET_FILE_DIR:Atlas_VST3>/../Resources/Tape" VERBATIM)
+      "$<TARGET_FILE_DIR:Atlas_VST3>/../Resources/Tape"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "$<TARGET_FILE_DIR:Atlas_VST3>/../Resources/espeak-ng-data"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${ATLAS_ESPEAK_DATA_ROOT}/espeak-ng-data"
+      "$<TARGET_FILE_DIR:Atlas_VST3>/../Resources/espeak-ng-data" VERBATIM)
 else()
   add_custom_command(TARGET Atlas_VST3 POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E rm -rf "$<TARGET_FILE_DIR:Atlas_VST3>/../Resources/Tape"
     COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Factory/Samples/Tape"
-      "$<TARGET_FILE_DIR:Atlas_VST3>/../Resources/Tape" VERBATIM)
+      "$<TARGET_FILE_DIR:Atlas_VST3>/../Resources/Tape"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "$<TARGET_FILE_DIR:Atlas_VST3>/../Resources/espeak-ng-data"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${ATLAS_ESPEAK_DATA_ROOT}/espeak-ng-data"
+      "$<TARGET_FILE_DIR:Atlas_VST3>/../Resources/espeak-ng-data" VERBATIM)
 endif()
 
 option(ATLAS_BUILD_TIMING_TESTS "Build the Atlas test suite (run with ctest)" OFF)
@@ -583,6 +619,23 @@ if(ATLAS_BUILD_TIMING_TESTS)
     Atlas juce::juce_audio_utils juce::juce_dsp juce::juce_gui_extra juce::juce_recommended_config_flags)
   foreach(braids_test models pitch strike random-phase slot-modulation resampler parameters editor)
     add_test(NAME atlas_braids_${braids_test} COMMAND AtlasBraidsTests --${braids_test})
+  endforeach()
+
+  juce_add_console_app(AtlasSpeechTests PRODUCT_NAME "Atlas Speech Tests")
+  juce_generate_juce_header(AtlasSpeechTests)
+  target_sources(AtlasSpeechTests PRIVATE tests/speech_tests.cpp)
+  target_include_directories(AtlasSpeechTests PRIVATE
+    src/common src/common/multisample src/common/speech src/common/wavetable src/plugin src/interface/look_and_feel
+    src/synthesis/framework src/synthesis/modules src/synthesis/effects
+    src/synthesis/filters src/synthesis/producers src/synthesis/synth_engine
+    src/synthesis/lookups src/synthesis/modulators src/synthesis/utilities third_party)
+  target_compile_definitions(AtlasSpeechTests PRIVATE
+    VITAL_ACCESSIBLE_UI=1 HEADLESS=0 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_DSP_USE_SHARED_FFTW=0
+    JUCE_MODAL_LOOPS_PERMITTED=1 "ATLAS_TEST_ESPEAK_DATA=\"${ATLAS_ESPEAK_DATA_ROOT}\"")
+  target_link_libraries(AtlasSpeechTests PRIVATE
+    Atlas juce::juce_audio_utils juce::juce_dsp juce::juce_gui_extra juce::juce_recommended_config_flags)
+  foreach(speech_test syllables phrase pitch envelope sequence parameters editor)
+    add_test(NAME atlas_speech_${speech_test} COMMAND AtlasSpeechTests --${speech_test})
   endforeach()
 
   juce_add_console_app(AtlasOpenWurliTests PRODUCT_NAME "Atlas OpenWurli Tests")

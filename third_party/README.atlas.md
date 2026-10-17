@@ -17,6 +17,15 @@ Fetched by default, needed to build Atlas:
   https://github.com/cameron314/concurrentqueue at 0bc97ad (June 2016).
 - `kissfft/`: KISS FFT (BSD-3), https://github.com/mborgerding/kissfft at
   760cb7e (October 2018). Atlas uses its header-only C++ class, `kissfft.hh`.
+- `espeak-ng/`: eSpeak NG 1.53.0 development (GPL v3 or later; ucd-tools and
+  NV Speech Player inside it are GPL v3 or later too, its Unicode tables are
+  under the Unicode licence in `COPYING.UCD`), https://github.com/espeak-ng/espeak-ng
+  at ba90c8e (September 2026), unchanged. CMake builds its static library and
+  the `espeak-ng` program, which compiles the phoneme data, intonations and
+  every language's dictionary into `build/espeak-ng/espeak-ng-data`; the
+  bundles carry that folder in `Resources/espeak-ng-data`. MBROLA, libsonic,
+  libpcaudio and the async API are off. The Speech oscillator type uses it;
+  see `src/common/speech/README.atlas.md`.
 
 Opt-in, only for reference tests. `git submodule update --init` skips these;
 fetch one with `git submodule update --init --checkout <path>`, and CMake uses

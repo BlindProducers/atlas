@@ -10,8 +10,7 @@
 #endif
 
 namespace vital {
-namespace {
-juce::File bundledDirectory() {
+juce::File bundleResourcesDirectory() {
   static int anchor;
  #if JUCE_WINDOWS
   HMODULE module = nullptr;
@@ -25,8 +24,11 @@ juce::File bundledDirectory() {
   if (dladdr(&anchor, &info) == 0 || !info.dli_fname) return {};
   const juce::File binary { juce::String(info.dli_fname) };
  #endif
-  return binary.getParentDirectory().getSiblingFile("Resources").getChildFile("Tape");
+  return binary.getParentDirectory().getSiblingFile("Resources");
 }
+
+namespace {
+juce::File bundledDirectory() { return bundleResourcesDirectory().getChildFile("Tape"); }
 }
 
 std::shared_ptr<TapeNoiseLibrary> TapeNoiseLibrary::shared() {
