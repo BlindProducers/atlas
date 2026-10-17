@@ -74,6 +74,9 @@ namespace vital {
       int getNumActiveVoices();
       ModulationConnectionBank& getModulationBank();
       Output* getIndependentRandomModulationSource(const std::string& source, int connection_index);
+      // The global stand-in for a per-voice source, for a route to a
+      // parameter outside the voices; see SynthVoiceHandler.
+      Output* getMonoModulationSource(const std::string& source);
       mono_float getLastActiveNote() const;
 
       void setTuning(const Tuning* tuning);

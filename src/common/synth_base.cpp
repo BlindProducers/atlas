@@ -524,6 +524,13 @@ vital::modulation_change SynthBase::createModulationChange(vital::ModulationConn
   change.destination_scale = vital::Parameters::getParameterRange(connection->destination_name);
   change.poly_modulation_switch = engine_->getPolyModulationSwitch(connection->destination_name);
   change.poly_destination = engine_->getPolyModulationDestination(connection->destination_name);
+  if (change.poly_destination == nullptr) {
+    // A parameter outside the voices follows the wheel itself, not one
+    // voice's: it has no voice to read once the notes end, and used to stay
+    // where the last one left it.
+    if (vital::Output* mono_source = engine_->getMonoModulationSource(connection->source_name))
+      change.source = mono_source;
+  }
   change.modulation_processor = connection->modulation_processor.get();
   change.source_slot = vital::source_types::slotForOutputSource(connection->source_name);
   if (change.source_slot >= 0)

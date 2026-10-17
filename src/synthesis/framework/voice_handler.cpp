@@ -116,6 +116,9 @@ namespace vital {
     pitch_wheel_.owner = &voice_router_;
     pitch_wheel_percent_.owner = &voice_router_;
     local_pitch_bend_.owner = &voice_router_;
+    global_mod_wheel_.owner = &global_router_;
+    global_pitch_wheel_percent_.owner = &global_router_;
+    global_pitch_wheel_percent_.trigger_value = 0.5f;
 
     setPolyphony(polyphony);
     voice_router_.router(this);
