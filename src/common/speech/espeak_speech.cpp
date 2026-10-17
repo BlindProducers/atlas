@@ -101,7 +101,7 @@ namespace espeak {
   }
 
   bool speak(const std::string& text, const std::string& voice, int pitch, Recording& recording,
-             std::string& error) {
+             std::string& error, bool intonation) {
     std::lock_guard<std::mutex> lock(engineMutex());
     recording = Recording();
     if (!initialise(error))
@@ -110,8 +110,9 @@ namespace espeak {
       error = "espeak-ng has no voice " + voice;
       return false;
     }
-    // A monotone at the voice's own pitch: the notes give the melody.
-    espeak_SetParameter(espeakRANGE, 0, 0);
+    // Sung, a monotone: the notes give the melody. Spoken, the voice's own
+    // pitch range (50).
+    espeak_SetParameter(espeakRANGE, intonation ? 50 : 0, 0);
     espeak_SetParameter(espeakPITCH, std::clamp(pitch, 0, kMaxPitch), 0);
     espeak_SetParameter(espeakPUNCTUATION, espeakPUNCT_NONE, 0);
 

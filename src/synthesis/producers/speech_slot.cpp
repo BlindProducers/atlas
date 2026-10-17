@@ -136,11 +136,11 @@ namespace vital {
     return static_cast<int>(index % static_cast<size_t>(count));
   }
 
-  int SpeechSlot::takeSyllable(double offset) {
+  int SpeechSlot::takeUnit(double offset, int split) {
     const speech::Phrase* phrase = phrase_.get();
-    if (phrase == nullptr || phrase->numSyllables() == 0)
+    const int count = phrase != nullptr ? phrase->numUnits(split) : 0;
+    if (count == 0)
       return -1;
-    const int count = phrase->numSyllables();
     const double start = clock_ + offset;
     if (song_playing_) {
       last_syllable_ = takeSongSyllable(song_quarters_ + offset * quarters_per_second_, count);

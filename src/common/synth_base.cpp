@@ -173,6 +173,7 @@ SynthBase::SynthBase() : expired_(false) {
         voice.active = static_cast<int>(value(prefix + "type", 0.0f) + 0.5f) == vital::source_types::kSpeech;
         voice.language = static_cast<int>(value(prefix + "speech_language", 0.0f) + 0.5f);
         voice.variant = static_cast<int>(value(prefix + "speech_variant", 0.0f) + 0.5f);
+        voice.spoken = static_cast<int>(value(prefix + "speech_mode", 0.0f) + 0.5f) == 1;
         return voice;
       });
 
@@ -423,6 +424,15 @@ void SynthBase::valueChanged(const std::string& name, vital::mono_float value) {
     setVoiceReverbMemory(voice_filter, false);
   if (changed && isSourceTypeControl(name))
     scheduleSourcePreparation();
+  // A new Speech variant starts from its own formants and breath. Preset
+  // loads set the controls directly, so saved values survive them.
+  const std::string variant_suffix = "_speech_variant";
+  if (changed && name.rfind("osc_", 0) == 0 && name.size() > variant_suffix.size() &&
+      name.compare(name.size() - variant_suffix.size(), variant_suffix.size(), variant_suffix) == 0) {
+    const std::string prefix = name.substr(0, name.size() - variant_suffix.size());
+    resetSpeechControl(prefix + "_speech_formant");
+    resetSpeechControl(prefix + "_speech_breath");
+  }
   if (changed && isEffectSlotTypeControl(name))
     scheduleEffectControlReservation();
   // Filter Table allocates its convolution buffers when a filter first selects it.
@@ -444,6 +454,17 @@ void SynthBase::valueChanged(const std::string& name, vital::mono_float value) {
       queueGuiControlUpdate(target, amount);
     }
   }
+}
+
+void SynthBase::resetSpeechControl(const std::string& name) {
+  const auto found = controls_.find(name);
+  if (found == controls_.end() || found->second == nullptr || found->second->value() == 0.0f)
+    return;
+  found->second->set(0.0f);
+  beginChangeGesture(name);
+  setValueNotifyHost(name, 0.0f);
+  endChangeGesture(name);
+  queueGuiControlUpdate(name, 0.0f);
 }
 
 void SynthBase::valueChangedInternal(const std::string& name, vital::mono_float value) {

@@ -128,6 +128,8 @@ class SynthBase : public MidiManager::Listener {
     // lock held.
     void prepareSelectedEffects();
     static bool isSourceTypeControl(const std::string& name);
+    // Sets a Speech slot's control back to 0 and tells the host and editor.
+    void resetSpeechControl(const std::string& name);
     // An effect slot's type ("fx_slot_3_type", "bus_1_fx_slot_3_type").
     static bool isEffectSlotTypeControl(const std::string& name);
     LineGenerator* getLfoSource(int index);

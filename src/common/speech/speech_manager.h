@@ -18,6 +18,7 @@ namespace speech {
     enum State { kEmpty, kRendering, kReady, kFailed };
     State state = kEmpty;
     int syllables = 0;
+    int words = 0;
     // The syllables' phonemes, words separated by spaces and syllables by dots.
     std::string phonemes;
     std::string error;
@@ -27,8 +28,8 @@ namespace speech {
 
   // Renders the oscillator slots' text with espeak-ng on a background
   // thread and hands the phrases to the engine on the message thread. A
-  // slot renders while its type is Speech and it has text; the language and
-  // variant come from its parameters, which a timer watches, so host
+  // slot renders while its type is Speech and it has text; the language,
+  // variant and mode come from its parameters, which a timer watches, so host
   // automation and preset loads re-render as edits in the editor do.
   class Manager : private juce::AsyncUpdater, private juce::Timer {
     public:
@@ -44,6 +45,8 @@ namespace speech {
         bool active = false;
         int language = 0;
         int variant = 0;
+        // Spoken mode: rendered with espeak-ng's intonation.
+        bool spoken = false;
       };
       // Message thread (or the audio thread offline): give a slot its phrase.
       using ApplyCallback = std::function<void(int slot, std::shared_ptr<const Phrase> phrase)>;
@@ -78,9 +81,10 @@ namespace speech {
         std::string text;
         int language = -1;
         int variant = -1;
+        bool spoken = false;
         bool operator==(const Key& other) const {
           return active == other.active && text == other.text && language == other.language &&
-                 variant == other.variant;
+                 variant == other.variant && spoken == other.spoken;
         }
       };
 

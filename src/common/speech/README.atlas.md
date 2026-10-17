@@ -2,14 +2,54 @@
 
 The Speech oscillator type sings the words typed into its text box, one
 syllable per note, with the voice of eSpeak NG (`third_party/espeak-ng`, GPL v3
-or later, used unchanged). Its controls are the text box, the Language and
-Variant menus and the Amplitude Envelope mode, besides the Level, Pan and
-Destination every slot has.
+or later, used unchanged). Its controls are the text box, Mode, Split, the
+Language and Variant menus, Formant, Breathiness, Speed, Vibrato Depth and
+Rate, and the Amplitude Envelope mode, besides the Level, Pan and Destination
+every slot has. Pitch and unison holds Transpose (semitones) and
+Tune (cents), added to the note before a layer is chosen. Warp holds the
+slot's FM and ring modulation from other oscillators (`SlotModulation`): FM
+scales how fast grains are laid, not how fast the syllable is read, so it
+bends the pitch at audio rate while the formants and the syllable's timing
+stay put, and never runs backwards; ring modulation multiplies the output.
+Speech has no unison or scale lock.
+
+- **Mode.** Sung renders a monotone and sings each note's pitch, holding the
+  vowel while the key is down. Spoken renders with espeak-ng's own intonation
+  (`espeakRANGE` 50) and plays straight through; middle C
+  (`SpeechSource::kSpokenRootNote`) speaks at the reference layer's pitch,
+  and other notes move the whole contour by their interval. Its marks follow
+  the moving pitch: frames search 0.55 to 1.8 times the layer's period and
+  take the shortest lag that repeats within 85% of the best. A note sings
+  from the layer nearest its target, and each voiced grain follows the next
+  at the recording's local period divided by the note's ratio to that layer.
+  Changing the mode renders the text again.
+- **Split.** Each note takes the next syllable, word (`Phrase::word_starts`,
+  from espeak-ng's word events) or the whole text. A note plays its
+  syllables in turn at speaking speed; only the last one holds its vowel.
+  The song-position counting of the next section counts these units.
+- **Formant** (semitones) reads each grain faster or slower while the grains
+  stay a note period apart, which moves the formants and keeps the pitch.
+  `SynthBase::valueChanged` sets it and Breathiness back to 0 when the
+  slot's variant changes (in the editor or from the host), not its
+  language; preset and project loads set controls directly, so saved values
+  survive them.
+- **Breathiness** crossfades (at equal power) every grain into the same span
+  of the syllable's whispered twin, `Syllable::breath`: built off the audio
+  thread frame by frame (512-point frames a quarter apart) as noise with the
+  frame's level and its cepstral envelope below 0.4 of the voice's period
+  (12 to 40 quefrency bins), so it keeps the formants without the harmonics.
+  Voiced grains read their whisper near their mark, held ones anywhere in
+  the vowel's middle, so the noise never repeats at the note's period.
+- **Speed** (25% to 400%) scales how fast the recording is read between
+  holds; the pitch stays. Reading slowly spreads unvoiced grains around the
+  read position so consonants do not buzz.
+- **Vibrato** fades in from 150 ms after the note over 350 ms, depth in
+  cents either side, rate 1 to 12 Hz.
 
 ## How the words become notes
 
 1. `speech::Manager` (message thread, `speech_manager.cpp`) notices a slot
-   whose type is Speech and whose text, language or variant differs from what
+   whose type is Speech and whose text, language, variant or mode differs from what
    it plays, and renders it on its own thread. A timer watches the parameters,
    so host automation and preset loads re-render as editor changes do. Another
    type, or no text, frees the slot's phrase.
@@ -116,12 +156,17 @@ language's own voice.
 made-up events and on espeak-ng's own in English, German and Spanish),
 `--phrase` (the layers' pitches, marks, hold points and steady grains for
 three voices), `--pitch` (the sung pitch at four notes, and a steady held
-vowel), `--envelope` (Voice sings the final consonant after release,
+vowel), `--tuning` (Transpose and Tune), `--slot-modulation` (FM and RM),
+`--split` (word and phrase units and their held last vowel), `--spoken`
+(intonation, middle C at the voice's pitch, an octave up, playing through),
+`--voice-controls` (formant, breath, speed and vibrato, and their reset on
+a new variant), `--envelope` (Voice sings the final consonant after release,
 Envelope 1 with no release cuts it), `--legato` (a mono legato note keeps
 its syllable, without Legato each note takes the next), `--sequence` (which
 syllable each note takes, chords, rewinding, phrase changes), `--transport`
 (syllables at song positions after moving the playhead, chased notes, loops
 returning inside a block, chords, edited notes, the host's saved state), `--parameters`
-(host state) and `--editor` (the text box and the two menus). The test binary
+(host state) and `--editor` (the text box, the menus and every row, in
+order). The test binary
 reads the data from `build/espeak-ng`. `--render <file.wav>` writes the start
 of "Happy Birthday" to listen to; it is not a ctest.

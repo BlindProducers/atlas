@@ -37,8 +37,11 @@ namespace speech {
   // Cuts each recording (the same text at rising pitches) into the
   // syllables, normalised, with pitch marks: one layer per recording that
   // splits into the same syllables as `reference`, the voice's own pitch.
-  std::shared_ptr<Phrase> buildPhrase(const std::vector<Recording>& recordings, int reference);
+  // `spoken` recordings carry espeak-ng's intonation, so their marks follow
+  // a pitch that moves.
+  std::shared_ptr<Phrase> buildPhrase(const std::vector<Recording>& recordings, int reference,
+                                      bool spoken = false);
   // One layer.
-  std::shared_ptr<Phrase> buildPhrase(const Recording& recording);
+  std::shared_ptr<Phrase> buildPhrase(const Recording& recording, bool spoken = false);
 } // namespace speech
 } // namespace vital

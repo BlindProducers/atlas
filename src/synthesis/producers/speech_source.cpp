@@ -118,10 +118,12 @@ namespace vital {
     state.layer = best;
   }
 
-  void SpeechSource::startSyllable(VoiceState& state, uint32_t generation, int syllable, int layer) {
+  void SpeechSource::startSyllable(VoiceState& state, uint32_t generation, int syllable, int last_syllable,
+                                   int layer) {
     // Grains of the previous syllable ring out; only new grains change.
     state.generation = generation;
     state.syllable = syllable;
+    state.last_syllable = std::max(syllable, last_syllable);
     state.layer = layer;
     state.position = 0.0;
     state.held = true;
@@ -129,15 +131,27 @@ namespace vital {
     state.singing = syllable >= 0;
     state.steady = 0.0f;
     state.countdown = 0.0;
+    state.vibrato_time = 0.0;
+    state.vibrato_phase = 0.0;
   }
 
-  void SpeechSource::launchGrain(VoiceState& state, const speech::Syllable& syllable, double ratio,
-                                 double note_period) {
+  void SpeechSource::launchGrain(VoiceState& state, const speech::Syllable& syllable,
+                                 const GrainSettings& settings) {
     const speech::Mark& mark = nearestMark(syllable.marks, state.position);
+    const double step = settings.ratio * settings.formant;
+    // Output samples to the next grain. Voiced grains repeat at the note's
+    // period (Sung), a little uneven in the steady vowel, or at the
+    // recording's period over the note's interval (Spoken); unvoiced ones
+    // overlap by half, so noise plays as it was spoken.
+    double spacing = 0.0;
     double half_width = mark.half_width;
-    if (mark.voiced)
-      half_width = std::min(half_width, 0.5 * kMaxGrainPeriods * note_period * ratio);
+    if (mark.voiced) {
+      spacing = settings.spoken ? mark.half_width / (settings.ratio * settings.pitch_factor) : settings.note_period;
+      half_width = std::min(half_width, 0.5 * kMaxGrainPeriods * spacing * step);
+    }
     half_width = std::max(half_width, 2.0);
+    if (!mark.voiced)
+      spacing = half_width / step;
 
     if (state.num_grains >= kMaxGrains) {
       // Replace the grain closest to its end.
@@ -152,22 +166,30 @@ namespace vital {
     }
     Grain& grain = state.grains[static_cast<size_t>(state.num_grains++)];
     grain.generation = state.generation;
-    grain.step = ratio;
+    grain.step = step;
     // The countdown overshot by a fraction of a sample: the grain began then.
     grain.time = -state.countdown;
-    grain.duration = 2.0 * half_width / ratio;
+    grain.duration = 2.0 * half_width / step;
+
+    // Voiced grains sit on their mark. Unvoiced ones follow the read
+    // position, spread a little when it moves slowly so noise never repeats.
+    double centre = mark.position;
+    if (!mark.voiced) {
+      const double spread = std::max(0.0, 1.0 - settings.speed) * half_width;
+      centre = state.position + spread * nextRandom(state);
+    }
 
     const bool steady = state.steady > 0.0f && !syllable.steady_grain.empty();
     grain.audio = syllable.audio.data();
     grain.length = syllable.length();
-    grain.start = mark.position - half_width;
-    grain.gain = steady ? 1.0f - state.steady : 1.0f;
+    grain.start = centre - half_width;
+    grain.gain = settings.voice_gain * (steady ? 1.0f - state.steady : 1.0f);
     if (steady) {
       const double steady_half = 0.5 * syllable.steady_grain.size();
       grain.steady = syllable.steady_grain.data();
       grain.steady_length = static_cast<int>(syllable.steady_grain.size());
       grain.steady_start = steady_half - half_width;
-      grain.steady_gain = state.steady * (1.0f + kShimmer * nextRandom(state));
+      grain.steady_gain = settings.voice_gain * state.steady * (1.0f + kShimmer * nextRandom(state));
       grain.steady_windowed = half_width < steady_half;
     }
     else {
@@ -175,13 +197,34 @@ namespace vital {
       grain.steady_gain = 0.0f;
     }
 
-    // Voiced grains repeat at the note's period, a little uneven in the
-    // steady vowel; unvoiced ones keep the recording's spacing, so noise
-    // plays as it was spoken.
-    if (mark.voiced)
-      state.countdown += note_period * (1.0 + kJitter * state.steady * nextRandom(state));
-    else
-      state.countdown += mark.half_width / ratio;
+    if (settings.breath_gain > 0.0f && syllable.breath.size() == syllable.audio.size()) {
+      // A voiced grain's whisper comes from near its mark, a held one's from
+      // anywhere in the vowel's middle, so the noise never repeats. Grains
+      // of noise from different places add in power, not amplitude: as loud
+      // as the voiced grains, which add in step.
+      double breath_centre = centre;
+      float gain = settings.breath_gain;
+      if (mark.voiced) {
+        if (state.holding && syllable.breath_to > syllable.breath_from)
+          breath_centre = syllable.breath_from + (0.5 + 0.5 * nextRandom(state)) *
+                          (syllable.breath_to - syllable.breath_from);
+        else
+          breath_centre = centre + half_width * nextRandom(state);
+        const double overlap = grain.duration / std::max(1.0, spacing);
+        gain *= static_cast<float>(0.5 * overlap / std::sqrt(0.375 * overlap));
+      }
+      grain.breath = syllable.breath.data();
+      grain.breath_start = breath_centre - half_width;
+      grain.breath_gain = gain;
+    }
+    else {
+      grain.breath = nullptr;
+      grain.breath_gain = 0.0f;
+    }
+
+    if (mark.voiced && !settings.spoken)
+      spacing *= 1.0 + kJitter * state.steady * nextRandom(state);
+    state.countdown += spacing;
   }
 
   float SpeechSource::renderGrains(VoiceState& state) {
@@ -202,6 +245,8 @@ namespace vital {
           const float steady = readAudio(grain.steady, grain.steady_length, grain.steady_start + offset);
           sum += grain.steady_gain * (grain.steady_windowed ? gain * steady : steady);
         }
+        if (grain.breath != nullptr)
+          sum += grain.breath_gain * gain * readAudio(grain.breath, grain.length, grain.breath_start + offset);
       }
       grain.time += 1.0;
       ++i;
@@ -209,9 +254,9 @@ namespace vital {
     return sum;
   }
 
-  void SpeechSource::advance(VoiceState& state, const speech::Syllable& syllable, double ratio, float steady_in,
-                             float steady_out) {
-    if (state.held && syllable.hold_point >= 0) {
+  void SpeechSource::advance(VoiceState& state, const speech::Syllable& syllable, double step, bool can_hold,
+                             float steady_in, float steady_out) {
+    if (can_hold && state.held && syllable.hold_point >= 0) {
       if (!state.holding && state.position >= syllable.hold_point) {
         state.holding = true;
         state.position = syllable.hold_point;
@@ -223,7 +268,7 @@ namespace vital {
       }
     }
     state.steady = std::max(0.0f, state.steady - steady_out);
-    state.position += ratio;
+    state.position += step;
     if (state.position >= syllable.length())
       state.singing = false;
   }
@@ -233,17 +278,28 @@ namespace vital {
       return;
 
     const float sample_rate = getSampleRate();
-    const poly_float note_input = input(kMidi)->at(0);
+    const poly_float note_input = input(kMidi)->at(0) + input(kTranspose)->at(0) + input(kTune)->at(0);
     const poly_mask reset_mask = getResetMask(kReset);
     const Output* events = input(kRetrigger)->source;
     const bool own_envelope = static_cast<int>(input(kAmpEnvMode)->at(0)[0] + 0.5f) == kVoiceEnvelope;
+    const int split = utils::iclamp(static_cast<int>(input(kSplit)->at(0)[0] + 0.5f), 0, speech::kNumSplits - 1);
+    const poly_float formant_input = utils::clamp(input(kFormant)->at(0), -24.0f, 24.0f);
+    const poly_float breath_input = utils::clamp(input(kBreath)->at(0), 0.0f, 1.0f);
+    const poly_float speed_input = utils::clamp(input(kSpeed)->at(0), -2.0f, 2.0f);
+    const poly_float vibrato_input = utils::clamp(input(kVibrato)->at(0), 0.0f, 1.0f);
+    const poly_float vibrato_rate_input = utils::clamp(input(kVibratoRate)->at(0), -2.0f, 4.0f);
     const float steady_in = 1.0f / std::max(1.0f, kSteadyInSeconds * sample_rate);
     const float steady_out = 1.0f / std::max(1.0f, kSteadyOutSeconds * sample_rate);
+    const SlotModulation::Block modulation = modulation_.resolve(*this, kDistortionType, kDistortionAmount,
+                                                                 kSecondaryDistortionType,
+                                                                 kSecondaryDistortionAmount, true);
+    const bool fm_active = modulation.anyFm();
 
     poly_float* raw = output(kRaw)->buffer;
     poly_float hold = 0.0f;
     const int count = std::min(num_samples, kMaxBufferSize * kMaxOversample);
     const float inverse_count = 1.0f / count;
+    const double block_seconds = count / static_cast<double>(sample_rate);
     SpeechSlot& slot = *slot_;
 
     for (int voice = 0; voice < kVoicesPerProcessor; ++voice) {
@@ -279,9 +335,46 @@ namespace vital {
           ++g;
       }
 
-      const float frequency = utils::clamp(utils::midiNoteToFrequency(note_input[lane]), 8.0f, 8000.0f);
-      const double note_period = sample_rate / frequency;
-      double ratio = phrase != nullptr ? phrase->sample_rate / sample_rate : 1.0;
+      const float note = note_input[lane];
+      // The pitch a note sings (Sung) or the pitch of the voice's own speech
+      // moved by the note's interval from middle C (Spoken): which layer
+      // serves it, without vibrato.
+      auto target_frequency = [note](const speech::Phrase* target) {
+        if (target != nullptr && target->spoken) {
+          const speech::Layer* reference = target->referenceLayer();
+          const float own = reference != nullptr && reference->frequency > 0.0f ? reference->frequency : 120.0f;
+          return utils::clamp(own * std::exp2((note - kSpokenRootNote) * (1.0f / kNotesPerOctave)), 8.0f, 8000.0f);
+        }
+        return utils::clamp(utils::midiNoteToFrequency(note), 8.0f, 8000.0f);
+      };
+
+      GrainSettings settings;
+      settings.formant = std::exp2(formant_input[lane] * (1.0f / kNotesPerOctave));
+      settings.speed = std::exp2(speed_input[lane]);
+      const float breath = breath_input[lane];
+      settings.voice_gain = std::cos(breath * 1.57079632679f);
+      settings.breath_gain = std::sin(breath * 1.57079632679f);
+      const float vibrato_rate = std::exp2(vibrato_rate_input[lane]);
+      const float vibrato_depth = vibrato_input[lane];
+
+      // Sets the pitch of the grains for `target`, the vibrato on top.
+      auto set_pitch = [&](const speech::Phrase* target) {
+        settings.ratio = target != nullptr ? target->sample_rate / sample_rate : 1.0;
+        settings.spoken = target != nullptr && target->spoken;
+        const float fade = utils::clamp(static_cast<float>((state.vibrato_time - kVibratoDelaySeconds) /
+                                                           kVibratoFadeSeconds), 0.0f, 1.0f);
+        const float vibrato = vibrato_depth * fade *
+                              std::sin(static_cast<float>(6.28318530718 * state.vibrato_phase));
+        const float frequency = target_frequency(target) * std::exp2(vibrato * (1.0f / kNotesPerOctave));
+        settings.note_period = sample_rate / frequency;
+        settings.pitch_factor = 1.0;
+        if (target != nullptr && state.layer >= 0 && state.layer < static_cast<int>(target->layers.size())) {
+          const float layer_frequency = target->layers[static_cast<size_t>(state.layer)].frequency;
+          if (layer_frequency > 0.0f)
+            settings.pitch_factor = frequency / layer_frequency;
+        }
+      };
+
       auto current_syllable = [&]() -> const speech::Syllable* {
         if (!state.singing || phrase == nullptr || state.layer < 0 ||
             state.layer >= static_cast<int>(phrase->layers.size()))
@@ -292,18 +385,24 @@ namespace vital {
         return &layer.syllables[static_cast<size_t>(state.syllable)];
       };
       if (phrase != nullptr && state.singing)
-        followPitch(state, *phrase, frequency);
+        followPitch(state, *phrase, target_frequency(phrase));
+      set_pitch(phrase);
       const speech::Syllable* syllable = current_syllable();
 
       for (int i = 0; i < count; ++i) {
         if (i == start_at) {
-          const int index = slot.takeSyllable(i / static_cast<double>(sample_rate));
+          const int unit = slot.takeUnit(i / static_cast<double>(sample_rate), split);
           const speech::Phrase* next = slot.phraseFor(slot.generation());
-          startSyllable(state, slot.generation(), index, next != nullptr ? next->layerFor(frequency) : 0);
+          int first = -1;
+          int last = -1;
+          if (next == nullptr || !next->unitRange(split, unit, first, last))
+            first = last = -1;
+          startSyllable(state, slot.generation(), first, last,
+                        next != nullptr ? next->layerFor(target_frequency(next)) : 0);
           phrase = next;
-          ratio = phrase != nullptr ? phrase->sample_rate / sample_rate : 1.0;
           if (phrase == nullptr)
             state.singing = false;
+          set_pitch(phrase);
           syllable = current_syllable();
         }
         if (i == release_at && state.held) {
@@ -313,15 +412,31 @@ namespace vital {
 
         if (syllable != nullptr && state.singing) {
           while (state.countdown <= 0.0 && !syllable->marks.empty())
-            launchGrain(state, *syllable, ratio, note_period);
-          advance(state, *syllable, ratio, steady_in, steady_out);
-          state.countdown -= 1.0;
+            launchGrain(state, *syllable, settings);
+          // Only the note's last syllable holds, and only when sung.
+          const bool can_hold = !settings.spoken && state.syllable >= state.last_syllable;
+          advance(state, *syllable, settings.ratio * settings.speed, can_hold, steady_in, steady_out);
+          // FM speeds up or holds back the next grain; it never runs backwards.
+          state.countdown -= fm_active ? std::max(0.0f, modulation.rateScale(i)[lane]) : 1.0;
+          if (!state.singing && state.syllable < state.last_syllable) {
+            // On to the next syllable of the word or phrase, where this one ended.
+            const double past = state.position - syllable->length();
+            state.syllable++;
+            state.singing = true;
+            syllable = current_syllable();
+            state.position = syllable != nullptr ? std::max(0.0, past) : 0.0;
+            if (syllable == nullptr)
+              state.singing = false;
+          }
         }
 
         const float value = state.num_grains > 0 ? renderGrains(state) : 0.0f;
         raw[i].set(lane, value);
         raw[i].set(lane + 1, value);
       }
+      state.vibrato_time += block_seconds;
+      state.vibrato_phase += vibrato_rate * block_seconds;
+      state.vibrato_phase -= std::floor(state.vibrato_phase);
 
       // The syllable holds the voice open until it has finished.
       const bool sounding = state.held || state.singing || state.num_grains > 0;
@@ -330,6 +445,8 @@ namespace vital {
         hold.set(lane + 1, 1.0f);
       }
     }
+    modulation.applyRingMod(raw, count);
+
     poly_float* hold_buffer = output(kHold)->buffer;
     for (int i = 0; i < count; ++i)
       hold_buffer[i] = hold;

@@ -1,7 +1,9 @@
 // Speech oscillator tests: espeak-ng's phonemes split into syllables, the
 // rendered pitch layers with their marks and steady vowel grains, the pitch
-// a note sings at, the two envelope modes, which syllable each note takes,
-// host state, and the editor's text box and menus.
+// a note sings at with Transpose and Tune, slot FM and RM, the two envelope
+// modes, which syllable each note takes, host state, and the editor's text
+// box, menus, Pitch and Warp rows, the Word and Phrase splits, Spoken mode,
+// and the formant, breath, speed and vibrato controls.
 
 #include "JuceHeader.h"
 #include "synth_plugin.h"
@@ -14,12 +16,15 @@
 #include "speech_slot.h"
 #include "speech_syllables.h"
 #include "speech_voices.h"
+#include "synth_oscillator.h"
 #include "synth_strings.h"
 
+#include <algorithm>
 #include <cmath>
 #include <functional>
 #include <iostream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -400,6 +405,299 @@ namespace {
     return finish("pitch");
   }
 
+  // Transpose and Tune move the sung pitch.
+  int tuning() {
+    for (const auto& [transpose, tune] : { std::pair<float, float> { 7.0f, 0.0f }, { -12.0f, 0.5f } }) {
+      SynthPlugin plugin;
+      preparePlayback(plugin, "la");
+      setControl(plugin, "osc_1_speech_transpose", transpose);
+      setControl(plugin, "osc_1_speech_tune", tune);
+      const auto audio = render(plugin, kRate, { { 0, juce::MidiMessage::noteOn(1, 60, 1.0f) } });
+      const std::string label = "transpose " + std::to_string(transpose) + " tune " + std::to_string(tune);
+      expect(finite(audio), label + " is finite");
+      const double expected = 440.0 * std::pow(2.0, (60.0 + transpose + tune - 69.0) / 12.0);
+      close(pitchOf(audio, kRate / 2, kRate / 2 + kRate / 10, kRate), expected, label + " sings its pitch",
+            expected * 0.02);
+    }
+    return finish("tuning");
+  }
+
+  // Ring and frequency modulation from another slot reach the Speech type.
+  int slotModulation() {
+    auto render_with = [](int distortion_type, float amount) {
+      SynthPlugin plugin;
+      preparePlayback(plugin, "la");
+      plugin.parameterChanged("osc_2_type", static_cast<float>(vital::source_types::kWavetable));
+      setControl(plugin, "osc_2_on", 1.0f);
+      setControl(plugin, "osc_2_level", 0.0f);
+      setControl(plugin, "osc_2_transpose", 7.0f);
+      setControl(plugin, "osc_1_distortion_type", static_cast<float>(distortion_type));
+      setControl(plugin, "osc_1_distortion_amount", amount);
+      plugin.checkOversampling();
+      return render(plugin, kRate / 2, { { 0, juce::MidiMessage::noteOn(1, 57, 1.0f) } });
+    };
+    const auto dry = render_with(vital::SynthOscillator::kNone, 0.0f);
+    const auto fm = render_with(vital::SynthOscillator::kFmOscillatorA, 0.5f);
+    const auto rm = render_with(vital::SynthOscillator::kRmOscillatorA, 1.0f);
+    double difference_fm = 0.0;
+    double difference_rm = 0.0;
+    for (size_t i = 0; i < dry.size(); ++i) {
+      difference_fm += std::abs(fm[i] - dry[i]);
+      difference_rm += std::abs(rm[i] - dry[i]);
+    }
+    expect(finite(fm) && finite(rm), "modulated renders are finite");
+    expect(difference_fm > 1.0, "FM from oscillator 2 changes the sound");
+    expect(difference_rm > 1.0, "RM from oscillator 2 changes the sound");
+    expect(rms(fm, kRate / 4, kRate / 2) > 1.0e-3, "the FM voice still sings");
+    expect(vital::source_types::supportsFm(vital::source_types::kSpeech) &&
+           vital::source_types::supportsRm(vital::source_types::kSpeech), "Speech accepts slot FM and RM");
+    return finish("slot modulation");
+  }
+
+  // ---- Voice controls --------------------------------------------------------------
+
+  // Pitches of the loud 40 ms windows of signal[start, end).
+  std::vector<double> windowPitches(const std::vector<float>& signal, int start, int end) {
+    std::vector<double> pitches;
+    const int window = kRate / 25;
+    for (int i = start; i + window <= end; i += window / 2) {
+      if (rms(signal, i, i + window) < 1.0e-3)
+        continue;
+      const double pitch = pitchOf(signal, i, i + window, kRate);
+      if (pitch > 0.0)
+        pitches.push_back(pitch);
+    }
+    return pitches;
+  }
+
+  double median(std::vector<double> values) {
+    if (values.empty())
+      return 0.0;
+    std::sort(values.begin(), values.end());
+    return values[values.size() / 2];
+  }
+
+  // How bright signal[start, end) is: its first difference's level over its own.
+  double brightness(const std::vector<float>& signal, int start, int end) {
+    double difference = 0.0;
+    double level = 0.0;
+    for (int i = start + 1; i < end; ++i) {
+      const double delta = double(signal[static_cast<size_t>(i)]) - signal[static_cast<size_t>(i - 1)];
+      difference += delta * delta;
+      level += double(signal[static_cast<size_t>(i)]) * signal[static_cast<size_t>(i)];
+    }
+    return level > 0.0 ? std::sqrt(difference / level) : 0.0;
+  }
+
+  // How well signal[start, end) repeats at `lag`, -1 to 1.
+  double repetition(const std::vector<float>& signal, int start, int end, int lag) {
+    double cross = 0.0;
+    double first = 0.0;
+    double second = 0.0;
+    for (int i = start; i + lag < end; ++i) {
+      cross += double(signal[static_cast<size_t>(i)]) * signal[static_cast<size_t>(i + lag)];
+      first += double(signal[static_cast<size_t>(i)]) * signal[static_cast<size_t>(i)];
+      second += double(signal[static_cast<size_t>(i + lag)]) * signal[static_cast<size_t>(i + lag)];
+    }
+    return first > 0.0 && second > 0.0 ? cross / std::sqrt(first * second) : 0.0;
+  }
+
+  // The last sample louder than `threshold` (5 ms windows), or 0.
+  int soundEnd(const std::vector<float>& signal, double threshold = 1.0e-3) {
+    const int window = kRate / 200;
+    int end = 0;
+    for (int i = 0; i + window <= static_cast<int>(signal.size()); i += window) {
+      if (rms(signal, i, i + window) > threshold)
+        end = i + window;
+    }
+    return end;
+  }
+
+  // What each note takes with each Split, and how the words play.
+  int split() {
+    auto phrase = speakLayers("Hello world", "gmw/en-US");
+    if (phrase == nullptr)
+      return finish("split");
+    phrase->findWords();
+    using vital::speech::Phrase;
+    expect(phrase->numSyllables() == 3 && phrase->numWords() == 2, "three syllables in two words");
+    expect(phrase->numUnits(vital::speech::kSplitSyllable) == 3 && phrase->numUnits(vital::speech::kSplitWord) == 2 &&
+           phrase->numUnits(vital::speech::kSplitPhrase) == 1, "a note per syllable, word or phrase");
+    int first = -1;
+    int last = -1;
+    expect(phrase->unitRange(vital::speech::kSplitWord, 0, first, last) && first == 0 && last == 1,
+           "the first word is the first two syllables");
+    expect(phrase->unitRange(vital::speech::kSplitWord, 1, first, last) && first == 2 && last == 2,
+           "the second word is the last syllable");
+    expect(phrase->unitRange(vital::speech::kSplitPhrase, 0, first, last) && first == 0 && last == 2,
+           "the phrase is every syllable");
+    expect(!phrase->unitRange(vital::speech::kSplitWord, 2, first, last), "there is no third word");
+
+    vital::SpeechSlot slot;
+    slot.setPhrase(phrase);
+    std::vector<int> words;
+    for (int i = 0; i < 3; ++i) {
+      words.push_back(slot.takeUnit(0.0, vital::speech::kSplitWord));
+      slot.advanceClock(4800, kRate);
+    }
+    expect(words == std::vector<int>({ 0, 1, 0 }), "notes take the words in turn");
+    expect(slot.takeUnit(0.0, vital::speech::kSplitPhrase) == 0, "with Phrase every note takes the text");
+
+    // A held note sings the whole word and holds its last vowel at the note's pitch.
+    for (int split : { vital::speech::kSplitWord, vital::speech::kSplitPhrase }) {
+      SynthPlugin plugin;
+      preparePlayback(plugin, "Hello world");
+      setControl(plugin, "osc_1_speech_split", static_cast<float>(split));
+      const int held = kRate * 2;
+      const auto audio = render(plugin, held + kRate, { { 0, juce::MidiMessage::noteOn(1, 57, 1.0f) },
+                                                       { held, juce::MidiMessage::noteOff(1, 57) } });
+      const std::string label = split == vital::speech::kSplitWord ? "a word" : "the phrase";
+      expect(finite(audio), label + " is finite");
+      close(pitchOf(audio, held - kRate / 4, held - kRate / 4 + kRate / 10, kRate), 220.0,
+            label + " holds its last vowel at the note's pitch", 220.0 * 0.02);
+      expect(rms(audio, held + kRate / 2, held + kRate) < 1.0e-4, label + " ends after release");
+    }
+    return finish("split");
+  }
+
+  // Spoken mode keeps espeak-ng's intonation and plays straight through.
+  int spoken() {
+    std::vector<double> medians;
+    for (int note : { 60, 72 }) {
+      SynthPlugin plugin;
+      preparePlayback(plugin, "la");
+      setControl(plugin, "osc_1_speech_mode", 1.0f);
+      setControl(plugin, "osc_1_speech_split", static_cast<float>(vital::speech::kSplitPhrase));
+      plugin.getSpeechManager()->setText(0, "Hello there, how are you today");
+      settle(plugin);
+      auto phrase = plugin.getEngine()->getSpeechSlot(0)->phrase();
+      expect(phrase != nullptr && phrase->spoken, "Spoken renders with intonation");
+      if (phrase == nullptr)
+        return finish("spoken");
+      const int length = kRate * 4;
+      const auto audio = render(plugin, length, { { 0, juce::MidiMessage::noteOn(1, note, 1.0f) } });
+      const std::string label = "note " + std::to_string(note);
+      expect(finite(audio), label + " is finite");
+      const int end = soundEnd(audio);
+      expect(end > kRate / 2 && end < length - kRate / 2,
+             label + " speaks the words through and stops with the key still down (" +
+                 std::to_string(end / static_cast<double>(kRate)) + " s)");
+      const auto pitches = windowPitches(audio, 0, end);
+      expect(pitches.size() > 10, label + " has voiced speech");
+      medians.push_back(median(pitches));
+      if (note == 60) {
+        const double own = phrase->referenceLayer()->frequency;
+        close(medians.back(), own, "middle C speaks at the voice's own pitch", own * 0.15);
+        const auto [low, high] = std::minmax_element(pitches.begin(), pitches.end());
+        expect(*high > *low * 1.15, "the intonation moves (" + std::to_string(*low) + " to " +
+                                        std::to_string(*high) + " Hz)");
+      }
+    }
+    if (medians.size() == 2)
+      close(medians[1] / medians[0], 2.0, "an octave up speaks an octave higher", 0.1);
+    return finish("spoken");
+  }
+
+  // Formant, Breathiness, Speed and Vibrato.
+  int voiceControls() {
+    auto sing = [](const std::vector<std::pair<std::string, float>>& controls, int held, int length) {
+      SynthPlugin plugin;
+      preparePlayback(plugin, "la");
+      for (const auto& [name, value] : controls)
+        setControl(plugin, "osc_1_speech_" + name, value);
+      return render(plugin, length, { { 0, juce::MidiMessage::noteOn(1, 57, 1.0f) },
+                                      { held, juce::MidiMessage::noteOff(1, 57) } });
+    };
+    const int held = kRate * 3 / 2;
+    const int from = kRate / 2;
+    const int to = kRate;
+    const auto plain = sing({}, held, held + kRate / 2);
+    const auto up = sing({ { "formant", 7.0f } }, held, held + kRate / 2);
+    const auto down = sing({ { "formant", -7.0f } }, held, held + kRate / 2);
+    expect(finite(up) && finite(down), "formant shifts are finite");
+    close(pitchOf(up, from, from + kRate / 10, kRate), 220.0, "formants up keep the pitch", 220.0 * 0.02);
+    close(pitchOf(down, from, from + kRate / 10, kRate), 220.0, "formants down keep the pitch", 220.0 * 0.02);
+    const double bright = brightness(plain, from, to);
+    expect(brightness(up, from, to) > bright * 1.15, "formants up are brighter");
+    expect(brightness(down, from, to) < bright / 1.15, "formants down are darker");
+
+    const int lag = static_cast<int>(std::lround(kRate / 220.0));
+    const auto breathy = sing({ { "breath", 1.0f } }, held, held + kRate / 2);
+    const auto half = sing({ { "breath", 0.5f } }, held, held + kRate / 2);
+    expect(finite(breathy) && finite(half), "breath is finite");
+    const double voiced = repetition(plain, from, to, lag);
+    const double whispered = repetition(breathy, from, to, lag);
+    expect(voiced > 0.8 && whispered < 0.5, "100% breath whispers (repeats " + std::to_string(whispered) +
+                                                " against " + std::to_string(voiced) + ")");
+    expect(repetition(half, from, to, lag) < voiced, "50% breath is breathier");
+    const double level = rms(plain, from, to);
+    expect(rms(breathy, from, to) > level * 0.5 && rms(breathy, from, to) < level * 2.0,
+           "the whisper is about as loud as the voice");
+    expect(rms(breathy, held + kRate / 4, held + kRate / 2) < 1.0e-4, "the whisper ends after release");
+
+    // Speed: a short note's syllable plays out faster or slower.
+    const int tap = kRate / 10;
+    const int fast_end = soundEnd(sing({ { "speed", 1.0f } }, tap, kRate * 2));
+    const int normal_end = soundEnd(sing({}, tap, kRate * 2));
+    const int slow_end = soundEnd(sing({ { "speed", -1.0f } }, tap, kRate * 2));
+    expect(fast_end < normal_end && normal_end < slow_end,
+           "speed shortens and lengthens the syllable (" + std::to_string(fast_end) + ", " +
+               std::to_string(normal_end) + ", " + std::to_string(slow_end) + " samples)");
+    const auto slow = sing({ { "speed", -1.0f } }, held, held + kRate / 2);
+    close(pitchOf(slow, from, from + kRate / 10, kRate), 220.0, "speed keeps the pitch", 220.0 * 0.02);
+
+    // Vibrato: none at first, then the pitch wavers by the depth.
+    const auto vibrato = sing({ { "vibrato", 1.0f } }, held, held + kRate / 2);
+    expect(finite(vibrato), "vibrato is finite");
+    const auto early = windowPitches(vibrato, kRate / 20, kRate / 8);
+    const auto late = windowPitches(vibrato, kRate * 3 / 4, held);
+    expect(!early.empty() && !late.empty(), "the vibrato note is voiced");
+    if (!early.empty() && !late.empty()) {
+      const auto [early_low, early_high] = std::minmax_element(early.begin(), early.end());
+      const auto [low, high] = std::minmax_element(late.begin(), late.end());
+      expect(*early_high / *early_low < 1.02, "vibrato waits for the note to settle");
+      expect(*high / *low > 1.06 && *high / *low < 1.16,
+             "one semitone of vibrato swings the pitch about two semitones (" + std::to_string(*low) + " to " +
+                 std::to_string(*high) + " Hz)");
+    }
+    const auto still = windowPitches(plain, kRate * 3 / 4, held);
+    if (!still.empty()) {
+      const auto [low, high] = std::minmax_element(still.begin(), still.end());
+      expect(*high / *low < 1.02, "no vibrato by default");
+    }
+
+    // A new variant starts from the voice's own formants and breath; a new
+    // language and a preset load keep them.
+    juce::MemoryBlock state;
+    {
+      SynthPlugin plugin;
+      setControl(plugin, "osc_1_speech_formant", 5.0f);
+      setControl(plugin, "osc_1_speech_breath", 0.5f);
+      plugin.valueChanged("osc_1_speech_variant", 2.0f);
+      expect(control(plugin, "osc_1_speech_formant") == 0.0f && control(plugin, "osc_1_speech_breath") == 0.0f,
+             "a new variant resets the formant and breath");
+      setControl(plugin, "osc_1_speech_formant", 4.0f);
+      setControl(plugin, "osc_1_speech_breath", 0.25f);
+      plugin.valueChanged("osc_1_speech_variant", 2.0f);
+      expect(control(plugin, "osc_1_speech_formant") == 4.0f, "the same variant keeps the formant");
+      plugin.valueChanged("osc_1_speech_language", static_cast<float>(vital::speech::languageIndex("roa/fr")));
+      expect(control(plugin, "osc_1_speech_formant") == 4.0f, "a new language keeps the formant");
+      close(control(plugin, "osc_1_speech_breath"), 0.25, "a new language keeps the breath", 1.0e-6);
+      setControl(plugin, "osc_1_speech_mode", 1.0f);
+      setControl(plugin, "osc_1_speech_split", 2.0f);
+      plugin.getStateInformation(state);
+    }
+    {
+      SynthPlugin plugin;
+      plugin.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+      expect(control(plugin, "osc_1_speech_formant") == 4.0f, "the formant is restored with the voice");
+      close(control(plugin, "osc_1_speech_breath"), 0.25, "breath is restored", 1.0e-6);
+      expect(control(plugin, "osc_1_speech_mode") == 1.0f && control(plugin, "osc_1_speech_split") == 2.0f,
+             "mode and split are restored");
+    }
+    return finish("voice controls");
+  }
+
   // ---- Envelope modes --------------------------------------------------------------
 
   int envelope() {
@@ -452,7 +750,7 @@ namespace {
       close(pitchOf(audio, second + kRate * 3 / 8, second + kRate * 3 / 8 + kRate / 10, kRate), expected,
             label + " moves to the new pitch", expected * 0.02);
       // The next syllable a note would take: legato used one, mono two.
-      const int next = plugin.getEngine()->getSpeechSlot(0)->takeSyllable(10.0);
+      const int next = plugin.getEngine()->getSpeechSlot(0)->takeUnit(10.0);
       expect(next == (legato ? 1 : 2), label + (legato ? " keeps the first syllable across the legato note"
                                                        : " sings a new syllable on each note") +
                                            " (next is " + std::to_string(next) + ")");
@@ -472,20 +770,20 @@ namespace {
       phrase->layers.back().syllables.push_back(syllable);
     }
     vital::SpeechSlot slot;
-    expect(slot.takeSyllable(0.0) == -1, "a slot without words sings nothing");
+    expect(slot.takeUnit(0.0) == -1, "a slot without words sings nothing");
     slot.setPhrase(phrase);
     const uint32_t generation = slot.generation();
-    expect(slot.takeSyllable(0.0) == 0, "the first note sings the first syllable");
-    expect(slot.takeSyllable(0.01) == 0, "a note of the same chord sings it too");
+    expect(slot.takeUnit(0.0) == 0, "the first note sings the first syllable");
+    expect(slot.takeUnit(0.01) == 0, "a note of the same chord sings it too");
     slot.advanceClock(4800, kRate);
-    expect(slot.takeSyllable(0.0) == 1, "the next note sings the next syllable");
+    expect(slot.takeUnit(0.0) == 1, "the next note sings the next syllable");
     slot.advanceClock(4800, kRate);
-    expect(slot.takeSyllable(0.0) == 2, "and the next");
+    expect(slot.takeUnit(0.0) == 2, "and the next");
     slot.advanceClock(4800, kRate);
-    expect(slot.takeSyllable(0.0) == 0, "after the last syllable the words start again");
+    expect(slot.takeUnit(0.0) == 0, "after the last syllable the words start again");
     slot.advanceClock(4800, kRate);
     slot.rewind();
-    expect(slot.takeSyllable(0.0) == 0, "rewinding starts the words again");
+    expect(slot.takeUnit(0.0) == 0, "rewinding starts the words again");
 
     auto other = std::make_shared<vital::speech::Phrase>(*phrase);
     slot.setPhrase(other);
@@ -512,7 +810,7 @@ namespace {
       expect(rms(audio, i * kRate / 2, i * kRate / 2 + kRate / 4) > 1.0e-3,
              "note " + std::to_string(i + 1) + " sings");
     // Three notes took "one", "two", "three"; the chord sang "four" together.
-    expect(speech->takeSyllable(10.0) == 0, "the chord took one syllable, so the words start again");
+    expect(speech->takeUnit(10.0) == 0, "the chord took one syllable, so the words start again");
     return finish("sequence");
   }
 
@@ -565,13 +863,13 @@ namespace {
         const double end = start + kBlockQuarters;
         for (double note : notes) {
           if (note >= start && note < (looping ? std::min(end, loop_end) : end))
-            sung.push_back(target.takeSyllable((note - start) / kQuartersPerSecond));
+            sung.push_back(target.takeUnit((note - start) / kQuartersPerSecond));
         }
         // The loop returns inside the block.
         if (looping && end > loop_end) {
           for (double note : notes) {
             if (note >= loop_start && note < loop_start + (end - loop_end))
-              sung.push_back(target.takeSyllable((note - loop_start + loop_end - start) / kQuartersPerSecond));
+              sung.push_back(target.takeUnit((note - loop_start + loop_end - start) / kQuartersPerSecond));
           }
         }
         target.advanceClock(kBlock, kRate);
@@ -590,7 +888,7 @@ namespace {
     expect(play(song, 2.5, 7.0) == std::vector<int>({ 3, 4, 0, 1 }),
            "starting in the middle sings the syllables a play from the start would");
     expect(play(song, 1.0, 3.5) == std::vector<int>({ 1, 2, 3 }), "and again after moving back");
-    expect(slot.takeSyllable(10.0) == 4, "with the transport stopped, a note takes the syllable after the song's");
+    expect(slot.takeUnit(10.0) == 4, "with the transport stopped, a note takes the syllable after the song's");
 
     // Starting at 1.5 while the note from 1.0 is held: the host chases it.
     expect(play({ 1.5, 2.0, 3.0 }, 1.5, 3.5) == std::vector<int>({ 1, 2, 3 }),
@@ -678,7 +976,7 @@ namespace {
       expect(speech->songNotes().size() == 4, "the plugin remembers the song's notes");
       host(1.5, 2.5, { 2.0 });
       // The note at 2.0 sang "three", so the next live note sings "four".
-      expect(speech->takeSyllable(10.0) == 3, "starting playback mid-song sings that point's syllable");
+      expect(speech->takeUnit(10.0) == 3, "starting playback mid-song sings that point's syllable");
       head.looping = true;
       head.loop_start = 1.0;
       head.loop_end = 3.0;
@@ -686,7 +984,7 @@ namespace {
       head.looping = false;
       expect(speech->songNotes().size() == 4 && std::abs(speech->songNotes().back() - 3.0) < 1.0e-3,
              "looping in the host forgets nothing after the loop");
-      expect(speech->takeSyllable(20.0) == 3, "the loop ended on the third note");
+      expect(speech->takeUnit(20.0) == 3, "the loop ended on the third note");
       saved = speech->songNotes();
       saved_played = speech->playedRanges();
       plugin.getStateInformation(state);
@@ -855,8 +1153,39 @@ namespace {
     if (text != nullptr && language != nullptr && variant != nullptr)
       expect(text->getScreenY() < language->getScreenY() && language->getScreenY() < variant->getScreenY(),
              "the text box comes first, then the language and the variant");
+    auto* transpose = titledExactly(*section, "1 Speech Transpose");
+    auto* tune = titledExactly(*section, "1 Speech Tune");
+    expect(titledExactly(*section, "Pitch and unison") != nullptr && transpose != nullptr && tune != nullptr,
+           "Transpose and Tune in Pitch and unison");
+    if (transpose != nullptr)
+      expect(transpose->getDescription().contains("formants"), "Transpose is described");
+    expect(titledExactly(*section, "Warp") != nullptr, "a Warp group");
+    std::vector<Component*> voice_rows;
+    for (const char* title : { "1 Speech Mode", "1 Speech Split", "1 Speech Language", "1 Speech Variant",
+                               "1 Speech Formant", "1 Speech Breathiness", "1 Speech Speed",
+                               "1 Speech Vibrato Depth", "1 Speech Vibrato Rate", "1 Speech Amplitude Envelope" }) {
+      auto* row = titledExactly(*section, title);
+      expect(row != nullptr && row->getWantsKeyboardFocus() && row->getDescription().isNotEmpty(),
+             std::string("an accessible ") + title + " row");
+      voice_rows.push_back(row);
+    }
+    bool in_order = true;
+    for (size_t i = 1; i < voice_rows.size(); ++i)
+      in_order = in_order && voice_rows[i - 1] != nullptr && voice_rows[i] != nullptr &&
+                 voice_rows[i - 1]->getScreenY() < voice_rows[i]->getScreenY();
+    expect(in_order, "mode and split, the voice, its sound, then the envelope mode");
+    if (voice_rows[4] != nullptr)
+      expect(voice_rows[4]->getDescription().contains("variant sets it back to 0"), "Formant says a new variant resets it");
+    auto* warp = titledExactly(*section, "1 Distortion mode");
+    expect(warp != nullptr && warp->getWantsKeyboardFocus() &&
+           titledExactly(*section, "1 Secondary distortion mode") != nullptr,
+           "the Warp group has the FM and RM rows");
+    if (warp != nullptr)
+      expect(warp->getDescription().contains("formants") || warp->getHelpText().contains("formants"),
+             "the distortion mode describes FM on a voice");
     expect(findTitled(*section, [](const String& t) {
-             return t.contains("Transpose") || t.contains("Warp") || t.contains("Braids") || t.contains("Wave Frame");
+             return t.contains("Unison") || t.contains("Braids") || t.contains("Wave Frame") ||
+                    t.contains("Spread") || t.contains("Scale lock");
            }) == nullptr,
            "Speech shows no other controls");
     return finish("editor");
@@ -928,6 +1257,16 @@ int main(int argc, char** argv) {
     return sequence();
   if (flag == "--envelope")
     return envelope();
+  if (flag == "--tuning")
+    return tuning();
+  if (flag == "--slot-modulation")
+    return slotModulation();
+  if (flag == "--split")
+    return split();
+  if (flag == "--spoken")
+    return spoken();
+  if (flag == "--voice-controls")
+    return voiceControls();
   if (flag == "--legato")
     return legato();
   if (flag == "--transport")

@@ -1943,6 +1943,34 @@ namespace vital {
     // after release. Envelope 1: the slot follows Env 1.
     { "speech_amp_env", 0x000000, 0.0, 1.0, 0.0, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Speech Amplitude Envelope", strings::kSpeechAmpEnvNames },
+    { "speech_transpose", 0x000000, -48.0, 48.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Speech Transpose", nullptr },
+    { "speech_tune", 0x000000, -1.0, 1.0, 0.0, 0.0, 100.0,
+      ValueDetails::kLinear, false, "", "Speech Tune", nullptr },
+    // Sung: a monotone the notes give the melody, the vowel held while the
+    // key is down. Spoken: espeak-ng's own intonation, played through.
+    { "speech_mode", 0x000000, 0.0, 1.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Speech Mode", strings::kSpeechModeNames },
+    // What each note takes: the next syllable, word or the whole text.
+    { "speech_split", 0x000000, 0.0, 2.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Speech Split", strings::kSpeechSplitNames },
+    // Moves the voice's formants, in semitones; the pitch stays. Changing the
+    // variant sets it back to 0.
+    { "speech_formant", 0x000000, -12.0, 12.0, 0.0, 0.0, 1.0,
+      ValueDetails::kLinear, false, " semitones", "Speech Formant", nullptr },
+    // 0% the voice as espeak-ng spoke it; 100% a whisper. Changing the
+    // variant sets it back to 0%.
+    { "speech_breath", 0x000000, 0.0, 1.0, 0.0, 0.0, 100.0,
+      ValueDetails::kLinear, false, "%", "Speech Breathiness", nullptr },
+    // How fast consonants and unheld vowels play, 25% to 400%, as log2.
+    { "speech_speed", 0x000000, -2.0, 2.0, 0.0, 0.0, 100.0,
+      ValueDetails::kExponential, false, "%", "Speech Speed", nullptr },
+    // A vibrato that fades in after each note starts: depth in semitones,
+    // rate as log2 Hz (1 to 12 Hz).
+    { "speech_vibrato", 0x000000, 0.0, 1.0, 0.0, 0.0, 100.0,
+      ValueDetails::kLinear, false, " cents", "Speech Vibrato Depth", nullptr },
+    { "speech_vibrato_rate", 0x000000, 0.0, 3.5849625, 2.4594316, 0.0, 1.0,
+      ValueDetails::kExponential, false, " Hz", "Speech Vibrato Rate", nullptr },
   };
 
   const ValueDetails ValueDetailsLookup::mod_parameter_list[] = {

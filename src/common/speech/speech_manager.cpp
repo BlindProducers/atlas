@@ -12,7 +12,7 @@
 namespace vital {
 namespace speech {
   namespace {
-    // How often the slots' type, language and variant are checked.
+    // How often the slots' type, language, variant and mode are checked.
     constexpr int kRefreshMilliseconds = 150;
 
     std::string phonemeSummary(const Phrase& phrase) {
@@ -85,6 +85,7 @@ namespace speech {
     slot.status.error = error;
     if (state != SlotStatus::kReady) {
       slot.status.syllables = 0;
+      slot.status.words = 0;
       slot.status.phonemes.clear();
     }
     slot.status.revision++;
@@ -104,6 +105,7 @@ namespace speech {
         desired.text = slot.text;
         desired.language = std::clamp(voice.language, 0, kNumLanguages - 1);
         desired.variant = std::clamp(voice.variant, 0, kNumVariants - 1);
+        desired.spoken = voice.spoken;
       }
       if (desired == slot.key)
         continue;
@@ -139,12 +141,13 @@ namespace speech {
       bool spoken = true;
       for (int pitch : kLayerPitches) {
         recordings.emplace_back();
-        spoken = espeak::speak(key.text, voiceName(key.language, key.variant), pitch, recordings.back(), error);
+        spoken = espeak::speak(key.text, voiceName(key.language, key.variant), pitch, recordings.back(), error,
+                               key.spoken);
         if (!spoken || shutting_down_)
           break;
       }
       if (spoken && !shutting_down_) {
-        phrase = buildPhrase(recordings, kReferenceLayer);
+        phrase = buildPhrase(recordings, kReferenceLayer, key.spoken);
         phrase->text = key.text;
         phrase->language = key.language;
         phrase->variant = key.variant;
@@ -165,6 +168,7 @@ namespace speech {
         else {
           setStatus(slot, SlotStatus::kReady);
           slot.status.syllables = phrase->numSyllables();
+          slot.status.words = phrase->numWords();
           slot.status.phonemes = phonemeSummary(*phrase);
         }
       }

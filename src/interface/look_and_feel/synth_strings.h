@@ -273,6 +273,17 @@ namespace strings {
     "Envelope 1",
   };
 
+  const std::string kSpeechModeNames[] = {
+    "Sung",
+    "Spoken",
+  };
+
+  const std::string kSpeechSplitNames[] = {
+    "Syllable",
+    "Word",
+    "Phrase",
+  };
+
   const std::string kOpenB3PercussionVolumeNames[] = { "Normal", "Soft" };
   const std::string kOpenB3PercussionDecayNames[] = { "Fast", "Slow" };
   const std::string kOpenB3PercussionHarmonicNames[] = { "Second", "Third" };

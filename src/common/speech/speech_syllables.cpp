@@ -144,7 +144,7 @@ namespace speech {
   }
 
   namespace {
-    Layer buildLayer(const Recording& recording) {
+    Layer buildLayer(const Recording& recording, bool spoken) {
       Layer layer;
       const int64_t total = static_cast<int64_t>(recording.audio.size());
       float peak = 0.0f;
@@ -186,7 +186,7 @@ namespace speech {
           nucleus_end.push_back(-1);
         }
       }
-      analyseLayer(layer, recording.sample_rate, nucleus_start, nucleus_end);
+      analyseLayer(layer, recording.sample_rate, nucleus_start, nucleus_end, spoken);
       return layer;
     }
 
@@ -201,20 +201,21 @@ namespace speech {
     }
   } // namespace
 
-  std::shared_ptr<Phrase> buildPhrase(const std::vector<Recording>& recordings, int reference) {
+  std::shared_ptr<Phrase> buildPhrase(const std::vector<Recording>& recordings, int reference, bool spoken) {
     auto phrase = std::make_shared<Phrase>();
+    phrase->spoken = spoken;
     if (recordings.empty())
       return phrase;
     reference = std::clamp(reference, 0, static_cast<int>(recordings.size()) - 1);
     phrase->sample_rate = recordings[static_cast<size_t>(reference)].sample_rate;
     std::vector<Layer> layers(recordings.size());
     std::vector<bool> usable(recordings.size(), false);
-    layers[static_cast<size_t>(reference)] = buildLayer(recordings[static_cast<size_t>(reference)]);
+    layers[static_cast<size_t>(reference)] = buildLayer(recordings[static_cast<size_t>(reference)], spoken);
     usable[static_cast<size_t>(reference)] = true;
     for (int i = 0; i < static_cast<int>(recordings.size()); ++i) {
       if (i == reference || recordings[static_cast<size_t>(i)].sample_rate != phrase->sample_rate)
         continue;
-      layers[static_cast<size_t>(i)] = buildLayer(recordings[static_cast<size_t>(i)]);
+      layers[static_cast<size_t>(i)] = buildLayer(recordings[static_cast<size_t>(i)], spoken);
       // A layer is only usable when it split into the same syllables.
       usable[static_cast<size_t>(i)] = sameSyllables(layers[static_cast<size_t>(i)],
                                                      layers[static_cast<size_t>(reference)]);
@@ -242,11 +243,12 @@ namespace speech {
         phrase->reference_layer = static_cast<int>(phrase->layers.size());
       phrase->layers.push_back(std::move(layers[static_cast<size_t>(i)]));
     }
+    phrase->findWords();
     return phrase;
   }
 
-  std::shared_ptr<Phrase> buildPhrase(const Recording& recording) {
-    return buildPhrase(std::vector<Recording> { recording }, 0);
+  std::shared_ptr<Phrase> buildPhrase(const Recording& recording, bool spoken) {
+    return buildPhrase(std::vector<Recording> { recording }, 0, spoken);
   }
 } // namespace speech
 } // namespace vital

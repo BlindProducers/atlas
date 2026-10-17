@@ -74,7 +74,7 @@ namespace vital {
       { "braids", "braids", false, false, true, false, true, true },
       { "openwurli", "wurli", false, false, true, false, false, true },
       { "openb3", "b3", false, false, true, false, false, true },
-      { "speech", "speech", false, false, true, false, false, false },
+      { "speech", "speech", false, false, true, false, true, true },
     };
 
     inline constexpr const Description& describe(int type) {

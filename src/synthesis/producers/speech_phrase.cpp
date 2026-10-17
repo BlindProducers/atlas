@@ -5,6 +5,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <array>
+#include <random>
 
 namespace vital {
 namespace speech {
@@ -21,6 +23,11 @@ namespace speech {
     // The shortest lag within this fraction of the best correlation wins,
     // so a period is never mistaken for two.
     constexpr float kOctaveTolerance = 0.85f;
+
+    // A spoken layer's pitch moves with espeak-ng's intonation: its frames
+    // search this much further either side of the layer's period.
+    constexpr float kSpokenLowestLag = 0.55f;
+    constexpr float kSpokenHighestLag = 1.8f;
 
     // Normalized autocorrelation of audio[start, start + window) at `lag`.
     float correlation(const float* audio, int length, int start, int window, int lag) {
@@ -47,8 +54,10 @@ namespace speech {
     };
 
     // The best period of the frame around `centre`, within [min_lag, max_lag].
+    // With `shortest`, the shortest lag that repeats nearly as well as the
+    // best wins, so a wide search never takes two periods for one.
     Frame analyseFrame(const float* audio, int length, int centre, int min_lag, int max_lag, float level,
-                       float threshold) {
+                       float threshold, bool shortest) {
       Frame frame;
       const int window = max_lag + max_lag / 2;
       const int start = std::max(0, centre - window / 2);
@@ -60,27 +69,46 @@ namespace speech {
         return frame;
       float best = 0.0f;
       int best_lag = 0;
-      for (int lag = min_lag; lag <= max_lag; ++lag) {
-        const float value = correlation(audio, length, start, window, lag);
-        if (value > best) {
-          best = value;
-          best_lag = lag;
+      if (shortest) {
+        std::vector<float> values(static_cast<size_t>(max_lag - min_lag + 1));
+        for (int lag = min_lag; lag <= max_lag; ++lag) {
+          const float value = correlation(audio, length, start, window, lag);
+          values[static_cast<size_t>(lag - min_lag)] = value;
+          best = std::max(best, value);
+        }
+        for (int lag = min_lag + 1; lag < max_lag; ++lag) {
+          const float value = values[static_cast<size_t>(lag - min_lag)];
+          if (value >= kOctaveTolerance * best && value >= values[static_cast<size_t>(lag - min_lag - 1)] &&
+              value >= values[static_cast<size_t>(lag - min_lag + 1)]) {
+            best = value;
+            best_lag = lag;
+            break;
+          }
         }
       }
-      frame.voiced = best >= threshold;
+      else {
+        for (int lag = min_lag; lag <= max_lag; ++lag) {
+          const float value = correlation(audio, length, start, window, lag);
+          if (value > best) {
+            best = value;
+            best_lag = lag;
+          }
+        }
+      }
+      frame.voiced = best_lag > 0 && best >= threshold;
       frame.period = best_lag;
       return frame;
     }
 
-    void placeMarks(Syllable& syllable, float period, int vowel_start, int vowel_end) {
+    void placeMarks(Syllable& syllable, float period, int vowel_start, int vowel_end, bool spoken) {
       syllable.marks.clear();
       const int length = syllable.length();
       if (length <= 0)
         return;
       const float* audio = syllable.audio.data();
       const int base = std::max(8, static_cast<int>(std::lround(period)));
-      const int min_lag = std::max(4, static_cast<int>(base * 0.8f));
-      const int max_lag = std::max(min_lag + 1, static_cast<int>(base * 1.25f));
+      const int min_lag = std::max(4, static_cast<int>(base * (spoken ? kSpokenLowestLag : 0.8f)));
+      const int max_lag = std::max(min_lag + 2, static_cast<int>(base * (spoken ? kSpokenHighestLag : 1.25f)));
 
       float peak = 0.0f;
       float positive = 0.0f;
@@ -101,7 +129,7 @@ namespace speech {
       for (int centre = 0; centre < length + hop; centre += hop) {
         const bool vowel = centre >= vowel_start && centre < vowel_end;
         frames.push_back(analyseFrame(audio, length, centre, min_lag, max_lag, level,
-                                      vowel ? kVowelCorrelation : kVoicedCorrelation));
+                                      vowel ? kVowelCorrelation : kVoicedCorrelation, spoken));
       }
       auto frame_at = [&](int position) -> const Frame& {
         const int index = std::clamp((position + hop / 2) / hop, 0, static_cast<int>(frames.size()) - 1);
@@ -284,6 +312,128 @@ namespace speech {
     }
   } // namespace
 
+  namespace {
+    // The syllable whispered: frame by frame, noise with the audio's
+    // spectral envelope (its cepstrum below the voice's pitch period) and the
+    // frame's level, overlap-added, so it lines up with the audio.
+    std::vector<float> buildBreath(const Syllable& syllable, float period, uint32_t seed) {
+      constexpr int kOrder = 9;
+      constexpr int kSize = 1 << kOrder;
+      constexpr int kHop = kSize / 4;
+      constexpr int kBins = kSize / 2 + 1;
+      const int length = syllable.length();
+      if (length <= 0)
+        return {};
+      juce::dsp::FFT fft(kOrder);
+      std::array<float, kSize> window {};
+      for (int n = 0; n < kSize; ++n)
+        window[static_cast<size_t>(n)] = 0.5f - 0.5f * std::cos(6.28318530718f * n / kSize);
+      // Keep quefrencies well below the period, so harmonics do not show.
+      const int lifter = std::clamp(static_cast<int>(0.4f * period), 12, 40);
+
+      std::mt19937 random(seed);
+      std::uniform_real_distribution<float> phase(0.0f, 6.28318530718f);
+      std::vector<float> data(static_cast<size_t>(2 * kSize));
+      std::vector<float> cepstrum(static_cast<size_t>(2 * kSize));
+      std::vector<double> sum(static_cast<size_t>(length), 0.0);
+      for (int start = kHop - kSize; start < length; start += kHop) {
+        std::fill(data.begin(), data.end(), 0.0f);
+        double energy = 0.0;
+        for (int n = 0; n < kSize; ++n) {
+          const int index = start + n;
+          if (index >= 0 && index < length) {
+            const float value = syllable.audio[static_cast<size_t>(index)] * window[static_cast<size_t>(n)];
+            data[static_cast<size_t>(n)] = value;
+            energy += static_cast<double>(value) * value;
+          }
+        }
+        if (energy < 1.0e-12)
+          continue;
+        fft.performRealOnlyForwardTransform(data.data(), true);
+
+        std::fill(cepstrum.begin(), cepstrum.end(), 0.0f);
+        for (int k = 0; k < kBins; ++k) {
+          const float magnitude = std::hypot(data[static_cast<size_t>(2 * k)], data[static_cast<size_t>(2 * k + 1)]);
+          cepstrum[static_cast<size_t>(2 * k)] = std::log(std::max(magnitude, 1.0e-9f));
+        }
+        fft.performRealOnlyInverseTransform(cepstrum.data());
+        for (int n = lifter + 1; n < kSize - lifter; ++n)
+          cepstrum[static_cast<size_t>(n)] = 0.0f;
+        std::fill(cepstrum.begin() + kSize, cepstrum.end(), 0.0f);
+        fft.performRealOnlyForwardTransform(cepstrum.data(), true);
+
+        for (int k = 0; k < kBins; ++k) {
+          const float envelope = std::exp(cepstrum[static_cast<size_t>(2 * k)]);
+          const float angle = k == 0 || k == kBins - 1 ? 0.0f : phase(random);
+          data[static_cast<size_t>(2 * k)] = envelope * std::cos(angle);
+          data[static_cast<size_t>(2 * k + 1)] = envelope * std::sin(angle);
+        }
+        fft.performRealOnlyInverseTransform(data.data());
+        double noise = 0.0;
+        for (int n = 0; n < kSize; ++n)
+          noise += static_cast<double>(data[static_cast<size_t>(n)]) * data[static_cast<size_t>(n)];
+        if (noise <= 1.0e-20)
+          continue;
+        // The frame's level before its analysis window (a Hann window keeps
+        // 3/8 of the power).
+        const double gain = std::sqrt(energy / (0.375 * kSize) / (noise / kSize));
+        for (int n = 0; n < kSize; ++n) {
+          const int index = start + n;
+          if (index >= 0 && index < length)
+            sum[static_cast<size_t>(index)] += gain * data[static_cast<size_t>(n)] * window[static_cast<size_t>(n)];
+        }
+      }
+      // Uncorrelated frames under Hann windows a quarter apart add 1.5 times the power.
+      std::vector<float> breath(static_cast<size_t>(length));
+      const double normalise = 1.0 / std::sqrt(1.5);
+      for (int i = 0; i < length; ++i)
+        breath[static_cast<size_t>(i)] = static_cast<float>(sum[static_cast<size_t>(i)] * normalise);
+      return breath;
+    }
+  } // namespace
+
+  void Phrase::findWords() {
+    word_starts.clear();
+    const Layer* layer = referenceLayer();
+    if (layer == nullptr)
+      return;
+    for (size_t i = 0; i < layer->syllables.size(); ++i) {
+      if (i == 0 || layer->syllables[i].word != layer->syllables[i - 1].word)
+        word_starts.push_back(static_cast<int>(i));
+    }
+  }
+
+  int Phrase::numUnits(int split) const {
+    const int syllables = numSyllables();
+    if (syllables == 0)
+      return 0;
+    if (split == kSplitPhrase)
+      return 1;
+    if (split == kSplitWord && !word_starts.empty())
+      return numWords();
+    return syllables;
+  }
+
+  bool Phrase::unitRange(int split, int unit, int& first, int& last) const {
+    const int syllables = numSyllables();
+    const int units = numUnits(split);
+    if (unit < 0 || unit >= units)
+      return false;
+    if (split == kSplitPhrase) {
+      first = 0;
+      last = syllables - 1;
+    }
+    else if (split == kSplitWord && !word_starts.empty()) {
+      first = word_starts[static_cast<size_t>(unit)];
+      last = unit + 1 < numWords() ? word_starts[static_cast<size_t>(unit + 1)] - 1 : syllables - 1;
+    }
+    else {
+      first = unit;
+      last = unit;
+    }
+    return first <= last;
+  }
+
   int Phrase::layerFor(float frequency) const {
     int best = 0;
     float best_distance = 1.0e30f;
@@ -307,9 +457,9 @@ namespace speech {
   }
 
   void analyseLayer(Layer& layer, double sample_rate, const std::vector<int32_t>& nucleus_start,
-                    const std::vector<int32_t>& nucleus_end) {
+                    const std::vector<int32_t>& nucleus_end, bool spoken) {
     // espeak-ng speaks in a monotone, so one period serves the whole layer:
-    // measure it over the vowels.
+    // measure it over the vowels. A spoken layer's pitch moves around it.
     std::vector<float> vowels;
     for (size_t i = 0; i < layer.syllables.size(); ++i) {
       const Syllable& syllable = layer.syllables[i];
@@ -330,9 +480,12 @@ namespace speech {
       Syllable& syllable = layer.syllables[i];
       const int start = i < nucleus_start.size() ? nucleus_start[i] : -1;
       const int end = i < nucleus_end.size() ? nucleus_end[i] : -1;
-      placeMarks(syllable, layer.period, start, end);
+      placeMarks(syllable, layer.period, start, end, spoken);
       syllable.hold_point = -1;
       syllable.steady_grain.clear();
+      syllable.breath = buildBreath(syllable, layer.period, 0x9e3779b9u * static_cast<uint32_t>(i + 1));
+      syllable.breath_from = 0;
+      syllable.breath_to = syllable.length();
       if (start < 0 || end <= start)
         continue;
       // Hold past the vowel's onset, in its first half, so a diphthong holds
@@ -347,10 +500,15 @@ namespace speech {
           best = mark.position;
       }
       syllable.hold_point = std::clamp(best >= 0 ? best : target, 0, std::max(0, syllable.length() - 1));
-      // The steady grain averages the vowel's middle, away from the
-      // consonants on either side.
-      syllable.steady_grain = buildSteadyGrain(syllable, layer.period, start + static_cast<int>(0.15f * length),
-                                               start + static_cast<int>(0.65f * length));
+      // The steady grain and a held note's breath come from the vowel's
+      // middle, away from the consonants on either side. Spoken notes never
+      // hold, so they need no steady grain.
+      const int middle_from = start + static_cast<int>(0.15f * length);
+      const int middle_to = std::max(middle_from + 1, start + static_cast<int>(0.65f * length));
+      syllable.breath_from = std::clamp(middle_from, 0, syllable.length());
+      syllable.breath_to = std::clamp(middle_to, syllable.breath_from, syllable.length());
+      if (!spoken)
+        syllable.steady_grain = buildSteadyGrain(syllable, layer.period, middle_from, middle_to);
     }
   }
 } // namespace speech

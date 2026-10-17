@@ -11,6 +11,8 @@
 namespace vital {
   // The Speech state of one oscillator slot, shared by every voice copy of
   // its module: the phrase it sings and which syllable the next note takes.
+  // With the Word or Phrase split a note takes a word or the whole text
+  // instead; "syllable" below means whichever unit that is.
   //
   // While the host plays, the syllable follows the song: the slot remembers
   // where in the song (in quarter notes) its notes started, and a note sings
@@ -79,9 +81,9 @@ namespace vital {
         song_continues_ = song_playing_;
         song_playing_ = false;
       }
-      // The syllable a note starting `offset` seconds into this block sings,
-      // or -1 when there is none.
-      int takeSyllable(double offset);
+      // The unit of `split` (speech::Split) a note starting `offset` seconds
+      // into this block sings, or -1 when there is none.
+      int takeUnit(double offset, int split = speech::kSplitSyllable);
       // The next note sings the first syllable (transport start, all sounds off).
       void rewind() {
         next_syllable_ = 0;

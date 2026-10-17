@@ -13,9 +13,10 @@ namespace vital {
 
   // The Speech oscillator type: sings the slot's text one syllable per note
   // with espeak-ng's voice. `prefix` names its controls ("osc_3_speech_");
-  // level and pan are the slot's shared controls. The language and variant
-  // only choose how the text is rendered, off the audio thread; the amp
-  // envelope mode chooses between the syllable's own shape and Env 1.
+  // level, pan and the FM/RM distortion pairs are the slot's shared
+  // controls. The language, variant and mode only choose how the text is
+  // rendered, off the audio thread; the amp envelope mode chooses between
+  // the syllable's own shape and Env 1.
   class SpeechModule : public SynthModule, public SlotModulationTarget {
     public:
       enum {
@@ -37,8 +38,7 @@ namespace vital {
       virtual ~SpeechModule() { }
 
       void init() override;
-      // Slot FM and RM do not apply to this type.
-      void setModulatorOutput(int, Output*) override { }
+      void setModulatorOutput(int position, Output* output) override;
       Processor* clone() const override { return new SpeechModule(*this); }
 
     protected:

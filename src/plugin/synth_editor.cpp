@@ -2237,6 +2237,20 @@ namespace {
       }
     }
 
+    // Speech: how notes take the words, the voice, how it sounds, then the
+    // envelope mode; the pitch rows follow in their own group.
+    if (id.startsWith("speech_")) {
+      const String suffix = id.fromFirstOccurrenceOf("speech_", false, false);
+      static const std::array<const char*, 12> speech_order = {{
+        "mode", "split", "language", "variant", "formant", "breath", "speed", "vibrato", "vibrato_rate",
+        "amp_env", "transpose", "tune"
+      }};
+      for (int i = 0; i < static_cast<int>(speech_order.size()); ++i) {
+        if (suffix == speech_order[i])
+          return 5770 + i;
+      }
+    }
+
     for (int random = 1; random <= vital::kNumRandomLfos; ++random) {
       const String prefix = "random_" + String(random) + "_";
       if (!id.startsWith(prefix))
@@ -3159,6 +3173,32 @@ namespace {
                "key is down, and after release the syllable sings on to its last consonant, keeping the voice "
                "open. Envelope 1 shapes the voice with Envelope 1 instead, so a short release can cut a final "
                "consonant.";
+      if (suffix == "transpose")
+        return "Transpose the voice in semitones. The voice keeps its formants, so it sings higher or lower "
+               "without sounding smaller or larger.";
+      if (suffix == "tune") return "Fine tune the voice in cents.";
+      if (suffix == "mode")
+        return "Choose how the words are voiced. Sung speaks them in a monotone and sings each note's pitch, "
+               "holding the vowel while the key is down. Spoken keeps espeak-ng's own intonation and plays "
+               "the words straight through: middle C speaks at the voice's own pitch, and other notes move "
+               "the whole intonation up or down.";
+      if (suffix == "split")
+        return "Choose what each note takes from the words: the next syllable, the next word, or the whole "
+               "text. Sung, the last syllable's vowel holds while the key is down.";
+      if (suffix == "formant")
+        return "Move the voice's formants up or down in semitones without changing its pitch. Up sounds "
+               "smaller and brighter, down larger and darker. Choosing another variant sets it back to 0.";
+      if (suffix == "breath")
+        return "Add breath to the voice. 0% is the voice as espeak-ng spoke it; higher values blend in a "
+               "whisper of the same words, and 100% whispers them. Choosing another variant sets it back "
+               "to 0%.";
+      if (suffix == "speed")
+        return "Set how fast the consonants and the vowels that are not held play. 100% is espeak-ng's "
+               "speaking speed. The pitch stays.";
+      if (suffix == "vibrato")
+        return "Set the depth of a vibrato that fades in after each note starts, in cents either side of the "
+               "pitch. 0 cents is no vibrato.";
+      if (suffix == "vibrato_rate") return "Set how fast the vibrato wavers, in hertz.";
     }
 
     if (legacy_id.startsWith("wurli_")) {
@@ -6768,7 +6808,12 @@ std::unique_ptr<AccessibleParameterRow> SynthEditor::buildAccessibleParameterRow
         return accessibleParameterText(*bridge, value);
       };
       const String type_name = String(strings::kOscillatorTypeNames[slot_type]).toLowerCase();
-      const String help = fm
+      const String help = slot_type == vital::source_types::kSpeech
+          ? String("Choose an FM source or a ring modulation source from another oscillator. FM bends the "
+                   "voice's pitch at audio rate while its formants and the syllable's timing stay put, and "
+                   "ring modulation multiplies its output by the source. Wavetable warps stay stored for the "
+                   "Wavetable type and read as None here.")
+          : fm
           ? "Choose an FM source or a ring modulation source from another oscillator. FM modulates this " +
             type_name + " oscillator's playback rate at audio rate, running it backwards at high amounts, and "
             "ring modulation multiplies its output by the source. Wavetable warps stay stored for the "
@@ -17811,7 +17856,8 @@ String SynthEditor::speechStatusDescription(int oscillator) {
     case vital::speech::SlotStatus::kRendering:
       return base + ", preparing the voice";
     case vital::speech::SlotStatus::kReady:
-      return base + ", " + String(status.syllables) + (status.syllables == 1 ? " syllable" : " syllables");
+      return base + ", " + String(status.syllables) + (status.syllables == 1 ? " syllable" : " syllables") +
+             " in " + String(status.words) + (status.words == 1 ? " word" : " words");
     case vital::speech::SlotStatus::kFailed:
       return base + ", " + String::fromUTF8(status.error.c_str());
     case vital::speech::SlotStatus::kEmpty:

@@ -29,11 +29,12 @@ namespace speech {
     constexpr int kMaxPitch = 99;
     constexpr int kVoicePitch = 50;
 
-    // Speaks `text` in a monotone with `voice` ("gmw/en-US+klatt") at `pitch`
-    // (0 to kMaxPitch). Returns false with `error` set when espeak-ng cannot
-    // run or the voice is missing.
+    // Speaks `text` with `voice` ("gmw/en-US+klatt") at `pitch` (0 to
+    // kMaxPitch): in a monotone, or with espeak-ng's own intonation when
+    // `intonation` is set. Returns false with `error` set when espeak-ng
+    // cannot run or the voice is missing.
     bool speak(const std::string& text, const std::string& voice, int pitch, Recording& recording,
-               std::string& error);
+               std::string& error, bool intonation = false);
   } // namespace espeak
 } // namespace speech
 } // namespace vital
