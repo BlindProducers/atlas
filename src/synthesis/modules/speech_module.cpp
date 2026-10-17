@@ -21,7 +21,7 @@ namespace vital {
     Output* pan = createPolyModControl(mix_prefix + "pan");
 
     source_->useInput(input(kReset), SpeechSource::kReset);
-    source_->useInput(input(kVoiceEvent), SpeechSource::kVoiceEvent);
+    source_->useInput(input(kRetrigger), SpeechSource::kRetrigger);
     source_->useInput(input(kMidi), SpeechSource::kMidi);
     source_->plug(amp_env, SpeechSource::kAmpEnvMode);
     source_->plug(level, SpeechSource::kLevel);

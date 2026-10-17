@@ -15,7 +15,9 @@ namespace vital {
   // recording one note period apart, so the voice keeps its formants. The
   // syllable's onset plays at its spoken speed; while the key is down the
   // vowel crossfades into its steady grain, repeated with a little jitter
-  // and shimmer; after release the rest of the syllable plays.
+  // and shimmer; after release the rest of the syllable plays. A mono legato
+  // note change keeps the syllable and only moves its pitch, moving to the
+  // layer nearest the new pitch.
   //
   // With the Voice envelope mode the syllable shapes the note and holds the
   // voice open until its last consonant ends; with Envelope 1 the slot
@@ -37,7 +39,9 @@ namespace vital {
 
       enum {
         kReset,
-        kVoiceEvent,
+        // A legato note change in mono mode sends no note-on here: the
+        // syllable carries on at the new pitch.
+        kRetrigger,
         kMidi,
         kAmpEnvMode,
         kLevel,
@@ -112,6 +116,9 @@ namespace vital {
       void advance(VoiceState& state, const speech::Syllable& syllable, double ratio, float steady_in,
                    float steady_out);
       static float nextRandom(VoiceState& state);
+      // Moves a sounding note to the layer nearest `frequency` when it has
+      // left its own layer by more than half a semitone of the way.
+      void followPitch(VoiceState& state, const speech::Phrase& phrase, float frequency);
 
       std::shared_ptr<SpeechSlot> slot_;
       std::array<VoiceState, kVoicesPerProcessor> voices_;

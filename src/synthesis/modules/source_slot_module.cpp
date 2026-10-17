@@ -264,7 +264,7 @@ namespace vital {
       case source_types::kSpeech: {
         auto* speech = static_cast<SpeechModule*>(module);
         speech->useInput(input(kReset), SpeechModule::kReset);
-        speech->useInput(input(kVoiceEvent), SpeechModule::kVoiceEvent);
+        speech->useInput(input(kRetrigger), SpeechModule::kRetrigger);
         speech->useInput(input(kMidi), SpeechModule::kMidi);
         speech->useOutput(output(kRaw), SpeechModule::kRaw);
         speech->useOutput(output(kLevelled), SpeechModule::kLevelled);

@@ -62,6 +62,13 @@ so it does not sound frozen. On release they crossfade back over 40 ms and
 the rest of the syllable plays from the hold point. After the last syllable
 the words start again; host playback starting and All Sound Off rewind them.
 
+Syllables start on the voice handler's retrigger, not its voice event: with
+one voice and Legato on, a note played while another is held (and the note
+it returns to when that is released) retargets the voice without a
+retrigger, so the syllable carries on at the new pitch, a melisma. A note
+that moves more than half a semitone closer to another layer than to its own
+continues from that layer at the same place in the syllable.
+
 The Amplitude Envelope mode, like Multi-sample's, OpenWurli's and OpenB3's:
 Voice (the default) lets the syllable shape its note and holds the voice open
 (`kHold`) until its last grain ends, so final consonants always sound;
@@ -83,7 +90,8 @@ made-up events and on espeak-ng's own in English, German and Spanish),
 `--phrase` (the layers' pitches, marks, hold points and steady grains for
 three voices), `--pitch` (the sung pitch at four notes, and a steady held
 vowel), `--envelope` (Voice sings the final consonant after release,
-Envelope 1 with no release cuts it), `--sequence` (which
+Envelope 1 with no release cuts it), `--legato` (a mono legato note keeps
+its syllable, without Legato each note takes the next), `--sequence` (which
 syllable each note takes, chords, rewinding, phrase changes), `--parameters`
 (host state) and `--editor` (the text box and the two menus). The test binary
 reads the data from `build/espeak-ng`. `--render <file.wav>` writes the start

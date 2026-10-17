@@ -428,6 +428,38 @@ namespace {
     return finish("envelope");
   }
 
+  // ---- Mono legato ----------------------------------------------------------------
+
+  int legato() {
+    // One voice: 60, then 64 pressed while 60 is held, 60 released, 64 released.
+    const int second = kRate / 2;
+    const std::vector<MidiEvent> events = {
+      { 0, juce::MidiMessage::noteOn(1, 60, 1.0f) },
+      { second, juce::MidiMessage::noteOn(1, 64, 1.0f) },
+      { second + kRate / 4, juce::MidiMessage::noteOff(1, 60) },
+      { second + kRate * 3 / 4, juce::MidiMessage::noteOff(1, 64) },
+    };
+    for (bool legato : { true, false }) {
+      SynthPlugin plugin;
+      preparePlayback(plugin, "one two three");
+      setControl(plugin, "polyphony", 1.0f);
+      setControl(plugin, "legato", legato ? 1.0f : 0.0f);
+      const std::string label = legato ? "legato" : "mono";
+      const auto audio = render(plugin, second + kRate, events);
+      expect(finite(audio), label + " is finite");
+      expect(rms(audio, second, second + kRate / 10) > 1.0e-3, label + " sings through the note change");
+      const double expected = 440.0 * std::pow(2.0, (64 - 69) / 12.0);
+      close(pitchOf(audio, second + kRate * 3 / 8, second + kRate * 3 / 8 + kRate / 10, kRate), expected,
+            label + " moves to the new pitch", expected * 0.02);
+      // The next syllable a note would take: legato used one, mono two.
+      const int next = plugin.getEngine()->getSpeechSlot(0)->takeSyllable(10.0);
+      expect(next == (legato ? 1 : 2), label + (legato ? " keeps the first syllable across the legato note"
+                                                       : " sings a new syllable on each note") +
+                                           " (next is " + std::to_string(next) + ")");
+    }
+    return finish("legato");
+  }
+
   // ---- Which syllable each note sings ---------------------------------------------
 
   int sequence() {
@@ -705,13 +737,15 @@ int main(int argc, char** argv) {
     return sequence();
   if (flag == "--envelope")
     return envelope();
+  if (flag == "--legato")
+    return legato();
   if (flag == "--parameters")
     return parameters();
   if (flag == "--editor")
     return editorTest();
   if (flag == "--render" && argc > 2)
     return renderSong(juce::File::getCurrentWorkingDirectory().getChildFile(argv[2]));
-  std::cerr << "usage: AtlasSpeechTests --syllables | --phrase | --pitch | --envelope | --sequence | --parameters | --editor | "
+  std::cerr << "usage: AtlasSpeechTests --syllables | --phrase | --pitch | --envelope | --legato | --sequence | --parameters | --editor | "
                "--render <file.wav>\n";
   return 2;
 }

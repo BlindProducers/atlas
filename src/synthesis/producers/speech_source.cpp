@@ -87,6 +87,37 @@ namespace vital {
     return static_cast<float>(x) * (2.0f / 4294967295.0f) - 1.0f;
   }
 
+  void SpeechSource::followPitch(VoiceState& state, const speech::Phrase& phrase, float frequency) {
+    const int count = static_cast<int>(phrase.layers.size());
+    if (count < 2 || state.layer < 0 || state.layer >= count || frequency <= 0.0f)
+      return;
+    const int best = phrase.layerFor(frequency);
+    if (best == state.layer)
+      return;
+    auto distance = [&](int layer) {
+      return std::abs(std::log(frequency / phrase.layers[static_cast<size_t>(layer)].frequency));
+    };
+    // Half a semitone of hysteresis, so a bend or vibrato near the middle
+    // of two layers does not flip between them.
+    constexpr float kHysteresis = 0.5f * 0.0577622650f;
+    if (distance(state.layer) - distance(best) < kHysteresis)
+      return;
+    const speech::Layer& from = phrase.layers[static_cast<size_t>(state.layer)];
+    const speech::Layer& to = phrase.layers[static_cast<size_t>(best)];
+    if (state.syllable < 0 || state.syllable >= static_cast<int>(from.syllables.size()) ||
+        state.syllable >= static_cast<int>(to.syllables.size()))
+      return;
+    const speech::Syllable& old_syllable = from.syllables[static_cast<size_t>(state.syllable)];
+    const speech::Syllable& new_syllable = to.syllables[static_cast<size_t>(state.syllable)];
+    // The same place in the syllable: the hold point while holding, else the
+    // same fraction of the way through. Ringing grains finish where they are.
+    if (state.holding && new_syllable.hold_point >= 0)
+      state.position = new_syllable.hold_point;
+    else if (old_syllable.length() > 0)
+      state.position *= static_cast<double>(new_syllable.length()) / old_syllable.length();
+    state.layer = best;
+  }
+
   void SpeechSource::startSyllable(VoiceState& state, uint32_t generation, int syllable, int layer) {
     // Grains of the previous syllable ring out; only new grains change.
     state.generation = generation;
@@ -204,7 +235,7 @@ namespace vital {
     const float sample_rate = getSampleRate();
     const poly_float note_input = input(kMidi)->at(0);
     const poly_mask reset_mask = getResetMask(kReset);
-    const Output* events = input(kVoiceEvent)->source;
+    const Output* events = input(kRetrigger)->source;
     const bool own_envelope = static_cast<int>(input(kAmpEnvMode)->at(0)[0] + 0.5f) == kVoiceEnvelope;
     const float steady_in = 1.0f / std::max(1.0f, kSteadyInSeconds * sample_rate);
     const float steady_out = 1.0f / std::max(1.0f, kSteadyOutSeconds * sample_rate);
@@ -260,6 +291,8 @@ namespace vital {
           return nullptr;
         return &layer.syllables[static_cast<size_t>(state.syllable)];
       };
+      if (phrase != nullptr && state.singing)
+        followPitch(state, *phrase, frequency);
       const speech::Syllable* syllable = current_syllable();
 
       for (int i = 0; i < count; ++i) {

@@ -20,7 +20,8 @@ namespace vital {
     public:
       enum {
         kReset,
-        kVoiceEvent,
+        // Note-ons except mono legato transitions, and note-offs.
+        kRetrigger,
         kMidi,
         kNumInputs
       };
