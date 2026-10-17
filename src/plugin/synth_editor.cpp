@@ -2778,9 +2778,23 @@ namespace {
     return readableId(id);
   }
 
+  // The arpeggiator runs outside the voices and reads its modulation as one
+  // value a block, and every step it plays is a new note. A source that a
+  // note restarts or sets (an envelope, the note-on random, velocity, pitch,
+  // pressure on the key, which never reaches an arp note anyway) cannot shape
+  // its speed, so its rates and time mode take only sources that run on
+  // their own or that a player moves by hand.
+  bool sourceFitsArpeggiator(const String& source_id) {
+    return source_id.startsWith("lfo_") || source_id.startsWith("random_") ||
+           source_id.startsWith("macro_") || source_id == "mod_wheel" || source_id == "pitch_wheel";
+  }
+
   bool isInvalidModulationPair(const String& source_id, const String& destination_id) {
     if (source_id.isEmpty() || destination_id.isEmpty())
       return false;
+
+    if (arpeggiatorForId(destination_id) > 0 && !sourceFitsArpeggiator(source_id))
+      return true;
 
     // An oscillator's audio can't modulate the oscillator itself (no self FM yet).
     if (const int slot = vital::source_types::slotForOutputSource(source_id.toStdString()); slot >= 0)
@@ -13945,6 +13959,12 @@ void SynthEditor::connectModulationAndPromptForAmount(const String& sourceId, co
                                                       Component& target) {
   if (sourceId.isEmpty() || destinationId.isEmpty())
     return;
+  if (arpeggiatorForId(destinationId) > 0 && !sourceFitsArpeggiator(sourceId)) {
+    postPluginAnnouncement(modulationSourceLabelForId(sourceId) +
+                           " cannot modulate the arpeggiator: every step it plays is a new note",
+                           AccessibilityHandler::AnnouncementPriority::high);
+    return;
+  }
   if (isInvalidModulationPair(sourceId, destinationId)) {
     postPluginAnnouncement(modulationSourceLabelForId(sourceId) + " cannot modulate its own controls",
                                            AccessibilityHandler::AnnouncementPriority::high);

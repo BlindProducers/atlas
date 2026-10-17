@@ -928,6 +928,7 @@ int main(int argc, char** argv) {
     testGranularSizeModeNamesBothChoices();
     testLevelsAndAmountsReadAsPercent();
     testSlotTypeRowsFollowTheType();
+    testArpeggiatorRatesOfferOnlyFreeRunningSources();
     testWavetableEditingOnASlotSwitchedToWavetable();
     testSwitchingChoiceKeepsItsControl();
     testAnalogSwitchKeepsItsControl();
