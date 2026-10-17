@@ -27,6 +27,8 @@
 #include "sample_module.h"
 #include "sample_source.h"
 #include "spectral_module.h"
+#include "speech_module.h"
+#include "speech_slot.h"
 #include "synth_constants.h"
 #include "wavetable.h"
 
@@ -45,6 +47,7 @@ namespace vital {
       SynthModule(kNumInputs, kNumOutputs), slot_(slot), prefix_(source_types::slotPrefix(slot)),
       beats_per_second_(beats_per_second), wavetable_(std::make_shared<Wavetable>(kNumOscillatorWaveFrames)),
       sample_(std::make_shared<Sample>()), multisample_(std::make_shared<MultiSampleSlot>()),
+      speech_(std::make_shared<SpeechSlot>()),
       playhead_(std::make_shared<PlayheadOutput>()), modulation_output_(std::make_shared<ModulationOutput>()),
       was_on_(std::make_shared<bool>(true)), state_(std::make_shared<ActiveState>()),
       type_controls_(std::make_shared<std::array<TypeControls, source_types::kNumTypes>>()) {
@@ -85,8 +88,12 @@ namespace vital {
   SynthModule* SourceSlotModule::createTypeModuleFor(int slot, int type, std::shared_ptr<Wavetable> wavetable,
                                                      std::shared_ptr<Sample> sample,
                                                      const Output* beats_per_second,
-                                                     std::shared_ptr<MultiSampleSlot> multisample) {
+                                                     std::shared_ptr<MultiSampleSlot> multisample,
+                                                     std::shared_ptr<SpeechSlot> speech) {
     switch (type) {
+      case source_types::kSpeech:
+        return new SpeechModule(source_types::groupPrefix(slot, type), std::move(speech),
+                                source_types::slotPrefix(slot));
       case source_types::kMultiSample:
         return new MultiSampleModule(source_types::groupPrefix(slot, type), std::move(multisample),
                                      source_types::slotPrefix(slot));
@@ -115,7 +122,7 @@ namespace vital {
   }
 
   SynthModule* SourceSlotModule::createTypeModule(int type) const {
-    return createTypeModuleFor(slot_, type, wavetable_, sample_, beats_per_second_, multisample_);
+    return createTypeModuleFor(slot_, type, wavetable_, sample_, beats_per_second_, multisample_, speech_);
   }
 
   void SourceSlotModule::init() {
@@ -132,6 +139,7 @@ namespace vital {
     multisample_amp_env_ = find_control("multisample_amp_env");
     wurli_amp_env_ = find_control("wurli_amp_env");
     b3_amp_env_ = find_control("b3_amp_env");
+    speech_amp_env_ = find_control("speech_amp_env");
     SynthModule::init();
   }
 
@@ -276,6 +284,18 @@ namespace vital {
         state_->modulation_target = organ;
         break;
       }
+      case source_types::kSpeech: {
+        auto* speech = static_cast<SpeechModule*>(module);
+        speech->useInput(input(kReset), SpeechModule::kReset);
+        speech->useInput(input(kVoiceEvent), SpeechModule::kVoiceEvent);
+        speech->useInput(input(kMidi), SpeechModule::kMidi);
+        speech->useInput(input(kRetrigger), SpeechModule::kRetrigger);
+        speech->useOutput(output(kRaw), SpeechModule::kRaw);
+        speech->useOutput(output(kLevelled), SpeechModule::kLevelled);
+        speech->useOutput(output(kHold), SpeechModule::kHold);
+        state_->modulation_target = speech;
+        break;
+      }
       case source_types::kNoise: {
         auto* noise = static_cast<NoiseModule*>(module);
         noise->useInput(input(kReset), NoiseModule::kReset);
@@ -380,6 +400,8 @@ namespace vital {
       return wurli_amp_env_ != nullptr && wurli_amp_env_->value() < 0.5f;
     if (state_->active_type == source_types::kOpenB3)
       return b3_amp_env_ != nullptr && b3_amp_env_->value() < 0.5f;
+    if (state_->active_type == source_types::kSpeech)
+      return speech_amp_env_ != nullptr && speech_amp_env_->value() < 0.5f;
     return false;
   }
 
@@ -428,9 +450,9 @@ namespace vital {
       output(kHold)->clearBuffer();
       playhead_->output()->buffer[0] = 0.0f;
     }
-    // Only a sounding Multi-sample, OpenWurli or OpenB3 type holds the voice open.
+    // Only a sounding Multi-sample, OpenWurli, OpenB3 or Speech type holds the voice open.
     if (!on || (state.active_type != source_types::kMultiSample && state.active_type != source_types::kOpenWurli &&
-                state.active_type != source_types::kOpenB3)) {
+                state.active_type != source_types::kOpenB3 && state.active_type != source_types::kSpeech)) {
       Output* hold = output(kHold);
       if (poly_float::notEqual(hold->buffer[0], 0.0f).anyMask())
         hold->clearBuffer();

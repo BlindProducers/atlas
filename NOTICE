@@ -43,6 +43,16 @@ their sources.
   type, the Scanner Vibrato effect and Analogue Rotary's OpenB3 Whirl model
   (src/synthesis/effects/openb3, ported from C to C++). OpenB3 and setBfree
   are not affiliated with Hammond or Leslie.
+- OpenEVV by Stanislaw Przedzinkowski, the OpenEVV SAPI5 contributors and Felix
+  Steindorff (MIT, https://github.com/Mudb0y/openevv): the Speech oscillator
+  type's text-to-speech engine, built from the opt-in third_party/openevv
+  submodule when it is fetched (cmake/openevv.cmake). Its language data
+  (lang/) and two lifted tables are IBM's and ETI's and are not covered by
+  the MIT licence or by Atlas's GPL; see
+  src/synthesis/effects/openevv/README.atlas.md before distributing a build
+  that includes it. IBM, ViaVoice and Embedded ViaVoice are trademarks of IBM;
+  Eloquence is a trademark of its owner. OpenEVV and Atlas are not affiliated
+  with them.
 - NVDA's controller interface by NV Access (LGPL 2.1,
   https://github.com/nvaccess/nvda): the interface definition Atlas builds its
   NVDA speech client from on Windows (third_party/nvda_controller).

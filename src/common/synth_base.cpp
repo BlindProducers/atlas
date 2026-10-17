@@ -20,6 +20,8 @@
 #include "multisample_slot.h"
 #include "source_types.h"
 #include "source_slot_module.h"
+#include "speech_manager.h"
+#include "speech_slot.h"
 
 #include "sample_source.h"
 #include "sound_engine.h"
@@ -176,6 +178,18 @@ SynthBase::SynthBase() : expired_(false) {
   memory_index_ = 0;
 
   controls_ = engine_->getControls();
+  // The map is complete now and never changes shape, so the speech worker may read it.
+  speech_manager_ = std::make_unique<atlas::openevv::SpeechManager>(
+      [this](int slot, const std::string& text) { return speechRequest(slot, text); },
+      [this](int slot, std::shared_ptr<const atlas::openevv::Utterance> utterance, uint64_t ticket) {
+        vital::SpeechSlot* target = engine_->getSpeech(slot);
+        std::shared_ptr<const atlas::openevv::Utterance> dropped;
+        {
+          ScopedLock lock(getCriticalSection());
+          dropped = target->setUtterance(std::move(utterance), ticket);
+        }
+        // `dropped` is freed here, outside the lock.
+      });
   // The engine built its default slot types in its own init; the default
   // (one-frame) tables are already rendered, so only the flags need setting.
   for (int i = 0; i < vital::kNumOscillators; ++i)
@@ -917,6 +931,43 @@ std::vector<std::pair<std::string, vital::ConvolutionReverbModule*>> SynthBase::
   return engine_->getConvolutionReverbModules();
 }
 
+vital::SpeechSlot* SynthBase::getSpeechSlot(int slot) {
+  if (slot < 0 || slot >= vital::kNumOscillators)
+    return nullptr;
+  return engine_->getSpeech(slot);
+}
+
+void SynthBase::stopSpeechManager() {
+  speech_manager_ = nullptr;
+}
+
+std::optional<atlas::openevv::RenderRequest> SynthBase::speechRequest(int slot, const std::string& text) const {
+  const std::string prefix = vital::source_types::slotPrefix(slot);
+  const auto value = [this, &prefix](const std::string& suffix, float fallback) {
+    const auto found = controls_.find(prefix + suffix);
+    return found == controls_.end() ? fallback : found->second->value();
+  };
+  if (static_cast<int>(value("type", 0.0f) + 0.5f) != vital::source_types::kSpeech)
+    return std::nullopt;
+  const auto whole = [&value](const std::string& suffix, float fallback, float scale) {
+    return static_cast<int>(std::lround(value("speech_" + suffix, fallback) * scale));
+  };
+  atlas::openevv::RenderRequest request;
+  request.text = text;
+  request.language = whole("language", 0.0f, 1.0f);
+  request.annotations = whole("annotations", 0.0f, 1.0f) != 0;
+  atlas::openevv::VoiceSettings& voice = request.voice;
+  voice.gender = whole("gender", 0.0f, 1.0f);
+  voice.head_size = whole("head_size", 0.5f, 100.0f);
+  voice.pitch_baseline = whole("pitch_baseline", 0.65f, 100.0f);
+  voice.pitch_fluctuation = whole("pitch_fluctuation", 0.3f, 100.0f);
+  voice.roughness = whole("roughness", 0.0f, 100.0f);
+  voice.breathiness = whole("breathiness", 0.0f, 100.0f);
+  voice.speed = whole("speed", 50.0f, 1.0f);
+  voice.volume = whole("volume", 0.92f, 100.0f);
+  return request;
+}
+
 json SynthBase::saveToJson() {
   return LoadSave::stateToJson(this, getCriticalSection());
 }
@@ -929,6 +980,10 @@ void SynthBase::initEngine() {
   clearPendingGuiUpdates();
   clearModulations();
   multisample_manager_->clearAll();
+  if (speech_manager_ != nullptr) {
+    for (int i = 0; i < vital::kNumOscillators; ++i)
+      speech_manager_->setText(i, "");
+  }
   if (getWavetableCreator(0)) {
     for (int i = 0; i < vital::kNumOscillators; ++i)
       getWavetableCreator(i)->init();

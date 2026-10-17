@@ -16,6 +16,8 @@
 
 #pragma once
 
+#include <optional>
+
 #include "JuceHeader.h"
 #include "concurrentqueue/concurrentqueue.h"
 #include "atlas_arpeggiator.h"
@@ -41,6 +43,7 @@ namespace vital {
   class Sample;
   class WaveFrame;
   class Wavetable;
+  class SpeechSlot;
 }
 
 class SynthGuiInterface;
@@ -49,6 +52,11 @@ namespace vital {
 namespace multisample {
   class Manager;
 }
+}
+
+namespace atlas::openevv {
+  class SpeechManager;
+  struct RenderRequest;
 }
 
 class SynthBase : public MidiManager::Listener {
@@ -106,6 +114,16 @@ class SynthBase : public MidiManager::Listener {
     vital::Sample* getSample(int index);
     // Loads and tracks each oscillator slot's SFZ/SF2 instrument.
     vital::multisample::Manager* getMultiSampleManager() { return multisample_manager_.get(); }
+    // The text of each Speech oscillator slot and its renders.
+    atlas::openevv::SpeechManager* getSpeechManager() { return speech_manager_.get(); }
+    // A slot's speech as the engine plays it (which piece a key played last).
+    vital::SpeechSlot* getSpeechSlot(int slot);
+    // What a slot's text renders as now: its Speech controls, or nothing
+    // when the slot is another type. Any thread.
+    std::optional<atlas::openevv::RenderRequest> speechRequest(int slot, const std::string& text) const;
+    // Stops the speech worker. Every subclass calls it first in its
+    // destructor: the worker hands renders over under getCriticalSection().
+    void stopSpeechManager();
     // The container preset being read, while its state is applied (its
     // instruments' files are inside it).
     const File& multiSampleContainer() const { return multisample_container_; }
@@ -279,6 +297,8 @@ class SynthBase : public MidiManager::Listener {
     // Declared after the engine so it is destroyed first.
     std::unique_ptr<vital::multisample::Manager> multisample_manager_;
     File multisample_container_;
+    // Declared after the engine so its thread stops first.
+    std::unique_ptr<atlas::openevv::SpeechManager> speech_manager_;
     std::unique_ptr<MidiManager> midi_manager_;
     std::unique_ptr<MidiKeyboardState> keyboard_state_;
     std::array<std::array<AtlasArpeggiator, 8>, vital::kNumArpeggiators> arpeggiators_;
@@ -373,6 +393,8 @@ class SynthBase : public MidiManager::Listener {
 
 class HeadlessSynth : public SynthBase {
   public:
+    ~HeadlessSynth() override { stopSpeechManager(); }
+
     virtual const CriticalSection& getCriticalSection() override {
       return critical_section_;
     }

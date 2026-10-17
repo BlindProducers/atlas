@@ -25,6 +25,7 @@
 #include "multisample_loader.cpp"
 #include "multisample_container.cpp"
 #include "multisample_manager.cpp"
+#include "speech_manager.cpp"
 #include "startup.cpp"
 #include "synth_gui_interface.cpp"
 #include "synth_parameters.cpp"

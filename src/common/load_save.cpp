@@ -17,6 +17,7 @@
 #include "load_save.h"
 #include "multisample_container.h"
 #include "multisample_manager.h"
+#include "speech_manager.h"
 #include <mutex>
 #include "source_types.h"
 #include "legacy_source_aliases.h"
@@ -391,6 +392,13 @@ json LoadSave::stateToJson(SynthBase* synth, const CriticalSection& critical_sec
       if (!spec.empty())
         settings_data[prefix + "multisample"] = spec.toJson(false);
     }
+
+    // A slot's speech text is kept whatever its type, as its controls are.
+    if (atlas::openevv::SpeechManager* speech = synth->getSpeechManager()) {
+      const std::string text = speech->text(slot);
+      if (!text.empty())
+        settings_data[prefix + "speech_text"] = text;
+    }
   }
 
   json convolution_irs = json::object();
@@ -586,6 +594,18 @@ void LoadSave::loadSlotInstruments(SynthBase* synth, const json& settings) {
       spec = vital::multisample::InstrumentSpec::fromJson(data);
     multisample->applySpec(slot, spec, synth->multiSampleContainer());
   }
+}
+
+void LoadSave::loadSlotSpeech(SynthBase* synth, const json& settings) {
+  atlas::openevv::SpeechManager* speech = synth->getSpeechManager();
+  if (speech == nullptr)
+    return;
+  for (int slot = 0; slot < vital::kNumOscillators; ++slot) {
+    const auto text = settings.find(vital::source_types::slotPrefix(slot) + "speech_text");
+    speech->setText(slot, text != settings.end() && text->is_string() ? text->get<std::string>() : std::string());
+  }
+  // Rendered now, with the loaded controls, so the first note plays the text.
+  speech->renderPendingNow();
 }
 
 void LoadSave::migrateFixedSourcesToSlots(json& settings, json& modulations) {
@@ -1734,6 +1754,7 @@ bool LoadSave::jsonToState(SynthBase* synth, std::map<std::string, String>& save
   loadModulations(synth, modulations);
   loadSlotSamples(synth, settings);
   loadSlotInstruments(synth, settings);
+  loadSlotSpeech(synth, settings);
   loadConvolutionIrs(synth, objectFieldOrEmpty(settings, "convolution_irs"));
   loadWavetables(synth, wavetables);
   loadFilterTables(synth, objectFieldOrEmpty(settings, "filter_tables"));

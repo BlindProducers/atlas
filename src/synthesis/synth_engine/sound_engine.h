@@ -36,6 +36,7 @@ namespace vital {
   class Decimator;
   class PeakMeter;
   class MultiSampleSlot;
+  class SpeechSlot;
   struct MultiSampleMidiState;
   class Sample;
   class SourceSlotModule;
@@ -113,6 +114,7 @@ namespace vital {
       Sample* getSample(int index);
       SourceSlotModule* getSourceSlot(int index);
       MultiSampleSlot* getMultiSample(int index);
+      SpeechSlot* getSpeech(int index);
       // Message thread with processing paused: build every oscillator slot's active type module.
       bool prepareSelectedSources();
       // Message thread with processing paused: bring every voice copy of the

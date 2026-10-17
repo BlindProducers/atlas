@@ -572,6 +572,18 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void addMultiSampleControlsGroup(int oscillator, Component& parent, int& y, int x, int width,
                                      int& focus_order, const String& section_name,
                                      const GroupRowAppender& appendRows = {});
+    // Speech oscillators: the text to speak, its status, Restart and the voice presets.
+    void addSpeechControlsGroup(int oscillator, Component& parent, int& y, int x, int width,
+                                int& focus_order, const String& section_name,
+                                const GroupRowAppender& appendRows = {});
+    void commitSpeechText(int oscillator, const String& text);
+    void restartSpeech(int oscillator);
+    void showSpeechVoicePresetMenu(int oscillator, Component& target);
+    String speechStatusTitle(int oscillator) const;
+    String speechDetails(int oscillator) const;
+    // Keeps the status and text rows on what is rendered, and announces a
+    // render of text typed here.
+    void refreshSpeechStatus();
     void chooseInstrumentFile(int oscillator);
     // Moves an SF2 slot to the previous (-1) or next (1) preset, wrapping.
     void stepInstrumentPreset(int oscillator, int direction);
@@ -995,6 +1007,12 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
       uint32 announced_at = 0;
     };
     std::array<InstrumentAnnouncementState, vital::kNumOscillators> instrument_announcements_ {};
+    struct SpeechAnnouncementState {
+      uint32_t renders = 0;
+      int state = -1;
+      bool user_edit = false;
+    };
+    std::array<SpeechAnnouncementState, vital::kNumOscillators> speech_announcements_ {};
     std::unique_ptr<FileChooser> lfo_chooser_;
     std::unique_ptr<FileChooser> fx_chooser_;
     std::unique_ptr<FileChooser> fx_bus_chooser_;

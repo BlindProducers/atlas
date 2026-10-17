@@ -766,6 +766,10 @@ namespace vital {
     return voice_handler_->getSourceSlot(index)->getMultiSample();
   }
 
+  SpeechSlot* SoundEngine::getSpeech(int index) {
+    return voice_handler_->getSourceSlot(index)->getSpeech();
+  }
+
   void SoundEngine::controlChange(int controller, int value, int sample) {
     // All Controllers Off returns every CC to the instrument defaults.
     if (controller == 121)

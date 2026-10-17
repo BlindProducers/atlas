@@ -182,6 +182,8 @@ target_sources(Atlas PRIVATE
   src/synthesis/producers/openb3_source.cpp
   src/synthesis/modules/openb3_module.cpp
   src/synthesis/modules/scanner_vibrato_module.cpp
+  # OpenEVV's renders and the syllable splitter, outside the fast-math unit.
+  src/synthesis/effects/openevv/openevv_engine.cpp
   src/unity_build/common.cpp
   src/unity_build/synthesis.cpp
   src/unity_build/plugin.cpp)
@@ -220,6 +222,7 @@ target_include_directories(Atlas PRIVATE
   src/synthesis/effects
   src/synthesis/effects/braids
   src/synthesis/effects/openwurli
+  src/synthesis/effects/openevv
   src/synthesis/filters
   src/synthesis/framework
   src/synthesis/lookups
@@ -229,6 +232,9 @@ target_include_directories(Atlas PRIVATE
   src/synthesis/utilities
   third_party
   third_party/concurrentqueue)
+
+# The Speech oscillator's engine, when third_party/openevv is fetched.
+include(cmake/openevv.cmake)
 
 target_compile_definitions(Atlas PRIVATE
   VITAL_ACCESSIBLE_UI=1
@@ -651,6 +657,26 @@ if(ATLAS_BUILD_TIMING_TESTS)
   foreach(openb3_test self oscillator drawbars percussion envelope coherence parameters scanner whirl editor)
     add_test(NAME atlas_openb3_${openb3_test} COMMAND AtlasOpenB3Tests --${openb3_test})
   endforeach()
+
+  # The Speech oscillator, when OpenEVV is built in (cmake/openevv.cmake).
+  if(TARGET atlas_openevv)
+    juce_add_console_app(AtlasSpeechTests PRODUCT_NAME "Atlas Speech Tests")
+    juce_generate_juce_header(AtlasSpeechTests)
+    target_sources(AtlasSpeechTests PRIVATE tests/speech_tests.cpp)
+    target_include_directories(AtlasSpeechTests PRIVATE
+      src/common src/common/multisample src/common/wavetable src/plugin src/interface/look_and_feel
+      src/synthesis/framework src/synthesis/modules src/synthesis/effects src/synthesis/effects/openevv
+      src/synthesis/filters src/synthesis/producers src/synthesis/synth_engine
+      src/synthesis/lookups src/synthesis/modulators src/synthesis/utilities third_party)
+    target_compile_definitions(AtlasSpeechTests PRIVATE
+      VITAL_ACCESSIBLE_UI=1 HEADLESS=0 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_DSP_USE_SHARED_FFTW=0
+      JUCE_MODAL_LOOPS_PERMITTED=1)
+    target_link_libraries(AtlasSpeechTests PRIVATE
+      Atlas atlas_openevv juce::juce_audio_utils juce::juce_dsp juce::juce_gui_extra juce::juce_recommended_config_flags)
+    foreach(speech_test engine split languages voice oscillator stepping state editor)
+      add_test(NAME atlas_speech_${speech_test} COMMAND AtlasSpeechTests --${speech_test})
+    endforeach()
+  endif()
 
   # Optional oracle: OpenB3's own Beatrix engine (C, from the opt-in
   # third_party/OpenB3 submodule) renders the reference. Production builds do

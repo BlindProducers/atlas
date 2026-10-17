@@ -42,6 +42,7 @@ namespace vital {
       kBraids,
       kOpenWurli,
       kOpenB3,
+      kSpeech,
       kNumTypes
     };
 
@@ -50,7 +51,7 @@ namespace vital {
       // Parameter group inside the slot: "" shares the slot's wavetable
       // parameters (osc_N_wave_frame ...), "sample" owns osc_N_sample_*,
       // "braids" owns osc_N_braids_*, "wurli" owns osc_N_wurli_*, "b3" owns
-      // osc_N_b3_*.
+      // osc_N_b3_*, "speech" owns osc_N_speech_*.
       const char* group;
       bool uses_wavetable;
       bool uses_sample;
@@ -73,6 +74,7 @@ namespace vital {
       { "braids", "braids", false, false, true, false, true, true },
       { "openwurli", "wurli", false, false, true, false, false, true },
       { "openb3", "b3", false, false, true, false, false, true },
+      { "speech", "speech", false, false, true, false, false, true },
     };
 
     inline constexpr const Description& describe(int type) {

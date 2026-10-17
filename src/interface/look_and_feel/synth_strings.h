@@ -231,6 +231,7 @@ namespace strings {
     "Braids",
     "OpenWurli",
     "OpenB3",
+    "Speech",
   };
 
   const std::string kMultiSampleAmpEnvNames[] = {
@@ -247,6 +248,17 @@ namespace strings {
     "Organ",
     "Envelope 1",
   };
+
+  // The Speech oscillator type (OpenEVV). Languages in atlas::openevv::kLanguages order.
+  const std::string kSpeechAmpEnvNames[] = { "Speech", "Envelope 1" };
+  const std::string kSpeechLanguageNames[] = {
+    "English (US)", "English (UK)", "German", "Spanish (Spain)", "Spanish (Mexico)", "French (France)",
+    "French (Canada)", "Italian", "Finnish", "Portuguese (Brazil)"
+  };
+  const std::string kSpeechGenderNames[] = { "Male", "Female" };
+  const std::string kSpeechSplitNames[] = { "Syllable", "Word", "Whole text" };
+  const std::string kSpeechPitchModeNames[] = { "Key", "Spoken" };
+  const std::string kSpeechQualityNames[] = { "11 kHz", "22 kHz" };
 
   const std::string kOpenB3PercussionVolumeNames[] = { "Normal", "Soft" };
   const std::string kOpenB3PercussionDecayNames[] = { "Fast", "Slow" };

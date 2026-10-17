@@ -29,6 +29,7 @@
 namespace vital {
   class MultiSampleSlot;
   class OscillatorModule;
+  class SpeechSlot;
   class Sample;
   class Wavetable;
 
@@ -58,8 +59,8 @@ namespace vital {
       enum {
         kRaw,
         kLevelled,
-        // 1 per voice while a Multi-sample instrument, an OpenWurli reed or an
-        // OpenB3 key still sounds (holds the voice open).
+        // 1 per voice while a Multi-sample instrument, an OpenWurli reed, an
+        // OpenB3 key or a piece of speech still sounds (holds the voice open).
         kHold,
         kNumOutputs
       };
@@ -80,7 +81,8 @@ namespace vital {
       int requestedType() const;
       int activeType() const { return state_->active_type; }
       // A Multi-sample type in Instrument envelope mode, OpenWurli in Reed
-      // mode or OpenB3 in Organ mode: its own envelopes shape it, not Env 1.
+      // mode, OpenB3 in Organ mode or Speech in Speech mode: its own envelopes
+      // shape it, not Env 1.
       bool holdsVoiceOpen() const;
       bool hasActiveModule() const { return state_->module != nullptr; }
       int slot() const { return slot_; }
@@ -89,6 +91,7 @@ namespace vital {
       Wavetable* getWavetable() { return wavetable_.get(); }
       Sample* getSample() { return sample_.get(); }
       MultiSampleSlot* getMultiSample() { return multisample_.get(); }
+      SpeechSlot* getSpeech() { return speech_.get(); }
       Output* getPhaseOutput() const { return playhead_->output(); }
       // The slot's audio as an audio-rate modulation source (osc_N_output).
       Output* getModulationOutput() const { return modulation_output_->output(); }
@@ -124,7 +127,8 @@ namespace vital {
       static const std::vector<ControlSpec>& describeType(int type);
       static SynthModule* createTypeModuleFor(int slot, int type, std::shared_ptr<Wavetable> wavetable,
                                               std::shared_ptr<Sample> sample, const Output* beats_per_second,
-                                              std::shared_ptr<MultiSampleSlot> multisample = nullptr);
+                                              std::shared_ptr<MultiSampleSlot> multisample = nullptr,
+                                              std::shared_ptr<SpeechSlot> speech = nullptr);
       SynthModule* createTypeModule(int type) const;
       void connectTypeModule(SynthModule* module, int type);
       void destroyActiveModule();
@@ -137,6 +141,7 @@ namespace vital {
       std::shared_ptr<Wavetable> wavetable_;
       std::shared_ptr<Sample> sample_;
       std::shared_ptr<MultiSampleSlot> multisample_;
+      std::shared_ptr<SpeechSlot> speech_;
       // Owns the playhead output so it can serve as a modulation source: the
       // engine enables and queries a source's owner when a route connects.
       class PlayheadOutput : public Processor {
@@ -166,6 +171,7 @@ namespace vital {
       Value* multisample_amp_env_ = nullptr;
       Value* wurli_amp_env_ = nullptr;
       Value* b3_amp_env_ = nullptr;
+      Value* speech_amp_env_ = nullptr;
       Value* secondary_distortion_type_ = nullptr;
       // The output buffers are shared by every voice copy, so the "clear once
       // after switching off" flag must be shared too: the copy that last wrote

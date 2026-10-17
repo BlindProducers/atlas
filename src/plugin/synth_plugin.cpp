@@ -190,6 +190,8 @@ SynthPlugin::SynthPlugin() {
 }
 
 SynthPlugin::~SynthPlugin() {
+  // Its worker takes this plugin's lock, which goes with this object.
+  stopSpeechManager();
   clearFxAutomationAssignments(false);
   // A MIDI learn completed while the editor was closed is saved now.
   midi_manager_->commitPendingMidiLearn();

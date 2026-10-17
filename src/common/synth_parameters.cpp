@@ -1930,6 +1930,58 @@ namespace vital {
       ValueDetails::kLinear, false, "", "OpenB3 Tune", nullptr },
   };
 
+  // Speech oscillator type (OpenEVV, IBM's Embedded ViaVoice, the engine
+  // screen reader users know as Eloquence): registered once per slot as
+  // osc_N_speech_*. Language to Annotations decide how the text is rendered
+  // (SpeechManager renders it again when one changes); the rest act on each
+  // note. The voice defaults are the language modules' first voice.
+  const ValueDetails ValueDetailsLookup::speech_slot_parameter_list[] = {
+    { "speech_language", 0x000000, 0.0, 9.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Speech Language", strings::kSpeechLanguageNames },
+    { "speech_gender", 0x000000, 0.0, 1.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Speech Gender", strings::kSpeechGenderNames },
+    { "speech_head_size", 0x000000, 0.0, 1.0, 0.5, 0.0, 100.0,
+      ValueDetails::kLinear, false, "%", "Speech Head Size", nullptr },
+    { "speech_pitch_baseline", 0x000000, 0.0, 1.0, 0.65, 0.0, 100.0,
+      ValueDetails::kLinear, false, "%", "Speech Pitch Baseline", nullptr },
+    { "speech_pitch_fluctuation", 0x000000, 0.0, 1.0, 0.3, 0.0, 100.0,
+      ValueDetails::kLinear, false, "%", "Speech Pitch Fluctuation", nullptr },
+    { "speech_roughness", 0x000000, 0.0, 1.0, 0.0, 0.0, 100.0,
+      ValueDetails::kLinear, false, "%", "Speech Roughness", nullptr },
+    { "speech_breathiness", 0x000000, 0.0, 1.0, 0.0, 0.0, 100.0,
+      ValueDetails::kLinear, false, "%", "Speech Breathiness", nullptr },
+    // The engine's own units: 50 is its usual rate, 250 its fastest.
+    { "speech_speed", 0x000000, 0.0, 250.0, 50.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Speech Speed", nullptr },
+    { "speech_volume", 0x000000, 0.0, 1.0, 0.92, 0.0, 100.0,
+      ValueDetails::kLinear, false, "%", "Speech Volume", nullptr },
+    { "speech_annotations", 0x000000, 0.0, 1.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Speech Annotations", strings::kOffOnNames },
+    // Speech: a piece sounds to its end and holds the voice open.
+    { "speech_amp_env", 0x000000, 0.0, 1.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Speech Amplitude Envelope", strings::kSpeechAmpEnvNames },
+    { "speech_split", 0x000000, 0.0, 2.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Speech Split", strings::kSpeechSplitNames },
+    { "speech_sustain", 0x000000, 0.0, 1.0, 1.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Speech Hold Vowel", strings::kOffOnNames },
+    { "speech_loop", 0x000000, 0.0, 1.0, 1.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Speech Loop Text", strings::kOffOnNames },
+    { "speech_restart_on_release", 0x000000, 0.0, 1.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Speech Restart On Release", strings::kOffOnNames },
+    { "speech_pitch_mode", 0x000000, 0.0, 1.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Speech Pitch Mode", strings::kSpeechPitchModeNames },
+    { "speech_intonation", 0x000000, 0.0, 1.0, 0.0, 0.0, 100.0,
+      ValueDetails::kLinear, false, "%", "Speech Intonation", nullptr },
+    { "speech_rate", 0x000000, 0.25, 4.0, 1.0, 0.0, 100.0,
+      ValueDetails::kLinear, false, "%", "Speech Rate", nullptr },
+    { "speech_quality", 0x000000, 0.0, 1.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Speech Quality", strings::kSpeechQualityNames },
+    { "speech_transpose", 0x000000, -48.0, 48.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Speech Transpose", nullptr },
+    { "speech_tune", 0x000000, -1.0, 1.0, 0.0, 0.0, 100.0,
+      ValueDetails::kLinear, false, "", "Speech Tune", nullptr },
+  };
+
   const ValueDetails ValueDetailsLookup::mod_parameter_list[] = {
     { "amount", 0x000000, -1.0, 1.0, 0.0, 0.0, 1.0,
       ValueDetails::kLinear, false, "", "Amount", nullptr },
@@ -2168,6 +2220,12 @@ namespace vital {
     for (int osc = 0; osc < kNumOscillators; ++osc) {
       addParameterGroup(b3_slot_parameter_list, num_b3_parameters, osc, kOscIdPrefix,
                         kOscNamePrefix, kOpenB3Version);
+    }
+    static constexpr int kSpeechVersion = 0x02011e;
+    const int num_speech_parameters = sizeof(speech_slot_parameter_list) / sizeof(ValueDetails);
+    for (int osc = 0; osc < kNumOscillators; ++osc) {
+      addParameterGroup(speech_slot_parameter_list, num_speech_parameters, osc, kOscIdPrefix,
+                        kOscNamePrefix, kSpeechVersion);
     }
 
     int num_filter_parameters = sizeof(filter_parameter_list) / sizeof(ValueDetails);

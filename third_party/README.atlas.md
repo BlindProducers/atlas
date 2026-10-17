@@ -46,6 +46,17 @@ it when `ATLAS_BUILD_TIMING_TESTS` is on:
   build its tonegen, vibrato and whirl C files with `tests/openb3/reference.c`;
   see `src/synthesis/effects/openb3/README.atlas.md`.
 
+Opt-in, built into Atlas when fetched:
+
+- `openevv/`: OpenEVV (https://github.com/Mudb0y/openevv at d2bc0c6), IBM's
+  Embedded ViaVoice text-to-speech engine rebuilt as C, for the Speech
+  oscillator type. Its engine is MIT; its language data is IBM's and ETI's and
+  is not licensed for redistribution, which is why it is opt-in and the
+  release workflow leaves it out. Fetch it with
+  `git submodule update --init --checkout third_party/openevv` (needs
+  Python 3 to write the rule code; not MSVC). See
+  `src/synthesis/effects/openevv/README.atlas.md`.
+
 Kept in this repository:
 
 - `scream/Source`: the BP Scream DSP (MIT, Cure Audio / exacoustics / Xynth

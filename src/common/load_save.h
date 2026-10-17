@@ -86,6 +86,8 @@ class LoadSave {
     static void loadSlotSamples(SynthBase* synth, const json& settings);
     // Multi-sample instruments (osc_N_multisample); slots without one are cleared.
     static void loadSlotInstruments(SynthBase* synth, const json& settings);
+    // Each oscillator slot's speech text (osc_N_speech_text), rendered before returning.
+    static void loadSlotSpeech(SynthBase* synth, const json& settings);
     // Rewrites a preset saved with fixed Sample/Granular/Spectral/Noise sources
     // into oscillator slots 5-8. Safe to call on presets already migrated.
     static void migrateFixedSourcesToSlots(json& settings, json& modulations);

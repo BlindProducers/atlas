@@ -17,6 +17,8 @@
 #include "synth_editor.h"
 #include "multisample_container.h"
 #include "multisample_manager.h"
+#include "speech_manager.h"
+#include "speech_slot.h"
 #include "delay.h"
 
 #include "synth_plugin.h"
@@ -2236,6 +2238,20 @@ namespace {
       }
     }
 
+    // Speech: the voice the text is rendered in, then how each key plays it.
+    if (id.startsWith("speech_")) {
+      const String suffix = id.fromFirstOccurrenceOf("speech_", false, false);
+      static const std::array<const char*, 21> speech_order = {{
+        "language", "gender", "head_size", "pitch_baseline", "pitch_fluctuation", "roughness", "breathiness",
+        "speed", "volume", "annotations", "split", "amp_env", "sustain", "loop", "restart_on_release", "pitch_mode",
+        "intonation", "rate", "quality", "transpose", "tune"
+      }};
+      for (int i = 0; i < static_cast<int>(speech_order.size()); ++i) {
+        if (suffix == speech_order[i])
+          return 5760 + i;
+      }
+    }
+
     for (int random = 1; random <= vital::kNumRandomLfos; ++random) {
       const String prefix = "random_" + String(random) + "_";
       if (!id.startsWith(prefix))
@@ -3143,6 +3159,58 @@ namespace {
       if (suffix == "transpose")
         return "Transpose the organ in semitones. The nearest of the 61 keys, from C2 to C7, gives the wiring.";
       if (suffix == "tune") return "Fine tune the organ in cents.";
+    }
+
+    if (legacy_id.startsWith("speech_")) {
+      const String suffix = legacy_id.fromFirstOccurrenceOf("speech_", false, false);
+      if (suffix == "language")
+        return "Choose the language the text is read in. Each has its own pronunciation rules, so type the text "
+               "in that language.";
+      if (suffix == "gender") return "Choose a male or female voice. It changes the voice source and its pitch.";
+      if (suffix == "head_size")
+        return "Set the size of the speaker's head. Smaller sounds like a child, larger like a big adult; it moves "
+               "the formants, the resonances that make each vowel.";
+      if (suffix == "pitch_baseline")
+        return "Set the voice's average pitch. With Pitch mode on Key the keys set the pitch instead, but this still "
+               "shapes the voice; with Spoken it is the pitch of middle C.";
+      if (suffix == "pitch_fluctuation")
+        return "Set how much the pitch moves as the voice speaks. 0% is a monotone; higher is more expressive. "
+               "Intonation decides how much of this movement a key keeps.";
+      if (suffix == "roughness") return "Add roughness to the voice, an irregular, creaky vibration.";
+      if (suffix == "breathiness") return "Add breath to the voice, a whispered noise under it.";
+      if (suffix == "speed")
+        return "Set how fast the engine speaks, in its own units: 50 is its usual rate, 0 its slowest and 250 its "
+               "fastest. Faster speech has shorter syllables. Rate changes the speed of each note instead.";
+      if (suffix == "volume") return "Set the engine's own volume, before the oscillator's level.";
+      if (suffix == "annotations")
+        return "Read Eloquence annotations in the text: a backquote and a command, such as backquote v b 80 for a "
+               "higher pitch or backquote p 500 for a pause. Off reads backquotes as spaces.";
+      if (suffix == "split")
+        return "Choose what each key plays: the next syllable, the next word, or the whole text. Keys pressed "
+               "together play the same piece.";
+      if (suffix == "amp_env")
+        return "Choose what shapes each note. Speech plays each piece to its end and keeps the voice open while it "
+               "sounds. Envelope 1 lets Envelope 1 shape it instead.";
+      if (suffix == "sustain")
+        return "Hold the vowel while the key is down. The piece pauses on its vowel until you release the key, then "
+               "finishes. Off plays each piece through at once.";
+      if (suffix == "loop") return "Start the text again after its last piece. Off leaves the keys silent at the end.";
+      if (suffix == "restart_on_release")
+        return "Start the text from its first piece whenever every key is released, so each phrase you play begins "
+               "at the start.";
+      if (suffix == "pitch_mode")
+        return "Choose where the pitch comes from. Key sings each piece at the key's pitch. Spoken keeps the "
+               "voice's own speaking melody, moved up or down by the key's distance from middle C.";
+      if (suffix == "intonation")
+        return "With Pitch mode on Key, keep this much of the voice's speaking melody around the key's pitch. 0% "
+               "sings each piece on one note.";
+      if (suffix == "rate")
+        return "Play each piece faster or slower without changing its pitch. 100% is the speed it was spoken at.";
+      if (suffix == "quality")
+        return "Choose the voice's sample rate. 11 kHz is Eloquence's own sound. 22 kHz keeps high notes steadier "
+               "and sounds a little different.";
+      if (suffix == "transpose") return "Transpose the voice in semitones.";
+      if (suffix == "tune") return "Fine tune the voice in cents.";
     }
 
     if (legacy_id.startsWith("wurli_")) {
@@ -6783,7 +6851,7 @@ std::unique_ptr<AccessibleParameterRow> SynthEditor::buildAccessibleParameterRow
         return std::make_unique<AccessibleParameterRow>(
             parameter, String(), std::function<String(double)>(), 1.0, 0.0, String(), String(),
             "Choose this oscillator's type: Wavetable, Analog, Sample, Granular, Spectral, Noise, Multi-sample, Braids, "
-            "OpenWurli or OpenB3. "
+            "OpenWurli, OpenB3 or Speech. "
             "Each type keeps its own settings, wavetable and sample for when you switch back.", true);
       }
       if (suffix == "analog_waveform")
@@ -7396,6 +7464,13 @@ void SynthEditor::addOscillatorSectionContent(int oscillator, const String& sect
                                   add_rows_to(dynamic_cast<AccessibleSectionHeader*>(&group),
                                               rows_in(OscillatorRowGroup::kType), inner_y, inner_width);
                                 });
+  }
+  else if (slot_type == vital::source_types::kSpeech) {
+    addSpeechControlsGroup(oscillator, parent, y, x, width, focus_order, section_name,
+                           [&](Component& group, int& inner_y, int inner_width) {
+                             add_rows_to(dynamic_cast<AccessibleSectionHeader*>(&group),
+                                         rows_in(OscillatorRowGroup::kType), inner_y, inner_width);
+                           });
   }
   else {
     add_group(OscillatorRowGroup::kType, type_name + " controls", type_name.toLowerCase() + " controls",
@@ -17700,6 +17775,261 @@ void SynthEditor::addMultiSampleControlsGroup(int oscillator, Component& parent,
 }
 
 namespace {
+  // The text box of a Speech oscillator: Escape puts back what it had.
+  class SpeechTextEditor : public TextEditor {
+    public:
+      using TextEditor::TextEditor;
+      String committed;
+  };
+
+  String speechSplitNoun(int split, int count) {
+    const String noun = split == atlas::openevv::kWords ? "word" : split == atlas::openevv::kWholeText ? "text" : "syllable";
+    return count == 1 ? noun : noun + "s";
+  }
+}
+
+void SynthEditor::addSpeechControlsGroup(int oscillator, Component& parent, int& y, int x, int width,
+                                         int& focus_order, const String& section_name,
+                                         const GroupRowAppender& append_rows) {
+  auto group = makeSectionHeader("Speech", groupRank("Oscillators"), false, section_name + " speech");
+  auto* group_ptr = group.get();
+  group_ptr->setDescription("The text " + section_name + " speaks, a piece per key, and its voice");
+  group_ptr->setExplicitFocusOrder(focus_order++);
+  parent.addAndMakeVisible(group_ptr);
+  if (auto* accessible_parent = dynamic_cast<AccessibleSectionHeader*>(&parent))
+    accessible_parent->addAccessibleChild(group_ptr);
+  row_focus_order_.push_back(group_ptr);
+  section_headers_.push_back(std::move(group));
+
+  int group_y = group_ptr->headerHeight() + 8;
+  auto place = [&](std::unique_ptr<Component> component, int height) {
+    auto* pointer = component.get();
+    pointer->setWantsKeyboardFocus(true);
+    pointer->setExplicitFocusOrder(focus_order++);
+    pointer->setBounds(10, group_y, jmax(200, width - 20), height);
+    group_ptr->addAndMakeVisible(pointer);
+    group_ptr->addAccessibleChild(pointer);
+    row_focus_order_.push_back(pointer);
+    section_headers_.push_back(std::move(component));
+    group_y += height + 6;
+    return pointer;
+  };
+  auto add_button = [&](const String& title, const String& description, std::function<void()> action) {
+    auto button = std::make_unique<OffscreenTextButton>(title);
+    button->setTitle(title);
+    button->setDescription(description);
+    button->setHelpText("Press Enter to " + description.toLowerCase());
+    button->onClick = std::move(action);
+    return static_cast<OffscreenTextButton*>(place(std::move(button), 38));
+  };
+
+  auto* manager = synth_.getSpeechManager();
+  auto editor = std::make_unique<SpeechTextEditor>("Text to speak");
+  auto* editor_ptr = editor.get();
+  editor_ptr->setTitle("Text to speak");
+  editor_ptr->setDescription("The text " + section_name + " speaks, a piece per key");
+  editor_ptr->setHelpText("Type the text, then press Enter to use it. Escape puts back the text in use.");
+  editor_ptr->setTextToShowWhenEmpty("Type what the oscillator says", Colours::grey);
+  editor_ptr->setMultiLine(false);
+  editor_ptr->setReturnKeyStartsNewLine(false);
+  editor_ptr->setSelectAllWhenFocused(false);
+  editor_ptr->committed = manager != nullptr ? String::fromUTF8(manager->text(oscillator).c_str()) : String();
+  editor_ptr->setText(editor_ptr->committed, dontSendNotification);
+  editor_ptr->onReturnKey = [this, oscillator, editor_ptr] {
+    editor_ptr->committed = editor_ptr->getText();
+    commitSpeechText(oscillator, editor_ptr->committed);
+  };
+  editor_ptr->onFocusLost = [this, oscillator, editor_ptr] {
+    if (editor_ptr->getText() != editor_ptr->committed) {
+      editor_ptr->committed = editor_ptr->getText();
+      commitSpeechText(oscillator, editor_ptr->committed);
+    }
+  };
+  editor_ptr->onEscapeKey = [editor_ptr] { editor_ptr->setText(editor_ptr->committed, dontSendNotification); };
+  editor_ptr->getProperties().set("SpeechText", oscillator);
+  place(std::move(editor), 38);
+
+  // The status reads what is rendered; Enter speaks the details.
+  auto* status = add_button(speechStatusTitle(oscillator), "Hear the details of the speech in " + section_name,
+                            [this, oscillator] {
+                              postPluginAnnouncement(speechDetails(oscillator),
+                                                     AccessibilityHandler::AnnouncementPriority::high);
+                            });
+  status->getProperties().set("SpeechStatus", oscillator);
+  add_button("Restart text", "Start the text of " + section_name + " again from its first piece",
+             [this, oscillator] { restartSpeech(oscillator); });
+  auto* preset = add_button("Voice preset", "Choose one of the engine's eight voices for " + section_name,
+                            [] { });
+  preset->onClick = [this, oscillator, preset] { showSpeechVoicePresetMenu(oscillator, *preset); };
+
+  if (append_rows)
+    append_rows(*group_ptr, group_y, width);
+  group_ptr->setBounds(x, y, width, group_y + 2);
+  y += group_y + 10;
+}
+
+void SynthEditor::commitSpeechText(int oscillator, const String& text) {
+  auto* manager = synth_.getSpeechManager();
+  if (manager == nullptr || !isPositiveAndBelow(oscillator, vital::kNumOscillators))
+    return;
+  const std::string utf8 = text.toStdString();
+  if (manager->text(oscillator) == utf8)
+    return;
+  manager->setText(oscillator, utf8);
+  synth_.markStateChanged();
+  speech_announcements_[static_cast<size_t>(oscillator)].user_edit = true;
+  if (text.isEmpty())
+    postPluginAnnouncement("Oscillator " + String(oscillator + 1) + " speech text cleared",
+                           AccessibilityHandler::AnnouncementPriority::high);
+}
+
+void SynthEditor::restartSpeech(int oscillator) {
+  if (auto* slot = synth_.getSpeechSlot(oscillator))
+    slot->requestRestart();
+  postPluginAnnouncement("Oscillator " + String(oscillator + 1) + " speech starts again from the first piece",
+                         AccessibilityHandler::AnnouncementPriority::high);
+}
+
+void SynthEditor::showSpeechVoicePresetMenu(int oscillator, Component& target) {
+  PopupMenu menu;
+  for (int voice = 0; voice < atlas::openevv::kNumPresetVoices; ++voice)
+    menu.addItem(voice + 1, atlas::openevv::kPresetVoiceNames[voice]);
+  Component::SafePointer<Component> safe_target(&target);
+  showAccessibleMenuAsync(menu, PopupMenu::Options().withTargetComponent(&target),
+                          [this, oscillator, safe_target](int result) {
+    if (result <= 0 || result > atlas::openevv::kNumPresetVoices || safe_target == nullptr)
+      return;
+    const atlas::openevv::VoiceSettings& voice = atlas::openevv::kPresetVoices[result - 1];
+    const String prefix = "osc_" + String(oscillator + 1) + "_speech_";
+    setParameterEngineValue(prefix + "gender", static_cast<float>(voice.gender));
+    setParameterEngineValue(prefix + "head_size", voice.head_size / 100.0f);
+    setParameterEngineValue(prefix + "pitch_baseline", voice.pitch_baseline / 100.0f);
+    setParameterEngineValue(prefix + "pitch_fluctuation", voice.pitch_fluctuation / 100.0f);
+    setParameterEngineValue(prefix + "roughness", voice.roughness / 100.0f);
+    setParameterEngineValue(prefix + "breathiness", voice.breathiness / 100.0f);
+    setParameterEngineValue(prefix + "speed", static_cast<float>(voice.speed));
+    setParameterEngineValue(prefix + "volume", voice.volume / 100.0f);
+    postPluginAnnouncement("Voice preset " + String(atlas::openevv::kPresetVoiceNames[result - 1]),
+                           AccessibilityHandler::AnnouncementPriority::high);
+  });
+}
+
+String SynthEditor::speechStatusTitle(int oscillator) const {
+  using State = atlas::openevv::SpeechManager::State;
+  auto* manager = synth_.getSpeechManager();
+  if (manager == nullptr)
+    return "Speech unavailable";
+  const auto status = manager->status(oscillator);
+  switch (status.state) {
+    case State::kUnavailable: return "Speech engine not in this build";
+    case State::kRendering: return "Reading the text";
+    case State::kFailed: return "Speech failed";
+    case State::kEmpty: return "No text";
+    case State::kReady: break;
+  }
+  if (status.utterance == nullptr)
+    return "No text";
+  const int syllables = static_cast<int>(status.utterance->units[atlas::openevv::kSyllables].size());
+  const int words = static_cast<int>(status.utterance->units[atlas::openevv::kWords].size());
+  return String(syllables) + " " + speechSplitNoun(atlas::openevv::kSyllables, syllables) + ", " + String(words) +
+         " " + speechSplitNoun(atlas::openevv::kWords, words);
+}
+
+String SynthEditor::speechDetails(int oscillator) const {
+  using State = atlas::openevv::SpeechManager::State;
+  const String name = "Oscillator " + String(oscillator + 1);
+  auto* manager = synth_.getSpeechManager();
+  if (manager == nullptr)
+    return name + ": speech is unavailable";
+  const auto status = manager->status(oscillator);
+  if (status.state == State::kUnavailable)
+    return name + ": this build of Atlas has no speech engine. Build it with the OpenEVV submodule to hear speech.";
+  if (status.state == State::kFailed)
+    return name + ": the speech engine could not read the text. " + String::fromUTF8(status.error.c_str());
+  if (status.utterance == nullptr || status.utterance->words.empty())
+    return name + " has no text to speak. Type it in Text to speak.";
+
+  const auto& utterance = *status.utterance;
+  const int language = jlimit(0, atlas::openevv::kNumLanguages - 1, utterance.request.language);
+  String details = name + " speaks " + String(static_cast<int>(utterance.units[atlas::openevv::kSyllables].size())) +
+                   " syllables in " + String(static_cast<int>(utterance.units[atlas::openevv::kWords].size())) +
+                   " words, in " + atlas::openevv::kLanguages[language].name + ".";
+  if (auto* slot = synth_.getSpeechSlot(oscillator)) {
+    const int last = slot->lastPlayed();
+    const int split = slot->lastPlayedSplit();
+    const auto& units = utterance.unitsFor(split);
+    if (last >= 0 && last < static_cast<int>(units.size())) {
+      const auto& unit = units[static_cast<size_t>(last)];
+      const String word = isPositiveAndBelow(unit.word, static_cast<int>(utterance.words.size()))
+                              ? String::fromUTF8(utterance.words[static_cast<size_t>(unit.word)].c_str())
+                              : String();
+      details += " The last key played " + speechSplitNoun(split, 1) + " " + String(last + 1) + " of " +
+                 String(static_cast<int>(units.size()));
+      if (split == atlas::openevv::kSyllables && word.isNotEmpty())
+        details += ", part " + String(unit.part + 1) + " of " + String(unit.parts) + " of " + word;
+      else if (split == atlas::openevv::kWords && word.isNotEmpty())
+        details += ", " + word;
+      details += ".";
+    }
+    else
+      details += " The next key plays the first piece.";
+  }
+  return details;
+}
+
+void SynthEditor::refreshSpeechStatus() {
+  using State = atlas::openevv::SpeechManager::State;
+  auto* manager = synth_.getSpeechManager();
+  if (manager == nullptr)
+    return;
+  for (int oscillator = 0; oscillator < vital::kNumOscillators; ++oscillator) {
+    const auto status = manager->status(oscillator);
+    auto& announced = speech_announcements_[static_cast<size_t>(oscillator)];
+    const int state = static_cast<int>(status.state);
+    if (status.renders == announced.renders && state == announced.state)
+      continue;
+    announced.renders = status.renders;
+    announced.state = state;
+
+    const String title = speechStatusTitle(oscillator);
+    for (auto& component : section_headers_) {
+      if (component == nullptr)
+        continue;
+      const var& property = component->getProperties()["SpeechStatus"];
+      if (!property.isVoid() && static_cast<int>(property) == oscillator && component->getTitle() != title) {
+        component->setTitle(title);
+        if (auto* button = dynamic_cast<Button*>(component.get()))
+          button->setButtonText(title);
+        if (auto* handler = component->getAccessibilityHandler())
+          handler->notifyAccessibilityEvent(AccessibilityEvent::titleChanged);
+      }
+      // A preset loaded while the editor is open brings its own text.
+      const var& text_property = component->getProperties()["SpeechText"];
+      if (!text_property.isVoid() && static_cast<int>(text_property) == oscillator) {
+        if (auto* editor = dynamic_cast<SpeechTextEditor*>(component.get())) {
+          const String text = String::fromUTF8(manager->text(oscillator).c_str());
+          if (text != editor->committed && !editor->hasKeyboardFocus(true)) {
+            editor->committed = text;
+            editor->setText(text, dontSendNotification);
+          }
+        }
+      }
+    }
+
+    // Only the text typed here is announced, not a render a control moved.
+    if (!announced.user_edit || status.state == State::kRendering)
+      continue;
+    announced.user_edit = false;
+    const String name = "Oscillator " + String(oscillator + 1);
+    if (status.state == State::kReady)
+      postPluginAnnouncement(name + " speech ready, " + title, AccessibilityHandler::AnnouncementPriority::high);
+    else if (status.state == State::kFailed)
+      postPluginAnnouncement(name + " speech failed. " + String::fromUTF8(status.error.c_str()),
+                             AccessibilityHandler::AnnouncementPriority::high);
+  }
+}
+
+namespace {
   String instrumentControlLabel(const vital::multisample::Control& control) {
     const String label = String::fromUTF8(control.label.c_str()).trim();
     if (label.isNotEmpty())
@@ -19004,6 +19334,7 @@ void SynthEditor::timerCallback() {
     allQwertyNotesOff();
   refreshConvolutionIrLoads();
   refreshMultiSampleStatus();
+  refreshSpeechStatus();
   if (cpu_meter_ != nullptr && cpu_meter_->isShowing())
     cpu_meter_->refresh();
   synth_.dispatchPendingGuiUpdates(*this);
