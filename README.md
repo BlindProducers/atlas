@@ -10,7 +10,7 @@ Accessibility is a core priority: every parameter can be navigated and adjusted 
 
 Atlas includes eight oscillator slots, each capable of running one of ten synthesis engines:
 
-- **Wavetable**: Vital’s wavetable engine featuring unison, distortion modes, frequency morphing, and secondary morph targets. Includes an integrated wavetable editor, audio import (splice, vocode, or pitched pitch-tracking), and wavetable/.wav export.
+- **Wavetable**: Vital’s wavetable engine featuring unison, distortion modes, frequency morphing, and secondary morph targets. Includes an integrated wavetable editor, audio import (splice, vocode, or pitch-tracked), and wavetable/.wav export.
 - **Analog**: Classic virtual analog waveforms with shape controls, a dedicated sub-oscillator, and vintage drift/aging parameters.
 - **Sample**: Standard audio playback with custom start, loop, and direction settings—useful for one-shots, transient attacks, and ambient textures.
 - **Granular**: A granular engine with control over grain size, spray, density, and playback randomization.
@@ -44,7 +44,7 @@ In addition to Vital's models (Analog, Dirty, Ladder, Digital, Diode, Formant, C
 
 Atlas contains over 35 effects covering everything from EQ and compression to advanced probabilistic delays and convolution reverb. Effects are loaded across four independent chains: a **Main chain** and **three auxiliary buses (Bus 1 through 3)**. Each chain can hold up to 20 re-orderable effect slots.
 
-- **Routing matrix**: Oscillators and filters can route to the Main chain, Bus 1–3, or bypass effects entirely directly to the master output.
+- **Routing matrix**: Oscillators and filters can route to the Main chain, Bus 1–3, or bypass the effects and go straight to the master output.
 - **Bus nesting**: Auxiliary buses can route into other buses, into the Main chain, or straight to the master output.
 - **Latency compensation (PDC)**: Lookahead effects and heavy spectral processing stay phase-aligned with parallel dry signals.
 - **Preset management**: Individual slots or full chains can be copied, pasted, saved, or loaded with or without their modulation assignments.
@@ -98,7 +98,8 @@ cmake --build build --config Release --parallel 4
 ```
 
 Compiled binaries are located in `build/Atlas_artefacts/Release`:
-- **macOS**: Copy `Atlas.component` to `~/Library/Audio/Plug-Ins/Components` (or run `installer/macos/build_pkg.sh` to generate an installer package).
+
+- **macOS**: Copy `Atlas.vst3` to `~/Library/Audio/Plug-Ins/VST3` and `Atlas.component` to `~/Library/Audio/Plug-Ins/Components` (or run `installer/macos/build_pkg.sh` to generate an installer package).
 - **Windows**: Copy the entire `Atlas.vst3` folder (including its internal asset bundle for the Tape effect) to `C:\Program Files\Common Files\VST3` (or compile `installer/windows/Atlas.iss` using Inno Setup).
 
 Atlas stores user presets, wavetables, samples, and effect chains in
@@ -123,10 +124,11 @@ ctest --test-dir build -C Release --output-on-failure --parallel 1
 To run reference tests that compare Atlas models to their original upstream codebases, pull the optional submodules first:
 
 ```sh
-git submodule update --init --checkout third_party/aquanode-plugins third_party/WDL third_party/nih-plug
+git submodule update --init --checkout third_party/aquanode-plugins third_party/WDL third_party/nih-plug \
+  third_party/openwurli third_party/melange third_party/OpenB3
 ```
 
-*(Note: `nih-plug` requires `rustc` and Python 3 installed).*
+*(Note: `nih-plug`, `openwurli` and `melange` require `rustc` and Python 3 installed.)*
 
 ---
 
