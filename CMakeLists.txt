@@ -272,9 +272,20 @@ target_link_libraries(Atlas PRIVATE
   juce::juce_audio_utils
   juce::juce_dsp
   juce::juce_gui_extra
-  espeak-ng
+  atlas_espeak
   PUBLIC
   juce::juce_recommended_config_flags)
+# Links espeak-ng without its usage requirements: those put its compat shims
+# for math.h, stdio.h, string.h, wchar.h and others ahead of the system
+# headers in every Atlas and JUCE translation unit (MSVC warns of
+# _USE_MATH_DEFINES being redefined in each one). LINK_ONLY drops them only
+# on the way through a link interface, hence the interface target.
+# espeak_speech.cpp needs only the public header, and the static library's
+# symbols must not be declared dllimport on Windows.
+add_library(atlas_espeak INTERFACE)
+target_link_libraries(atlas_espeak INTERFACE $<LINK_ONLY:espeak-ng>)
+target_include_directories(atlas_espeak INTERFACE third_party/espeak-ng/src/include)
+target_compile_definitions(atlas_espeak INTERFACE LIBESPEAK_NG_EXPORT=1)
 # espeak-ng's compiled data, which the bundles copy below.
 add_dependencies(Atlas data)
 
