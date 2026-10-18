@@ -177,6 +177,19 @@ class AccessibleTextButton : public TextButton {
     std::unique_ptr<AccessibilityHandler> createAccessibilityHandler() override;
 };
 
+// A text box VoiceOver reaches while it is scrolled out of view. JUCE leaves
+// a control out of its group's accessibility children when it is not in view
+// unless its handler reports it accessible offscreen, as the rows, buttons and
+// menus here do, and VoiceOver's own navigation never scrolls the editor: a
+// plain TextEditor only turned up once Tab had scrolled it into view. Its
+// help is the help text, where JUCE's handler reads the tooltip.
+class AccessibleTextEditor : public TextEditor {
+  public:
+    using TextEditor::TextEditor;
+
+    std::unique_ptr<AccessibilityHandler> createAccessibilityHandler() override;
+};
+
 class ModulationRemapKeyboardComponent : public Component {
   public:
     std::function<bool(const KeyPress&)> onKeyPressed;

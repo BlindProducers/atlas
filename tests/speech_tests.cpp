@@ -1164,6 +1164,10 @@ namespace {
     synth.getSpeechManager()->setText(0, "Hello world");
     SynthEditor editor(synth);
     editor.updateFullGui();
+    // In a window, as the editor accessibility tests run: JUCE creates a
+    // component's accessibility handler only once it has one.
+    editor.addToDesktop(0);
+    editor.setVisible(true);
     pumpUntil([&] { return synth.getSpeechManager()->status(0).state == vital::speech::SlotStatus::kReady; });
 
     auto* section = oscillatorSection(editor);
@@ -1185,6 +1189,27 @@ namespace {
       expect(synth.getSpeechManager()->text(0) == "Row row row your boat", "Enter hands the words to the slot");
       pumpUntil([&] { return synth.getSpeechManager()->status(0).syllables == 5; });
       expect(synth.getSpeechManager()->status(0).syllables == 5, "the new words are rendered");
+    }
+
+    // VoiceOver lists a group's children without scrolling the editor, and
+    // JUCE leaves out a child that is not in view unless its handler says it
+    // is accessible offscreen, as the rows' handlers do. A plain TextEditor
+    // only turned up after Tab had scrolled it into view.
+    auto* speech_group = titledExactly(*section, "Speech controls");
+    if (text != nullptr && speech_group != nullptr) {
+      auto* text_handler = text->getAccessibilityHandler();
+      expect(text_handler != nullptr && text_handler->getCurrentState().isAccessibleOffscreen(),
+             "the text box stays accessible while scrolled out of view");
+      expect(text_handler != nullptr && text_handler->getRole() == AccessibilityRole::editableText &&
+                 text_handler->getTextInterface() != nullptr,
+             "the text box is an editable text element");
+      expect(text_handler != nullptr && text_handler->getHelp() == text->getHelpText(),
+             "the text box's help is its help text");
+      std::vector<AccessibilityHandler*> children;
+      if (auto* group_handler = speech_group->getAccessibilityHandler())
+        children = group_handler->getChildren();
+      expect(!children.empty() && children.front() == text_handler,
+             "the Speech controls group lists the text box first for VoiceOver, without Tab");
     }
 
     auto* language = dynamic_cast<ComboBox*>(titledExactly(*section, "1 Speech Language"));

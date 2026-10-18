@@ -4678,6 +4678,69 @@ std::unique_ptr<AccessibilityHandler> AccessibleComboBox::createAccessibilityHan
   return std::make_unique<Handler>(*this);
 }
 
+std::unique_ptr<AccessibilityHandler> AccessibleTextEditor::createAccessibilityHandler() {
+  // JUCE's own TextEditor handler, except for the state and the help (see the
+  // class). JUCE keeps that handler private, so the text interface is repeated.
+  class Handler final : public AccessibilityHandler {
+    public:
+      explicit Handler(TextEditor& editorToWrap) :
+          AccessibilityHandler(editorToWrap,
+                               editorToWrap.isReadOnly() ? AccessibilityRole::staticText
+                                                         : AccessibilityRole::editableText,
+                               {}, AccessibilityHandler::Interfaces{ std::make_unique<TextInterface>(editorToWrap) }),
+          editor_(editorToWrap) { }
+
+      AccessibleState getCurrentState() const override {
+        return AccessibilityHandler::getCurrentState().withAccessibleOffscreen();
+      }
+
+      String getHelp() const override {
+        const String help = editor_.getHelpText();
+        return help.isNotEmpty() ? help : editor_.getTooltip();
+      }
+
+    private:
+      class TextInterface final : public AccessibilityTextInterface {
+        public:
+          explicit TextInterface(TextEditor& editorToWrap) : editor_(editorToWrap) { }
+
+          bool isDisplayingProtectedText() const override { return editor_.getPasswordCharacter() != 0; }
+          bool isReadOnly() const override { return editor_.isReadOnly(); }
+          int getTotalNumCharacters() const override { return editor_.getText().length(); }
+          Range<int> getSelection() const override { return editor_.getHighlightedRegion(); }
+          void setSelection(Range<int> range) override { editor_.setHighlightedRegion(range); }
+
+          String getText(Range<int> range) const override {
+            if (isDisplayingProtectedText())
+              return String::repeatedString(String::charToString(editor_.getPasswordCharacter()),
+                                            getTotalNumCharacters());
+            return editor_.getTextInRange(range);
+          }
+
+          void setText(const String& text) override { editor_.setText(text); }
+          int getTextInsertionOffset() const override { return editor_.getCaretPosition(); }
+
+          RectangleList<int> getTextBounds(Range<int> range) const override {
+            RectangleList<int> bounds;
+            for (const auto& rectangle : editor_.getTextBounds(range))
+              bounds.add(editor_.localAreaToGlobal(rectangle));
+            return bounds;
+          }
+
+          int getOffsetAtPoint(Point<int> point) const override {
+            return editor_.getTextIndexAt(editor_.getLocalPoint(nullptr, point));
+          }
+
+        private:
+          TextEditor& editor_;
+      };
+
+      TextEditor& editor_;
+  };
+
+  return std::make_unique<Handler>(*this);
+}
+
 namespace {
   class PresetTableCellLabel final : public Label, public AccessibleContextMenuTarget {
     public:
@@ -18034,7 +18097,7 @@ void SynthEditor::addSpeechControlsGroup(int oscillator, Component& parent, int&
 
   int group_y = group_ptr->headerHeight() + 8;
   auto* manager = synth_.getSpeechManager();
-  auto editor = std::make_unique<TextEditor>();
+  auto editor = std::make_unique<AccessibleTextEditor>();
   auto* editor_ptr = editor.get();
   editor_ptr->setTitle(String(oscillator + 1) + " Text to sing");
   editor_ptr->setDescription(speechStatusDescription(oscillator));
