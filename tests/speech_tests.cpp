@@ -385,7 +385,7 @@ namespace {
       SynthPlugin plugin;
       preparePlayback(plugin, "la");
       const int held = kRate * 3 / 2;
-      const auto audio = render(plugin, held + kRate / 2, { { 0, juce::MidiMessage::noteOn(1, note, 1.0f) },
+      const auto audio = render(plugin, held + kRate, { { 0, juce::MidiMessage::noteOn(1, note, 1.0f) },
                                                            { held, juce::MidiMessage::noteOff(1, note) } });
       const std::string label = "note " + std::to_string(note);
       expect(finite(audio), label + " is finite");
@@ -400,7 +400,7 @@ namespace {
       // The held vowel is the steady grain: its level barely moves.
       const double waver = levelWaver(audio, kRate / 2, held, kRate);
       expect(waver < 0.05, label + " holds a steady vowel (level wavers " + std::to_string(waver) + ")");
-      expect(rms(audio, held + kRate / 4, held + kRate / 2) < 1.0e-4, label + " ends after release");
+      expect(rms(audio, held + kRate / 2, held + kRate) < 1.0e-4, label + " ends after release");
     }
     return finish("pitch");
   }
@@ -622,7 +622,7 @@ namespace {
     expect(brightness(down, from, to) < bright / 1.15, "formants down are darker");
 
     const int lag = static_cast<int>(std::lround(kRate / 220.0));
-    const auto breathy = sing({ { "breath", 1.0f } }, held, held + kRate / 2);
+    const auto breathy = sing({ { "breath", 1.0f } }, held, held + kRate);
     const auto half = sing({ { "breath", 0.5f } }, held, held + kRate / 2);
     expect(finite(breathy) && finite(half), "breath is finite");
     const double voiced = repetition(plain, from, to, lag);
@@ -633,17 +633,17 @@ namespace {
     const double level = rms(plain, from, to);
     expect(rms(breathy, from, to) > level * 0.5 && rms(breathy, from, to) < level * 2.0,
            "the whisper is about as loud as the voice");
-    expect(rms(breathy, held + kRate / 4, held + kRate / 2) < 1.0e-4, "the whisper ends after release");
+    expect(rms(breathy, held + kRate / 2, held + kRate) < 1.0e-4, "the whisper ends after release");
 
     // Speed: a short note's syllable plays out faster or slower.
     const int tap = kRate / 10;
-    const int fast_end = soundEnd(sing({ { "speed", 1.0f } }, tap, kRate * 2));
+    const int fast_end = soundEnd(sing({ { "speed", 2.0f } }, tap, kRate * 2));
     const int normal_end = soundEnd(sing({}, tap, kRate * 2));
-    const int slow_end = soundEnd(sing({ { "speed", -1.0f } }, tap, kRate * 2));
+    const int slow_end = soundEnd(sing({ { "speed", 0.5f } }, tap, kRate * 2));
     expect(fast_end < normal_end && normal_end < slow_end,
            "speed shortens and lengthens the syllable (" + std::to_string(fast_end) + ", " +
                std::to_string(normal_end) + ", " + std::to_string(slow_end) + " samples)");
-    const auto slow = sing({ { "speed", -1.0f } }, held, held + kRate / 2);
+    const auto slow = sing({ { "speed", 0.5f } }, held, held + kRate / 2);
     close(pitchOf(slow, from, from + kRate / 10, kRate), 220.0, "speed keeps the pitch", 220.0 * 0.02);
 
     // Vibrato: none at first, then the pitch wavers by the depth.

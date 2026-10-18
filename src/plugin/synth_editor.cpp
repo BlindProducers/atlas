@@ -3193,8 +3193,9 @@ namespace {
                "whisper of the same words, and 100% whispers them. Choosing another variant sets it back "
                "to 0%.";
       if (suffix == "speed")
-        return "Set how fast the consonants and the vowels that are not held play. 100% is espeak-ng's "
-               "speaking speed. The pitch stays.";
+        return "Set how fast the consonants and the vowels that are not held play, from 0% to 400%. 100% is "
+               "a little slower than espeak-ng speaks, which sings too fast; about 150% is its own speed. The pitch "
+               "stays.";
       if (suffix == "vibrato")
         return "Set the depth of a vibrato that fades in after each note starts, in cents either side of the "
                "pitch. 0 cents is no vibrato.";

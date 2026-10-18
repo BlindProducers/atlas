@@ -60,6 +60,11 @@ namespace vital {
       // the next kVibratoFadeSeconds.
       static constexpr float kVibratoDelaySeconds = 0.15f;
       static constexpr float kVibratoFadeSeconds = 0.35f;
+      // Speed 100% reads the recording at this fraction of espeak-ng's
+      // speaking speed, which sings too fast. Speed never goes below
+      // kMinSpeed, so even at 0% a released note finishes its syllable.
+      static constexpr float kBaseSpeed = 0.65f;
+      static constexpr float kMinSpeed = 0.02f;
 
       enum {
         kReset,
@@ -81,7 +86,7 @@ namespace vital {
         kFormant,
         // 0 to 1.
         kBreath,
-        // log2 of the speed.
+        // 0 to 4, 1 being kBaseSpeed.
         kSpeed,
         // Depth in semitones and rate as log2 Hz.
         kVibrato,

@@ -286,7 +286,7 @@ namespace vital {
     const int split = utils::iclamp(static_cast<int>(input(kSplit)->at(0)[0] + 0.5f), 0, speech::kNumSplits - 1);
     const poly_float formant_input = utils::clamp(input(kFormant)->at(0), -24.0f, 24.0f);
     const poly_float breath_input = utils::clamp(input(kBreath)->at(0), 0.0f, 1.0f);
-    const poly_float speed_input = utils::clamp(input(kSpeed)->at(0), -2.0f, 2.0f);
+    const poly_float speed_input = utils::clamp(input(kSpeed)->at(0), kMinSpeed, 4.0f) * kBaseSpeed;
     const poly_float vibrato_input = utils::clamp(input(kVibrato)->at(0), 0.0f, 1.0f);
     const poly_float vibrato_rate_input = utils::clamp(input(kVibratoRate)->at(0), -2.0f, 4.0f);
     const float steady_in = 1.0f / std::max(1.0f, kSteadyInSeconds * sample_rate);
@@ -355,7 +355,7 @@ namespace vital {
 
       GrainSettings settings;
       settings.formant = std::exp2(formant_input[lane] * (1.0f / kNotesPerOctave));
-      settings.speed = std::exp2(speed_input[lane]);
+      settings.speed = speed_input[lane];
       const float breath = breath_input[lane];
       settings.voice_gain = std::cos(breath * 1.57079632679f);
       settings.breath_gain = std::sin(breath * 1.57079632679f);

@@ -1962,9 +1962,10 @@ namespace vital {
     // variant sets it back to 0%.
     { "speech_breath", 0x000000, 0.0, 1.0, 0.0, 0.0, 100.0,
       ValueDetails::kLinear, false, "%", "Speech Breathiness", nullptr },
-    // How fast consonants and unheld vowels play, 25% to 400%, as log2.
-    { "speech_speed", 0x000000, -2.0, 2.0, 0.0, 0.0, 100.0,
-      ValueDetails::kExponential, false, "%", "Speech Speed", nullptr },
+    // How fast consonants and unheld vowels play, 0% to 400%; 100% is 65% of
+    // espeak-ng's speaking speed (SpeechSource::kBaseSpeed).
+    { "speech_speed", 0x000000, 0.0, 4.0, 1.0, 0.0, 100.0,
+      ValueDetails::kLinear, false, "%", "Speech Speed", nullptr },
     // A vibrato that fades in after each note starts: depth in semitones,
     // rate as log2 Hz (1 to 12 Hz).
     { "speech_vibrato", 0x000000, 0.0, 1.0, 0.0, 0.0, 100.0,

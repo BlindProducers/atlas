@@ -40,9 +40,11 @@ Speech has no unison or scale lock.
   (12 to 40 quefrency bins), so it keeps the formants without the harmonics.
   Voiced grains read their whisper near their mark, held ones anywhere in
   the vowel's middle, so the noise never repeats at the note's period.
-- **Speed** (25% to 400%) scales how fast the recording is read between
-  holds; the pitch stays. Reading slowly spreads unvoiced grains around the
-  read position so consonants do not buzz.
+- **Speed** (0% to 400%) scales how fast the recording is read between
+  holds; the pitch stays. 100% is 65% of espeak-ng's speaking speed, which
+  sings too fast, and 0% still reads at 2% so a released note finishes.
+  Reading slowly spreads unvoiced grains around the read position so
+  consonants do not buzz.
 - **Vibrato** fades in from 150 ms after the note over 350 ms, depth in
   cents either side, rate 1 to 12 Hz.
 
