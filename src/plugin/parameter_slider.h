@@ -2,6 +2,21 @@
 
 #include "JuceHeader.h"
 
+// An open popup menu passes Left, and Right on an item without a submenu, to
+// the control it was opened from (JUCE's MenuWindow::keyPressed), and a combo
+// box's open list does the same. That control sits behind the menu, blocked
+// by it, and must not change: the user hears the menu, not the value moving.
+inline bool isArrowKeyFromAnOpenMenu(const Component& component, const KeyPress& key) {
+  if (!component.isCurrentlyBlockedByAnotherModalComponent())
+    return false;
+  for (const int code : { KeyPress::leftKey, KeyPress::rightKey, KeyPress::upKey, KeyPress::downKey,
+                          KeyPress::pageUpKey, KeyPress::pageDownKey, KeyPress::homeKey, KeyPress::endKey }) {
+    if (key.getKeyCode() == code)
+      return true;
+  }
+  return false;
+}
+
 // Shared keyboard navigation for parameter, remap and wavetable sliders.
 class ParameterSlider : public Slider {
   public:
@@ -19,6 +34,8 @@ class ParameterSlider : public Slider {
     }
 
     bool keyPressed(const KeyPress& key) override {
+      if (isArrowKeyFromAnOpenMenu(*this, key))
+        return true;
       const int code = key.getKeyCode();
       if (code == KeyPress::returnKey) {
         showTextBox();

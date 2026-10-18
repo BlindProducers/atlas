@@ -162,6 +162,8 @@ class AccessibleComboBox : public ComboBox {
     }
 
     bool keyPressed(const KeyPress& key) override {
+      if (isArrowKeyFromAnOpenMenu(*this, key))
+        return true;
       if (onKeyPressed && onKeyPressed(key))
         return true;
       return ComboBox::keyPressed(key);
@@ -357,6 +359,22 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     File presetFileAtRow(int row) const {
       return isPositiveAndBelow(row, filtered_presets_.size()) ? filtered_presets_[row] : File();
     }
+    int presetRowCount() const { return filtered_presets_.size(); }
+    // Tests: what a message box, file chooser or dialog window does once it
+    // closes, having opened while `returnTo` had the focus.
+    void closeOsWindowForTesting(Component& returnTo) {
+      FocusReturn focus;
+      focus.component = &returnTo;
+      focus.title = returnTo.getTitle();
+      closeOsWindow(openOsWindow(std::move(focus)), {});
+    }
+    // Tests: a rebuild's focus restore for a control titled `title` in `section`.
+    bool restoreFocusForTesting(const String& title, const String& section) {
+      return restoreFocusAfterRebuild({}, nullptr, title, section, false);
+    }
+    // Tests: what moving a preset to Trash does to its file (a test
+    // deletes the presets it made instead). Empty for the real move.
+    static std::function<bool(const File&)>& trashFileForTesting();
     // The grouped source menu a parameter row offers (tests walk it like the slot menus).
     PopupMenu createModulationSourceSubmenu(const String& destinationId, std::map<int, String>& choices,
                                             int firstItemId);
@@ -409,6 +427,13 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
                                   bool refocusScreenReader = false);
     Component* findRebuildFocusTarget(const String& parameterId, Component* persistentComponent,
                                       const String& accessibleTitle, const String& preferredSection) const;
+    // The heading of `section`, or of the nearest section whose key it starts
+    // with ("Oscillator 1" for "Oscillator 1 pitch and unison"); null if none.
+    Component* sectionHeadingFor(const String& section) const;
+    // On Windows, once a rebuild has settled with no control focused while the
+    // plugin's window still has the keyboard (JUCE would give every key to the
+    // host), focuses `section`'s heading, or else the editor.
+    void refocusIfFocusOrphaned(const String& section);
     // A control to give focus back to. Its parameter, title and section find
     // its replacement when a rebuild has deleted it.
     struct FocusReturn {
@@ -422,6 +447,43 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     // Opens a file chooser and, once it closes, puts keyboard and screen reader
     // focus back on the control that opened it, or on its replacement.
     void launchFileChooser(FileChooser& chooser, int flags, std::function<void(const FileChooser&)> callback);
+    // Shows a native message box and, once it closes and `callback` has run,
+    // puts focus back on `returnTo` (else the control focused when it opened)
+    // or its replacement. On Windows JUCE runs the box on a thread of its own,
+    // and when it closes Windows gives the focus to the host's window, not
+    // back to the plugin's, so NVDA ends up in the host. The callback gets the
+    // plain index of the button pressed (0 for the first).
+    void showMessageBox(const MessageBoxOptions& options, std::function<void(int)> callback = {},
+                        Component* returnTo = nullptr);
+    void showWarningBox(const String& title, const String& message, Component* returnTo = nullptr);
+    // Opens a dialog window (keyboard help, accessibility settings) and puts
+    // focus back once it has closed, as for a file chooser.
+    DialogWindow* launchDialogWindow(DialogWindow::LaunchOptions& options);
+    // A file chooser, message box or dialog window that has not closed yet,
+    // and the control to give focus back to when it does.
+    struct OpenOsWindow;
+    std::shared_ptr<OpenOsWindow> openOsWindow(FocusReturn focus);
+    // Runs a window's callback once it has closed; when no other window is
+    // still open, gives focus back. A window the callback opens (an error box
+    // after a file chooser) gives focus back to the same control instead.
+    // Static: the editor may be gone by the time the window closes.
+    static void closeOsWindow(const std::shared_ptr<OpenOsWindow>& window, const std::function<void()>& callback);
+    void restoreFocusAfterOsWindow(const FocusReturn& focus);
+    // The control a message box should give focus back to: the focused one,
+    // or the one an inline prompt that is closing returns to.
+    FocusReturn focusForMessageBox() const;
+    // Asks a yes or no question in the editor, in the inline prompt with its
+    // text box hidden: the first button (`confirmLabel`) runs `confirm`,
+    // Cancel and Escape do nothing, and both go back to `target`. Used on
+    // Windows in place of a native box, which would take focus out of the plugin.
+    void promptForConfirmation(const String& question, const String& confirmLabel, Component& target,
+                               std::function<void()> confirm, const String& cancelMessage);
+    // Gives the inline prompt back its text box and OK button after a question.
+    void endConfirmationPrompt();
+    bool isConfirmationButtonFocused() const {
+      return confirmation_prompt_visible_ &&
+             (modulation_amount_ok_.hasKeyboardFocus(false) || modulation_amount_cancel_.hasKeyboardFocus(false));
+    }
     // On Windows a rebuild that a choice deciding the rows starts (an
     // oscillator's Type, a filter's Model, an effect's mode, or Envelope 1's
     // Analog switch) keeps the focused row of such a choice and the groups
@@ -444,6 +506,11 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     // Focuses the header of the effect at `position` (0 for Slot 1) in the
     // chain `sectionName`; false when there is none.
     bool focusEffectSlotHeader(const String& sectionName, int position);
+    // Where comma and period stop in the chain `sectionName`, in order: each
+    // occupied slot's header and, on Windows, the grouping headings inside it
+    // (kSectionKeysStepThroughEffectGroups).
+    std::vector<Component*> effectChainStops(const String& sectionName) const;
+    void focusEffectChainStop(Component& stop);
     void showNavigationMenu();
     void armOrCancelMidiLearn(const String& parameterId);
     void showAccessibilitySettingsMenu();
@@ -475,6 +542,25 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void renameSelectedPreset();
     void showPresetMetadataDialog();
     void deleteSelectedPreset();
+    // Moves `file` to Trash and selects the
+    // preset after it in the list, or the one before when it was the last.
+    void movePresetToTrash(const File& file);
+    // The browser drops `file`, or shows `to` in place of `from`, at once,
+    // ahead of the rescan that a trash, rename or metadata edit starts, so
+    // the list never offers a preset file that is gone. When `to` no longer
+    // passes the filters (moved to another bank), the preset after `from` is
+    // selected, as after a trash.
+    void forgetPreset(const File& file);
+    void replacePresetInBrowser(const File& from, const File& to);
+    void rebuildPresetLookup();
+    // The preset after `file` in the shown list, or the one before when it is
+    // the last; empty when it is the only one.
+    String presetPathAfter(const File& file) const;
+    // What populatePresetFilters gave up, given the filters before it ran: a
+    // library, bank, category or tag with no presets left goes back to All,
+    // and this says so ("No presets left in X. Showing all banks"); empty if none.
+    String presetFilterFallbackNotice(const String& library, const String& bank, const String& category,
+                                      const String& tag) const;
     void revealSelectedPreset();
     void updatePresetManagementControls();
     void showPresetMenu();
@@ -1087,9 +1173,13 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     bool preset_metadata_edit_mode_ = false;
     File preset_metadata_file_;
     int preset_list_generation_ = 0;
+    // A preset saved while the list was being rescanned, to select once the
+    // rescan lands (selectPresetFile); cleared when the user picks another.
+    String select_after_refresh_;
     bool save_patch_dialog_visible_ = false;
-    // Where focus was when the save or metadata form opened; it goes back there when the form closes.
-    Component::SafePointer<Component> save_patch_return_focus_;
+    // Where focus was when the save or metadata form opened; it goes back
+    // there, or to its replacement after a rebuild, when the form closes.
+    FocusReturn save_patch_return_focus_;
     bool updating_preset_list_ = false;
     bool updating_routing_controls_ = false;
     bool wavetable_browser_cache_valid_ = false;
@@ -1124,12 +1214,24 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     bool effect_chain_rebuild_queued_ = false;
     // Bumped by each rebuild so only the last one re-focuses the screen reader.
     int screen_reader_refocus_generation_ = 0;
+    // Bumped by each restoreFocusAfterRebuild so only the last one's delayed grab runs.
+    int rebuild_focus_grab_generation_ = 0;
     // Set when a queued rebuild should re-focus the screen reader once it runs.
     bool screen_reader_refocus_requested_ = false;
     // The control the window had when it lost focus, until focus comes back.
     FocusReturn window_focus_return_;
-    // File choosers opened by launchFileChooser that have not closed yet.
-    int open_file_choosers_ = 0;
+    // File choosers, message boxes and dialog windows (openOsWindow) that have
+    // not closed yet.
+    int open_os_windows_ = 0;
+    // While a closed window's callback runs, the control that window gives
+    // focus back to (closeOsWindow).
+    const FocusReturn* os_window_callback_focus_ = nullptr;
+    // The inline prompt is asking a yes or no question (promptForConfirmation).
+    bool confirmation_prompt_visible_ = false;
+    // The inline prompt's action is running (applyParameterValue): a box it
+    // opens returns to the control the prompt returns to (focusForMessageBox).
+    bool inline_prompt_applying_ = false;
+    String confirmation_cancel_message_;
     // Bumped by each hideInlineTextPrompt so only the last one hides the prompt.
     int inline_prompt_hide_generation_ = 0;
     String queued_effect_chain_rebuild_section_;

@@ -911,6 +911,18 @@ int main(int argc, char** argv) {
       std::cout << "Atlas oscillator modulation tests passed\n";
     return failures == 0 ? 0 : 1;
   }
+  if (argc > 1 && String(argv[1]) == "--editor-focus") {
+    // What is said must not depend on the user's own speech settings.
+    atlas::speech::useDefaultSettingsForTesting();
+    testSectionKeysStepThroughEffectGroups();
+    testOsWindowsGiveFocusBack();
+    testOrphanedFocusGoesToTheSectionHeading();
+    testContextMenuArrowsLeaveTheControl();
+    testPresetTrashKeepsBankAndFocus();
+    if (failures == 0)
+      std::cout << "Atlas editor focus tests passed\n";
+    return failures == 0 ? 0 : 1;
+  }
   if (argc > 1 && String(argv[1]) == "--editor-speech") {
     testKeyboardEditorsAnnounceNavigation();
     testListsSayTheSelectedRow();
