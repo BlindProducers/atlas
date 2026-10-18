@@ -40,7 +40,10 @@ namespace maim_tests {
   Stereo sawtooth(int samples, float frequency, int rate, float amplitude = 0.5f) {
     Stereo signal { std::vector<float>(size_t(samples)), std::vector<float>(size_t(samples)) };
     for (int i = 0; i < samples; ++i) {
-      const float phase = std::fmod(float(i) * frequency / float(rate), 1.0f);
+      // The fractional part by hand: MSVC 19.44's optimizer crashes (C1001)
+      // on std::fmod in this loop.
+      const float cycles = float(i) * frequency / float(rate);
+      const float phase = cycles - std::floor(cycles);
       signal.left[size_t(i)] = signal.right[size_t(i)] = amplitude * (2.0f * phase - 1.0f);
     }
     return signal;

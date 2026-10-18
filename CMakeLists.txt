@@ -356,10 +356,29 @@ set(OPUS_INSTALL_PKG_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
 set(OPUS_INSTALL_CMAKE_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
 set(OPUS_DRED OFF CACHE BOOL "" FORCE)
 set(OPUS_OSCE OFF CACHE BOOL "" FORCE)
+if(MSVC)
+  # Opus picks the C runtime itself and takes the DLL one unless told
+  # otherwise; Atlas and its other static libraries use the static one, and
+  # mixing them makes the plug-in link two runtimes (LNK4098).
+  set(OPUS_STATIC_RUNTIME ON CACHE BOOL "" FORCE)
+endif()
+# Opus reads the target CPU from CMAKE_SYSTEM_PROCESSOR, which Visual Studio
+# generators fill with the host's: an x64 build on a Windows on ARM machine
+# would get Opus's ARM configuration and none of its SSE paths. The platform
+# the generator was given names the target.
+if(CMAKE_VS_PLATFORM_NAME STREQUAL "x64")
+  set(CMAKE_SYSTEM_PROCESSOR AMD64)
+elseif(CMAKE_VS_PLATFORM_NAME STREQUAL "Win32")
+  set(CMAKE_SYSTEM_PROCESSOR x86)
+elseif(CMAKE_VS_PLATFORM_NAME STREQUAL "ARM64")
+  set(CMAKE_SYSTEM_PROCESSOR ARM64)
+endif()
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64|ARM64")
   # Every arm64 CPU has NEON, and Opus has no runtime check for it on macOS;
   # presuming it, as Opus does for aarch64 Linux, compiles its NEON paths in.
   set(OPUS_PRESUME_NEON ON CACHE BOOL "" FORCE)
+else()
+  set(OPUS_PRESUME_NEON OFF CACHE BOOL "" FORCE)
 endif()
 add_subdirectory(third_party/opus opus EXCLUDE_FROM_ALL)
 set_property(TARGET opus PROPERTY POSITION_INDEPENDENT_CODE ON)
