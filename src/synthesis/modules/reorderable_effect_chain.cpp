@@ -24,6 +24,7 @@
 #include "analogue_spring_module.h"
 #include "analogue_wah_module.h"
 #include "analogue_compressor_module.h"
+#include "maim_module.h"
 #include "filter_fx_module.h"
 #include "spectral_balance_module.h"
 #include "glitch_delay_module.h"
@@ -223,6 +224,8 @@ namespace vital {
         return new ScannerVibratoModule(module_prefix);
       case constants::kAnalogueCompressor:
         return new AnalogueCompressorModule(module_prefix);
+      case constants::kMaim:
+        return new MaimModule(module_prefix);
       default:
         return nullptr;
     }
@@ -318,6 +321,7 @@ namespace vital {
     // 32768 samples at 176.4 kHz and above), so the budget holds two of them
     // there; LatencyCompensatedSum clamps rather than overruns beyond it.
     static_assert(kMaxLatencySamples >= 2 * SpectralLockModule::kMaxSpectralLatencySamples);
+    static_assert(kMaxLatencySamples >= 2 * MaimModule::kMaxLatencySamples);
     int latency = 0;
     for (int slot = 0; slot < constants::kMaxEffectSlots; ++slot) {
       const int index = utils::iclamp(static_cast<int>(slot_types_[slot]->value() + 0.5f) - 1,

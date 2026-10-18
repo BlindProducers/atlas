@@ -25,6 +25,7 @@
 #include "value_bridge.h"
 #include "tape_controls.h"
 #include "resonator/resonator_engine.h"
+#include "maim/maim_common.h"
 #include "analogue/chorus_engine.h"
 #include "analogue/echo_engine.h"
 #include "analogue/rotary_engine.h"
@@ -1498,7 +1499,8 @@ namespace {
         "Glitch Delay",
         "OpenWurli Amp",
         "Scanner Vibrato",
-        "Analogue Compressor"
+        "Analogue Compressor",
+        "Maim"
       };
       for (int envelope = 1; envelope <= vital::kNumEnvelopes; ++envelope)
         result.push_back("Envelope " + String(envelope));
@@ -1573,7 +1575,8 @@ namespace {
         section == "Analogue Flanger" || section == "Analogue Echo" ||
         section == "Analogue Rotary" || section == "Analogue Spring" ||
         section == "Analogue Wah" || section == "Spectral Balance" || section == "Glitch Delay" ||
-        section == "OpenWurli Amp" || section == "Scanner Vibrato" || section == "Analogue Compressor")
+        section == "OpenWurli Amp" || section == "Scanner Vibrato" || section == "Analogue Compressor" ||
+        section == "Maim")
       return "Effects";
     if (section == "Modulation routing")
       return "Modulation";
@@ -1745,6 +1748,11 @@ namespace {
       return rank({ "mode", "rate" });
     if (effect_id == "analoguecompressor")
       return rank({ "mode", "threshold", "ratio", "knee", "attack", "release", "makeup", "mix" });
+    if (effect_id == "maim")
+      return rank({ "encoder", "bitrate", "lpc_rate", "turbo", "tilt", "error", "mix", "shift", "level_shift",
+                    "feedback", "butterfly_straight", "butterfly_crossed", "band_step", "band_invert", "window_step",
+                    "band_shift", "band_reverse", "loss_period", "loss_width", "loss_jitter", "loss_mode", "drive",
+                    "low_cut", "high_cut", "makeup" });
     if (effect_id == "glitch_delay")
       return glitchDelayParameterRank(suffix);
     if (effect_id == "spectral_balance")
@@ -1793,8 +1801,9 @@ namespace {
       if (model == atlas::resonator::kTube) return 3;
       return 0;
     }
+    // Maim's encoders each show their own rows.
     if (control_id.endsWith("analoguechorus_model") || control_id.endsWith("analoguerotary_model") ||
-        control_id.endsWith("glitch_delay_tap_view"))
+        control_id.endsWith("glitch_delay_tap_view") || control_id.endsWith("maim_encoder"))
       return roundToInt(value);
     // The two pedals share their rows; the Mu-Tron III adds its own.
     if (control_id.endsWith("analoguewah_model"))
@@ -1819,7 +1828,7 @@ namespace {
     for (const char* variant : { "dimension_expander_mode", "resonator_model", "analoguechorus_model",
                                  "analogueecho_medium", "analoguerotary_model", "analoguewah_model",
                                  "convolution_reverb_predelay_sync", "spectral_lock_mode",
-                                 "glitch_delay_tap_view" }) {
+                                 "glitch_delay_tap_view", "maim_encoder" }) {
       if (id == variant || id.endsWith(String("_") + variant))
         return true;
     }
@@ -1836,6 +1845,23 @@ namespace {
   bool isConvolutionReverbParameterRelevant(const String& suffix, int synced) {
     if (suffix == "predelay") return synced == 0;
     if (suffix == "predelay_tempo") return synced == 1;
+    return true;
+  }
+
+  // Maim shows the rows its Encoder uses: the bitrate for the MP3 encoders
+  // and Opus, the spectral, butterfly and MDCT bends for the MP3 encoders
+  // (the band step, inversion and window step for LAME alone), packet loss
+  // for Opus, GSM and LPC, and the sample rate for LPC.
+  bool isMaimParameterRelevant(const String& suffix, int encoder) {
+    using namespace atlas::maim;
+    const bool mp3 = encoder == kBlade || encoder == kLame;
+    if (suffix == "bitrate" || suffix == "turbo") return mp3 || encoder == kOpus;
+    if (suffix == "lpc_rate") return encoder == kLpc;
+    if (suffix == "band_step" || suffix == "band_invert" || suffix == "window_step") return encoder == kLame;
+    if (suffix == "tilt" || suffix == "shift" || suffix == "level_shift" || suffix == "feedback" ||
+        suffix.startsWith("butterfly_") || suffix == "band_shift" || suffix == "band_reverse")
+      return mp3;
+    if (suffix.startsWith("loss_")) return !mp3;
     return true;
   }
 
@@ -2458,7 +2484,7 @@ namespace {
         { "Space", { kReverb, kConvolutionReverb, kDelay, kFloatyDelay, kGlitchDelay } },
         { "Modulation", { kChorus, kFlanger, kPhaser, kTremoloPan, kDimensionExpander, kPhaseShift,
                           kFrequencyShifter, kTranceGate } },
-        { "Distortion and character", { kDistortion, kWaveShaper, kErosion, kResonator } },
+        { "Distortion and character", { kDistortion, kWaveShaper, kErosion, kResonator, kMaim } },
         { "Filter and EQ", { kFilterFx, kEq, kMidSideEq, kDefuse } },
         { "Spectral", { kSpectralGate, kSpectralCompressor, kSpectralLock, kSpectralBalance } },
       };
@@ -2547,6 +2573,7 @@ namespace {
     if (rest.startsWith("openwurli_amp_")) return "OpenWurli Amp";
     if (rest.startsWith("scanner_vibrato_")) return "Scanner Vibrato";
     if (rest.startsWith("analoguecompressor_")) return "Analogue Compressor";
+    if (rest.startsWith("maim_")) return "Maim";
     if (rest.startsWith("spectral_compressor_")) return "Spectral Compressor";
     if (rest.startsWith("spectral_gate_")) return "Spectral Gate";
     if (rest.startsWith("erosion_")) return "Erosion";
@@ -2703,6 +2730,7 @@ namespace {
     if (id.startsWith("openwurli_amp_")) return "OpenWurli Amp";
     if (id.startsWith("scanner_vibrato_")) return "Scanner Vibrato";
     if (id.startsWith("analoguecompressor_")) return "Analogue Compressor";
+    if (id.startsWith("maim_")) return "Maim";
     if (id.startsWith("spectral_compressor_")) return "Spectral Compressor";
     if (id.startsWith("spectral_gate_")) return "Spectral Gate";
     if (const int arp = arpeggiatorForId(id); arp > 0) return "Arpeggiator " + String(arp);
@@ -2941,6 +2969,75 @@ namespace {
       return "Choose whether pitch quantize uses this source's scale or the global scale.";
     if (suffix == "transpose_quantize")
       return "Snap pitch modulation to the selected key and scale.";
+    return {};
+  }
+
+  String maimHelpText(const String& suffix) {
+    if (suffix == "encoder")
+      return "Choose the codec the sound goes through. Blade and LAME are real MP3 encoders, each with its own "
+             "tone: Blade is bubbly and washes out transients, LAME rolls off the highs as the bitrate drops. Both "
+             "take the spectral, butterfly and MDCT bends. Opus is the modern internet codec, GSM the 13 kilobit "
+             "telephone codec and LPC a 2.4 kilobit vocoder; these three take packet loss instead.";
+    if (suffix == "bitrate")
+      return "Set how many kilobits a second the MP3 or Opus encoder may use. Lower bitrates discard more of the "
+             "sound. Blade starts at 32; Opus runs at half the figure shown, as in Maim.";
+    if (suffix == "lpc_rate")
+      return "Set the sample rate the LPC vocoder runs at, from 2 to 22.05 kilohertz. Lower rates narrow the band "
+             "its ten poles cover and sound crushed. The vocoder never runs faster than the processing rate.";
+    if (suffix == "turbo")
+      return "Squeeze the MP3 frames below what the bitrate allows, for more of the encoder's artefacts. With Opus "
+             "it splits frames into shorter packets at random.";
+    if (suffix == "tilt")
+      return "Bias the encoder's psychoacoustic threshold. Negative keeps the low frequencies and discards the "
+             "highs; positive keeps the highs and discards the lows. Acts on long blocks: through transients the "
+             "encoder codes short blocks, which it leaves alone.";
+    if (suffix == "error")
+      return "Corrupt the encoded data: shuffles lines of the MP3 spectrum, or flips bits in Opus, GSM and LPC "
+             "packets.";
+    if (suffix == "mix")
+      return "Blend the dry sound, delayed to line up, with the codec's output. 100 percent is the codec alone.";
+    if (suffix == "shift")
+      return "Shift the MP3 spectrum up or down by this many MDCT lines, of the 576 in a frame.";
+    if (suffix == "level_shift")
+      return "Above zero, raise the quiet spectrum lines, adding noise under the sound. Below zero, remove every "
+             "line under a level, for a bubbly, chirping thinning.";
+    if (suffix == "feedback")
+      return "Feed each spectrum frame's levels back into the next, for a buzzy resonance.";
+    if (suffix == "butterfly_straight")
+      return "How much of each band stays put in the MP3 encoder's aliasing butterfly. 100 percent, with Crossed at "
+             "zero, is the encoder as designed. The butterfly runs on long blocks, so transients pass unbent.";
+    if (suffix == "butterfly_crossed")
+      return "How much of each band the butterfly leaks into its neighbour, for interference between neighbouring "
+             "bands.";
+    if (suffix == "band_step")
+      return "How many MDCT lines LAME steps between bands. 18 is LAME as designed; fewer overlap the bands.";
+    if (suffix == "band_invert")
+      return "Fill LAME's bands from the top down instead of the bottom up.";
+    if (suffix == "window_step")
+      return "How far LAME's analysis window moves between subbands. 64 is LAME as designed; near zero it holds a "
+             "tone, and negative values run backwards.";
+    if (suffix == "band_shift")
+      return "Feed each MDCT band from the band this many above or below it, wrapping round at the ends, which "
+             "moves the whole spectrum in steps of a band: 689 hertz at 44.1 kilohertz.";
+    if (suffix == "band_reverse")
+      return "Feed the bands from the top down, so the lows take the highs' content and the highs the lows'.";
+    if (suffix == "loss_period")
+      return "The length of one packet loss cycle, from 50 milliseconds to 2 seconds.";
+    if (suffix == "loss_width")
+      return "The share of each cycle during which packets get through. 100 percent loses nothing.";
+    if (suffix == "loss_jitter")
+      return "Vary the delivered and lost parts of each cycle at random by up to this much.";
+    if (suffix == "loss_mode")
+      return "What the decoder does with a lost packet. Drop leaves silence, which Opus conceals from the sound "
+             "before it; Stick decodes the last packet that arrived again.";
+    if (suffix == "drive")
+      return "Gain into the codec, from minus 36 to 36 decibels. Above 0 decibels the encoder's input clips.";
+    if (suffix == "makeup")
+      return "Gain after the codec and its filters, from minus 36 to 36 decibels.";
+    if (suffix == "low_cut")
+      return "A gentle high-pass filter after the codec, with its cutoff here.";
+    if (suffix == "high_cut")
+      return "A gentle low-pass filter after the codec, with its cutoff here.";
     return {};
   }
 
@@ -3648,6 +3745,11 @@ namespace {
         return "Scale the compression and the makeup gain. 100 percent is the full effect and zero is the dry "
                "signal; in between, the gain change shrinks in dB rather than blending two signals.";
     }
+    if (const String maim_suffix = effectSuffix("maim_"); maim_suffix.isNotEmpty()) {
+      const String help = maimHelpText(maim_suffix);
+      if (help.isNotEmpty())
+        return help;
+    }
     const String analogue_spring_suffix = effectSuffix("analoguespring_");
     if (analogue_spring_suffix.isNotEmpty()) {
       if (analogue_spring_suffix == "tank") return "Choose a Short, Medium or Long spring tank. Longer tanks ring longer.";
@@ -3735,7 +3837,7 @@ namespace {
       "eq_", "flanger_", "frequency_shifter_", "limiter_", "mid_side_eq_", "phase_shift_", "phaser_",
       "reverb_", "utility_", "waveshaper_", "spectral_gate_", "erosion_", "floaty_delay_", "spectral_compressor_", "scream_", "tremolo_pan_", "tape_", "defuse_", "suppressor_", "trance_gate_", "spectral_lock_", "resonator_",
       "analoguechorus_", "analogueflanger_", "analogueecho_", "analoguerotary_", "analoguespring_", "analoguewah_",
-      "spectral_balance_", "openwurli_amp_", "scanner_vibrato_", "analoguecompressor_"
+      "spectral_balance_", "openwurli_amp_", "scanner_vibrato_", "analoguecompressor_", "maim_"
     };
     for (const auto& prefix : effect_prefixes) {
       effect_suffix = effectSuffix(prefix);
@@ -5073,6 +5175,7 @@ class AccessibleParameterRow : public Component {
       const bool glitch_delay_control = parameter_id.startsWith("glitch_delay_") || parameter_id.contains("_glitch_delay_");
       // Analogue Chorus, Flanger and Echo share one prefix family.
       const bool analogue_control = parameter_id.startsWith("analogue") || parameter_id.contains("_analogue");
+      const bool maim_control = parameter_id.startsWith("maim_") || parameter_id.contains("_maim_");
       const auto accessible_name = accessibleName.isNotEmpty() ? accessibleName : (random_rate ? String("Rate") : name);
       const String parameter_description = accessibleDescription.isNotEmpty()
           ? accessibleDescription
@@ -5234,6 +5337,25 @@ class AccessibleParameterRow : public Component {
                             : parameter_id.endsWith("_spread") ? 0.1 : 1.0;
           slider_.adjustmentStep = [step] { return step; };
         }
+        if (bridge != nullptr && maim_control && interval == 0.0 &&
+            bridge->getDetails().value_scale != vital::ValueDetails::kExponential &&
+            bridge->getDetails().value_scale != vital::ValueDetails::kIndexed) {
+          // Keys move in display units: one percent, half a decibel, or 50 ms
+          // of the loss period, which is stored as the cube root of its seconds.
+          const auto& details = bridge->getDetails();
+          const double minimum = details.min, span = details.max - minimum, scale = details.display_multiply;
+          const bool cubic = details.value_scale == vital::ValueDetails::kCubic;
+          slider_.toAdjustmentValue = [minimum, span, scale, cubic](double v) {
+            const double stored = minimum + span * v;
+            return (cubic ? stored * stored * stored : stored) * scale;
+          };
+          slider_.fromAdjustmentValue = [minimum, span, scale, cubic](double display) {
+            const double value = display / scale;
+            return ((cubic ? std::cbrt(jmax(0.0, value)) : value) - minimum) / span;
+          };
+          const double step = cubic ? 0.05 : String(details.display_units).trim() == "dB" ? 0.5 : 1.0;
+          slider_.adjustmentStep = [step] { return step; };
+        }
         if (bridge != nullptr && analogue_control && interval == 0.0 &&
             bridge->getDetails().value_scale != vital::ValueDetails::kExponential) {
           // Keys move in display units: one percent, degree or millisecond.
@@ -5333,6 +5455,7 @@ class AccessibleParameterRow : public Component {
                                         : suppressor_control ? "Arrows change percentages by one percent, Release by 0.05, Curve Frequency by 10 Hz, and Curve Width by 10. Shift arrows use one tenth of the step; Page keys use ten times the step. Enter types a value, Backspace restores its default, Home selects maximum and End minimum."
                                         : defuse_control ? "Use arrows to adjust, Shift arrows for finer changes, and Page keys for ten times the increment. Stages change by one, Frequency by 10 Hz, Resonance by 0.01, Spread by 0.1 octave, and Automation Precision by one percent. Enter types a value; Backspace restores the default. Home selects maximum and End minimum. Shift M opens the context menu."
                                         : tape_control ? "Use arrows to adjust, Shift arrows for finer changes, and Page keys for larger changes. Wow Rate uses 0.01 Hz, Flutter Rate 0.1 Hz, cutoffs 10 Hz, levels 0.1, Drive and percentages one percent. Enter types a value; Backspace restores the default. Home selects maximum and End minimum. Shift M opens the context menu."
+                                        : maim_control ? "Use arrows for changes, Shift arrows for a tenth of the step, and Page keys for ten times the step. Percentages move one percent, Drive and Makeup half a decibel, Loss Period 50 milliseconds, the cutoffs 10 hertz, and lines, bands and steps one at a time. Home for maximum, End for minimum, Enter to type a value, Backspace to reset to default. Press Shift M for the context menu, Shift L for MIDI learn, and Shift C to clear MIDI learn."
                                         : glitch_delay_control ? "Use arrows for changes, Shift arrows for a tenth of the step, and Page keys for ten times the step. Tap times, Glide and tape times move 10 ms; Buffer and Smear Size 5 ms; slice and grain sizes 1 ms; High Cut 100 Hz; Low Cut and ring frequencies 10 Hz; pitch ranges one semitone; sweep speeds and formant shifts 0.1 semitone; FM ratios 0.05; FM index and rate reduction 0.1; densities one grain a second; Volume 0.5 dB and Output Gain 0.1 dB; percentages one percent. Home for maximum, End for minimum, Enter to type a value, Backspace to reset to default. Press Shift M for the context menu, Shift L for MIDI learn, and Shift C to clear MIDI learn."
                                         : resonator_control ? "Use arrows for changes, Shift arrows for finer changes, and Page keys for ten times the step. Tune moves one semitone; Decay, rates and Filter Frequency move in even ratio steps; percentages, degrees, cents and Glide milliseconds move by one; decibels, LFO Amount and Filter Bandwidth by 0.1; Ratio by 0.01. Named choices move one item at a time. Home for maximum, End for minimum, Enter to type a value, Backspace to reset to default. Press Shift M for the context menu, Shift L for MIDI learn, and Shift C to clear MIDI learn."
                                         : tremolo_control ? "Use arrows for changes, Shift arrows for finer changes, and Page keys for larger changes. Free Rate uses 0.1 Hz steps, Stereo Phase and Offset use one degree, Depth and Mix use one percent, and Smoothing uses 0.1 ms. Named choices move one item at a time. Home for maximum, End for minimum, Enter to type a value, Backspace to reset to default. Press Shift M for the context menu, Shift L for MIDI learn, and Shift C to clear MIDI learn."
@@ -13714,6 +13837,13 @@ void SynthEditor::addEffectSlotGroups(const String& sectionName, Component& pare
       glitch_delay_synced = sync != synth_.getControls().end() && sync->second->value() >= 0.5f;
       effect_slot_modes_[effect_prefix + "sync"] = glitch_delay_synced ? 1 : 0;
     }
+    int maim_encoder = atlas::maim::kLame;
+    if (effect_id == "maim") {
+      const auto found = synth_.getControls().find((effect_prefix + "encoder").toStdString());
+      if (found != synth_.getControls().end())
+        maim_encoder = jlimit(0, atlas::maim::kNumEncoders - 1, roundToInt(found->second->value()));
+      effect_slot_modes_[effect_prefix + "encoder"] = effectSlotRowVariant(effect_prefix + "encoder", float(maim_encoder));
+    }
     int analogue_chorus_model = 0;
     if (effect_id == "analoguechorus") {
       const auto found = synth_.getControls().find((effect_prefix + "model").toStdString());
@@ -13760,6 +13890,8 @@ void SynthEditor::addEffectSlotGroups(const String& sectionName, Component& pare
       if (effect_id == "convolution_reverb" && !isConvolutionReverbParameterRelevant(suffix, convolution_predelay_synced))
         continue;
       if (effect_id == "glitch_delay" && !isGlitchDelayParameterRelevant(suffix, glitch_delay_tap, glitch_delay_synced))
+        continue;
+      if (effect_id == "maim" && !isMaimParameterRelevant(suffix, maim_encoder))
         continue;
       if (shouldExposeEffectSlotParameter(effect_id, suffix) &&
           shouldShowParameterInSection(sectionName, parameter))
@@ -14054,6 +14186,29 @@ void SynthEditor::addEffectSlotGroups(const String& sectionName, Component& pare
           equalizer_bands("mid_eq_") },
         { "Side", "The six bands for the side channel, the difference between left and right", {},
           equalizer_bands("side_eq_") } };
+      for (const auto& group : groups)
+        place_group(group, *slot_ptr, slot_y, group_width, group_key, place_group);
+      grouped_rows = true;
+    }
+
+    // Maim keeps the encoder, its bitrate or sample rate, Turbo, Tilt, Error
+    // and Mix at the top of the slot, then groups the rest as Maim's panels
+    // do. Groups whose rows the encoder has no use for are left out.
+    if (effect_id == "maim") {
+      for (const auto* control : { "encoder", "bitrate", "lpc_rate", "turbo", "tilt", "error", "mix" }) {
+        if (const auto found = by_suffix.find(control); found != by_suffix.end())
+          add_parameter_row(*found->second, *slot_ptr, *slot_ptr, slot_y, width);
+      }
+      const std::vector<RowGroup> groups {
+        { "Spectral", "Shifts, thins and feeds back the MP3 spectrum", { "shift", "level_shift", "feedback" }, {} },
+        { "Butterfly", "The MP3 encoder's aliasing butterfly, straight and crossed",
+          { "butterfly_straight", "butterfly_crossed" }, {} },
+        { "MDCT", "How LAME steps through its bands and windows, and which band each MP3 band reads",
+          { "band_step", "band_invert", "window_step", "band_shift", "band_reverse" }, {} },
+        { "Packet loss", "A cycle of delivered and lost packets, and what the decoder does with the lost ones",
+          { "loss_period", "loss_width", "loss_jitter", "loss_mode" }, {} },
+        { "Gain and filters", "Drive into the codec, the filters after it and the makeup gain",
+          { "drive", "low_cut", "high_cut", "makeup" }, {} } };
       for (const auto& group : groups)
         place_group(group, *slot_ptr, slot_y, group_width, group_key, place_group);
       grouped_rows = true;

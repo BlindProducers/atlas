@@ -1716,6 +1716,103 @@ namespace {
     return titles.joinIntoString(" in ");
   }
 
+  // Maim's Encoder is a menu that decides which rows show: the MP3 bends for
+  // Blade and LAME, packet loss for Opus, GSM and LPC. The rows sit in the
+  // groups of Maim's panels, and read in Maim's units.
+  void testMaimRows() {
+    SynthPlugin synth;
+    synth.parameterChanged("fx_slot_1_type", vital::constants::kMaim + 1);
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    editor.toFront(true);
+    pumpEditorEvents();
+
+    const String prefix = "fx_slot_1_maim_";
+    auto* encoder = dynamic_cast<ComboBox*>(editor.controlForParameter(prefix + "encoder"));
+    expect(encoder != nullptr, "Maim's Encoder is a menu");
+    if (encoder != nullptr) {
+      StringArray items;
+      for (int i = 0; i < encoder->getNumItems(); ++i)
+        items.add(encoder->getItemText(i));
+      expect(items == StringArray { "Blade", "LAME", "Opus", "GSM", "LPC" },
+             "Encoder offers Maim's codecs: " + items.joinIntoString(", ").toStdString());
+      expect(encoder->getText() == "LAME", "Encoder reads LAME by default: " + encoder->getText().toStdString());
+    }
+    auto groups = [&](const char* suffix) { return effectRowGroups(editor, prefix + suffix); };
+    const auto check = [&](const char* suffix, const String& expected) {
+      const String found = groups(suffix);
+      expect(found == expected, (prefix + suffix + " sits in \"" + expected + "\" (found \"" + found + "\")").toStdString());
+    };
+    for (const auto* control : { "bitrate", "turbo", "tilt", "error", "mix" })
+      check(control, "");
+    for (const auto* control : { "shift", "level_shift", "feedback" })
+      check(control, "Spectral");
+    for (const auto* control : { "butterfly_straight", "butterfly_crossed" })
+      check(control, "Butterfly");
+    for (const auto* control : { "band_step", "band_invert", "window_step", "band_shift", "band_reverse" })
+      check(control, "MDCT");
+    for (const auto* control : { "drive", "low_cut", "high_cut", "makeup" })
+      check(control, "Gain and filters");
+    for (const auto* control : { "lpc_rate", "loss_period", "loss_width", "loss_jitter", "loss_mode" })
+      check(control, "no row");
+
+    const auto value_text = [&](const char* suffix) {
+      auto* control = editor.controlForParameter(prefix + suffix);
+      auto* handler = control ? control->getAccessibilityHandler() : nullptr;
+      auto* value = handler ? handler->getValueInterface() : nullptr;
+      return value ? value->getCurrentValueAsString() : String("<missing>");
+    };
+    struct Row { const char* suffix; const char* text; };
+    for (const Row row : { Row { "bitrate", "112 kbps" }, Row { "turbo", "0%" }, Row { "mix", "100%" },
+                           Row { "shift", "0 lines" }, Row { "band_step", "18" }, Row { "window_step", "64" },
+                           Row { "drive", "0 dB" }, Row { "low_cut", "10 Hz" }, Row { "high_cut", "18000 Hz" } }) {
+      expect(value_text(row.suffix) == row.text, std::string("Maim ") + row.suffix + " reads " + row.text +
+             " (reads " + value_text(row.suffix).toStdString() + ")");
+    }
+
+    // Blade loses the LAME-only MDCT rows; Opus loses the bends and gains packet loss.
+    synth.parameterChanged((prefix + "encoder").toStdString(), 0.0f);
+    editor.updateFullGui();
+    pumpEditorEvents();
+    check("butterfly_crossed", "Butterfly");
+    check("band_shift", "MDCT");
+    for (const auto* control : { "band_step", "band_invert", "window_step" })
+      check(control, "no row");
+    synth.parameterChanged((prefix + "encoder").toStdString(), 2.0f);
+    editor.updateFullGui();
+    pumpEditorEvents();
+    check("bitrate", "");
+    check("turbo", "");
+    for (const auto* control : { "loss_period", "loss_width", "loss_jitter", "loss_mode" })
+      check(control, "Packet loss");
+    for (const auto* control : { "shift", "butterfly_straight", "band_shift", "tilt", "lpc_rate" })
+      check(control, "no row");
+    expect(value_text("loss_period") == "2.05 secs" && value_text("loss_mode") == "Drop",
+           "the packet loss rows read in seconds and by name (" + value_text("loss_period").toStdString() + ", " +
+           value_text("loss_mode").toStdString() + ")");
+    // The timer compares the encoder with what the rows were built for; with
+    // Opus chosen it must not find a difference and rebuild the rows every tick.
+    {
+      Component::SafePointer<Component> loss_row(editor.controlForParameter(prefix + "loss_period"));
+      for (int tick = 0; tick < 3; ++tick) {
+        editor.pollStateNow();
+        pumpEditorEvents();
+      }
+      expect(loss_row != nullptr && editor.controlForParameter(prefix + "loss_period") == loss_row.getComponent(),
+             "the timer leaves Maim's rows alone while the encoder stays Opus");
+    }
+    synth.parameterChanged((prefix + "encoder").toStdString(), 4.0f);
+    editor.updateFullGui();
+    pumpEditorEvents();
+    check("lpc_rate", "");
+    check("bitrate", "no row");
+    expect(value_text("lpc_rate") == "8 kHz", "the LPC rate reads in kilohertz (" + value_text("lpc_rate").toStdString() + ")");
+
+    editor.removeFromDesktop();
+  }
+
   // The EQ gives each band its own group. Mid Side EQ nests the bands of each
   // channel in a Mid group and a Side group.
   void testEqualizerBandGroups() {

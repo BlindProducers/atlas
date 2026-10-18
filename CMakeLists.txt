@@ -119,6 +119,20 @@ set(ATLAS_ZL_COMPRESSOR_SOURCES
   src/synthesis/effects/zl_compressor/zl_compressor_engine.cpp
   src/synthesis/modules/analogue_compressor_module.cpp)
 
+# The Maim effect (Maim's controllers around its codecs): the LPC vocoder's
+# quantizers and the packet patterns decide the same way on every platform
+# only with IEEE semantics, so no fast-math and no FMA contraction.
+set(ATLAS_MAIM_SOURCES
+  src/synthesis/effects/maim/blade_codec.cpp
+  src/synthesis/effects/maim/gsm_codec.cpp
+  src/synthesis/effects/maim/lpc_codec.cpp
+  src/synthesis/effects/maim/maim_engine.cpp
+  src/synthesis/effects/maim/mp3_codec.cpp
+  src/synthesis/effects/maim/mp3_manager.cpp
+  src/synthesis/effects/maim/opus_codec.cpp
+  src/synthesis/effects/maim/resampler.cpp
+  src/synthesis/modules/maim_module.cpp)
+
 # PFFFT replaces JUCE's scalar FFT fallback for the oscillators
 # (src/common/fourier_transform.h, third_party/pffft). On by default where JUCE
 # has no fast FFT engine; turning it on for macOS puts both on the same FFT.
@@ -214,6 +228,8 @@ target_sources(Atlas PRIVATE
   src/synthesis/modules/scanner_vibrato_module.cpp
   # ZL Compressor by zsliu98 (AGPL v3): the Analogue Compressor effect.
   ${ATLAS_ZL_COMPRESSOR_SOURCES}
+  # Maim by Arden Butterfield (GPL v3): the Maim effect.
+  ${ATLAS_MAIM_SOURCES}
   src/unity_build/common.cpp
   src/unity_build/synthesis.cpp
   src/unity_build/plugin.cpp)
@@ -228,7 +244,7 @@ set_source_files_properties(${ATLAS_OPENWURLI_SOURCES} src/synthesis/producers/o
 set_source_files_properties(${ATLAS_OPENB3_SOURCES} src/synthesis/producers/openb3_source.cpp
   src/synthesis/modules/openb3_module.cpp src/synthesis/modules/scanner_vibrato_module.cpp PROPERTIES
   COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:strict>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffp-contract=off;-fno-fast-math>")
-set_source_files_properties(${ATLAS_ZL_COMPRESSOR_SOURCES} PROPERTIES
+set_source_files_properties(${ATLAS_ZL_COMPRESSOR_SOURCES} ${ATLAS_MAIM_SOURCES} PROPERTIES
   COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:strict>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffp-contract=off;-fno-fast-math>")
 
 # Braids is written for the firmware's two's-complement integer arithmetic.
@@ -243,6 +259,110 @@ set(ATLAS_BRAIDS_SOURCES
 set_source_files_properties(${ATLAS_BRAIDS_SOURCES} PROPERTIES
   COMPILE_DEFINITIONS TEST
   COMPILE_OPTIONS "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-fwrapv;-w>")
+
+# The Maim effect's codecs. Maim's circuit-bent LAME (libmp3lame 3.99.5 with
+# mpglib's decoder, LGPL 2.1 or later) and BladeEnc (LGPL 2.1 or later) are
+# kept in third_party/maim; libgsm (its own permissive licence) in
+# third_party/gsm; Opus (BSD-3) is a submodule built by its own CMake. The C
+# libraries build without warnings and without FMA contraction, so the
+# encoders decide the same way on macOS and Windows. Atlas reaches them only
+# through third_party/maim/include, keeping their config.h and common.h off
+# its include path.
+add_library(atlas_maim_lame STATIC
+  third_party/maim/lame/libmp3lame/VbrTag.c
+  third_party/maim/lame/libmp3lame/bitstream.c
+  third_party/maim/lame/libmp3lame/encoder.c
+  third_party/maim/lame/libmp3lame/fft.c
+  third_party/maim/lame/libmp3lame/gain_analysis.c
+  third_party/maim/lame/libmp3lame/id3tag.c
+  third_party/maim/lame/libmp3lame/lame.c
+  third_party/maim/lame/libmp3lame/mpglib_interface.c
+  third_party/maim/lame/libmp3lame/newmdct.c
+  third_party/maim/lame/libmp3lame/presets.c
+  third_party/maim/lame/libmp3lame/psymodel.c
+  third_party/maim/lame/libmp3lame/quantize.c
+  third_party/maim/lame/libmp3lame/quantize_pvt.c
+  third_party/maim/lame/libmp3lame/reservoir.c
+  third_party/maim/lame/libmp3lame/set_get.c
+  third_party/maim/lame/libmp3lame/tables.c
+  third_party/maim/lame/libmp3lame/takehiro.c
+  third_party/maim/lame/libmp3lame/util.c
+  third_party/maim/lame/libmp3lame/vbrquantize.c
+  third_party/maim/lame/libmp3lame/version.c
+  third_party/maim/lame/mpglib/common.c
+  third_party/maim/lame/mpglib/dct64_i386.c
+  third_party/maim/lame/mpglib/decode_i386.c
+  third_party/maim/lame/mpglib/interface.c
+  third_party/maim/lame/mpglib/layer1.c
+  third_party/maim/lame/mpglib/layer2.c
+  third_party/maim/lame/mpglib/layer3.c
+  third_party/maim/lame/mpglib/tabinit.c)
+target_include_directories(atlas_maim_lame PRIVATE
+  third_party/maim/lame/atlas_config
+  third_party/maim/lame/include
+  third_party/maim/lame/libmp3lame
+  third_party/maim/lame/mpglib)
+target_compile_definitions(atlas_maim_lame PRIVATE HAVE_CONFIG_H=1)
+
+add_library(atlas_maim_blade STATIC
+  third_party/maim/blade/bladeenc/blade.c
+  third_party/maim/blade/bladeenc/codec.c
+  third_party/maim/blade/bladeenc/common.c
+  third_party/maim/blade/bladeenc/encode.c
+  third_party/maim/blade/bladeenc/formatbitstream2.c
+  third_party/maim/blade/bladeenc/l3bitstream.c
+  third_party/maim/blade/bladeenc/l3psy.c
+  third_party/maim/blade/bladeenc/loop.c
+  third_party/maim/blade/bladeenc/mdct.c
+  third_party/maim/blade/bladeenc/reservoir.c
+  third_party/maim/blade/bladeenc/subs.c
+  third_party/maim/blade/bladeenc/tables.c)
+
+# libgsm without its toast command-line tool. SASR: >> is an arithmetic
+# shift on every compiler Atlas builds with.
+add_library(atlas_gsm STATIC
+  third_party/gsm/src/add.c
+  third_party/gsm/src/code.c
+  third_party/gsm/src/debug.c
+  third_party/gsm/src/decode.c
+  third_party/gsm/src/gsm_create.c
+  third_party/gsm/src/gsm_decode.c
+  third_party/gsm/src/gsm_destroy.c
+  third_party/gsm/src/gsm_encode.c
+  third_party/gsm/src/gsm_explode.c
+  third_party/gsm/src/gsm_implode.c
+  third_party/gsm/src/gsm_option.c
+  third_party/gsm/src/gsm_print.c
+  third_party/gsm/src/long_term.c
+  third_party/gsm/src/lpc.c
+  third_party/gsm/src/preprocess.c
+  third_party/gsm/src/rpe.c
+  third_party/gsm/src/short_term.c
+  third_party/gsm/src/table.c)
+target_include_directories(atlas_gsm PRIVATE third_party/gsm/inc)
+target_compile_definitions(atlas_gsm PRIVATE SASR=1 NeedFunctionPrototypes=1)
+
+foreach(library atlas_maim_lame atlas_maim_blade atlas_gsm)
+  set_property(TARGET ${library} PROPERTY POSITION_INDEPENDENT_CODE ON)
+  target_compile_options(${library} PRIVATE
+    $<$<C_COMPILER_ID:MSVC>:/w;/fp:precise>
+    $<$<NOT:$<C_COMPILER_ID:MSVC>>:-w;-ffp-contract=off;-fno-fast-math>)
+endforeach()
+
+set(OPUS_BUILD_SHARED_LIBRARY OFF CACHE BOOL "" FORCE)
+set(OPUS_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+set(OPUS_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(OPUS_INSTALL_PKG_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
+set(OPUS_INSTALL_CMAKE_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
+set(OPUS_DRED OFF CACHE BOOL "" FORCE)
+set(OPUS_OSCE OFF CACHE BOOL "" FORCE)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64|ARM64")
+  # Every arm64 CPU has NEON, and Opus has no runtime check for it on macOS;
+  # presuming it, as Opus does for aarch64 Linux, compiles its NEON paths in.
+  set(OPUS_PRESUME_NEON ON CACHE BOOL "" FORCE)
+endif()
+add_subdirectory(third_party/opus opus EXCLUDE_FROM_ALL)
+set_property(TARGET opus PROPERTY POSITION_INDEPENDENT_CODE ON)
 
 target_include_directories(Atlas PRIVATE
   src/common
@@ -263,7 +383,8 @@ target_include_directories(Atlas PRIVATE
   src/synthesis/producers
   src/synthesis/utilities
   third_party
-  third_party/concurrentqueue)
+  third_party/concurrentqueue
+  third_party/maim/include)
 
 target_compile_definitions(Atlas PRIVATE
   VITAL_ACCESSIBLE_UI=1
@@ -284,6 +405,10 @@ target_link_libraries(Atlas PRIVATE
   juce::juce_dsp
   juce::juce_gui_extra
   atlas_espeak
+  atlas_maim_lame
+  atlas_maim_blade
+  atlas_gsm
+  opus
   PUBLIC
   juce::juce_recommended_config_flags)
 # Links espeak-ng without its usage requirements: those put its compat shims
@@ -395,6 +520,7 @@ if(ATLAS_BUILD_TIMING_TESTS)
   target_include_directories(AtlasTimingTests PRIVATE
     src/common
     src/common/wavetable
+    src/interface/look_and_feel
     src/synthesis/effects
     src/synthesis/filters
     src/synthesis/framework
@@ -445,6 +571,7 @@ if(ATLAS_BUILD_TIMING_TESTS)
   add_test(NAME atlas_release_velocity_glide COMMAND AtlasTimingTests --release-velocity-glide)
   add_test(NAME atlas_analog_oscillator COMMAND AtlasTimingTests --analog-oscillator)
   add_test(NAME atlas_fourier_transform COMMAND AtlasTimingTests --fourier-transform)
+  add_test(NAME atlas_maim COMMAND AtlasTimingTests --maim)
   add_test(NAME atlas_analog_oscillator_controls COMMAND AtlasTimingTests --analog-oscillator-controls)
 
   juce_add_console_app(AtlasCpuTests PRODUCT_NAME "Atlas CPU Tests")

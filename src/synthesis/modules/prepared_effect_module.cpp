@@ -4,6 +4,7 @@
 #include "filter_table/filter_table_kernel.h"
 #include "table_filter.h"
 #include "spectral_lock_module.h"
+#include "maim_module.h"
 #include "smooth_value.h"
 #include "value_switch.h"
 #include "operators.h"
@@ -35,7 +36,7 @@ bool resetsInPlace(int type) {
     case constants::kAnalogueFlanger: case constants::kAnalogueEcho:
     case constants::kAnalogueRotary: case constants::kAnalogueSpring:
     case constants::kAnalogueWah: case constants::kSpectralBalance:
-    case constants::kGlitchDelay: return false;
+    case constants::kGlitchDelay: case constants::kMaim: return false;
     default: return true;
   }
 }
@@ -119,6 +120,7 @@ PreparedEffectModule::PreparedEffectModule(int type, std::string prefix, Factory
   pending_capacity_ = type_ == constants::kSpectralGate ? 8192 :
                       type_ == constants::kSpectralLock ? SpectralLockModule::kMaxSpectralLatencySamples :
                       type_ == constants::kFilterFx ? filterFxLatency(atlas::filter_table::kLinear) :
+                      type_ == constants::kMaim ? MaimModule::kMaxLatencySamples :
                       description_.latency;
   // On Windows only a live shell has its dry history (reserveControls).
   if (!kReserveMemoryOnlyWhileUsed && pending_capacity_ > 0)
@@ -151,6 +153,10 @@ void PreparedEffectModule::init() {
   if (type_ == constants::kFilterFx) {
     filter_model_control_ = parameter("filter_fx_model");
     filter_style_control_ = parameter("filter_fx_style");
+  }
+  if (type_ == constants::kMaim) {
+    maim_encoder_control_ = parameter("maim_encoder");
+    maim_lpc_rate_control_ = parameter("maim_lpc_rate");
   }
   SynthModule::init();
   worker_->add(this);
@@ -530,6 +536,10 @@ int PreparedEffectModule::getLatencySamples() const {
     return filter_model_control_ != nullptr &&
            static_cast<int>(std::round(filter_model_control_->value())) == constants::kFilterTable ?
         filterFxLatency(static_cast<int>(filter_style_control_->value() + 0.5f)) : 0;
+  // Maim's depends on its Encoder, its LPC Sample Rate and the processing rate.
+  if (type_ == constants::kMaim)
+    return MaimModule::latencyFor(maim_encoder_control_ ? maim_encoder_control_->value() : 1.0f,
+                                  maim_lpc_rate_control_ ? maim_lpc_rate_control_->value() : 5.0f, getSampleRate());
   return description_.latency;
 }
 }

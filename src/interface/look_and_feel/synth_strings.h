@@ -657,7 +657,8 @@ namespace strings {
     "glitch_delay",
     "openwurli_amp",
     "scanner_vibrato",
-    "analoguecompressor"
+    "analoguecompressor",
+    "maim"
   };
 
   const std::string kEffectSlotTypeNames[] = {
@@ -701,7 +702,8 @@ namespace strings {
     "Glitch Delay",
     "OpenWurli Amp",
     "Scanner Vibrato",
-    "Analogue Compressor"
+    "Analogue Compressor",
+    "Maim"
   };
 
   // Both tables are indexed by effect; a missing entry would read out of bounds.
@@ -757,6 +759,14 @@ namespace strings {
   const std::string kScannerVibratoModeNames[] = { "V1", "V2", "V3", "C1", "C2", "C3" };
   // ZL Compressor's styles, in the order of atlas::zl::Style.
   const std::string kAnalogueCompressorModeNames[] = { "Clean", "Classic", "Optical", "Vocal" };
+  // Maim's encoders, in the order of atlas::maim::Encoder, and its choices.
+  const std::string kMaimEncoderNames[] = { "Blade", "LAME", "Opus", "GSM", "LPC" };
+  const std::string kMaimBitrateNames[] = { "8 kbps", "16 kbps", "24 kbps", "32 kbps", "40 kbps", "48 kbps",
+                                           "56 kbps", "64 kbps", "80 kbps", "96 kbps", "112 kbps", "128 kbps",
+                                           "160 kbps", "192 kbps", "224 kbps", "256 kbps", "320 kbps" };
+  const std::string kMaimLpcRateNames[] = { "2 kHz", "3 kHz", "4 kHz", "5 kHz", "6 kHz", "8 kHz", "11.025 kHz",
+                                           "12 kHz", "16 kHz", "22.05 kHz" };
+  const std::string kMaimLossModeNames[] = { "Drop", "Stick" };
   const std::string kAnalogueWahModelNames[] = { "Cry Baby", "V846", "Mu-Tron III" };
   const std::string kAnalogueWahModeNames[] = { "LP", "BP", "HP" };
   const std::string kAnalogueWahRangeNames[] = { "Lo", "Hi" };
@@ -1055,6 +1065,7 @@ namespace strings {
     "OPENWURLI AMP",
     "SCANNER VIBRATO",
     "ANALOGUE COMPRESSOR",
+    "MAIM",
   };
 
   const std::string kDestinationMenuNames[vital::constants::kNumDestinations] = {
@@ -1106,6 +1117,7 @@ namespace strings {
     "OpenWurli Amp",
     "Scanner Vibrato",
     "Analogue Compressor",
+    "Maim",
   };
 
   const std::string kBusDestinationNames[vital::constants::kNumBusDestinations] = {

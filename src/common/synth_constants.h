@@ -182,6 +182,7 @@ namespace vital {
       kOpenWurliAmp,
       kScannerVibrato,
       kAnalogueCompressor,
+      kMaim,
       kNumEffects
     };
 

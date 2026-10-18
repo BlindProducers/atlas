@@ -26,6 +26,10 @@ Fetched by default, needed to build Atlas:
   bundles carry that folder in `Resources/espeak-ng-data`. MBROLA, libsonic,
   libpcaudio and the async API are off. The Speech oscillator type uses it;
   see `src/common/speech/README.atlas.md`.
+- `opus/`: Opus 1.5.2 plus 16 commits (BSD-3, https://github.com/xiph/opus
+  at 5854a9f, the commit Maim pins), unchanged, built as a static library by
+  its own CMake with no programs, tests, DRED or OSCE. The Maim effect's Opus
+  encoder.
 
 Opt-in, only for reference tests. `git submodule update --init` skips these;
 fetch one with `git submodule update --init --checkout <path>`, and CMake uses
@@ -70,6 +74,16 @@ Kept in this repository:
   client Atlas speaks through NVDA with; see `nvda_controller/README.atlas.md`.
 - `licenses/WolfShaper.LICENSE`: Atlas's Waveshaper adapts Wolf Shaper by
   Patrick Desaulniers (GPL v3 or later).
+- `maim/`: the two MP3 encoders of Maim by Arden Butterfield
+  (https://github.com/ArdenButterfield/Maim at 985ed20, GPL v3), as Maim
+  circuit bends them: `lame/` is libmp3lame 3.99.5 with mpglib's decoder
+  (LGPL 2 or later) and `blade/` BladeEnc 0.94.2 (LGPL 2.1 or later), each
+  with Maim's `*_bends` API. Atlas adds `lame/atlas_config/config.h` in place
+  of configure's, the wrapper headers in `include/`, and a per-encoder random
+  generator for the Error bend; see `src/synthesis/effects/maim/README.atlas.md`.
+- `gsm/`: libgsm 1.0 patchlevel 22 by Jutta Degener and Carsten Bormann
+  (https://www.quut.com/gsm/, their own permissive licence in `COPYRIGHT`),
+  unchanged, without the toast program. The Maim effect's GSM encoder.
 - `pffft/`: PFFFT by Julien Pommier (FFTPACK licence, BSD style), unchanged
   from https://bitbucket.org/jpommier/pffft. The oscillators' FFT
   (`vital::FourierTransform`) uses it on Windows, where JUCE has only a scalar

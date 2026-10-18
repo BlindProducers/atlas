@@ -47,6 +47,16 @@ their sources.
   the Analogue Compressor effect's engine (src/synthesis/effects/zl_compressor,
   licence in LICENSE.zlcompressor.md). Those files are AGPL v3; the AGPL permits
   combining them with this GPL v3 program (GPL v3 section 13).
+- Maim by Arden Butterfield (GPL v3, https://github.com/ArdenButterfield/Maim):
+  the Maim effect (src/synthesis/effects/maim, its controllers ported to
+  Atlas), with the libraries Maim circuit bends, kept in third_party/maim:
+  LAME 3.99.5 by the LAME project (LGPL 2 or later, COPYING and LICENSE there)
+  and BladeEnc by Tord Jansson (LGPL 2.1 or later, COPYING there), each with
+  Maim's bends and one further change by Atlas noted in the effect's
+  README.atlas.md. With them, unchanged: libgsm by Jutta Degener and Carsten
+  Bormann, Technische Universitaet Berlin (its own permissive licence,
+  third_party/gsm/COPYRIGHT), and Opus by Xiph.Org and its contributors
+  (BSD-3, the third_party/opus submodule).
 - eSpeak NG by Reece H. Dunn and its contributors, based on eSpeak by Jonathan
   Duddington (GPL v3 or later, https://github.com/espeak-ng/espeak-ng), with
   ucd-tools (GPL v3 or later), NV Speech Player by NV Access (GPL v3 or later)
