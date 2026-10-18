@@ -254,6 +254,57 @@ namespace {
            "A zero-length host note (on then off at one sample) must not stay pressed");
   }
 
+  // A wheel on a parameter outside the voices (an effect's mix, the volume)
+  // used to move it only while a note played: the route read the wheel from
+  // a voice, and stayed where the last voice left it once the notes ended.
+  void testWheelsMoveGlobalParametersWithoutNotes() {
+    SynthPlugin synth;
+    prepare(synth);
+    auto& controls = synth.getControls();
+    const auto settled = [&](const std::string& destination) {
+      render(synth, 24000);
+      return synth.getEngine()->getMonoModulations().at(destination)->buffer[0][0];
+    };
+    const auto range = [](const std::string& name) {
+      const auto& details = vital::Parameters::getDetails(name);
+      return details.max - details.min;
+    };
+
+    const float volume = controls.at("volume")->value();
+    connect(synth, "mod_wheel", "volume", 0.5f);
+    MidiBuffer wheel_up;
+    wheel_up.addEvent(MidiMessage::controllerEvent(1, 1, 127), 0);
+    renderMidi(synth, wheel_up);
+    close(settled("volume"), volume + 0.5f * range("volume"),
+          "the mod wheel moves a global parameter with no note playing", 0.01f * range("volume"));
+
+    // After a note has ended there is no voice to read the wheel from.
+    render(synth, 4800, true);
+    MidiBuffer release;
+    release.addEvent(MidiMessage::noteOff(1, 48), 0);
+    renderMidi(synth, release);
+    render(synth, 96000);
+    expect(synth.getEngine()->getNumActiveVoices() == 0, "the note has ended");
+    MidiBuffer wheel_down;
+    wheel_down.addEvent(MidiMessage::controllerEvent(1, 1, 0), 0);
+    renderMidi(synth, wheel_down);
+    close(settled("volume"), volume, "the mod wheel keeps moving a global parameter after the notes end",
+          0.01f * range("volume"));
+
+    const float routing = controls.at("stereo_routing")->value();
+    connect(synth, "pitch_wheel", "stereo_routing", 0.5f);
+    MidiBuffer bend;
+    bend.addEvent(MidiMessage::pitchWheel(1, 16383), 0);
+    renderMidi(synth, bend);
+    close(settled("stereo_routing"), routing + 0.5f * range("stereo_routing"),
+          "the pitch wheel moves a global parameter with no note playing", 0.01f * range("stereo_routing"));
+
+    // A per-voice parameter still takes each voice's own wheel.
+    auto* per_voice = connect(synth, "mod_wheel", "filter_1_cutoff");
+    expect(per_voice != nullptr && per_voice->modulation_processor->isPolyphonicModulation(),
+           "the mod wheel stays a per-voice source for a per-voice parameter");
+  }
+
   void testArpeggiatorEnableAndDisableReleaseNotes() {
     SynthPlugin synth;
     prepare(synth);
@@ -793,6 +844,7 @@ int main(int argc, char** argv) {
     testArpOctave();
     testArpRetriggerDivisionParameter();
     testArpChordUsesVoicesOnlyForOscillatorsThatAreOn();
+    testArpRateFollowsModulation();
     if (failures == 0)
       std::cout << "Atlas arpeggiator tests passed\n";
     return failures == 0 ? 0 : 1;
@@ -876,6 +928,7 @@ int main(int argc, char** argv) {
     testGranularSizeModeNamesBothChoices();
     testLevelsAndAmountsReadAsPercent();
     testSlotTypeRowsFollowTheType();
+    testArpeggiatorRatesOfferOnlyFreeRunningSources();
     testWavetableEditingOnASlotSwitchedToWavetable();
     testSwitchingChoiceKeepsItsControl();
     testAnalogSwitchKeepsItsControl();
@@ -914,6 +967,7 @@ int main(int argc, char** argv) {
   testEditorMacrosUpdateIndependently();
   testMacroLevelMatchesDirectLevel();
   testSameSampleNoteOnOffDoesNotStick();
+  testWheelsMoveGlobalParametersWithoutNotes();
   testArpeggiatorEnableAndDisableReleaseNotes();
   testArpeggiatorVoicesFollowSoundingSlots();
   testArpeggiatorTailsKeepTheirSlot();

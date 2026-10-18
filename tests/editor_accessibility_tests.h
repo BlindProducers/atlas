@@ -742,6 +742,36 @@ namespace {
     editor.removeFromDesktop();
   }
 
+  // The arpeggiator's rates and time mode offer only sources that run on
+  // their own or that a player moves: every arp step is a new note, so a
+  // source a note restarts (an envelope) or sets (velocity, pressure) cannot
+  // shape its speed. Other parameters keep every source.
+  void testArpeggiatorRatesOfferOnlyFreeRunningSources() {
+    SynthPlugin synth;
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    pumpEditorEvents();
+    const auto sources = [&](const char* destination) {
+      std::map<int, String> choices;
+      editor.createModulationSourceSubmenu(destination, choices, 1);
+      StringArray ids;
+      for (const auto& choice : choices)
+        ids.add(choice.second);
+      return ids;
+    };
+    for (const char* destination : { "arp_1_free_rate", "arp_1_sync_rate", "arp_1_time_mode", "arp_2_free_rate" }) {
+      const StringArray ids = sources(destination);
+      for (const char* kept : { "lfo_1", "lfo_12", "random_1", "macro_control_1", "mod_wheel", "pitch_wheel" })
+        expect(ids.contains(kept), std::string(destination) + " offers " + kept);
+      for (const char* hidden : { "env_1", "env_2", "random", "velocity", "aftertouch", "slide", "lift",
+                                  "note", "note_in_octave", "stereo" })
+        expect(!ids.contains(hidden), std::string(destination) + " hides " + hidden);
+    }
+    const StringArray cutoff = sources("filter_1_cutoff");
+    expect(cutoff.contains("env_1") && cutoff.contains("velocity") && cutoff.contains("aftertouch") &&
+           cutoff.contains("random"), "a voice parameter keeps the note-bound sources");
+  }
+
   // Oscillator slots Phase 2: every slot type shows the distortion rows it can
   // use, headers name the type, arp destinations name the slot's type and the
   // Sample/Granular playheads are offered as modulation sources.
