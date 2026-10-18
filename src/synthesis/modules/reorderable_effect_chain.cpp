@@ -23,6 +23,7 @@
 #include "analogue_rotary_module.h"
 #include "analogue_spring_module.h"
 #include "analogue_wah_module.h"
+#include "analogue_compressor_module.h"
 #include "filter_fx_module.h"
 #include "spectral_balance_module.h"
 #include "glitch_delay_module.h"
@@ -220,6 +221,8 @@ namespace vital {
         return new OpenWurliAmpModule(module_prefix);
       case constants::kScannerVibrato:
         return new ScannerVibratoModule(module_prefix);
+      case constants::kAnalogueCompressor:
+        return new AnalogueCompressorModule(module_prefix);
       default:
         return nullptr;
     }

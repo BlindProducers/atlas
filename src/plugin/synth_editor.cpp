@@ -1497,7 +1497,8 @@ namespace {
         "Floaty Delay",
         "Glitch Delay",
         "OpenWurli Amp",
-        "Scanner Vibrato"
+        "Scanner Vibrato",
+        "Analogue Compressor"
       };
       for (int envelope = 1; envelope <= vital::kNumEnvelopes; ++envelope)
         result.push_back("Envelope " + String(envelope));
@@ -1572,7 +1573,7 @@ namespace {
         section == "Analogue Flanger" || section == "Analogue Echo" ||
         section == "Analogue Rotary" || section == "Analogue Spring" ||
         section == "Analogue Wah" || section == "Spectral Balance" || section == "Glitch Delay" ||
-        section == "OpenWurli Amp" || section == "Scanner Vibrato")
+        section == "OpenWurli Amp" || section == "Scanner Vibrato" || section == "Analogue Compressor")
       return "Effects";
     if (section == "Modulation routing")
       return "Modulation";
@@ -1742,6 +1743,8 @@ namespace {
       return rank({ "volume", "tremolo_depth", "speaker" });
     if (effect_id == "scanner_vibrato")
       return rank({ "mode", "rate" });
+    if (effect_id == "analoguecompressor")
+      return rank({ "mode", "threshold", "ratio", "knee", "attack", "release", "makeup", "mix" });
     if (effect_id == "glitch_delay")
       return glitchDelayParameterRank(suffix);
     if (effect_id == "spectral_balance")
@@ -2450,7 +2453,7 @@ namespace {
     static const std::vector<EffectCategory> categories = [] {
       std::vector<EffectCategory> result {
         { "Analogue", { kAnalogueChorus, kAnalogueFlanger, kAnalogueEcho, kAnalogueRotary, kAnalogueSpring, kAnalogueWah,
-                        kTape, kOpenWurliAmp, kScannerVibrato } },
+                        kTape, kOpenWurliAmp, kScannerVibrato, kAnalogueCompressor } },
         { "Dynamics", { kCompressor, kLimiter, kSuppressor } },
         { "Space", { kReverb, kConvolutionReverb, kDelay, kFloatyDelay, kGlitchDelay } },
         { "Modulation", { kChorus, kFlanger, kPhaser, kTremoloPan, kDimensionExpander, kPhaseShift,
@@ -2543,6 +2546,7 @@ namespace {
     if (rest.startsWith("glitch_delay_")) return "Glitch Delay";
     if (rest.startsWith("openwurli_amp_")) return "OpenWurli Amp";
     if (rest.startsWith("scanner_vibrato_")) return "Scanner Vibrato";
+    if (rest.startsWith("analoguecompressor_")) return "Analogue Compressor";
     if (rest.startsWith("spectral_compressor_")) return "Spectral Compressor";
     if (rest.startsWith("spectral_gate_")) return "Spectral Gate";
     if (rest.startsWith("erosion_")) return "Erosion";
@@ -2698,6 +2702,7 @@ namespace {
     if (id.startsWith("glitch_delay_")) return "Glitch Delay";
     if (id.startsWith("openwurli_amp_")) return "OpenWurli Amp";
     if (id.startsWith("scanner_vibrato_")) return "Scanner Vibrato";
+    if (id.startsWith("analoguecompressor_")) return "Analogue Compressor";
     if (id.startsWith("spectral_compressor_")) return "Spectral Compressor";
     if (id.startsWith("spectral_gate_")) return "Spectral Gate";
     if (const int arp = arpeggiatorForId(id); arp > 0) return "Arpeggiator " + String(arp);
@@ -3618,6 +3623,31 @@ namespace {
       if (scanner_suffix == "rate")
         return "Set how fast the scanner turns. 7.25 hertz is OpenB3's; a real organ's motor runs near 7.";
     }
+    const String analogue_compressor_suffix = effectSuffix("analoguecompressor_");
+    if (analogue_compressor_suffix.isNotEmpty()) {
+      if (analogue_compressor_suffix == "mode")
+        return "Choose how the compressor listens. Clean follows the input's level directly, for transparent "
+               "control. Classic listens to its own output, as feedback compressors do, for a smoother, more "
+               "musical response. Optical smooths the level before the ratio, like the slow light cell of an "
+               "opto compressor. Vocal is a feedback design that smooths the gain itself, gentle on voices.";
+      if (analogue_compressor_suffix == "threshold")
+        return "Set the level above which compression starts, from minus 60 to 0 dB. Lower settings compress more.";
+      if (analogue_compressor_suffix == "ratio")
+        return "Set how strongly levels above the threshold are reduced. 2:1 halves the excess; 100:1 acts as a "
+               "limiter.";
+      if (analogue_compressor_suffix == "knee")
+        return "Soften the change around the threshold. Compression fades in this many dB either side of it; "
+               "zero is a hard knee.";
+      if (analogue_compressor_suffix == "attack")
+        return "Set how quickly compression reacts when the level rises. Longer attacks let transients through.";
+      if (analogue_compressor_suffix == "release")
+        return "Set how quickly compression lets go when the level falls. Short releases pump; long ones are smoother.";
+      if (analogue_compressor_suffix == "makeup")
+        return "Add or remove gain after compression, from minus 30 to 30 dB, to match the level you started with.";
+      if (analogue_compressor_suffix == "mix")
+        return "Scale the compression and the makeup gain. 100 percent is the full effect and zero is the dry "
+               "signal; in between, the gain change shrinks in dB rather than blending two signals.";
+    }
     const String analogue_spring_suffix = effectSuffix("analoguespring_");
     if (analogue_spring_suffix.isNotEmpty()) {
       if (analogue_spring_suffix == "tank") return "Choose a Short, Medium or Long spring tank. Longer tanks ring longer.";
@@ -3705,7 +3735,7 @@ namespace {
       "eq_", "flanger_", "frequency_shifter_", "limiter_", "mid_side_eq_", "phase_shift_", "phaser_",
       "reverb_", "utility_", "waveshaper_", "spectral_gate_", "erosion_", "floaty_delay_", "spectral_compressor_", "scream_", "tremolo_pan_", "tape_", "defuse_", "suppressor_", "trance_gate_", "spectral_lock_", "resonator_",
       "analoguechorus_", "analogueflanger_", "analogueecho_", "analoguerotary_", "analoguespring_", "analoguewah_",
-      "spectral_balance_", "openwurli_amp_", "scanner_vibrato_"
+      "spectral_balance_", "openwurli_amp_", "scanner_vibrato_", "analoguecompressor_"
     };
     for (const auto& prefix : effect_prefixes) {
       effect_suffix = effectSuffix(prefix);
@@ -5026,7 +5056,9 @@ class AccessibleParameterRow : public Component {
       // Speech's language and variant lists are long: a menu reads them best.
       const bool speech_voice_control = parameter_id.endsWith("_speech_language") ||
                                         parameter_id.endsWith("_speech_variant");
-      use_combo_control_ = row_switching_choice || speech_voice_control ||
+      // The Analogue Compressor's Mode keeps its rows, but reads best as a menu.
+      const bool analogue_compressor_mode = parameter_id.endsWith("analoguecompressor_mode");
+      use_combo_control_ = row_switching_choice || speech_voice_control || analogue_compressor_mode ||
                            (spectral_lock_control && (parameter_id.endsWith("_root") || parameter_id.endsWith("_scale")));
       const bool tape_control = parameter_id.startsWith("tape_") || parameter_id.contains("_tape_");
       const bool suppressor_control = parameter_id.startsWith("suppressor_") || parameter_id.contains("_suppressor_");

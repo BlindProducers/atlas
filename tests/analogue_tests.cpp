@@ -17,6 +17,8 @@
 #include "analogue/wah_engine.h"
 #include "analogue_wah_module.h"
 #include "scanner_vibrato_module.h"
+#include "analogue_compressor_module.h"
+#include "zl_compressor/zl_compressor_engine.h"
 #include "reorderable_effect_chain.h"
 #include "reverb_module.h"
 #include "synth_parameters.h"
@@ -1504,6 +1506,184 @@ namespace {
     }
   }
 
+
+  // ------------------------------------------------------------ Compressor
+
+  struct CompressorFixture {
+    vital::AnalogueCompressorModule module;
+    vital::control_map controls;
+    explicit CompressorFixture(int rate = 48000) {
+      module.init(); module.setSampleRate(rate); module.setOversampleAmount(1);
+      controls = module.getControls();
+    }
+    void set(const std::string& id, float value) { controls.at("analoguecompressor_" + id)->set(value); }
+    void setRatio(double ratio) { set("ratio", static_cast<float>(std::log2(ratio))); }
+    void setTime(const std::string& id, double milliseconds) { set(id, static_cast<float>(std::cbrt(milliseconds))); }
+    // A hard knee (ZL's minimum knee width) with ratio 4 at -20 dB.
+    void hardKnee(int mode) {
+      set("mode", static_cast<float>(mode)); set("threshold", -20.0f); setRatio(4.0); set("knee", 0.0f);
+      setTime("attack", 10.0); setTime("release", 100.0);
+    }
+    Signal render(const Signal& input) {
+      Signal out(input.size());
+      allocation_count = 0; track = true;
+      for (size_t i = 0; i < input.size(); i += vital::kMaxBufferSize) {
+        const int size = static_cast<int>(std::min<size_t>(vital::kMaxBufferSize, input.size() - i));
+        module.processWithInput(input.data() + i, size);
+        std::copy_n(module.output()->buffer, size, out.data() + i);
+      }
+      track = false;
+      expect(allocation_count == 0, "Analogue Compressor processing does not allocate");
+      return out;
+    }
+  };
+
+  Signal constantSignal(int count, float left, float right) {
+    return Signal(static_cast<size_t>(count), vital::poly_float(left, right, left, right));
+  }
+
+  double toDb(double gain) { return 20.0 * std::log10(std::max(std::abs(gain), 1e-12)); }
+
+  // The static curves: a steady level of -6 dB through ratio 4 at -20 dB.
+  // The feed-forward styles (Clean, Optical) land on the curve itself, 14 dB
+  // over becoming 3.5; the feedback styles (Classic, Vocal) measure their own
+  // output, so the level settles where L = in - (L - T)(1 - 1/r).
+  void testCompressorStaticCurves() {
+    namespace zl = atlas::zl;
+    const double input = toDb(0.5), threshold = -20.0, ratio = 4.0;
+    const double feed_forward = threshold + (input - threshold) / ratio;
+    const double feedback = (input + threshold * (1.0 - 1.0 / ratio)) / (2.0 - 1.0 / ratio);
+    const char* const names[] = { "Clean", "Classic", "Optical", "Vocal" };
+    for (int mode = 0; mode < zl::kNumStyles; ++mode) {
+      CompressorFixture f;
+      f.hardKnee(mode);
+      const Signal out = f.render(constantSignal(48000, 0.5f, 0.5f));
+      const double expected = mode == zl::kClassic || mode == zl::kVocal ? feedback : feed_forward;
+      const double level = toDb(out.back()[0]);
+      expect(std::abs(level - expected) < 0.05 && std::abs(out.back()[1] - out.back()[0]) < 1e-6f,
+             std::string(names[mode]) + " settles at " + std::to_string(expected) + " dB (got " +
+             std::to_string(level) + ")");
+
+      // Below the threshold nothing changes.
+      CompressorFixture quiet;
+      quiet.hardKnee(mode);
+      const Signal soft = quiet.render(constantSignal(24000, 0.05f, 0.05f));
+      expect(std::abs(soft.back()[0] - 0.05f) < 1e-5f, std::string(names[mode]) + " leaves -26 dB untouched");
+    }
+  }
+
+  void testCompressorDryAndLanes() {
+    CompressorFixture f;
+    f.hardKnee(atlas::zl::kClean);
+    f.set("mix", 0.0f); f.set("makeup", 12.0f);
+    const Signal input = stereoSine(9600, 48000.0, 440.0);
+    const Signal out = f.render(input);
+    bool dry = true, mirrored = true;
+    for (size_t i = 0; i < out.size(); ++i) {
+      dry = dry && std::abs(out[i][0] - input[i][0]) < 1e-6f && std::abs(out[i][1] - input[i][1]) < 1e-6f;
+      mirrored = mirrored && out[i][2] == out[i][0] && out[i][3] == out[i][1];
+    }
+    expect(dry, "Analogue Compressor at 0% Mix returns the dry signal, makeup included");
+    expect(mirrored, "Analogue Compressor lanes 2 and 3 mirror left and right");
+  }
+
+  // Mix scales the gain change and the makeup in dB, as ZL's Wet does.
+  void testCompressorMakeupAndMix() {
+    {
+      CompressorFixture f;
+      f.hardKnee(atlas::zl::kClean);
+      f.set("makeup", 6.0f);
+      const Signal out = f.render(constantSignal(48000, 0.05f, 0.05f));
+      expect(std::abs(toDb(out.back()[0] / 0.05f) - 6.0) < 0.01, "Makeup adds 6 dB");
+    }
+    {
+      CompressorFixture f;
+      f.hardKnee(atlas::zl::kClean);
+      f.set("makeup", 6.0f); f.set("mix", 0.5f);
+      const Signal out = f.render(constantSignal(48000, 0.05f, 0.05f));
+      expect(std::abs(toDb(out.back()[0] / 0.05f) - 3.0) < 0.01, "Mix 50% halves the makeup in dB");
+    }
+    {
+      CompressorFixture f;
+      f.hardKnee(atlas::zl::kClean);
+      f.set("mix", 0.5f);
+      const Signal out = f.render(constantSignal(48000, 0.5f, 0.5f));
+      const double full = (toDb(0.5) + 20.0) * (1.0 - 1.0 / 4.0);
+      expect(std::abs(toDb(out.back()[0] / 0.5f) + 0.5 * full) < 0.05, "Mix 50% halves the gain change in dB");
+    }
+  }
+
+  // Mid and side are detected on their own: a signal only in the side
+  // channel is compressed like one only in the mid, and stays in the side.
+  void testCompressorMidSide() {
+    CompressorFixture mid, side;
+    mid.hardKnee(atlas::zl::kClean);
+    side.hardKnee(atlas::zl::kClean);
+    const Signal centre = mid.render(constantSignal(48000, 0.5f, 0.5f));
+    const Signal wide = side.render(constantSignal(48000, 0.5f, -0.5f));
+    expect(std::abs(wide.back()[0] - centre.back()[0]) < 1e-5f && std::abs(wide.back()[1] + wide.back()[0]) < 1e-6f,
+           "a side-only signal is compressed as a mid-only one");
+  }
+
+  // The level 5 ms after a loud signal starts: a short attack has already
+  // pulled it down, a long one has not.
+  void testCompressorAttackRelease() {
+    const auto after_onset = [](double attack) {
+      CompressorFixture f;
+      f.hardKnee(atlas::zl::kClean);
+      f.setTime("attack", attack);
+      Signal input = constantSignal(4800, 0.0f, 0.0f);
+      const Signal loud = constantSignal(240, 0.5f, 0.5f);
+      input.insert(input.end(), loud.begin(), loud.end());
+      return toDb(f.render(input).back()[0]);
+    };
+    const double fast = after_onset(1.0), slow = after_onset(200.0);
+    expect(fast < -15.0 && slow > -8.0, "attack sets how fast compression starts (1 ms: " + std::to_string(fast) +
+           " dB, 200 ms: " + std::to_string(slow) + " dB)");
+
+    const auto after_release = [](double release) {
+      CompressorFixture f;
+      f.hardKnee(atlas::zl::kClean);
+      f.setTime("release", release);
+      Signal input = constantSignal(24000, 0.5f, 0.5f);
+      const Signal quiet = constantSignal(2400, 0.05f, 0.05f);
+      input.insert(input.end(), quiet.begin(), quiet.end());
+      return toDb(f.render(input).back()[0] / 0.05f);
+    };
+    const double quick = after_release(20.0), long_release = after_release(2000.0);
+    expect(quick > -0.5 && long_release < -5.0, "release sets how fast it lets go (20 ms: " +
+           std::to_string(quick) + " dB, 2 s: " + std::to_string(long_release) + " dB)");
+  }
+
+  // Changing mode carries the gain change over instead of starting from none.
+  void testCompressorModeSwitch() {
+    for (int from = 0; from < atlas::zl::kNumStyles; ++from) {
+      for (int to = 0; to < atlas::zl::kNumStyles; ++to) {
+        if (from == to) continue;
+        CompressorFixture f;
+        f.hardKnee(from);
+        f.set("threshold", -30.0f);
+        const Signal input = monoSine(48000, 48000.0, 220.0, 0.5);
+        Signal out(input.size());
+        for (size_t i = 0; i < input.size(); i += vital::kMaxBufferSize) {
+          if (i == 24000 - 24000 % vital::kMaxBufferSize) f.set("mode", static_cast<float>(to));
+          const int size = static_cast<int>(std::min<size_t>(vital::kMaxBufferSize, input.size() - i));
+          f.module.processWithInput(input.data() + i, size);
+          std::copy_n(f.module.output()->buffer, size, out.data() + i);
+        }
+        double worst = 0.0, steady = 0.0;
+        for (size_t i = 9600; i < out.size(); ++i) {
+          const double step = std::abs(out[i][0] - out[i - 1][0]);
+          worst = std::max(worst, step);
+          if (i < 20000 || i > 40000) steady = std::max(steady, step);
+        }
+        expect(worst < 1.5 * steady + 0.002, "Analogue Compressor mode " + std::to_string(from) + " to " +
+               std::to_string(to) + " is click-free (largest step " + std::to_string(worst) + ", steady " +
+               std::to_string(steady) + ")");
+      }
+    }
+  }
+
   // ------------------------------------------------------------ Labels
 
   void testChoiceLabels() {
@@ -1539,6 +1719,11 @@ namespace {
            vital::Parameters::getDetails("analoguewah_mode").max == wah::kNumModes - 1 &&
            vital::Parameters::getDetails("analoguewah_range").max == wah::kNumRanges - 1,
            "Wah choice ranges match the engine");
+    namespace zl = atlas::zl;
+    expect(label("analoguecompressor_mode", zl::kClean) == "Clean" && label("analoguecompressor_mode", zl::kClassic) == "Classic" &&
+           label("analoguecompressor_mode", zl::kOptical) == "Optical" && label("analoguecompressor_mode", zl::kVocal) == "Vocal" &&
+           vital::Parameters::getDetails("analoguecompressor_mode").max == zl::kNumStyles - 1,
+           "Compressor mode labels match the engine");
     expect(vital::Parameters::getDetails("analoguechorus_model").max == chorus::kNumModels - 1 &&
            vital::Parameters::getDetails("analoguerotary_model").max == rotary::kNumModels - 1 &&
            vital::Parameters::getDetails("analoguerotary_speed").max == rotary::kNumSpeeds - 1 &&
@@ -1598,6 +1783,7 @@ namespace {
       else if (effect == "analoguespring") { SpringFixture f; apply(f.controls); out = f.render(input); }
       else if (effect == "analoguewah") { WahFixture f; apply(f.controls); out = f.render(input); }
       else if (effect == "scanner_vibrato") { ScannerFixture f; apply(f.controls); out = f.render(input); }
+      else if (effect == "analoguecompressor") { CompressorFixture f; apply(f.controls); out = f.render(input); }
       else { EchoFixture f; apply(f.controls); out = f.render(input); }
       bool finite = true;
       double peak = 0.0;
@@ -1686,6 +1872,11 @@ namespace {
       f.set("model", model); f.set("envelope", 1.0f); f.set("decay", 0.0f);
       check("Analogue Wah model " + std::to_string(model), f.module);
     }
+    for (int mode = 0; mode < atlas::zl::kNumStyles; ++mode) {
+      CompressorFixture f;
+      f.hardKnee(mode);
+      check("Analogue Compressor mode " + std::to_string(mode), f.module);
+    }
   }
 }
 
@@ -1755,6 +1946,15 @@ int main(int argc, char** argv) {
     testWahDecayAndMode();
     testWahModelSwitch();
     testEffectChains(vital::constants::kAnalogueWah, "analoguewah");
+  }
+  if (only.empty() || only == "--compressor") {
+    testCompressorStaticCurves();
+    testCompressorDryAndLanes();
+    testCompressorMakeupAndMix();
+    testCompressorMidSide();
+    testCompressorAttackRelease();
+    testCompressorModeSwitch();
+    testEffectChains(vital::constants::kAnalogueCompressor, "analoguecompressor");
   }
   if (only.empty() || only == "--labels")
     testChoiceLabels();

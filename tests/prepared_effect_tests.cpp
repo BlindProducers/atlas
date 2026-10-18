@@ -38,6 +38,7 @@
 #include "resonator_module.h"
 #include "openwurli_amp_module.h"
 #include "scanner_vibrato_module.h"
+#include "analogue_compressor_module.h"
 #include "note_monitor.h"
 #include "table_filter.h"
 #include "reorderable_effect_chain.h"
@@ -195,6 +196,7 @@ std::unique_ptr<vital::SynthModule> create(int type, vital::Output* bpm) {
     case constants::kGlitchDelay: return std::make_unique<GlitchDelayModule>(bpm, nullptr);
     case constants::kOpenWurliAmp: return std::make_unique<OpenWurliAmpModule>();
     case constants::kScannerVibrato: return std::make_unique<ScannerVibratoModule>();
+    case constants::kAnalogueCompressor: return std::make_unique<AnalogueCompressorModule>();
   }
   return {};
 }

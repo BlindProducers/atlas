@@ -931,6 +931,7 @@ int main(int argc, char** argv) {
     testArpeggiatorRatesOfferOnlyFreeRunningSources();
     testWavetableEditingOnASlotSwitchedToWavetable();
     testSwitchingChoiceKeepsItsControl();
+    testAnalogueCompressorRows();
     testAnalogSwitchKeepsItsControl();
     testEffectMoveKeepsFocusAcrossTimerTick();
     testSectionKeysStepThroughEffectSlots();

@@ -372,6 +372,9 @@ namespace {
       expect(!top.contains("Reverb") && submenuTexts(*replace->subMenu, "Space").contains("Reverb"),
              "Reverb sits inside Space rather than at the top level");
       expect(submenuTexts(*replace->subMenu, "Analogue").contains("Analogue Wah"), "Analogue effects are grouped");
+      expect(submenuTexts(*replace->subMenu, "Analogue").contains("Analogue Compressor") &&
+             !submenuTexts(*replace->subMenu, "Dynamics").contains("Analogue Compressor"),
+             "the Analogue Compressor sits in the Analogue category");
       expect(submenuTexts(*replace->subMenu, "Analogue").contains("Tape") &&
              !submenuTexts(*replace->subMenu, "Distortion and character").contains("Tape"),
              "Tape sits in the Analogue category");
@@ -951,6 +954,56 @@ namespace {
              "slot 7 keeps keyboard focus on its wavetable toggle after showing the editor");
     }
     editor.removeFromDesktop();
+  }
+
+  // The Analogue Compressor's Mode is a menu of ZL Compressor's styles, though
+  // it keeps the slot's rows; the other rows read in decibels, a ratio and
+  // milliseconds.
+  void testAnalogueCompressorRows() {
+    SynthPlugin synth;
+    synth.parameterChanged("fx_slot_1_type", vital::constants::kAnalogueCompressor + 1);
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    editor.toFront(true);
+    pumpEditorEvents();
+
+    const String prefix = "fx_slot_1_analoguecompressor_";
+    auto* mode = dynamic_cast<ComboBox*>(editor.controlForParameter(prefix + "mode"));
+    expect(mode != nullptr, "Analogue Compressor Mode is a menu");
+    if (mode != nullptr) {
+      StringArray items;
+      for (int i = 0; i < mode->getNumItems(); ++i)
+        items.add(mode->getItemText(i));
+      expect(items == StringArray { "Clean", "Classic", "Optical", "Vocal" },
+             "Mode offers ZL Compressor's styles: " + items.joinIntoString(", ").toStdString());
+      expect(mode->getText() == "Clean", "Mode reads Clean by default: " + mode->getText().toStdString());
+    }
+    const auto value_text = [&](const char* suffix) {
+      auto* control = editor.controlForParameter(prefix + suffix);
+      auto* handler = control ? control->getAccessibilityHandler() : nullptr;
+      auto* value = handler ? handler->getValueInterface() : nullptr;
+      return value ? value->getCurrentValueAsString() : String("<missing>");
+    };
+    struct Row { const char* suffix; const char* text; };
+    for (const Row row : { Row { "threshold", "-18 dB" }, Row { "ratio", "3:1" }, Row { "knee", "8 dB" },
+                           Row { "attack", "100 ms" }, Row { "release", "500 ms" }, Row { "makeup", "0 dB" },
+                           Row { "mix", "100%" } }) {
+      expect(value_text(row.suffix) == row.text, std::string("Analogue Compressor ") + row.suffix + " reads " +
+             row.text + " (reads " + value_text(row.suffix).toStdString() + ")");
+    }
+
+    if (mode != nullptr) {
+      Component::SafePointer<Component> neighbour(editor.controlForParameter(prefix + "threshold"));
+      editor.ensureComponentVisible(mode);
+      mode->grabKeyboardFocus();
+      mode->keyPressed(KeyPress(KeyPress::downKey));
+      editor.pollStateNow();
+      pumpEditorEvents();
+      close(synth.getControls().at((prefix + "mode").toStdString())->value(), 1.0f, "Down steps Mode to Classic");
+      expect(neighbour != nullptr, "stepping Mode keeps the slot's rows");
+    }
   }
 
   // Stepping a choice that decides which rows show (an oscillator's Type, a

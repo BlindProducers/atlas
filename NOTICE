@@ -43,6 +43,10 @@ their sources.
   type, the Scanner Vibrato effect and Analogue Rotary's OpenB3 Whirl model
   (src/synthesis/effects/openb3, ported from C to C++). OpenB3 and setBfree
   are not affiliated with Hammond or Leslie.
+- ZL Compressor by zsliu98 (AGPL v3, https://github.com/ZL-Audio/ZLCompressor):
+  the Analogue Compressor effect's engine (src/synthesis/effects/zl_compressor,
+  licence in LICENSE.zlcompressor.md). Those files are AGPL v3; the AGPL permits
+  combining them with this GPL v3 program (GPL v3 section 13).
 - eSpeak NG by Reece H. Dunn and its contributors, based on eSpeak by Jonathan
   Duddington (GPL v3 or later, https://github.com/espeak-ng/espeak-ng), with
   ucd-tools (GPL v3 or later), NV Speech Player by NV Access (GPL v3 or later)

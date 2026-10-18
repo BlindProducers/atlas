@@ -656,7 +656,8 @@ namespace strings {
     "spectral_balance",
     "glitch_delay",
     "openwurli_amp",
-    "scanner_vibrato"
+    "scanner_vibrato",
+    "analoguecompressor"
   };
 
   const std::string kEffectSlotTypeNames[] = {
@@ -699,7 +700,8 @@ namespace strings {
     "Spectral Balance",
     "Glitch Delay",
     "OpenWurli Amp",
-    "Scanner Vibrato"
+    "Scanner Vibrato",
+    "Analogue Compressor"
   };
 
   // Both tables are indexed by effect; a missing entry would read out of bounds.
@@ -753,6 +755,8 @@ namespace strings {
   const std::string kAnalogueRotarySpeedNames[] = { "Slow", "Fast", "Stop" };
   const std::string kAnalogueSpringTankNames[] = { "Short", "Medium", "Long" };
   const std::string kScannerVibratoModeNames[] = { "V1", "V2", "V3", "C1", "C2", "C3" };
+  // ZL Compressor's styles, in the order of atlas::zl::Style.
+  const std::string kAnalogueCompressorModeNames[] = { "Clean", "Classic", "Optical", "Vocal" };
   const std::string kAnalogueWahModelNames[] = { "Cry Baby", "V846", "Mu-Tron III" };
   const std::string kAnalogueWahModeNames[] = { "LP", "BP", "HP" };
   const std::string kAnalogueWahRangeNames[] = { "Lo", "Hi" };
@@ -1050,6 +1054,7 @@ namespace strings {
     "GLITCH DELAY",
     "OPENWURLI AMP",
     "SCANNER VIBRATO",
+    "ANALOGUE COMPRESSOR",
   };
 
   const std::string kDestinationMenuNames[vital::constants::kNumDestinations] = {
@@ -1100,6 +1105,7 @@ namespace strings {
     "Glitch Delay",
     "OpenWurli Amp",
     "Scanner Vibrato",
+    "Analogue Compressor",
   };
 
   const std::string kBusDestinationNames[vital::constants::kNumBusDestinations] = {

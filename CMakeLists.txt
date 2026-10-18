@@ -112,6 +112,13 @@ set(ATLAS_OPENB3_SOURCES
   src/synthesis/effects/openb3/scanner_vibrato.cpp
   src/synthesis/effects/openb3/whirl.cpp)
 
+# The Analogue Compressor (ZL Compressor's engine) works in decibels with
+# logarithms of signals that reach zero, so it keeps IEEE semantics: no
+# fast-math, and no FMA contraction, so macOS and Windows compute alike.
+set(ATLAS_ZL_COMPRESSOR_SOURCES
+  src/synthesis/effects/zl_compressor/zl_compressor_engine.cpp
+  src/synthesis/modules/analogue_compressor_module.cpp)
+
 # PFFFT replaces JUCE's scalar FFT fallback for the oscillators
 # (src/common/fourier_transform.h, third_party/pffft). On by default where JUCE
 # has no fast FFT engine; turning it on for macOS puts both on the same FFT.
@@ -205,6 +212,8 @@ target_sources(Atlas PRIVATE
   src/synthesis/producers/openb3_source.cpp
   src/synthesis/modules/openb3_module.cpp
   src/synthesis/modules/scanner_vibrato_module.cpp
+  # ZL Compressor by zsliu98 (AGPL v3): the Analogue Compressor effect.
+  ${ATLAS_ZL_COMPRESSOR_SOURCES}
   src/unity_build/common.cpp
   src/unity_build/synthesis.cpp
   src/unity_build/plugin.cpp)
@@ -218,6 +227,8 @@ set_source_files_properties(${ATLAS_OPENWURLI_SOURCES} src/synthesis/producers/o
   COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:strict>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffp-contract=off;-fno-fast-math>")
 set_source_files_properties(${ATLAS_OPENB3_SOURCES} src/synthesis/producers/openb3_source.cpp
   src/synthesis/modules/openb3_module.cpp src/synthesis/modules/scanner_vibrato_module.cpp PROPERTIES
+  COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:strict>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffp-contract=off;-fno-fast-math>")
+set_source_files_properties(${ATLAS_ZL_COMPRESSOR_SOURCES} PROPERTIES
   COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:strict>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffp-contract=off;-fno-fast-math>")
 
 # Braids is written for the firmware's two's-complement integer arithmetic.
@@ -950,6 +961,7 @@ if(ATLAS_BUILD_TIMING_TESTS)
   add_test(NAME atlas_analogue_labels COMMAND AtlasAnalogueTests --labels)
   add_test(NAME atlas_analogue_spring COMMAND AtlasAnalogueTests --spring)
   add_test(NAME atlas_analogue_wah COMMAND AtlasAnalogueTests --wah)
+  add_test(NAME atlas_analogue_compressor COMMAND AtlasAnalogueTests --compressor)
   add_test(NAME atlas_analogue_cpu COMMAND AtlasAnalogueTests --cpu)
   set_tests_properties(atlas_analogue_cpu PROPERTIES LABELS cpu)
 
