@@ -136,12 +136,16 @@ namespace vital {
     return static_cast<int>(index % static_cast<size_t>(count));
   }
 
-  int SpeechSlot::takeUnit(double offset, int split) {
+  int SpeechSlot::takeUnit(double offset, int split, int sample) {
     const speech::Phrase* phrase = phrase_.get();
     const int count = phrase != nullptr ? phrase->numUnits(split) : 0;
     if (count == 0)
       return -1;
     const double start = clock_ + offset;
+    // A note pressed while another key is down sings that note's syllable,
+    // and is not remembered as a note start in the song.
+    if (last_syllable_ >= 0 && last_syllable_ < count && heldNotesAt(sample) > 0)
+      return last_syllable_;
     if (song_playing_) {
       last_syllable_ = takeSongSyllable(song_quarters_ + offset * quarters_per_second_, count);
       last_start_ = start;

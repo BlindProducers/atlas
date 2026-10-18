@@ -102,6 +102,8 @@ namespace vital {
       // Mixes Multi-sample CC-triggered regions (pedal noises), which play
       // outside any voice, into the voice outputs.
       void mixMultiSampleTails(int num_samples, bool voices_rendered);
+      // Tells each Speech slot which keyboard notes are down in this block.
+      void prepareSpeechHolds(int num_samples);
 
       struct TailControls {
         Value* on = nullptr;

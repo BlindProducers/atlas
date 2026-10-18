@@ -806,6 +806,18 @@ namespace {
     slot.advanceClock(4800, kRate);
     slot.rewind();
     expect(slot.takeUnit(0.0) == 0, "rewinding starts the words again");
+    slot.advanceClock(4800, kRate);
+    slot.setHeldNotes(1, nullptr, 0);
+    expect(slot.takeUnit(0.0) == 0, "a note pressed while a key is down sings that key's syllable");
+    const int release = 100;
+    slot.advanceClock(4800, kRate);
+    slot.setHeldNotes(1, &release, 1);
+    expect(slot.takeUnit(0.0, vital::speech::kSplitSyllable, 50) == 0, "until the key is released");
+    slot.advanceClock(4800, kRate);
+    slot.setHeldNotes(1, &release, 1);
+    expect(slot.takeUnit(0.0, vital::speech::kSplitSyllable, 100) == 1,
+           "a key released where the note starts no longer holds the syllable");
+    slot.setHeldNotes(0, nullptr, 0);
 
     auto other = std::make_shared<vital::speech::Phrase>(*phrase);
     slot.setPhrase(other);
@@ -826,6 +838,8 @@ namespace {
     events.push_back({ 3 * kRate / 2, juce::MidiMessage::noteOn(1, 60, 1.0f) });
     events.push_back({ 3 * kRate / 2, juce::MidiMessage::noteOn(1, 64, 1.0f) });
     events.push_back({ 3 * kRate / 2, juce::MidiMessage::noteOn(1, 67, 1.0f) });
+    for (int note : { 60, 64, 67 })
+      events.push_back({ 7 * kRate / 4, juce::MidiMessage::noteOff(1, note) });
     const auto audio = render(plugin, 2 * kRate, events);
     expect(finite(audio), "the sequence is finite");
     for (int i = 0; i < 4; ++i)
@@ -833,6 +847,24 @@ namespace {
              "note " + std::to_string(i + 1) + " sings");
     // Three notes took "one", "two", "three"; the chord sang "four" together.
     expect(speech->takeUnit(10.0) == 0, "the chord took one syllable, so the words start again");
+
+    // A note pressed into a held one (past the chord window) sings its
+    // syllable; the text moves on once both keys are up.
+    SynthPlugin held_plugin;
+    preparePlayback(held_plugin, "one two three four");
+    std::vector<MidiEvent> held_events = {
+      { 0, juce::MidiMessage::noteOn(1, 60, 1.0f) },
+      { kRate / 4, juce::MidiMessage::noteOn(1, 64, 1.0f) },
+      { kRate / 2, juce::MidiMessage::noteOff(1, 60) },
+      { kRate / 2, juce::MidiMessage::noteOff(1, 64) },
+      { 3 * kRate / 4, juce::MidiMessage::noteOn(1, 67, 1.0f) },
+      { kRate, juce::MidiMessage::noteOff(1, 67) },
+    };
+    const auto held_audio = render(held_plugin, 3 * kRate / 2, held_events);
+    expect(finite(held_audio), "the held notes are finite");
+    expect(rms(held_audio, kRate / 4, kRate / 2) > 1.0e-3, "the note pressed into a held one sings");
+    expect(held_plugin.getEngine()->getSpeechSlot(0)->takeUnit(10.0) == 2,
+           "the held notes shared \"one\" and the next note sang \"two\"");
     return finish("sequence");
   }
 

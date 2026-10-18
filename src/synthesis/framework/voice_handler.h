@@ -447,6 +447,7 @@ namespace vital {
 
     protected:
       virtual bool shouldAccumulate(Output* output);
+      const CircularQueue<Voice*>& activeVoices() const { return active_voices_; }
 
     private:
       Voice* grabVoice(bool legato_transition);

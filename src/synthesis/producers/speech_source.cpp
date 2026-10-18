@@ -396,7 +396,7 @@ namespace vital {
 
       for (int i = 0; i < count; ++i) {
         if (i == start_at) {
-          const int unit = slot.takeUnit(i / static_cast<double>(sample_rate), split);
+          const int unit = slot.takeUnit(i / static_cast<double>(sample_rate), split, i);
           const speech::Phrase* next = slot.phraseFor(slot.generation());
           int first = -1;
           int last = -1;

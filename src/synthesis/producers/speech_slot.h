@@ -3,6 +3,7 @@
 
 #include "speech_phrase.h"
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <memory>
@@ -27,6 +28,11 @@ namespace vital {
   // starts (or a loop returns) as a new note-on there. Where that point has
   // been played and no note was remembered starting at it, such a note
   // continues the held note's syllable and is not remembered.
+  //
+  // While a key is down, every new note sings the syllable that key's note
+  // sings: a chord held down loops one syllable on every note pressed into
+  // it, and the text moves on only once all keys are up. Notes an
+  // arpeggiator plays move on as before.
   class SpeechSlot {
     public:
       // Notes that start within this many seconds of each other (a chord,
@@ -38,6 +44,8 @@ namespace vital {
       // Song positions this close, in quarter notes, are the same place
       // (about five samples at 120 BPM and 48 kHz).
       static constexpr double kSamePlace = 2.0e-4;
+      // The most key releases within one block the slot keeps apart.
+      static constexpr int kMaxHeldReleases = 64;
 
       struct Range {
         double start = 0.0;
@@ -81,9 +89,26 @@ namespace vital {
         song_continues_ = song_playing_;
         song_playing_ = false;
       }
+      // Before the voices render each block, from the voice handler: how many
+      // keyboard notes playing the slot are down where the block starts, and
+      // the samples into the block where `num_releases` of them are released.
+      void setHeldNotes(int held, const int* releases, int num_releases) {
+        held_notes_ = held;
+        num_releases_ = std::min(num_releases, kMaxHeldReleases);
+        for (int i = 0; i < num_releases_; ++i)
+          releases_[static_cast<size_t>(i)] = releases[i];
+      }
+      // Keyboard notes still down `sample` samples into the block, not
+      // counting notes that start in it.
+      int heldNotesAt(int sample) const {
+        int held = held_notes_;
+        for (int i = 0; i < num_releases_; ++i)
+          held -= releases_[static_cast<size_t>(i)] <= sample ? 1 : 0;
+        return held;
+      }
       // The unit of `split` (speech::Split) a note starting `offset` seconds
-      // into this block sings, or -1 when there is none.
-      int takeUnit(double offset, int split = speech::kSplitSyllable);
+      // (`sample` samples) into this block sings, or -1 when there is none.
+      int takeUnit(double offset, int split = speech::kSplitSyllable, int sample = 0);
       // The next note sings the first syllable (transport start, all sounds off).
       void rewind() {
         next_syllable_ = 0;
@@ -135,5 +160,8 @@ namespace vital {
       double loop_end_ = 0.0;
       std::array<ChasePoint, 2> chase_ {};
       int num_chase_ = 0;
+      int held_notes_ = 0;
+      std::array<int, kMaxHeldReleases> releases_ {};
+      int num_releases_ = 0;
   };
 } // namespace vital

@@ -88,7 +88,13 @@ Speech has no unison or scale lock.
    lock. Notes already sounding finish with the previous phrase.
 
 On the audio thread `SpeechSource` (TD-PSOLA) gives each note-on the slot's
-next syllable; notes starting within 40 ms of each other (a chord) share one.
+next syllable; notes starting within 40 ms of each other (a chord) share one,
+and so does a note pressed while another key is down: the text moves on only
+once every key is up. Before the voices render each block, the voice handler
+tells each slot how many keyboard notes are down and where in the block any
+are released (`SpeechSlot::setHeldNotes`), so a key released on the sample
+where the next note starts doesn't hold its syllable. Notes held only by the
+sustain pedal, and notes an arpeggiator plays, don't hold the syllable.
 The note sings from the layer nearest its pitch, so inside espeak-ng's range
 no grain moves more than about two semitones; beyond it the top or bottom
 layer is shifted further. It lays Hann-windowed grains two source periods
