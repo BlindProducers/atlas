@@ -307,6 +307,8 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     bool keyStateChanged(bool isKeyDown) override;
     std::unique_ptr<ComponentTraverser> createFocusTraverser() override;
     std::unique_ptr<ComponentTraverser> createKeyboardFocusTraverser() override;
+    void focusGained(FocusChangeType cause) override;
+    void focusOfChildComponentChanged(FocusChangeType cause) override;
 
     const std::vector<Component*>& getAccessibleFocusOrder() const { return accessibility_focus_order_; }
     const std::vector<Component*>& getKeyboardFocusOrder() const { return focus_order_; }
@@ -387,13 +389,26 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     Component* persistentFocusedComponent() const;
     // Focuses the control a rebuild replaced; false when there is none to focus.
     // refocusScreenReader moves the screen reader to it again once the rows
-    // settle; callers that announce the change leave it off so the move does
-    // not cut the announcement short.
+    // settle. Announcements made meanwhile wait for that move, which would
+    // otherwise cut them short.
     bool restoreFocusAfterRebuild(const String& parameterId, Component* persistentComponent,
                                   const String& accessibleTitle = {}, const String& preferredSection = {},
                                   bool refocusScreenReader = false);
     Component* findRebuildFocusTarget(const String& parameterId, Component* persistentComponent,
                                       const String& accessibleTitle, const String& preferredSection) const;
+    // A control to give focus back to. Its parameter, title and section find
+    // its replacement when a rebuild has deleted it.
+    struct FocusReturn {
+      String parameter_id, title, section;
+      Component::SafePointer<Component> component;
+      bool isEmpty() const { return parameter_id.isEmpty() && title.isEmpty() && component == nullptr; }
+    };
+    // The focused control or, when the window has lost focus to a file
+    // chooser, a menu or the host, the control it will give focus back to.
+    FocusReturn focusToReturnTo() const;
+    // Opens a file chooser and, once it closes, puts keyboard and screen reader
+    // focus back on the control that opened it, or on its replacement.
+    void launchFileChooser(FileChooser& chooser, int flags, std::function<void(const FileChooser&)> callback);
     // On Windows a rebuild that a choice deciding the rows starts (an
     // oscillator's Type, a filter's Model, an effect's mode, or Envelope 1's
     // Analog switch) keeps the focused row of such a choice and the groups
@@ -680,11 +695,14 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void cancelInitialModulationAmount();
     // Where the inline text prompt sends focus back when it closes.
     void rememberPromptFocus(Component& target);
-    // Focuses that control again, after rebuilding the sections if `rebuild`.
+    // Focuses that control again, after rebuilding the sections if `rebuild`,
+    // and moves the screen reader back onto it once the prompt is hidden.
     // Call before hiding the prompt: hiding the focused text field first hands
     // focus to the top of the window. Falls back to fallbackParameterId's row.
     void returnFocusFromPrompt(bool rebuild, const String& fallbackParameterId);
+    // Hides the prompt once the screen reader has followed focus off it.
     void hideInlineTextPrompt();
+    void hideInlineTextPromptNow();
     ValueBridge* parameterBridge(const String& id) const;
     void setParameterEngineValue(const String& id, float engineValue);
     void randomizeAmplitudeSeed(const String& id);
@@ -1095,6 +1113,12 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     int screen_reader_refocus_generation_ = 0;
     // Set when a queued rebuild should re-focus the screen reader once it runs.
     bool screen_reader_refocus_requested_ = false;
+    // The control the window had when it lost focus, until focus comes back.
+    FocusReturn window_focus_return_;
+    // File choosers opened by launchFileChooser that have not closed yet.
+    int open_file_choosers_ = 0;
+    // Bumped by each hideInlineTextPrompt so only the last one hides the prompt.
+    int inline_prompt_hide_generation_ = 0;
     String queued_effect_chain_rebuild_section_;
     String queued_effect_chain_rebuild_title_;
     String queued_effect_chain_rebuild_parameter_;

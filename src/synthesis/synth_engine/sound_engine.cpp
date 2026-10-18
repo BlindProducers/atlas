@@ -417,6 +417,10 @@ namespace vital {
     return voice_handler_->getIndependentRandomModulationSource(source, connection_index);
   }
 
+  Output* SoundEngine::getMonoModulationSource(const std::string& source) {
+    return voice_handler_->getMonoModulationSource(source);
+  }
+
   mono_float SoundEngine::getLastActiveNote() const {
     return voice_handler_->getLastActiveNote();
   }

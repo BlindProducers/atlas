@@ -309,6 +309,16 @@ namespace vital {
     data_->mod_sources["mod_wheel"] = smooth_mod_wheel->output();
     data_->mod_sources["pitch_wheel"] = pitch_wheel_percent();
 
+    // A parameter outside the voices (an effect's mix, say) has no voice to
+    // take a wheel from, and must keep following it after the notes have
+    // ended, so a route to one reads the wheel's last position on any channel
+    // instead of a voice's (SynthBase::createModulationChange swaps it in).
+    SmoothControlSource* smooth_global_mod_wheel = new SmoothControlSource();
+    smooth_global_mod_wheel->plug(global_mod_wheel(), SmoothControlSource::kTarget);
+    addMonoProcessor(smooth_global_mod_wheel);
+    mono_mod_sources_["mod_wheel"] = smooth_global_mod_wheel->output();
+    mono_mod_sources_["pitch_wheel"] = global_pitch_wheel_percent();
+
     createStatusOutput("note", note_percentage_->output());
     createStatusOutput("note_in_octave", note_in_octave());
     createStatusOutput("aftertouch" ,aftertouch());
@@ -642,6 +652,11 @@ namespace vital {
     Output* output = getModulationSource(source);
     if (output != nullptr && output->owner != nullptr)
       output->owner->enable(false);
+  }
+
+  Output* SynthVoiceHandler::getMonoModulationSource(const std::string& source) {
+    const auto found = mono_mod_sources_.find(source);
+    return found == mono_mod_sources_.end() ? nullptr : found->second;
   }
 
   void SynthVoiceHandler::enableModulationConnection(ModulationConnectionProcessor* processor) {

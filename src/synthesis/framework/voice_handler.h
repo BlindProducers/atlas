@@ -338,16 +338,20 @@ namespace vital {
       poly_mask getCurrentVoiceMask();
       const Voice* getCurrentVoice() const { return active_voices_.size() ? active_voices_.back() : nullptr; }
 
+      // Each voice reads the wheels of its channel; the global outputs keep
+      // the last position on any channel (see global_mod_wheel()).
       force_inline void setModWheel(mono_float value, int channel = 0) {
         VITAL_ASSERT(channel < kNumMidiChannels && channel >= 0);
         mod_wheel_values_[channel] = value;
         mod_wheel_.trigger_value = value;
+        global_mod_wheel_.trigger_value = value;
       }
 
       force_inline void setModWheelAllChannels(mono_float value) {
         for (int i = 0; i < kNumMidiChannels; ++i)
           mod_wheel_values_[i] = value;
         mod_wheel_.trigger_value = value;
+        global_mod_wheel_.trigger_value = value;
       }
 
       force_inline void setPitchWheel(mono_float value, int channel = 0) {
@@ -355,6 +359,7 @@ namespace vital {
         pitch_wheel_values_[channel] = value;
         pitch_wheel_.trigger_value = value;
         pitch_wheel_percent_.trigger_value = value * 0.5f + 0.5f;
+        global_pitch_wheel_percent_.trigger_value = value * 0.5f + 0.5f;
         for (Voice* voice : active_voices_) {
           if (voice->state().channel == channel && voice->held())
             voice->setLocalPitchBend(value);
@@ -369,6 +374,7 @@ namespace vital {
           zoned_pitch_wheel_values_[i] = value;
         pitch_wheel_.trigger_value = value;
         pitch_wheel_percent_.trigger_value = value * 0.5f + 0.5f;
+        global_pitch_wheel_percent_.trigger_value = value * 0.5f + 0.5f;
       }
 
       force_inline Output* voice_event() { return &voice_event_; }
@@ -391,6 +397,11 @@ namespace vital {
       force_inline Output* pitch_wheel_percent() { return &pitch_wheel_percent_; }
       force_inline Output* local_pitch_bend() { return &local_pitch_bend_; }
       force_inline Output* mod_wheel() { return &mod_wheel_; }
+      // The wheels' last position on any channel, for a parameter outside the
+      // voices: a voice's wheel is its channel's, and there is no voice to
+      // read one from once the notes have ended.
+      force_inline Output* global_mod_wheel() { return &global_mod_wheel_; }
+      force_inline Output* global_pitch_wheel_percent() { return &global_pitch_wheel_percent_; }
       force_inline Output* getAccumulatedOutput(Output* output) { return accumulated_outputs_[output].get(); }
       force_inline int polyphony() { return polyphony_; }
     
@@ -498,6 +509,8 @@ namespace vital {
       cr::Output pitch_wheel_;
       cr::Output pitch_wheel_percent_;
       cr::Output local_pitch_bend_;
+      cr::Output global_mod_wheel_;
+      cr::Output global_pitch_wheel_percent_;
 
       bool sustain_[kNumMidiChannels];
       bool sostenuto_[kNumMidiChannels];

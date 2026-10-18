@@ -742,6 +742,36 @@ namespace {
     editor.removeFromDesktop();
   }
 
+  // The arpeggiator's rates and time mode offer only sources that run on
+  // their own or that a player moves: every arp step is a new note, so a
+  // source a note restarts (an envelope) or sets (velocity, pressure) cannot
+  // shape its speed. Other parameters keep every source.
+  void testArpeggiatorRatesOfferOnlyFreeRunningSources() {
+    SynthPlugin synth;
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    pumpEditorEvents();
+    const auto sources = [&](const char* destination) {
+      std::map<int, String> choices;
+      editor.createModulationSourceSubmenu(destination, choices, 1);
+      StringArray ids;
+      for (const auto& choice : choices)
+        ids.add(choice.second);
+      return ids;
+    };
+    for (const char* destination : { "arp_1_free_rate", "arp_1_sync_rate", "arp_1_time_mode", "arp_2_free_rate" }) {
+      const StringArray ids = sources(destination);
+      for (const char* kept : { "lfo_1", "lfo_12", "random_1", "macro_control_1", "mod_wheel", "pitch_wheel" })
+        expect(ids.contains(kept), std::string(destination) + " offers " + kept);
+      for (const char* hidden : { "env_1", "env_2", "random", "velocity", "aftertouch", "slide", "lift",
+                                  "note", "note_in_octave", "stereo" })
+        expect(!ids.contains(hidden), std::string(destination) + " hides " + hidden);
+    }
+    const StringArray cutoff = sources("filter_1_cutoff");
+    expect(cutoff.contains("env_1") && cutoff.contains("velocity") && cutoff.contains("aftertouch") &&
+           cutoff.contains("random"), "a voice parameter keeps the note-bound sources");
+  }
+
   // Oscillator slots Phase 2: every slot type shows the distortion rows it can
   // use, headers name the type, arp destinations name the slot's type and the
   // Sample/Granular playheads are offered as modulation sources.
@@ -1618,6 +1648,239 @@ namespace {
     pumpUntil([&] { return rowTitles().containsIgnoreCase("Predelay tempo"); });
     rows = rowTitles();
     expect(rows.containsIgnoreCase("Predelay tempo"), ("synced predelay shows the division row: " + rows).toStdString());
+  }
+
+  // The groups between a parameter's row and its effect slot, innermost first.
+  String effectRowGroups(SynthEditor& editor, const String& id) {
+    auto* control = editor.controlForParameter(id);
+    if (control == nullptr)
+      return "no row";
+    StringArray titles;
+    for (auto* parent = control->getParentComponent();
+         parent != nullptr && !parent->getProperties().contains("FxSlot"); parent = parent->getParentComponent())
+      if (parent->getProperties().contains("SectionName"))
+        titles.add(parent->getTitle());
+    return titles.joinIntoString(" in ");
+  }
+
+  // The EQ gives each band its own group. Mid Side EQ nests the bands of each
+  // channel in a Mid group and a Side group.
+  void testEqualizerBandGroups() {
+    SynthPlugin synth;
+    synth.parameterChanged("fx_slot_1_type", vital::constants::kEq + 1);
+    synth.parameterChanged("fx_slot_2_type", vital::constants::kMidSideEq + 1);
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    pumpEditorEvents();
+
+    auto check = [&](const String& id, const String& expected) {
+      const String found = effectRowGroups(editor, id);
+      expect(found == expected, (id + " sits in \"" + expected + "\" (found \"" + found + "\")").toStdString());
+    };
+    check("fx_slot_1_enabled", "");
+    check("fx_slot_1_eq_low_mode", "Low band");
+    check("fx_slot_1_eq_low_resonance", "Low band");
+    check("fx_slot_1_eq_band_cutoff", "Band 1");
+    check("fx_slot_1_eq_band_2_mode", "Band 2");
+    check("fx_slot_1_eq_band_3_gain", "Band 3");
+    check("fx_slot_1_eq_band_4_resonance", "Band 4");
+    check("fx_slot_1_eq_high_cutoff", "High band");
+    check("fx_slot_2_enabled", "");
+    check("fx_slot_2_mid_side_eq_mid_eq_low_cutoff", "Low band in Mid");
+    check("fx_slot_2_mid_side_eq_mid_eq_band_mode", "Band 1 in Mid");
+    check("fx_slot_2_mid_side_eq_mid_eq_high_gain", "High band in Mid");
+    check("fx_slot_2_mid_side_eq_side_eq_low_mode", "Low band in Side");
+    check("fx_slot_2_mid_side_eq_side_eq_band_3_resonance", "Band 3 in Side");
+    check("fx_slot_2_mid_side_eq_side_eq_high_resonance", "High band in Side");
+
+    // Keyboard order: each group's heading, then its rows, band after band, Mid before Side.
+    const auto& order = editor.getKeyboardFocusOrder();
+    auto position = [&](Component* control) {
+      const auto found = std::find(order.begin(), order.end(), control);
+      return found == order.end() ? -1 : int(found - order.begin());
+    };
+    auto row = [&](const String& id) { return position(editor.controlForParameter(id)); };
+    auto group = [&](const String& key) { return position(editorSection(editor, "Chain and routing slot " + key)); };
+    expect(group("1 eq low band") >= 0 && group("1 eq low band") < row("fx_slot_1_eq_low_mode") &&
+           row("fx_slot_1_eq_low_resonance") < group("1 eq band 1") &&
+           group("1 eq band 1") < row("fx_slot_1_eq_band_mode") &&
+           row("fx_slot_1_eq_band_4_resonance") < group("1 eq high band") &&
+           group("1 eq high band") < row("fx_slot_1_eq_high_mode"),
+           "the EQ reads each band's heading, then its rows, from low to high");
+    expect(group("2 mid side eq mid") >= 0 && group("2 mid side eq mid") < group("2 mid side eq mid low band") &&
+           row("fx_slot_2_mid_side_eq_mid_eq_high_resonance") < group("2 mid side eq side") &&
+           group("2 mid side eq side") < group("2 mid side eq side low band") &&
+           group("2 mid side eq side low band") < row("fx_slot_2_mid_side_eq_side_eq_low_mode"),
+           "Mid Side EQ reads the Mid group's bands, then the Side group's");
+  }
+
+  // The compressor keeps its global controls at the top of the slot and gives
+  // each band its own group below them.
+  void testCompressorBandGroups() {
+    SynthPlugin synth;
+    synth.parameterChanged("fx_slot_1_type", vital::constants::kCompressor + 1);
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    pumpEditorEvents();
+
+    const std::initializer_list<const char*> global_rows = {
+      "enabled", "compressor_enabled_bands", "compressor_attack", "compressor_release", "compressor_mix" };
+    const std::initializer_list<const char*> band_rows = {
+      "upper_threshold", "upper_ratio", "lower_threshold", "lower_ratio", "gain" };
+    const std::pair<const char*, const char*> bands[] = {
+      { "low", "Low band" }, { "band", "Mid band" }, { "high", "High band" } };
+
+    auto check = [&](const String& id, const String& expected) {
+      const String found = effectRowGroups(editor, id);
+      expect(found == expected, (id + " sits in \"" + expected + "\" (found \"" + found + "\")").toStdString());
+    };
+    for (const auto* control : global_rows)
+      check("fx_slot_1_" + String(control), "");
+    for (const auto& [prefix, title] : bands)
+      for (const auto* control : band_rows)
+        check("fx_slot_1_compressor_" + String(prefix) + "_" + control, title);
+
+    // Keyboard order: Enabled and the global rows, then each band's heading
+    // and its rows, from low to high.
+    const auto& order = editor.getKeyboardFocusOrder();
+    auto position = [&](Component* control) {
+      const auto found = std::find(order.begin(), order.end(), control);
+      return found == order.end() ? -1 : int(found - order.begin());
+    };
+    std::vector<int> sequence;
+    for (const auto* control : global_rows)
+      sequence.push_back(position(editor.controlForParameter("fx_slot_1_" + String(control))));
+    for (const auto& [prefix, title] : bands) {
+      sequence.push_back(position(editorSection(editor, "Chain and routing slot 1 compressor " + String(title).toLowerCase())));
+      for (const auto* control : band_rows)
+        sequence.push_back(position(editor.controlForParameter("fx_slot_1_compressor_" + String(prefix) + "_" + control)));
+    }
+    StringArray positions;
+    for (int index : sequence)
+      positions.add(String(index));
+    expect(sequence.front() >= 0 &&
+           std::adjacent_find(sequence.begin(), sequence.end(), std::greater_equal<int>()) == sequence.end(),
+           ("the compressor reads Enabled, Enabled Bands, Attack, Release and Mix, then each band's heading and rows "
+            "from low to high (positions " + positions.joinIntoString(" ") + ")").toStdString());
+  }
+
+  // Return on an oscillator row opens the value field; Return or Escape there
+  // must bring focus back to the row, whatever the oscillator's type, even
+  // when the editor's timer has run while the field was open.
+  void testTypedValueReturnsToOscillatorRows() {
+    SynthPlugin synth;
+    synth.parameterChanged("osc_1_type", float(vital::source_types::kMultiSample));
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    editor.toFront(true);
+    pumpEditorEvents();
+
+    auto focusedName = [&] {
+      auto* focused = Component::getCurrentlyFocusedComponent();
+      if (focused == &editor)
+        return std::string("the editor itself");
+      return focused != nullptr ? focused->getTitle().toStdString() : std::string("nothing");
+    };
+    // Keys go through the window, as typing does: Escape in the field reaches
+    // the editor, which closes the prompt.
+    auto press = [&](int key_code) {
+      if (auto* peer = editor.getPeer())
+        peer->handleKeyPress(KeyPress(key_code));
+    };
+    for (const String id : { "osc_1_multisample_transpose", "osc_1_multisample_tune", "osc_2_transpose" }) {
+      for (const bool cancel : { false, true }) {
+        const std::string what = id.toStdString() + (cancel ? " after Escape" : " after Return");
+        auto* control = editor.controlForParameter(id);
+        expect(control != nullptr, id.toStdString() + " has a row");
+        if (control == nullptr)
+          continue;
+        editor.ensureComponentVisible(control);
+        control->grabKeyboardFocus();
+        press(KeyPress::returnKey);
+        expect(dynamic_cast<TextEditor*>(Component::getCurrentlyFocusedComponent()) != nullptr,
+               "Return on " + id.toStdString() + " opens the value field, focused " + focusedName());
+        // Typing takes a while: the timer refreshes the rows meanwhile.
+        pumpEditorEvents();
+        auto* field = dynamic_cast<TextEditor*>(Component::getCurrentlyFocusedComponent());
+        expect(field != nullptr, "the value field keeps focus while open for " + id.toStdString() +
+               ", focused " + focusedName());
+        if (field == nullptr)
+          continue;
+        if (!cancel)
+          field->setText("3", dontSendNotification);
+        press(cancel ? KeyPress::escapeKey : KeyPress::returnKey);
+        pumpEditorEvents();
+        expect(editor.focusedRowParameterId() == id, "focus is back on " + what + ", focused " + focusedName());
+        auto* row = editor.controlForParameter(id);
+        expect(row != nullptr && row->getAccessibilityHandler() != nullptr &&
+               row->getAccessibilityHandler()->hasFocus(false), "the screen reader is back on " + what);
+        // The field stays a moment, until the screen reader has followed focus off it.
+        pumpUntil([&] { return !field->isVisible(); });
+        expect(!field->isVisible(), "the value field is hidden " + std::string(cancel ? "after Escape" : "after Return"));
+      }
+    }
+    editor.removeFromDesktop();
+  }
+
+  // The window loses focus to a file chooser, a menu or the host. If the rows
+  // are rebuilt before it gets focus back, JUCE has lost the control it was
+  // going to return to and focuses the editor itself, which a screen reader
+  // reads as the top of the window. Focus must land on the control's
+  // replacement instead.
+  void testWindowRefocusFindsTheRebuiltControl() {
+    SynthPlugin synth;
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    editor.toFront(true);
+    pumpEditorEvents();
+
+    auto showButton = [&]() -> Component* {
+      auto* oscillator = editorSection(editor, "Oscillator 2");
+      return oscillator != nullptr ? titled(*oscillator, "Show wavetable editor") : nullptr;
+    };
+    auto focusedName = [&] {
+      auto* focused = Component::getCurrentlyFocusedComponent();
+      if (focused == &editor)
+        return std::string("the editor itself");
+      return focused != nullptr ? focused->getTitle().toStdString() : std::string("nothing");
+    };
+    auto* button = showButton();
+    auto* peer = editor.getPeer();
+    expect(button != nullptr && peer != nullptr, "Oscillator 2 has a Show wavetable editor button on screen");
+    if (button == nullptr || peer == nullptr) {
+      editor.removeFromDesktop();
+      return;
+    }
+    editor.ensureComponentVisible(button);
+    button->grabKeyboardFocus();
+
+    // Nothing rebuilt: focus comes back to the same button.
+    peer->handleFocusLoss();
+    expect(Component::getCurrentlyFocusedComponent() == nullptr, "the window has lost focus");
+    peer->handleFocusGain();
+    pumpEditorEvents();
+    expect(Component::getCurrentlyFocusedComponent() == button,
+           "focus comes back to the button, focused " + focusedName());
+
+    // Rebuilt while the window had no focus: focus finds the new button.
+    Component::SafePointer<Component> old_button(button);
+    peer->handleFocusLoss();
+    editor.updateFullGui();
+    pumpEditorEvents();
+    expect(old_button == nullptr && showButton() != nullptr, "the rebuild replaced the button");
+    peer->handleFocusGain();
+    pumpEditorEvents();
+    auto* replacement = showButton();
+    expect(replacement != nullptr && Component::getCurrentlyFocusedComponent() == replacement,
+           "focus comes back to Oscillator 2's new Show wavetable editor button, focused " + focusedName());
+    expect(replacement != nullptr && replacement->getAccessibilityHandler() != nullptr &&
+           replacement->getAccessibilityHandler()->hasFocus(false),
+           "the screen reader is on the new button too");
+    editor.removeFromDesktop();
   }
 
   // A modulation amount typed in destination units keeps fractions on stepped
