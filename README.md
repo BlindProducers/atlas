@@ -27,12 +27,14 @@ downloads a patch into the Community library and loads it, or downloads a bank a
 it into the Atlas folder, and P plays the recording its uploader attached, when there is one.
 The Preset menu's Share patch and Share bank items upload the current patch or a folder of
 the user library to the same site, with the API token from your account there.
+Settings shows the version, links to this repository, and logs in to the site or turns
+the community library off.
 
 Atlas's own announcements, such as the cursor position in the LFO, Trance gate and
 wavetable editors, are spoken by the screen reader. On Windows they go straight to
 NVDA's speech and braille. With another screen reader they are sent as UI Automation
 notifications. Atlas never speaks with the Windows SAPI voice. On macOS they go to
-VoiceOver. Accessibility settings in the Editor menu choose which kinds of
+VoiceOver. The Accessibility group of Settings, in the Editor menu, chooses which kinds of
 announcement you hear.
 
 ## Oscillators

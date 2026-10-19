@@ -425,7 +425,22 @@ target_include_directories(Atlas PRIVATE
   third_party/concurrentqueue
   third_party/maim/include)
 
+# The beta the release workflow publishes this version as (ATLAS_PRERELEASE in
+# .github/workflows/release.yml, "beta.2"), which Settings shows after the
+# version; empty for a final release. Bumping it there configures again.
+set(ATLAS_PRERELEASE "")
+set(ATLAS_RELEASE_WORKFLOW "${CMAKE_CURRENT_SOURCE_DIR}/.github/workflows/release.yml")
+if(EXISTS "${ATLAS_RELEASE_WORKFLOW}")
+  file(STRINGS "${ATLAS_RELEASE_WORKFLOW}" ATLAS_PRERELEASE_LINE REGEX "^[ ]+ATLAS_PRERELEASE:")
+  if(ATLAS_PRERELEASE_LINE)
+    string(REGEX REPLACE "^[ ]+ATLAS_PRERELEASE:[ ]*\"?([^\" ]*)\"?.*$" "\\1" ATLAS_PRERELEASE "${ATLAS_PRERELEASE_LINE}")
+  endif()
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${ATLAS_RELEASE_WORKFLOW}")
+endif()
+message(STATUS "Atlas ${PROJECT_VERSION} ${ATLAS_PRERELEASE}")
+
 target_compile_definitions(Atlas PRIVATE
+  ATLAS_PRERELEASE="${ATLAS_PRERELEASE}"
   VITAL_ACCESSIBLE_UI=1
   HEADLESS=0
   JUCE_WEB_BROWSER=0

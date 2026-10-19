@@ -1245,7 +1245,7 @@ namespace {
     auto* tags = dynamic_cast<TextEditor*>(titled(editor, "Share tags"));
     auto* token = dynamic_cast<TextEditor*>(titled(editor, "API token"));
     auto* share = dynamic_cast<Button*>(titled(editor, "Share"));
-    auto* forget = dynamic_cast<Button*>(titled(editor, "Forget saved token"));
+    auto* forget = dynamic_cast<Button*>(titled(editor, "Log out"));
     auto* folder = dynamic_cast<ComboBox*>(titled(editor, "Folder to share"));
     auto* genre = dynamic_cast<ComboBox*>(titled(editor, "Share genre"));
     const bool form = editor.isShareFormVisible() && name != nullptr && style != nullptr && tags != nullptr &&
@@ -1256,7 +1256,7 @@ namespace {
       return;
     }
     expect(name->isShowing() && style->isShowing() && !folder->isVisible() && !genre->isVisible() && !forget->isVisible(),
-           "the patch form shows name and style, not the bank's folder and genre, and no Forget with no token saved");
+           "the patch form shows name and style, not the bank's folder and genre, and no Log out with no token saved");
     expect(name->hasKeyboardFocus(false), "the name box has the focus");
     expect(said("Share patch on 127.0.0.1"), "the form says what it is for: " + heard());
     expect(token->getPasswordCharacter() != 0 && token->getAccessibilityHandler() != nullptr &&
@@ -1323,9 +1323,10 @@ namespace {
     editor.showShareBankFormForTesting();
     pumpUntil([&] { return genre->getNumItems() == 3 && said("Share bank on"); }, 10000);
     expect(folder->isShowing() && genre->isShowing() && !style->isVisible() && forget->isShowing(),
-           "the bank form shows the folder and genre, and Forget with a token saved");
+           "the bank form shows the folder and genre, and Log out with a token saved");
     expect(folder->hasKeyboardFocus(false) && said("Share bank on 127.0.0.1"), "the folder menu has the focus: " + heard());
-    expect(token->getDescription().contains("the token ending in face") && !token->getDescription().contains(kTestToken),
+    expect(token->getDescription().contains("use the token ending in face, saved in Atlas's settings") &&
+               !token->getDescription().contains(kTestToken),
            "the token box says a token is saved by its last characters only: " + token->getDescription().toStdString());
     int my_bank = -1;
     for (int i = 0; i < folder->getNumItems(); ++i) {
@@ -1361,14 +1362,14 @@ namespace {
              "as an archive of the folder, with its genre and the saved token");
     }
 
-    // Forget saved token, then Escape closes the form and the focus goes back.
+    // Log out, then Escape closes the form and the focus goes back.
     editor.showShareBankFormForTesting();
     pumpEditorEvents();
     spoken.messages.clear();
     forget->onClick();
     pumpEditorEvents();
-    expect(atlas::community::storedApiToken().isEmpty() && !forget->isVisible() && said("Forgot the saved API token"),
-           "Forget saved token clears it: " + heard());
+    expect(atlas::community::storedApiToken().isEmpty() && !forget->isVisible() && said("Logged out"),
+           "Log out clears the token: " + heard());
     expect(Component::getCurrentlyFocusedComponent() == nullptr || editor.isParentOf(Component::getCurrentlyFocusedComponent()),
            "the focus stays in the editor");
     name->grabKeyboardFocus();
@@ -1378,6 +1379,272 @@ namespace {
     expect(!editor.isShareFormVisible() && preset_menu->hasKeyboardFocus(false),
            "Escape closes the form and the focus goes back to the Preset menu");
     editor.removeFromDesktop();
+  }
+
+  // The account behind a token, the uploader of a share, and the setting that
+  // shows or hides the browser.
+  void testAccountsAndTheBrowserSetting() {
+    using namespace atlas::community;
+    Account account;
+    expect(parseAccount(200, R"({"username": "jayladdermusic", "display_name": "Jay Ladder", "is_staff": false,
+                                 "presets": 3, "banks": 1})", account).isEmpty() &&
+               account.username == "jayladdermusic" && account.display_name == "Jay Ladder" && account.presets == 3 &&
+               account.banks == 1,
+           "/api/v1/me/ is read");
+    expect(accountName(account) == "Jay Ladder (jayladdermusic)", "an account is named by both its names");
+    account.display_name = "jayladdermusic";
+    expect(accountName(account) == "jayladdermusic", "once when they are the same");
+    expect(parseAccount(401, R"({"error": "A valid API token is required."})", account).contains("refused") &&
+               !account.known(),
+           "401 is a refused token");
+    expect(parseAccount(500, "<html>", account).contains("is having trouble (500)") &&
+               parseAccount(200, R"({"presets": 1})", account).contains("names no account"),
+           "other answers are errors");
+    expect(meEndpoint("https://atlas.blindproducers.org/") == "https://atlas.blindproducers.org/api/v1/me/",
+           "the account page's address");
+    const auto shared = parseUploadAnswer(201, R"({"id": 1, "name": "X",
+        "uploader": {"username": "jayladdermusic", "display_name": "Jay Ladder"}})");
+    expect(shared.uploader.username == "jayladdermusic" && shared.uploader.display_name == "Jay Ladder",
+           "a share's answer names the account that shared it");
+
+    TemporaryUndoLibrary library;   // its own config file
+    expect(library.isolated(), "the test's config is its own");
+    if (!library.isolated())
+      return;
+    forgetBrowserShownForTesting();
+    expect(browserShown(), "the browser is shown unless turned off");
+    setBrowserShown(false);
+    forgetBrowserShownForTesting();
+    expect(!browserShown() && LoadSave::getConfigJson()["community_browser"] == false,
+           "turned off, it stays off, kept in the config");
+    setBrowserShown(true);
+    expect(browserShown(), "and on again");
+
+    storeApiToken(kTestToken);
+    Account jay;
+    jay.username = "jayladdermusic";
+    jay.display_name = "Jay Ladder";
+    storeAccount(jay);
+    expect(storedAccount().username == "jayladdermusic" && storedAccount().display_name == "Jay Ladder",
+           "the account is kept beside the token");
+    storeApiToken(kTestToken);
+    expect(storedAccount().known(), "the same token keeps it");
+    storeApiToken("bpa_" + String::repeatedString("ab", 20));
+    expect(!storedAccount().known(), "another token forgets it");
+    storeApiToken({});
+    expect(storedApiToken().isEmpty() && !storedAccount().known(), "logging out forgets both");
+  }
+
+  void testAccountIsAskedOfTheLibrary() {
+    TestLibraryServer server;
+    expect(server.isListening(), "the test library listens on 127.0.0.1");
+    if (!server.isListening())
+      return;
+    server.answer("GET", "/api/v1/me/", 200,
+                  R"({"username": "jayladdermusic", "display_name": "Jay Ladder", "presets": 3, "banks": 1})");
+    atlas::community::Account account;
+    String error = atlas::community::fetchAccount(server.url(), kTestToken, account);
+    expect(error.isEmpty() && account.username == "jayladdermusic" && account.banks == 1,
+           "the account is fetched: " + error.toStdString());
+    const auto requests = server.requests();
+    expect(requests.size() == 1 && requests[0].method == "GET" && requests[0].path == "/api/v1/me/" &&
+               requests[0].headers["authorization"] == "Bearer " + kTestToken,
+           "with the token as a Bearer header");
+    server.answer("GET", "/api/v1/me/", 401, R"({"error": "A valid API token is required."})");
+    error = atlas::community::fetchAccount(server.url(), kTestToken, account);
+    expect(error.contains("refused") && !account.known(), "a refused token is said: " + error.toStdString());
+    expect(atlas::community::fetchAccount("file:///saved/presets.json", kTestToken, account).contains("web address"),
+           "a saved library has no accounts");
+  }
+
+  Component* titledIn(Component& parent, const String& title) { return titled(parent, title); }
+
+  // Editor menu > Settings: Plugin info, Accessibility and Online community
+  // browser, each a group; the browser can be hidden, which takes it out of
+  // the preset browser; logging in and out asks the library whose token it is.
+  void testSettingsWindow() {
+    TemporaryUndoLibrary library;
+    expect(library.isolated(), "the test's library is its own temporary folder");
+    if (!library.isolated())
+      return;
+    atlas::community::forgetBrowserShownForTesting();
+    TestLibraryServer server;
+    expect(server.isListening(), "the test library listens on 127.0.0.1");
+    if (!server.isListening())
+      return;
+    server.answer("GET", "/api/v1/me/", 401, R"({"error": "A valid API token is required."})");
+    server.answer("GET", "/api/v1/me/", 200,
+                  R"({"username": "jayladdermusic", "display_name": "Jay Ladder", "presets": 3, "banks": 1})");
+    atlas::community::setLibraryUrlForTesting(server.url());
+    struct RealLibraryAgain { ~RealLibraryAgain() { atlas::community::setLibraryUrlForTesting({}); } } real_library_again;
+
+    SpokenMessages spoken;
+    auto said = [&](const String& words) {
+      for (const auto& message : spoken.messages)
+        if (message.contains(words))
+          return true;
+      return false;
+    };
+    auto heard = [&] { return spoken.messages.joinIntoString(" | ").toStdString(); };
+
+    SynthPlugin synth;
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    editor.toFront(true);
+    pumpEditorEvents();
+    editor.refreshPresetLibrary();
+    pumpUntil([&] { return !editor.isPresetLibraryBusy(); }, 60000);
+
+    Component::SafePointer<DialogWindow> window(editor.showSettingsForTesting());
+    pumpEditorEvents();
+    auto* content = window != nullptr ? window->getContentComponent() : nullptr;
+    expect(content != nullptr && window->getName() == "Atlas Settings", "Settings opens its window");
+    if (content == nullptr) {
+      editor.removeFromDesktop();
+      return;
+    }
+    for (const auto* group : { "Plugin info", "Accessibility", "Online community browser" }) {
+      auto* found = titledIn(*content, group);
+      expect(found != nullptr && found->getAccessibilityHandler() != nullptr &&
+                 found->getAccessibilityHandler()->getRole() == AccessibilityRole::group,
+             std::string("the window has the group ") + group);
+    }
+
+    // Plugin info.
+    auto* version = dynamic_cast<Label*>(titledIn(*content, "Version"));
+    expect(version != nullptr && version->getText() == "Atlas " + SynthEditor::versionText() &&
+               SynthEditor::versionText().startsWith(ProjectInfo::versionString),
+           "the version is shown: " + (version != nullptr ? version->getText().toStdString() : std::string()));
+    expect(version != nullptr && version->hasKeyboardFocus(false), "the version has the focus first");
+    std::cout << "  version: " << SynthEditor::versionText() << '\n';
+    const std::pair<const char*, const char*> links[] = {
+      { "Report an issue on GitHub", "https://github.com/BlindProducers/atlas/issues/new" },
+      { "Source code on GitHub", "https://github.com/BlindProducers/atlas in your browser" },
+      { "Releases on GitHub", "https://github.com/BlindProducers/atlas/releases" } };
+    for (const auto& [title, url] : links) {
+      auto* link = dynamic_cast<Button*>(titledIn(*content, title));
+      expect(link != nullptr && link->getDescription().contains(url), std::string("the link ") + title + " opens " + url);
+    }
+
+    // Accessibility: the speech categories, which change the settings.
+    auto* accessibility = titledIn(*content, "Accessibility");
+    int toggles = 0;
+    if (accessibility != nullptr) {
+      for (auto* child : accessibility->getChildren())
+        if (dynamic_cast<ToggleButton*>(child) != nullptr)
+          ++toggles;
+    }
+    expect(toggles == 10, "the Accessibility group has the ten speech settings, got " + std::to_string(toggles));
+    auto* other = dynamic_cast<Button*>(titledIn(*content, "Other announcements"));
+    const bool other_was = atlas::speech::settings().other;
+    if (other != nullptr) {
+      other->triggerClick();
+      pumpEditorEvents();
+    }
+    expect(other != nullptr && atlas::speech::settings().other != other_was, "a toggle changes its setting");
+    atlas::speech::settings().other = other_was;
+
+    // Online community browser.
+    auto* show = dynamic_cast<Button*>(titledIn(*content, "Show the community library in the preset browser"));
+    auto* account = dynamic_cast<Label*>(titledIn(*content, "Account"));
+    auto* token = dynamic_cast<TextEditor*>(titledIn(*content, "API token"));
+    auto* log_in = dynamic_cast<Button*>(titledIn(*content, "Log in"));
+    auto* log_out = dynamic_cast<Button*>(titledIn(*content, "Log out"));
+    auto* website = dynamic_cast<Button*>(titledIn(*content, "Open 127.0.0.1"));
+    auto* collection = dynamic_cast<TableListBox*>(titled(editor, "Collection"));
+    const bool controls = show != nullptr && account != nullptr && token != nullptr && log_in != nullptr &&
+                          log_out != nullptr && website != nullptr && collection != nullptr;
+    expect(controls, "the community group has its controls");
+    if (!controls) {
+      delete window.getComponent();
+      editor.removeFromDesktop();
+      return;
+    }
+    expect(show->getToggleState() && collection->getNumRows() == 4, "the browser is shown by default");
+    expect(account->isShowing() && account->getText() == "Not logged in." && token->isShowing() && log_in->isShowing() &&
+               !log_out->isVisible() && website->isShowing() && website->getDescription().contains(server.url()),
+           "not logged in: the token box, Log in and the website: " + account->getText().toStdString());
+    expect(token->getAccessibilityHandler() != nullptr && token->getAccessibilityHandler()->getTextInterface() != nullptr &&
+               token->getAccessibilityHandler()->getTextInterface()->isDisplayingProtectedText(),
+           "the token box hides what is typed");
+
+    show->triggerClick();
+    pumpEditorEvents();
+    expect(!atlas::community::browserShown() && collection->getNumRows() == 2 && !account->isVisible() &&
+               !token->isVisible() && !website->isVisible(),
+           "hidden: the Collection list has two rows and the group only the toggle");
+    show->triggerClick();
+    pumpEditorEvents();
+    expect(atlas::community::browserShown() && collection->getNumRows() == 4 && token->isShowing(),
+           "shown again: the community rows and controls are back");
+
+    // Log in: a refused token, then one that works.
+    spoken.messages.clear();
+    log_in->onClick();
+    pumpEditorEvents();
+    expect(said("Paste your API token first") && server.requests().empty(), "Log in without a token asks for one");
+    token->setText(kTestToken, true);
+    spoken.messages.clear();
+    log_in->onClick();
+    pumpUntil([&] { return said("Unable to log in"); }, 10000);
+    expect(said("Unable to log in. The library refused the API token") && atlas::community::storedApiToken().isEmpty() &&
+               account->getText().startsWith("Not logged in."),
+           "a refused token is said and not kept: " + heard());
+    spoken.messages.clear();
+    log_in->onClick();
+    pumpUntil([&] { return said("Logged in"); }, 10000);
+    expect(said("Logged in as Jay Ladder (jayladdermusic)") && atlas::community::storedApiToken() == kTestToken &&
+               atlas::community::storedAccount().username == "jayladdermusic",
+           "a token that works is kept with its account: " + heard());
+    expect(account->getText() == "Logged in as Jay Ladder (jayladdermusic). 3 presets and 1 bank shared." &&
+               log_out->isShowing() && !token->isVisible() && !log_in->isVisible() && token->getText().isEmpty(),
+           "the account is shown, with Log out in place of the token box: " + account->getText().toStdString());
+    for (const auto& message : spoken.messages)
+      expect(!message.contains(kTestToken) && !message.contains("bpa_"), "the token is never said");
+
+    // Opened again, it asks the library for the account behind the saved token.
+    delete window.getComponent();
+    pumpEditorEvents();
+    window = editor.showSettingsForTesting();
+    pumpEditorEvents();
+    content = window != nullptr ? window->getContentComponent() : nullptr;
+    account = content != nullptr ? dynamic_cast<Label*>(titledIn(*content, "Account")) : nullptr;
+    pumpUntil([&] { return account != nullptr && account->getText().contains("shared"); }, 10000);
+    expect(account != nullptr && account->getText() == "Logged in as Jay Ladder (jayladdermusic). 3 presets and 1 bank shared.",
+           "the saved token's account is checked when Settings opens");
+
+    // Log out.
+    log_out = content != nullptr ? dynamic_cast<Button*>(titledIn(*content, "Log out")) : nullptr;
+    spoken.messages.clear();
+    if (log_out != nullptr)
+      log_out->onClick();
+    pumpEditorEvents();
+    expect(said("Logged out") && atlas::community::storedApiToken().isEmpty() && !atlas::community::storedAccount().known() &&
+               account != nullptr && account->getText() == "Not logged in.",
+           "Log out forgets the token and its account: " + heard());
+
+    // The window closes with the editor.
+    editor.removeFromDesktop();
+  }
+
+  void testSettingsCloseWithTheEditor() {
+    SynthPlugin synth;
+    Component::SafePointer<DialogWindow> window;
+    {
+      SynthEditor editor(synth);
+      editor.updateFullGui();
+      editor.addToDesktop(0);
+      editor.setVisible(true);
+      pumpEditorEvents();
+      window = editor.showSettingsForTesting();
+      pumpEditorEvents();
+      expect(window != nullptr, "Settings opens");
+      editor.removeFromDesktop();
+    }
+    pumpEditorEvents();
+    expect(window == nullptr, "and closes when the editor does");
   }
 
   int runCommunityLibraryTests() {
@@ -1393,6 +1660,10 @@ namespace {
     testApiTokenIsKeptInTheConfigOnly();
     testUploadReachesTheLibrary();
     testShareFormsUploadAndSpeak();
+    testAccountsAndTheBrowserSetting();
+    testAccountIsAskedOfTheLibrary();
+    testSettingsWindow();
+    testSettingsCloseWithTheEditor();
     if (failures == 0)
       std::cout << "Atlas community library tests passed\n";
     return failures == 0 ? 0 : 1;

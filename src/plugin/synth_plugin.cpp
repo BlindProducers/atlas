@@ -368,12 +368,15 @@ void SynthPlugin::prepareToPlay(double sample_rate, int buffer_size) {
 void SynthPlugin::setAuditionSource(AudioSource* source) {
   const SpinLock::ScopedLockType lock(audition_lock_);
   audition_source_ = source;
+  audition_active_.store(source != nullptr, std::memory_order_release);
   const double sample_rate = AudioProcessor::getSampleRate();
   if (source != nullptr && sample_rate > 0.0)
     source->prepareToPlay(jmax(1, getBlockSize()), sample_rate);
 }
 
 void SynthPlugin::mixAudition(AudioSampleBuffer& buffer) {
+  if (!audition_active_.load(std::memory_order_acquire))
+    return;
   // Never waits: the message thread holds the lock only to swap the source
   // or prepare it, and a block that meets that goes out without the preview.
   const SpinLock::ScopedTryLockType lock(audition_lock_);

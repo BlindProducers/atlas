@@ -394,6 +394,14 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     bool isCommunityLibraryLoaded() const { return community_list_loaded_; }
     bool isCommunityDownloadBusy() const { return !community_downloads_.empty(); }
     String communityLibraryError() const { return community_list_error_; }
+    // Settings, for the tests: the window it opened, or null.
+    DialogWindow* showSettingsForTesting() {
+      showSettings();
+      return settings_window_.getComponent();
+    }
+    // "2.0.0 beta 2": the version and, for a pre-release, the beta the
+    // release workflow builds (ATLAS_PRERELEASE in .github/workflows/release.yml).
+    static String versionText();
     // The Preset menu's Share patch and Share bank forms, for the tests.
     void showSharePatchFormForTesting() { showShareForm(false); }
     void showShareBankFormForTesting() { showShareForm(true); }
@@ -563,7 +571,13 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void focusEffectChainStop(Component& stop);
     void showNavigationMenu();
     void armOrCancelMidiLearn(const String& parameterId);
-    void showAccessibilitySettingsMenu();
+    // The Editor menu's Settings window: Plugin info (version, links to the
+    // repository), Accessibility (the speech categories) and Online community
+    // browser (show or hide it, the API token and the account it belongs to).
+    void showSettings();
+    // Shows or hides the community library in the preset browser and the
+    // Preset menu, for every editor from now on (community_library.h).
+    void setCommunityBrowserShown(bool shown);
     void showKeyboardHelp();
     void initializePatch();
     void savePatchAsDefault();
@@ -1108,7 +1122,7 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     AccessibleTextEditor share_description_;
     AccessibleTextEditor share_token_;
     AccessibleTextButton share_ok_ { "Share" };
-    AccessibleTextButton share_forget_token_ { "Forget saved token" };
+    AccessibleTextButton share_forget_token_ { "Log out" };
     AccessibleTextButton share_cancel_ { "Cancel" };
     Label routing_summary_;
     AccessibleComboBox routing_mode_;
@@ -1376,6 +1390,8 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     bool share_genres_loading_ = false;
     std::unique_ptr<FileChooser> share_folder_chooser_;
     FocusReturn share_return_focus_;
+    // The Settings window while it is open; closed with the editor.
+    Component::SafePointer<DialogWindow> settings_window_;
     // Where focus was when the save or metadata form opened; it goes back
     // there, or to its replacement after a rebuild, when the form closes.
     FocusReturn save_patch_return_focus_;
@@ -1443,5 +1459,6 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SynthEditor)
 
     friend class PresetFacetTableModel;
+    friend class AtlasSettingsContent;
     friend class PresetResultsTableModel;
 };

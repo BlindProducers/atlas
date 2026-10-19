@@ -197,6 +197,15 @@ UploadRequest buildPresetUpload(const juce::String& library_url, const juce::Fil
 UploadRequest buildBankUpload(const juce::String& library_url, const juce::File& bank, const ShareFields& fields,
                               const juce::String& token);
 
+// The account a token belongs to, from /api/v1/me/.
+struct Account {
+  juce::String username;            // "jayladdermusic"
+  juce::String display_name;        // "Jay Ladder"
+  int presets = 0;                  // what it has shared
+  int banks = 0;
+  bool known() const { return username.isNotEmpty(); }
+};
+
 // What the library answered: 201 with the new item, 400 with the fields it
 // refused, 401 for a missing or wrong token, or anything else.
 struct UploadResult {
@@ -206,6 +215,7 @@ struct UploadResult {
   juce::String page_url;            // its page on the site
   juce::String error;               // empty once shared
   juce::StringArray field_errors;   // "Genre: This field is required."
+  Account uploader;                 // the account that shared it, as the library names it
   bool shared() const { return status == 201 && error.isEmpty(); }
   bool tokenRefused() const { return status == 401; }
 };
@@ -218,9 +228,30 @@ UploadResult uploadPreset(const juce::String& library_url, const juce::String& t
 UploadResult uploadBank(const juce::String& library_url, const juce::String& token, const juce::File& bank,
                         const ShareFields& fields, const std::atomic<bool>* cancelled = nullptr);
 
-// The token kept in Atlas's config file, or empty; storing an empty one forgets it.
+// The token kept in Atlas's config file, or empty; storing an empty one
+// forgets it, and storing another forgets the account saved with it.
 juce::String storedApiToken();
 void storeApiToken(const juce::String& token);
+
+juce::String meEndpoint(const juce::String& library_url);
+// Reads /api/v1/me/'s answer; returns what went wrong, or an empty string.
+juce::String parseAccount(int status, const std::string& body, Account& account);
+// Asks the library whose `token` is, for a background thread.
+juce::String fetchAccount(const juce::String& library_url, const juce::String& token, Account& account,
+                          const std::atomic<bool>* cancelled = nullptr);
+// "Jay Ladder (jayladdermusic)", or the account name alone.
+juce::String accountName(const Account& account);
+// The account last seen for the saved token, kept beside it in the config.
+Account storedAccount();
+void storeAccount(const Account& account);
+
+// Settings: whether the preset browser shows the community library (its
+// Collection rows and the Preset menu's Share items). On unless turned off.
+// Read from the config once, then from memory.
+bool browserShown();
+void setBrowserShown(bool shown);
+// Tests: read the setting from the config again.
+void forgetBrowserShownForTesting();
 // A token as it may be said: "the token ending in 3f2a"; never the whole of it.
 juce::String tokenHint(const juce::String& token);
 // Whether `token` looks like one the library issues ("bpa_" and hex).

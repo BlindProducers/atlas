@@ -25,6 +25,9 @@ namespace {
   // An upload may be a bank of hundreds of megabytes.
   constexpr int kUploadTimeoutMs = 120000;
   constexpr const char* kTokenConfigKey = "community_api_token";
+  constexpr const char* kAccountUsernameKey = "community_account_username";
+  constexpr const char* kAccountNameKey = "community_account_name";
+  constexpr const char* kBrowserShownKey = "community_browser";
 
   juce::String& testingLibraryUrl() {
     static juce::String url;
@@ -830,6 +833,9 @@ UploadResult parseUploadAnswer(int status, const std::string& body) {
     result.id = jsonInteger(answer, "id");
     result.name = jsonString(answer, "name").trim();
     result.page_url = jsonString(answer, "url");
+    const json& uploader = jsonObject(answer, "uploader");
+    result.uploader.username = jsonString(uploader, "username").trim();
+    result.uploader.display_name = jsonString(uploader, "display_name").trim();
     return result;
   }
 
@@ -913,6 +919,124 @@ UploadResult uploadBank(const juce::String& library_url, const juce::String& tok
   return upload(buildBankUpload(library_url, bank, fields, token), cancelled);
 }
 
+namespace {
+  // -1 until the config has been read, then 0 or 1.
+  std::atomic<int>& browserShownState() {
+    static std::atomic<int> state { -1 };
+    return state;
+  }
+}
+
+juce::String meEndpoint(const juce::String& library_url) {
+  return library_url.trimCharactersAtEnd("/") + "/api/v1/me/";
+}
+
+juce::String parseAccount(int status, const std::string& body, Account& account) {
+  account = {};
+  if (status == 401 || status == 403)
+    return "The library refused the API token";
+  json answer;
+  try {
+    answer = json::parse(body, nullptr, false);
+  }
+  catch (const json::exception&) {
+    answer = json();
+  }
+  if (status < 200 || status >= 300)
+    return "The library " + httpStatusText(status);
+  if (answer.is_discarded() || !answer.is_object())
+    return "The library's answer is not JSON";
+  account.username = jsonString(answer, "username").trim();
+  account.display_name = jsonString(answer, "display_name").trim();
+  account.presets = static_cast<int>(jsonInteger(answer, "presets"));
+  account.banks = static_cast<int>(jsonInteger(answer, "banks"));
+  if (!account.known())
+    return "The library's answer names no account";
+  return {};
+}
+
+juce::String fetchAccount(const juce::String& library_url, const juce::String& token, Account& account,
+                          const std::atomic<bool>* cancelled) {
+  account = {};
+  const juce::URL url(meEndpoint(library_url));
+  if (!isWebUrl(url))
+    return "Logging in needs the library's web address";
+  const juce::String key = token.trim().removeCharacters("\r\n");
+  if (key.isEmpty())
+    return "No API token";
+  int status = 0;
+  auto stream = url.createInputStream(juce::URL::InputStreamOptions(juce::URL::ParameterHandling::inAddress)
+                                          .withConnectionTimeoutMs(kConnectionTimeoutMs)
+                                          .withExtraHeaders("User-Agent: " + userAgent() +
+                                                            "\r\nAccept: application/json\r\nAuthorization: Bearer " +
+                                                            key + "\r\n")
+                                          .withStatusCode(&status)
+                                          .withNumRedirectsToFollow(0));
+  if (stream == nullptr)
+    return status != 0 ? parseAccount(status, {}, account) : "Could not connect to " + url.getDomain();
+  juce::MemoryOutputStream out;
+  const juce::String error = readAll(*stream, out, nullptr, kMaxPageBytes, cancelled);
+  if (error.isNotEmpty())
+    return error;
+  return parseAccount(status, std::string(static_cast<const char*>(out.getData()), out.getDataSize()), account);
+}
+
+juce::String accountName(const Account& account) {
+  if (account.display_name.isNotEmpty() && account.display_name != account.username)
+    return account.display_name + " (" + account.username + ")";
+  return account.username;
+}
+
+Account storedAccount() {
+  Account account;
+  const json config = LoadSave::getConfigJson();
+  if (config.is_object()) {
+    account.username = jsonString(config, kAccountUsernameKey).trim();
+    account.display_name = jsonString(config, kAccountNameKey).trim();
+  }
+  return account;
+}
+
+void storeAccount(const Account& account) {
+  json config = LoadSave::getConfigJson();
+  if (!config.is_object())
+    config = json::object();
+  if (account.known()) {
+    config[kAccountUsernameKey] = account.username.toStdString();
+    config[kAccountNameKey] = account.display_name.toStdString();
+  }
+  else {
+    config.erase(kAccountUsernameKey);
+    config.erase(kAccountNameKey);
+  }
+  LoadSave::saveJsonToConfig(config);
+}
+
+bool browserShown() {
+  auto& state = browserShownState();
+  int shown = state.load(std::memory_order_relaxed);
+  if (shown < 0) {
+    const json config = LoadSave::getConfigJson();
+    const auto found = config.is_object() ? config.find(kBrowserShownKey) : config.end();
+    shown = found != config.end() && found->is_boolean() && !found->get<bool>() ? 0 : 1;
+    state.store(shown, std::memory_order_relaxed);
+  }
+  return shown != 0;
+}
+
+void setBrowserShown(bool shown) {
+  browserShownState().store(shown ? 1 : 0, std::memory_order_relaxed);
+  json config = LoadSave::getConfigJson();
+  if (!config.is_object())
+    config = json::object();
+  config[kBrowserShownKey] = shown;
+  LoadSave::saveJsonToConfig(config);
+}
+
+void forgetBrowserShownForTesting() {
+  browserShownState().store(-1, std::memory_order_relaxed);
+}
+
 juce::String storedApiToken() {
   const json config = LoadSave::getConfigJson();
   if (!config.is_object())
@@ -925,14 +1049,15 @@ void storeApiToken(const juce::String& token) {
   if (!config.is_object())
     config = json::object();
   const juce::String key = token.trim();
-  if (key.isEmpty()) {
-    if (config.count(kTokenConfigKey) == 0)
-      return;
+  // An account belongs to the token it was seen with.
+  if (jsonString(config, kTokenConfigKey).trim() != key) {
+    config.erase(kAccountUsernameKey);
+    config.erase(kAccountNameKey);
+  }
+  if (key.isEmpty())
     config.erase(kTokenConfigKey);
-  }
-  else {
+  else
     config[kTokenConfigKey] = key.toStdString();
-  }
   LoadSave::saveJsonToConfig(config);
 }
 

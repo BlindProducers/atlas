@@ -158,6 +158,10 @@ class SynthPlugin : public SynthBase, public AudioProcessor, public ValueBridge:
     // the lock the audio thread tries for it.
     SpinLock audition_lock_;
     AudioSource* audition_source_ = nullptr;
+    // Whether there is a source at all: with none, processBlock reads this
+    // one flag and nothing else, so the community browser costs the audio
+    // thread nothing until a preview plays.
+    std::atomic<bool> audition_active_ { false };
     AudioBuffer<float> audition_buffer_ { 2, 1024 };
     void mixAudition(AudioSampleBuffer& buffer);
     void updateFxSampleRate();

@@ -6737,8 +6737,7 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   };
   configureShareButton(share_ok_, "Share", "Upload to the community library");
   share_ok_.onClick = [this] { commitShareForm(); };
-  configureShareButton(share_forget_token_, "Forget saved token",
-                       "Remove the API token kept in Atlas's settings");
+  configureShareButton(share_forget_token_, "Log out", "Removes the API token from Atlas's settings");
   share_forget_token_.onClick = [this] { forgetShareToken(); };
   configureShareButton(share_cancel_, "Cancel sharing", "Close the share form without uploading");
   share_cancel_.onClick = [this] { hideShareForm(); };
@@ -6858,6 +6857,9 @@ SynthEditor::~SynthEditor() {
   // The preview plays through the plugin, which must not read it once this
   // editor is gone.
   detachCommunityPreview();
+  // The Settings window reaches into this editor.
+  if (auto* settings = settings_window_.getComponent())
+    delete settings;
   // Key releases can no longer reach this editor; don't leave notes held.
   allQwertyNotesOff();
   detachQwertyKeyInterceptor();
@@ -9414,7 +9416,7 @@ void SynthEditor::showNavigationMenu() {
   menu.addSeparator();
   const int mapping_count = static_cast<int>(synth_.midiLearnMappings().size());
   menu.addSubMenu("MIDI learn mappings (" + String(mapping_count) + ")", createMidiLearnMenu());
-  menu.addItem(4, "Accessibility settings");
+  menu.addItem(4, "Settings...");
   menu.addItem(8, "Keyboard help");
 
   showAccessibleMenuAsync(menu, PopupMenu::Options().withTargetComponent(menu_button_),
@@ -9424,7 +9426,7 @@ void SynthEditor::showNavigationMenu() {
     else if (result == 7)
       clearTuning();
     else if (result == 4)
-      showAccessibilitySettingsMenu();
+      showSettings();
     else if (result == 8)
       showKeyboardHelp();
     else if (result == 9 || result == 10)
@@ -9432,73 +9434,388 @@ void SynthEditor::showNavigationMenu() {
   });
 }
 
-void SynthEditor::showAccessibilitySettingsMenu() {
-  struct Entry {
-    const char* label;
-    bool AccessibilitySpeechSettings::* field;
+namespace {
+  constexpr const char* kRepositoryUrl = "https://github.com/BlindProducers/atlas";
+
+  // A titled group of the Settings window: a screen reader names its controls
+  // by it, and it draws its title above them.
+  class SettingsGroup : public Component {
+    public:
+      explicit SettingsGroup(const String& title) {
+        setTitle(title);
+        setName(title);
+      }
+
+      static constexpr int kHeadingHeight = 28;
+
+      void paint(Graphics& g) override {
+        g.setColour(Colour(0xff2a2f37));
+        g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(0.5f), 5.0f, 1.0f);
+        g.setColour(Colours::white);
+        g.setFont(FontOptions(15.0f, Font::bold));
+        g.drawText(getTitle(), 10, 4, getWidth() - 20, kHeadingHeight - 4, Justification::centredLeft, true);
+      }
+
+      std::unique_ptr<AccessibilityHandler> createAccessibilityHandler() override {
+        return std::make_unique<AccessibilityHandler>(*this, AccessibilityRole::group);
+      }
   };
 
-  static const Entry kEntries[] = {
-    { "Use speech feedback",               &AccessibilitySpeechSettings::speech_feedback  },
-    { "Navigation announcements",          &AccessibilitySpeechSettings::navigation       },
-    { "Preset announcements",              &AccessibilitySpeechSettings::presets          },
-    { "LFO and Trance gate editor announcements",          &AccessibilitySpeechSettings::lfo_editor       },
-    { "Wavetable editor announcements",    &AccessibilitySpeechSettings::wavetable_editor },
-    { "Sample and granular announcements", &AccessibilitySpeechSettings::sample_browser   },
-    { "Modulation announcements",          &AccessibilitySpeechSettings::modulation       },
-    { "Parameter value announcements",     &AccessibilitySpeechSettings::parameters       },
-    { "Other announcements",               &AccessibilitySpeechSettings::other            },
-    { "Frequency values in Hz",            &AccessibilitySpeechSettings::frequency_values_in_hz },
-  };
+  String pluralCount(int count, const char* singular, const char* plural) {
+    return String(count) + " " + (count == 1 ? singular : plural);
+  }
 
-  class DialogContent : public Component {
+  String loggedInText(const atlas::community::Account& account, bool with_counts) {
+    String text = "Logged in as " + atlas::community::accountName(account) + ".";
+    if (with_counts)
+      text << " " << pluralCount(account.presets, "preset", "presets") << " and "
+           << pluralCount(account.banks, "bank", "banks") << " shared.";
+    return text;
+  }
+}
+
+// The Settings window's content (SynthEditor::showSettings): three groups,
+// read and changed from the keyboard, Tab moving through them in order.
+class AtlasSettingsContent : public Component {
   public:
-    DialogContent() {
+    explicit AtlasSettingsContent(SynthEditor& editor) : editor_(&editor) {
+      setTitle("Atlas settings");
+
+      // Plugin info.
+      addAndMakeVisible(info_);
+      String format = AudioProcessor::getWrapperTypeDescription(editor.synth_.wrapperType);
+      if (format == "AudioUnit")
+        format = "Audio Unit";
+      version_.setText("Atlas " + SynthEditor::versionText() +
+                           (format != "Undefined" ? ", " + format + " plug-in" : String()),
+                       dontSendNotification);
+      version_.setTitle("Version");
+      version_.setDescription(version_.getText());
+      version_.setColour(Label::textColourId, Colours::white);
+      version_.setWantsKeyboardFocus(true);
+      info_.addAndMakeVisible(version_);
+      addLink(issue_, "Report an issue", String(kRepositoryUrl) + "/issues/new");
+      addLink(source_, "Source code", kRepositoryUrl);
+      addLink(releases_, "Releases", String(kRepositoryUrl) + "/releases");
+
+      // Accessibility: the speech categories, as the Accessibility settings window had them.
+      addAndMakeVisible(accessibility_);
+      struct Entry {
+        const char* label;
+        bool AccessibilitySpeechSettings::* field;
+      };
+      static const Entry kEntries[] = {
+        { "Use speech feedback",                      &AccessibilitySpeechSettings::speech_feedback  },
+        { "Navigation announcements",                 &AccessibilitySpeechSettings::navigation       },
+        { "Preset announcements",                     &AccessibilitySpeechSettings::presets          },
+        { "LFO and Trance gate editor announcements", &AccessibilitySpeechSettings::lfo_editor       },
+        { "Wavetable editor announcements",           &AccessibilitySpeechSettings::wavetable_editor },
+        { "Sample and granular announcements",        &AccessibilitySpeechSettings::sample_browser   },
+        { "Modulation announcements",                 &AccessibilitySpeechSettings::modulation       },
+        { "Parameter value announcements",            &AccessibilitySpeechSettings::parameters       },
+        { "Other announcements",                      &AccessibilitySpeechSettings::other            },
+        { "Frequency values in Hz",                   &AccessibilitySpeechSettings::frequency_values_in_hz },
+      };
       auto& settings = accessibilitySpeechSettings();
-      for (const auto& e : kEntries) {
-        auto btn = std::make_unique<SpokenToggleButton>(e.label);
-        btn->setToggleState(settings.*(e.field), dontSendNotification);
-        auto* btn_ptr = btn.get();
-        auto field = e.field;
-        btn->onStateChange = [btn_ptr, field]() {
-          accessibilitySpeechSettings().*field = btn_ptr->getToggleState();
+      for (const auto& entry : kEntries) {
+        auto toggle = std::make_unique<SpokenToggleButton>(entry.label);
+        toggle->setTitle(entry.label);
+        toggle->setToggleState(settings.*(entry.field), dontSendNotification);
+        auto* raw = toggle.get();
+        const auto field = entry.field;
+        toggle->onClick = [raw, field] {
+          accessibilitySpeechSettings().*field = raw->getToggleState();
           saveAccessibilitySpeechSettings();
         };
-        addAndMakeVisible(*btn);
-        buttons_.push_back(std::move(btn));
+        accessibility_.addAndMakeVisible(*toggle);
+        speech_toggles_.push_back(std::move(toggle));
       }
-      setSize(360, static_cast<int>(sizeof(kEntries) / sizeof(kEntries[0])) * 28 + 16);
+
+      // Online community browser.
+      addAndMakeVisible(community_);
+      const String host = atlas::community::libraryHost();
+      show_community_.setTitle("Show the community library in the preset browser");
+      show_community_.setDescription("Adds Community presets and Community banks to the Collection list, and Share "
+                                     "patch and Share bank to the Preset menu");
+      show_community_.setToggleState(atlas::community::browserShown(), dontSendNotification);
+      show_community_.onClick = [this] {
+        if (editor_ != nullptr)
+          editor_->setCommunityBrowserShown(show_community_.getToggleState());
+        else
+          atlas::community::setBrowserShown(show_community_.getToggleState());
+        updateCommunityControls();
+        if (show_community_.getToggleState())
+          refreshAccount();
+      };
+      community_.addAndMakeVisible(show_community_);
+      account_.setTitle("Account");
+      account_.setColour(Label::textColourId, Colours::white);
+      account_.setWantsKeyboardFocus(true);
+      community_.addChildComponent(account_);
+      token_.setTitle("API token");
+      token_.setDescription("From the API tokens page of your account on " + host + ". It starts with bpa_");
+      token_.setHelpText(token_.getDescription());
+      token_.setTextToShowWhenEmpty("API token", Colours::grey);
+      token_.setPasswordCharacter(static_cast<juce_wchar>(0x2022));
+      token_.setSelectAllWhenFocused(true);
+      token_.setWantsKeyboardFocus(true);
+      token_.onReturnKey = [this] { logIn(); };
+      community_.addChildComponent(token_);
+      configureButton(log_in_, "Log in", "Checks the API token with " + host + " and keeps it in Atlas's settings");
+      log_in_.onClick = [this] { logIn(); };
+      configureButton(log_out_, "Log out", "Removes the API token from Atlas's settings");
+      log_out_.onClick = [this] { logOut(); };
+      configureButton(website_, "Open " + host, "Opens " + atlas::community::libraryUrl() + " in your browser");
+      website_.onClick = [] { URL(atlas::community::libraryUrl()).launchInDefaultBrowser(); };
+      for (auto* button : { &log_in_, &log_out_, &website_ })
+        community_.addChildComponent(*button);
+
+      updateCommunityControls();
+      refreshAccount();
     }
 
-    void resized() override {
-      int y = 8;
-      for (auto& btn : buttons_) {
-        btn->setBounds(8, y, getWidth() - 16, 24);
-        y += 28;
-      }
+    // The community group's controls follow the toggle and the token.
+    void updateCommunityControls() {
+      const bool shown = show_community_.getToggleState();
+      const bool logged_in = atlas::community::storedApiToken().isNotEmpty();
+      // Off what is about to go, so the focus stays in the window.
+      Component* focus_target = nullptr;
+      if (logged_in && (token_.hasKeyboardFocus(true) || log_in_.hasKeyboardFocus(false)))
+        focus_target = &log_out_;
+      else if (!logged_in && log_out_.hasKeyboardFocus(false))
+        focus_target = &token_;
+      account_.setVisible(shown);
+      token_.setVisible(shown && !logged_in);
+      log_in_.setVisible(shown && !logged_in);
+      log_out_.setVisible(shown && logged_in);
+      website_.setVisible(shown);
+      if (!logged_in && !checking_)
+        setAccountText("Not logged in.");
+      layout();
+      if (focus_target != nullptr && focus_target->isShowing())
+        focus_target->grabKeyboardFocus();
     }
+
+    void resized() override { layout(); }
+
+    String accountText() const { return account_.getText(); }
 
   private:
-    std::vector<std::unique_ptr<ToggleButton>> buttons_;
-  };
+    void addLink(TextButton& button, const String& title, const String& url) {
+      configureButton(button, title + " on GitHub", "Opens " + url + " in your browser");
+      button.onClick = [url] { URL(url).launchInDefaultBrowser(); };
+      info_.addAndMakeVisible(button);
+    }
 
-  DialogWindow::LaunchOptions opts;
-  opts.dialogTitle = "Accessibility Settings";
-  opts.content.setOwned(new DialogContent());
-  opts.componentToCentreAround = this;
-  opts.useNativeTitleBar = true;
-  opts.resizable = false;
-  opts.escapeKeyTriggersCloseButton = true;
-  auto* dlg = launchDialogWindow(opts);
-  if (dlg) {
-    Component::SafePointer<DialogWindow> safe_dlg(dlg);
-    MessageManager::callAsync([safe_dlg]() {
-      if (safe_dlg && safe_dlg->getContentComponent()) {
-        if (auto* first = safe_dlg->getContentComponent()->getChildComponent(0))
-          first->grabKeyboardFocus();
+    void configureButton(TextButton& button, const String& title, const String& help) {
+      button.setButtonText(title);
+      button.setTitle(title);
+      button.setDescription(help);
+      button.setHelpText(help);
+      button.setWantsKeyboardFocus(true);
+    }
+
+    void setAccountText(const String& text) {
+      account_.setText(text, dontSendNotification);
+      account_.setDescription(text);
+      if (auto* handler = account_.getAccessibilityHandler())
+        handler->notifyAccessibilityEvent(AccessibilityEvent::titleChanged);
+    }
+
+    // Who the saved token belongs to: what was seen last at once, then what
+    // the library says now, asked in the background. Nothing is fetched while
+    // the browser is hidden or no token is saved.
+    void refreshAccount() {
+      const String token = atlas::community::storedApiToken();
+      if (!show_community_.getToggleState() || token.isEmpty() || editor_ == nullptr)
+        return;
+      const auto known = atlas::community::storedAccount();
+      setAccountText(known.known() ? loggedInText(known, false) : String("Checking the API token."));
+      checking_ = true;
+      const int generation = ++account_generation_;
+      Component::SafePointer<AtlasSettingsContent> safe_this(this);
+      const String library_url = atlas::community::libraryUrl();
+      editor_->runPresetBackgroundTask([safe_this, token, library_url, generation](
+                                           const std::shared_ptr<std::atomic<bool>>& cancelled) {
+        atlas::community::Account account;
+        const String error = atlas::community::fetchAccount(library_url, token, account, cancelled.get());
+        if (cancelled->load())
+          return;
+        MessageManager::callAsync([safe_this, token, account, error, generation] {
+          if (safe_this != nullptr)
+            safe_this->accountChecked(token, account, error, generation);
+        });
+      });
+    }
+
+    void accountChecked(const String& token, const atlas::community::Account& account, const String& error,
+                        int generation) {
+      if (generation != account_generation_ || atlas::community::storedApiToken() != token)
+        return;
+      checking_ = false;
+      if (error.isEmpty()) {
+        atlas::community::storeAccount(account);
+        setAccountText(loggedInText(account, true));
+        return;
       }
+      const auto known = atlas::community::storedAccount();
+      if (error.contains("refused"))
+        setAccountText("The library refused the saved API token. Log out, then log in with a new one.");
+      else
+        setAccountText((known.known() ? loggedInText(known, false) + " " : String("API token saved. ")) +
+                       "The library could not be reached: " + error + ".");
+    }
+
+    void logIn() {
+      const String token = token_.getText().trim();
+      if (token.isEmpty() || !atlas::community::looksLikeApiToken(token)) {
+        token_.grabKeyboardFocus();
+        postPresetActionAnnouncement(token.isEmpty() ? String("Paste your API token first")
+                                                     : String("That is not an API token. Tokens start with bpa_"),
+                                     AccessibilityHandler::AnnouncementPriority::high);
+        return;
+      }
+      if (editor_ == nullptr || checking_)
+        return;
+      checking_ = true;
+      setAccountText("Checking the API token.");
+      postPresetActionAnnouncement("Checking the API token", AccessibilityHandler::AnnouncementPriority::medium);
+      const int generation = ++account_generation_;
+      Component::SafePointer<AtlasSettingsContent> safe_this(this);
+      const String library_url = atlas::community::libraryUrl();
+      editor_->runPresetBackgroundTask([safe_this, token, library_url, generation](
+                                           const std::shared_ptr<std::atomic<bool>>& cancelled) {
+        atlas::community::Account account;
+        const String error = atlas::community::fetchAccount(library_url, token, account, cancelled.get());
+        if (cancelled->load())
+          return;
+        MessageManager::callAsync([safe_this, token, account, error, generation] {
+          if (safe_this != nullptr)
+            safe_this->loggedIn(token, account, error, generation);
+        });
+      });
+    }
+
+    void loggedIn(const String& token, const atlas::community::Account& account, const String& error, int generation) {
+      if (generation != account_generation_)
+        return;
+      checking_ = false;
+      if (error.isNotEmpty()) {
+        setAccountText("Not logged in. " + error + ".");
+        postPresetActionAnnouncement("Unable to log in. " + error, AccessibilityHandler::AnnouncementPriority::high);
+        return;
+      }
+      atlas::community::storeApiToken(token);
+      atlas::community::storeAccount(account);
+      token_.clear();
+      setAccountText(loggedInText(account, true));
+      updateCommunityControls();
+      postPresetActionAnnouncement("Logged in as " + atlas::community::accountName(account),
+                                   AccessibilityHandler::AnnouncementPriority::high);
+    }
+
+    void logOut() {
+      ++account_generation_;
+      checking_ = false;
+      atlas::community::storeApiToken({});
+      updateCommunityControls();
+      postPresetActionAnnouncement("Logged out", AccessibilityHandler::AnnouncementPriority::high);
+    }
+
+    void layout() {
+      constexpr int kMargin = 10;
+      constexpr int kRow = 30;
+      const int width = 520;
+      const int inner = width - 2 * kMargin - 20;
+      int y = kMargin;
+      auto placeGroup = [&](SettingsGroup& group, const std::vector<Component*>& rows) {
+        int row_y = SettingsGroup::kHeadingHeight;
+        for (auto* row : rows) {
+          if (!row->isVisible())
+            continue;
+          row->setBounds(10, row_y, inner, kRow - 4);
+          row_y += kRow;
+        }
+        group.setBounds(kMargin, y, width - 2 * kMargin, row_y + 6);
+        y += group.getHeight() + kMargin;
+      };
+      placeGroup(info_, { &version_, &issue_, &source_, &releases_ });
+      std::vector<Component*> speech;
+      for (auto& toggle : speech_toggles_)
+        speech.push_back(toggle.get());
+      placeGroup(accessibility_, speech);
+      placeGroup(community_, { &show_community_, &account_, &token_, &log_in_, &log_out_, &website_ });
+      // The window follows the content's size.
+      if (getWidth() != width || getHeight() != y)
+        setSize(width, y);
+    }
+
+    Component::SafePointer<SynthEditor> editor_;
+    SettingsGroup info_ { "Plugin info" };
+    SettingsGroup accessibility_ { "Accessibility" };
+    SettingsGroup community_ { "Online community browser" };
+    Label version_;
+    AccessibleTextButton issue_, source_, releases_;
+    std::vector<std::unique_ptr<ToggleButton>> speech_toggles_;
+    SpokenToggleButton show_community_ { "Show the community library in the preset browser" };
+    Label account_;
+    AccessibleTextEditor token_;
+    AccessibleTextButton log_in_, log_out_, website_;
+    bool checking_ = false;
+    int account_generation_ = 0;
+};
+
+String SynthEditor::versionText() {
+  String text = ProjectInfo::versionString;
+#ifdef ATLAS_PRERELEASE
+  const String prerelease = String(ATLAS_PRERELEASE).trim();
+  // "beta.2" reads as "beta 2", as the release's title does.
+  if (prerelease.isNotEmpty())
+    text << " " << prerelease.replace(".", " ");
+#endif
+  return text;
+}
+
+void SynthEditor::showSettings() {
+  // One window at a time: a second Settings brings the first to the front.
+  if (auto* open = settings_window_.getComponent()) {
+    open->toFront(true);
+    return;
+  }
+  DialogWindow::LaunchOptions options;
+  options.dialogTitle = "Atlas Settings";
+  options.content.setOwned(new AtlasSettingsContent(*this));
+  options.componentToCentreAround = this;
+  options.useNativeTitleBar = true;
+  options.resizable = false;
+  options.escapeKeyTriggersCloseButton = true;
+  settings_window_ = launchDialogWindow(options);
+  if (auto* window = settings_window_.getComponent()) {
+    Component::SafePointer<DialogWindow> safe_window(window);
+    MessageManager::callAsync([safe_window] {
+      if (safe_window == nullptr)
+        return;
+      // The version first: what the window is about, then Tab on through it.
+      if (auto* content = safe_window->getContentComponent())
+        if (auto* version = content->getChildComponent(0) != nullptr ? content->getChildComponent(0)->getChildComponent(0) : nullptr)
+          version->grabKeyboardFocus();
     });
   }
+}
+
+void SynthEditor::setCommunityBrowserShown(bool shown) {
+  atlas::community::setBrowserShown(shown);
+  if (!shown) {
+    // Nothing of the library keeps running: no preview, no share form.
+    detachCommunityPreview();
+    if (share_form_visible_)
+      hideShareForm();
+  }
+  // A Community collection on show gives way to All presets, and comes back with the browser.
+  setPresetCollection(presetCollection());
+  populatePresetFilters();
+  filterPresetList();
+  updatePresetSummary();
 }
 
 namespace {
@@ -9681,6 +9998,7 @@ void SynthEditor::showKeyboardHelp() {
       "  Shift+S - Reverse the preset table sort direction\n"
       "  R - Rename the selected editable user preset\n"
       "  E - Edit the selected editable preset's metadata\n"
+      "  P - Play or stop the selected community preset's or bank's preview\n"
       "  {Cmd}+S - Save the patch over the loaded user preset, or ask where to save it\n"
       "  Shift+{Cmd}+S - Save the patch as a new preset\n"
       "  Delete - Ask before moving the selected editable user preset to Trash\n"
@@ -10402,6 +10720,9 @@ const PresetBrowserItem* SynthEditor::presetItemForFile(const File& file) const 
 PresetCollection SynthEditor::presetCollection() const {
   if (last_preset_collection_ == kFavouritesCollection)
     return PresetCollection::kFavourites;
+  // Hidden in Settings: the community collections are not on offer.
+  if (!atlas::community::browserShown())
+    return PresetCollection::kAll;
   if (last_preset_collection_ == kCommunityCollection)
     return PresetCollection::kCommunity;
   if (last_preset_collection_ == kCommunityBanksCollection)
@@ -11069,10 +11390,12 @@ void SynthEditor::populatePresetFilters() {
            collection == PresetCollection::kAll);
   addFacet(kCollectionFacet, "Collection", kFavouritesCollection, favorite_matching_count,
            collection == PresetCollection::kFavourites);
-  addFacet(kCollectionFacet, "Collection", kCommunityCollection, static_cast<int>(community_index_.size()),
-           collection == PresetCollection::kCommunity);
-  addFacet(kCollectionFacet, "Collection", kCommunityBanksCollection, static_cast<int>(community_bank_index_.size()),
-           collection == PresetCollection::kCommunityBanks);
+  if (atlas::community::browserShown()) {
+    addFacet(kCollectionFacet, "Collection", kCommunityCollection, static_cast<int>(community_index_.size()),
+             collection == PresetCollection::kCommunity);
+    addFacet(kCollectionFacet, "Collection", kCommunityBanksCollection, static_cast<int>(community_bank_index_.size()),
+             collection == PresetCollection::kCommunityBanks);
+  }
   for (const auto& library : preset_libraries_) {
     const int count = countMatching([&](const PresetBrowserItem& item) {
       return matchesLibrary(item, library);
@@ -11881,7 +12204,7 @@ void SynthEditor::showPresetMenu() {
   // Patch and library actions only: choosing, loading, favouriting, renaming
   // and sorting presets happen in the browser itself (see its context menu).
   enum Item { kSave = 1, kSaveAs, kSaveDefault, kInitialize, kImportPreset, kImportBank, kExportBank,
-              kExportPreset, kReveal, kRefresh, kScanDownloads, kSharePatch, kShareBank, kForgetToken };
+              kExportPreset, kReveal, kRefresh, kScanDownloads, kSharePatch, kShareBank };
   const bool has_selection = selectedPresetFile().existsAsFile();
   PopupMenu menu;
   menu.addItem(kSave, "Save patch (" + atlas::keys::commandName() + " S)");
@@ -11895,11 +12218,11 @@ void SynthEditor::showPresetMenu() {
   menu.addItem(kExportPreset, "Export patch as preset file...");
   menu.addItem(kReveal, String(kShowInFileBrowserVerb) + " selected preset in " + kFileBrowserName, has_selection);
   menu.addSeparator();
-  menu.addItem(kSharePatch, "Share patch on the community library...");
-  menu.addItem(kShareBank, "Share bank on the community library...");
-  if (atlas::community::storedApiToken().isNotEmpty())
-    menu.addItem(kForgetToken, "Forget community library API token");
-  menu.addSeparator();
+  if (atlas::community::browserShown()) {
+    menu.addItem(kSharePatch, "Share patch on the community library...");
+    menu.addItem(kShareBank, "Share bank on the community library...");
+    menu.addSeparator();
+  }
   menu.addItem(kRefresh, "Refresh preset list");
   menu.addItem(kScanDownloads, LoadSave::shouldScanDownloads() ? "Turn scan Downloads folder on startup off"
                                                               : "Turn scan Downloads folder on startup on");
@@ -11919,7 +12242,6 @@ void SynthEditor::showPresetMenu() {
       case kScanDownloads: toggleScanDownloads(); break;
       case kSharePatch: showShareForm(false); break;
       case kShareBank: showShareForm(true); break;
-      case kForgetToken: forgetShareToken(); break;
       default: break;
     }
   });
@@ -12443,9 +12765,12 @@ void SynthEditor::hideShareForm() {
 
 void SynthEditor::updateShareTokenControls() {
   const String stored = atlas::community::storedApiToken();
+  const auto account = atlas::community::storedAccount();
   const String help = stored.isNotEmpty()
-      ? "API token. Leave it empty to use " + atlas::community::tokenHint(stored) +
-            ", saved in Atlas's settings, or type another to replace it"
+      ? "API token. Leave it empty to " +
+            (account.known() ? "share as " + atlas::community::accountName(account)
+                             : "use " + atlas::community::tokenHint(stored) + ", saved in Atlas's settings") +
+            ", or type another to replace it"
       : "Your personal API token from the API tokens page of your account on " + atlas::community::libraryHost() +
             ". It starts with bpa_. Once it works it is kept in Atlas's settings";
   share_token_.setDescription(help);
@@ -12469,7 +12794,7 @@ void SynthEditor::forgetShareToken() {
   atlas::community::storeApiToken({});
   share_token_.clear();
   updateShareTokenControls();
-  postPresetActionAnnouncement(had ? "Forgot the saved API token" : "No API token is saved",
+  postPresetActionAnnouncement(had ? "Logged out" : "Not logged in",
                                AccessibilityHandler::AnnouncementPriority::medium);
 }
 
@@ -12674,6 +12999,8 @@ void SynthEditor::finishShare(const atlas::community::UploadResult& result, cons
   // A token that worked is kept for next time, in Atlas's settings only.
   if (typed_token.isNotEmpty())
     atlas::community::storeApiToken(typed_token);
+  if (result.uploader.known() && atlas::community::storedApiToken().isNotEmpty())
+    atlas::community::storeAccount(result.uploader);
   // The library's lists now hold the new item: fetched afresh on their next showing.
   {
     const ScopedLock lock(presetBrowserCacheLock());
