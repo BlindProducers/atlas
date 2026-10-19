@@ -595,6 +595,7 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void updatePresetSummary();
     void refreshWavetableNameLabel(int oscillator);
     void refreshSampleNameLabel(int sampleTarget);
+    void refreshOscillatorHeaderTitles();
     String sourceStatusTitleForSection(const String& sectionName) const;
     void loadShiftedWavetable(int oscillator, int direction);
     void updateRoutingSummary();
@@ -756,6 +757,7 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void addFxBusControlsGroup(const String& sectionName, Component& parent, int& y, int x,
                                int width, int& focusOrder);
     int effectSlotType(const String& sectionName, int slot) const;
+    int effectSlotTypeInChain(int chain, int slot) const;
     int firstEmptyEffectSlot(const String& sectionName) const;
     std::vector<int> activeEffectSlots(const String& sectionName) const;
     String effectSlotPrefix(const String& sectionName, int slot) const;
@@ -999,6 +1001,15 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     std::map<String, std::vector<AudioProcessorParameter*>> sections_;
     std::map<String, StringArray> group_sections_;
     std::map<String, ValueBridge*> parameters_by_id_;
+    // Each effect slot's type control by chain (0 is the main chain) and slot,
+    // looked up once: the timer reads every slot's type several times a tick.
+    // Cleared with parameters_by_id_, whose bridges it may point to.
+    struct EffectSlotTypeControl {
+      ValueBridge* bridge = nullptr;
+      vital::Value* control = nullptr;
+    };
+    mutable std::array<std::array<EffectSlotTypeControl, vital::constants::kMaxEffectSlots>, vital::kNumBuses + 1>
+        effect_slot_type_controls_ {};
     StringArray group_names_;
     StringArray section_names_;
     Array<File> all_presets_;

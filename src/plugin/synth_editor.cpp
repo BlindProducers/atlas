@@ -6720,6 +6720,7 @@ void SynthEditor::buildSections() {
   }
   internal_fx_bridges_.clear();
   parameters_by_id_.clear();
+  effect_slot_type_controls_ = {};
 
   sections_[kPresetSection];
   for (auto* parameter : synth_.getParameters()) {
@@ -13734,20 +13735,28 @@ void SynthEditor::applyRoutingPreset(int preset) {
 }
 
 int SynthEditor::effectSlotType(const String& sectionName, int slot) const {
-  if (!isPositiveAndBelow(slot, vital::constants::kMaxEffectSlots))
+  return effectSlotTypeInChain(fxBusForSection(sectionName), slot);
+}
+
+int SynthEditor::effectSlotTypeInChain(int chain, int slot) const {
+  if (!isPositiveAndBelow(slot, vital::constants::kMaxEffectSlots) || !isPositiveAndNotGreaterThan(chain, vital::kNumBuses))
     return 0;
 
-  const String id = effectSlotPrefix(sectionName, slot) + "type";
-  if (auto* bridge = parameterBridge(id))
-    return jlimit(0, static_cast<int>(vital::constants::kNumEffects),
-                  static_cast<int>(std::round(bridge->convertToEngineValue(bridge->getValue()))));
-
-  const auto& controls = synth_.getControls();
-  const auto found = controls.find(id.toStdString());
-  if (found == controls.end() || found->second == nullptr)
-    return 0;
-  return jlimit(0, static_cast<int>(vital::constants::kNumEffects),
-                static_cast<int>(std::round(found->second->value())));
+  auto& cached = effect_slot_type_controls_[static_cast<size_t>(chain)][static_cast<size_t>(slot)];
+  if (cached.bridge == nullptr && cached.control == nullptr) {
+    const String id = (chain == 0 ? String() : "bus_" + String(chain) + "_") + "fx_slot_" + String(slot + 1) + "_type";
+    cached.bridge = parameterBridge(id);
+    if (cached.bridge == nullptr) {
+      const auto& controls = synth_.getControls();
+      const auto found = controls.find(id.toStdString());
+      if (found == controls.end() || found->second == nullptr)
+        return 0;
+      cached.control = found->second;
+    }
+  }
+  const float value = cached.bridge != nullptr ? cached.bridge->convertToEngineValue(cached.bridge->getValue())
+                                               : cached.control->value();
+  return jlimit(0, static_cast<int>(vital::constants::kNumEffects), static_cast<int>(std::round(value)));
 }
 
 int SynthEditor::firstEmptyEffectSlot(const String& sectionName) const {
@@ -13760,8 +13769,9 @@ int SynthEditor::firstEmptyEffectSlot(const String& sectionName) const {
 
 std::vector<int> SynthEditor::activeEffectSlots(const String& sectionName) const {
   std::vector<int> slots;
+  const int chain = fxBusForSection(sectionName);
   for (int slot = 0; slot < vital::constants::kMaxEffectSlots; ++slot) {
-    if (effectSlotType(sectionName, slot) > 0)
+    if (effectSlotTypeInChain(chain, slot) > 0)
       slots.push_back(slot);
   }
   return slots;
@@ -16337,6 +16347,25 @@ void SynthEditor::refreshSampleNameLabel(int target) {
       if (auto* header = dynamic_cast<AccessibleSectionHeader*>(component.get()))
         header->setHeaderTitle(sourceStatusTitleForSection(section_name));
     }
+  }
+}
+
+void SynthEditor::refreshOscillatorHeaderTitles() {
+  // What refreshWavetableNameLabel and refreshSampleNameLabel do for every
+  // oscillator, in one pass over the headers.
+  for (auto& component : section_headers_) {
+    auto* header = dynamic_cast<AccessibleSectionHeader*>(component.get());
+    if (header == nullptr)
+      continue;
+    const String section_name = header->getProperties()["SectionName"].toString();
+    if (!section_name.startsWith("Oscillator "))
+      continue;
+    const int oscillator = section_name.getTrailingIntValue() - 1;
+    if (!isPositiveAndBelow(oscillator, vital::kNumOscillators) || section_name != "Oscillator " + String(oscillator + 1))
+      continue;
+    if (synth_.getWavetableCreator(oscillator) != nullptr ||
+        vital::source_types::describe(sourceSlotType(oscillator)).uses_sample)
+      header->setHeaderTitle(sourceStatusTitleForSection(section_name));
   }
 }
 
@@ -20705,12 +20734,7 @@ void SynthEditor::timerCallback() {
     row->refresh();
   refreshFxBusToggles();
   refreshEffectChainSummaries();
-  for (int oscillator = 0; oscillator < vital::kNumOscillators; ++oscillator)
-    refreshWavetableNameLabel(oscillator);
-  for (int slot = 0; slot < vital::kNumOscillators; ++slot) {
-    if (vital::source_types::describe(sourceSlotType(slot)).uses_sample)
-      refreshSampleNameLabel(slot);
-  }
+  refreshOscillatorHeaderTitles();
 }
 
 void SynthEditor::updateFullGui() {
