@@ -20,10 +20,11 @@ Shift M opens a control's context menu to add modulation, MIDI learn or reset it
 Comma and period jump between sections. The Editor menu holds tuning, accessibility
 settings, the keyboard help and the list of MIDI learn mappings. The Preset menu saves,
 initialises, imports and exports patches and banks, and the preset browser searches
-and filters the library by bank, category, tag and favourites. The Community row of
-its Collection list shows the patches shared on [atlas.blindproducers.org](https://atlas.blindproducers.org),
-filtered the same way; Return downloads one into the Community library and loads it, and P
-plays the recording its uploader attached, when there is one.
+and filters the library by bank, category, tag and favourites. The Community presets and
+Community banks rows of its Collection list show the patches and banks shared on
+[atlas.blindproducers.org](https://atlas.blindproducers.org), filtered the same way; Return
+downloads a patch into the Community library and loads it, or downloads a bank and unpacks
+it into the Atlas folder, and P plays the recording its uploader attached, when there is one.
 
 Atlas's own announcements, such as the cursor position in the LFO, Trance gate and
 wavetable editors, are spoken by the screen reader. On Windows they go straight to

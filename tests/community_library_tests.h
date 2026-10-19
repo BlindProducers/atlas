@@ -301,15 +301,18 @@ namespace {
     };
     enum { kName = 1, kAuthor, kDownloaded, kTags, kCategory, kBank, kLibrary };
 
-    // Into the Community collection: the list is fetched and shown.
-    expect(collection->getNumRows() == 3 && collection->getTableListBoxModel()->getCellTooltip(2, 1) == "Community",
-           "the Collection list ends with Community");
+    // Into the Community presets collection: the list is fetched and shown.
+    expect(collection->getNumRows() == 4 &&
+               collection->getTableListBoxModel()->getCellTooltip(2, 1) == "Community presets" &&
+               collection->getTableListBoxModel()->getCellTooltip(3, 1) == "Community banks",
+           "the Collection list ends with Community presets and Community banks");
     collection->selectRow(2);
     pumpEditorEvents();
     pumpUntil([&] { return !editor.isCommunityLibraryBusy(); }, 10000);
     expect(editor.isCommunityLibraryLoaded(),
            "the community list arrives: " + editor.communityLibraryError().toStdString());
-    expect(synth.getEditorMemory().preset_collection == "Community", "the collection is remembered for the instance");
+    expect(synth.getEditorMemory().preset_collection == "Community presets",
+           "the collection is remembered for the instance");
     expect(said("Community presets loaded, 2 found"), "the list's arrival is said");
     expect(editor.presetRowCount() == 2, "both shared presets are listed, got " + std::to_string(editor.presetRowCount()));
     if (editor.presetRowCount() != 2) {
@@ -404,6 +407,296 @@ namespace {
                (facetRows(*libraries).joinIntoString(", ") + " | " + cell(0, kLibrary) + " | " + cell(0, kBank) + " | " +
                 cell(0, kCategory) + " | " + cell(0, kDownloaded)).toStdString());
     expect(results->getHeader().getColumnName(kDownloaded) == "Favourite", "the column is named Favourite again");
+    finish();
+  }
+
+  // Two banks as /api/v1/banks/ describes them: one complete, with a contents
+  // list the plugin leaves alone, and one with no genre, preview or tags.
+  const char* const kCommunityBanksPage = R"json({
+    "count": 2, "page": 1, "pages": 1, "page_size": 200, "next": null, "previous": null,
+    "results": [
+      {"id": 1, "type": "bank", "name": "Hamo Speed Garage Bank", "genre": {"name": "Speed Garage", "slug": "speed-garage"},
+       "tags": ["dance", "speed garage"], "description": "Test bank",
+       "uploader": {"username": "jayladdermusic", "display_name": "Jay Ladder", "url": "https://atlas.blindproducers.org/users/jayladdermusic/"},
+       "file": {"url": "https://atlas.blindproducers.org/banks/1/download/?v=1792387344", "name": "Hamo Speed Garage Bank.atb",
+                "extension": ".atb", "size": 50066794, "sha256": "5F981598D51D96C2CD98397EE40583AA42AB9A7ACF464BB7A0F7B641910FBB2F"},
+       "preview": {"url": "https://atlas.blindproducers.org/banks/1/preview/?v=1792387344", "name": "Hamo Speed Garage Bank preview.wav",
+                   "content_type": "audio/wav", "size": 3908628, "duration": null},
+       "counts": {"preset": 62, "wavetable": 3, "lfo": 0, "fx": 0, "sample": 2}, "total_files": 67, "unpacked_bytes": 92330836,
+       "downloads": 1, "created_at": "2026-10-19T04:22:29.397Z", "updated_at": "2026-10-19T05:22:24.312Z",
+       "url": "https://atlas.blindproducers.org/banks/1/", "api_url": "https://atlas.blindproducers.org/api/v1/banks/1/",
+       "contents": [{"path": "Hamo Speed Garage Bank/Presets/Bass Alloy.atp", "type": "preset", "name": "Bass Alloy", "size": 759307}]},
+      {"id": 2, "type": "bank", "name": "Plain", "genre": null, "tags": [], "description": "",
+       "uploader": {"username": "someone", "display_name": "", "url": ""},
+       "file": {"url": "https://atlas.blindproducers.org/banks/2/download/?v=1", "name": "", "extension": "atb", "size": 10, "sha256": ""},
+       "preview": null, "counts": {"preset": 1, "wavetable": 0, "lfo": 0, "fx": 0, "sample": 0}, "total_files": 1,
+       "unpacked_bytes": 10, "downloads": 0, "created_at": "", "updated_at": "", "url": "", "api_url": ""}
+    ],
+    "filters": {"sort": "newest"}
+  })json";
+
+  void testBanksPageParses() {
+    std::vector<atlas::community::RemoteBank> banks;
+    String next;
+    const String error = atlas::community::parseBanksPage(kCommunityBanksPage, banks, next);
+    expect(error.isEmpty() && next.isEmpty() && banks.size() == 2,
+           "the saved banks page parses, both banks read: " + error.toStdString());
+    if (banks.size() != 2)
+      return;
+    const auto& hamo = banks[0];
+    expect(hamo.id == 1 && hamo.name == "Hamo Speed Garage Bank" && hamo.genre == "Speed Garage" &&
+               hamo.genre_slug == "speed-garage",
+           "id, name and genre");
+    expect(hamo.tags == StringArray { "dance", "speed garage" } && hamo.description == "Test bank", "tags and description");
+    expect(hamo.uploader == "jayladdermusic" && hamo.uploader_name == "Jay Ladder", "the uploader");
+    expect(hamo.download_url == "https://atlas.blindproducers.org/banks/1/download/?v=1792387344" &&
+               hamo.file_name == "Hamo Speed Garage Bank.atb" && hamo.extension == "atb" && hamo.file_size == 50066794 &&
+               hamo.sha256 == "5f981598d51d96c2cd98397ee40583aa42ab9a7acf464bb7a0f7b641910fbb2f",
+           "the archive's url, name, extension, size and lower-case checksum");
+    expect(hamo.preview.exists() && hamo.preview.file_name == "Hamo Speed Garage Bank preview.wav" &&
+               hamo.preview.content_type == "audio/wav" && hamo.preview.size == 3908628 && hamo.preview.duration_seconds == 0.0,
+           "the preview, whose length the library does not know");
+    expect(hamo.presets == 62 && hamo.wavetables == 3 && hamo.samples == 2 && hamo.lfos == 0 && hamo.fx == 0 &&
+               hamo.total_files == 67 && hamo.unpacked_bytes == 92330836 && hamo.downloads == 1,
+           "the counts, the sizes and the downloads");
+    expect(hamo.updated_ms == Time::fromISO8601("2026-10-19T05:22:24.312Z").toMilliseconds() &&
+               hamo.page_url == "https://atlas.blindproducers.org/banks/1/",
+           "the time of the last change and the page");
+    expect(atlas::community::bankContentsText(hamo) == "62 presets, 3 wavetables and 2 samples",
+           "the contents are said by kind: " + atlas::community::bankContentsText(hamo).toStdString());
+    const auto& plain = banks[1];
+    expect(plain.genre.isEmpty() && plain.tags.isEmpty() && !plain.preview.exists() && plain.uploader_name == "someone" &&
+               plain.updated_ms == 0,
+           "missing fields stay empty and the display name falls back to the account name");
+    expect(atlas::community::bankContentsText(plain) == "1 preset", "one preset is singular");
+    expect(atlas::community::bankContentsText(atlas::community::RemoteBank()) == "no Atlas files", "an empty bank says so");
+
+    const File data = File::getSpecialLocation(File::tempDirectory).getChildFile("AtlasCommunityData");
+    expect(atlas::community::banksDirectory(data) == data.getChildFile("Community").getChildFile("Banks"),
+           "bank archives live in Community/Banks under the data folder");
+    expect(atlas::community::localFile(hamo, data) ==
+               atlas::community::banksDirectory(data).getChildFile("jayladdermusic").getChildFile("Hamo Speed Garage Bank.atb"),
+           "an archive lands under its uploader: " + atlas::community::localFile(hamo, data).getFullPathName().toStdString());
+    expect(atlas::community::localFile(plain, data).getFileName() == "Plain.atb",
+           "an archive without a file name is named after the bank");
+    expect(atlas::community::localPreviewFile(hamo, data) ==
+               atlas::community::previewDirectory(data).getChildFile("Banks").getChildFile("jayladdermusic")
+                   .getChildFile("Hamo Speed Garage Bank preview.wav"),
+           "a bank's preview lands under Banks and its uploader");
+    expect(atlas::community::banksPageUrl("https://atlas.blindproducers.org/", 3) ==
+               "https://atlas.blindproducers.org/api/v1/banks/?page_size=200&page=3",
+           "a page of banks is asked for in full pages");
+    const File saved_page = data.getChildFile("saved").getChildFile("presets.json");
+    expect(atlas::community::banksPageUrl(URL(saved_page).toString(false), 1) ==
+               URL(saved_page.getSiblingFile("banks.json")).toString(false),
+           "a saved library's banks are the banks.json beside its presets page");
+  }
+
+  // A bank archive as Export folder as bank writes it: the presets saved at
+  // `preset_paths` under <bank name>/Presets/.
+  bool writeTestBank(const File& archive, const String& bank_name, SynthPlugin& synth, const StringArray& preset_paths) {
+    const File source = archive.getSiblingFile(bank_name + " source");
+    source.deleteRecursively();
+    ZipFile::Builder builder;
+    for (const auto& path : preset_paths) {
+      const File preset = source.getChildFile(path);
+      if (!synth.saveCopyToFile(preset))
+        return false;
+      builder.addFile(preset, 9, bank_name + "/" + LoadSave::kPresetFolderName + "/" + path);
+    }
+    archive.deleteFile();
+    FileOutputStream out(archive);
+    return out.openedOk() && builder.writeToStream(out, nullptr);
+  }
+
+  // One shared bank as the library's page would list it, pointing at a saved archive.
+  json communityBankJson(int id, const String& name, const File& archive, const String& sha256, const String& genre,
+                         const StringArray& tags, int presets) {
+    json entry;
+    entry["id"] = id;
+    entry["name"] = name.toStdString();
+    entry["genre"] = { { "name", genre.toStdString() },
+                       { "slug", genre.toLowerCase().replaceCharacter(' ', '-').toStdString() } };
+    entry["tags"] = json::array();
+    for (const auto& tag : tags)
+      entry["tags"].push_back(tag.toStdString());
+    entry["description"] = "A bank shared for the test";
+    entry["uploader"] = { { "username", "tester" }, { "display_name", "Test Account" }, { "url", "" } };
+    entry["file"] = { { "url", (URL(archive).toString(false) + "?v=1").toStdString() },
+                      { "name", archive.getFileName().toStdString() },
+                      { "extension", ".atb" },
+                      { "size", archive.getSize() },
+                      { "sha256", sha256.toStdString() } };
+    entry["preview"] = nullptr;
+    entry["counts"] = { { "preset", presets }, { "wavetable", 0 }, { "lfo", 0 }, { "fx", 0 }, { "sample", 0 } };
+    entry["total_files"] = presets;
+    entry["unpacked_bytes"] = 2048;
+    entry["downloads"] = 4;
+    entry["updated_at"] = "2026-10-19T04:05:06.007Z";
+    entry["url"] = "";
+    return entry;
+  }
+
+  // The browser: the Community banks row lists the library's banks with the
+  // uploader as the bank and the genre as the category, Return downloads one,
+  // checks it and unpacks it into the Atlas folder, after which its presets
+  // show among all presets; a bank with the wrong checksum is refused.
+  void testCommunityBanksListAndImport() {
+    TemporaryUndoLibrary library;
+    expect(library.isolated(), "the test's library is its own temporary folder");
+    if (!library.isolated())
+      return;
+    SpokenMessages spoken;
+    auto said = [&](const String& words) {
+      for (const auto& message : spoken.messages)
+        if (message.contains(words))
+          return true;
+      return false;
+    };
+    auto heard = [&] { return spoken.messages.joinIntoString(" | ").toStdString(); };
+
+    // The saved library: two bank archives, one listed with the wrong checksum.
+    const File saved = library.folder.getChildFile("SavedLibrary");
+    saved.createDirectory();
+    SynthPlugin synth;
+    const File good = saved.getChildFile("Test Bank.atb");
+    const File broken = saved.getChildFile("Broken Bank.atb");
+    const bool made = writeTestBank(good, "Test Bank", synth, { "Lead/Shared One.atp", "Shared Two.atp" }) &&
+                      writeTestBank(broken, "Broken Bank", synth, { "Broken One.atp" });
+    expect(made, "bank archives are written to stand in for the library's files");
+    json banks;
+    banks["count"] = 2;
+    banks["next"] = nullptr;
+    banks["results"] = json::array();
+    banks["results"].push_back(communityBankJson(1, "Test Bank", good, sha256OfFile(good), "Speed Garage",
+                                                 { "test", "garage" }, 2));
+    banks["results"].push_back(communityBankJson(2, "Broken Bank", broken, String::repeatedString("0", 64), "Ambient",
+                                                 {}, 1));
+    saved.getChildFile("banks.json").replaceWithText(String(banks.dump()));
+    saved.getChildFile("presets.json").replaceWithText(R"({"count": 0, "next": null, "results": []})");
+    atlas::community::setLibraryUrlForTesting(URL(saved.getChildFile("presets.json")).toString(false));
+    struct RealLibraryAgain { ~RealLibraryAgain() { atlas::community::setLibraryUrlForTesting({}); } } real_library_again;
+
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    editor.toFront(true);
+    pumpEditorEvents();
+    editor.refreshPresetLibrary();
+    pumpUntil([&] { return !editor.isPresetLibraryBusy(); }, 60000);
+
+    auto* collection = dynamic_cast<TableListBox*>(titled(editor, "Collection"));
+    auto* libraries = dynamic_cast<TableListBox*>(titled(editor, "Library"));
+    auto* uploaders = dynamic_cast<TableListBox*>(titled(editor, "Bank"));
+    auto* categories = dynamic_cast<TableListBox*>(titled(editor, "Category"));
+    auto* tags = dynamic_cast<TableListBox*>(titled(editor, "Tags"));
+    auto* results = dynamic_cast<TableListBox*>(titled(editor, "Preset results table"));
+    auto* details = dynamic_cast<Label*>(titled(editor, "Selected preset details"));
+    auto* autoload = dynamic_cast<Button*>(titled(editor, "Autoload preset when scrolling"));
+    const bool browser = made && collection != nullptr && libraries != nullptr && uploaders != nullptr &&
+                         categories != nullptr && tags != nullptr && results != nullptr && details != nullptr &&
+                         autoload != nullptr;
+    expect(browser, "the editor has its preset browser");
+    if (!browser) {
+      editor.removeFromDesktop();
+      return;
+    }
+    const bool autoload_was_on = autoload->getToggleState();
+    autoload->setToggleState(true, dontSendNotification);   // a bank never autoloads, even with autoload on
+    auto finish = [&] {
+      autoload->setToggleState(autoload_was_on, dontSendNotification);
+      editor.removeFromDesktop();
+    };
+    auto cell = [&](int row, int column) { return results->getTableListBoxModel()->getCellTooltip(row, column); };
+    auto facetRows = [](TableListBox& table) {
+      StringArray rows;
+      for (int row = 0; row < table.getNumRows(); ++row)
+        rows.add(table.getTableListBoxModel()->getCellTooltip(row, 1));
+      return rows;
+    };
+    enum { kName = 1, kAuthor, kImported, kTags, kCategory, kBank, kLibrary };
+
+    // Into the Community banks collection: the list is fetched and shown.
+    expect(collection->getNumRows() == 4 && collection->getTableListBoxModel()->getCellTooltip(3, 1) == "Community banks",
+           "the Collection list ends with Community banks");
+    collection->selectRow(3);
+    pumpEditorEvents();
+    pumpUntil([&] { return !editor.isCommunityBankLibraryBusy(); }, 10000);
+    expect(editor.isCommunityBankLibraryLoaded(),
+           "the community bank list arrives: " + editor.communityBankLibraryError().toStdString());
+    expect(synth.getEditorMemory().preset_collection == "Community banks", "the collection is remembered for the instance");
+    expect(said("Community banks loaded, 2 found"), "the list's arrival is said: " + heard());
+    expect(editor.presetRowCount() == 2, "both shared banks are listed, got " + std::to_string(editor.presetRowCount()));
+    if (editor.presetRowCount() != 2) {
+      finish();
+      return;
+    }
+    // Sorted by name: Broken Bank, then Test Bank.
+    const File archive = atlas::community::banksDirectory(library.folder).getChildFile("tester").getChildFile("Test Bank.atb");
+    expect(editor.presetFileAtRow(1) == archive,
+           "a row is where its archive lands: " + editor.presetFileAtRow(1).getFullPathName().toStdString());
+    expect(cell(1, kName) == "Test Bank" && cell(1, kAuthor) == "Test Account" && cell(1, kImported) == "Not imported" &&
+               cell(1, kTags) == "test, garage" && cell(1, kCategory) == "Speed Garage" && cell(1, kBank) == "tester" &&
+               cell(1, kLibrary) == "Community",
+           "the row shows the name, uploader, import state, tags, genre, uploader and library: " +
+               (cell(1, kName) + " | " + cell(1, kAuthor) + " | " + cell(1, kImported) + " | " + cell(1, kTags) + " | " +
+                cell(1, kCategory) + " | " + cell(1, kBank) + " | " + cell(1, kLibrary)).toStdString());
+    expect(results->getHeader().getColumnName(kImported) == "Imported", "the Favourite column is named Imported");
+    expect(facetRows(*libraries) == StringArray { "All libraries", "Community" } &&
+               facetRows(*uploaders) == StringArray { "All banks", "tester" } &&
+               facetRows(*categories) == StringArray { "All categories", "Ambient", "Speed Garage" } &&
+               facetRows(*tags) == StringArray { "All tags", "garage", "test" },
+           "the Library, Bank, Category and Tags lists come from the banks' uploaders, genres and tags: " +
+               (facetRows(*libraries).joinIntoString(", ") + " / " + facetRows(*uploaders).joinIntoString(", ") + " / " +
+                facetRows(*categories).joinIntoString(", ") + " / " + facetRows(*tags).joinIntoString(", ")).toStdString());
+    results->selectRow(1);
+    pumpEditorEvents();
+    const String before = details->getText();
+    expect(before.contains("Test Bank. Not imported, Return downloads and imports it. Community bank shared by Test Account") &&
+               before.contains("Genre: Speed Garage. Contents: 2 presets. Download: ") && before.contains("2.0 KB unpacked") &&
+               before.contains("Tags: test, garage. Downloads: 4. No preview. Description: A bank shared for the test"),
+           "the details say what the bank is and holds: " + before.toStdString());
+    expect(synth.getActiveFile() == File(), "selecting a bank loads nothing, autoload or not");
+
+    // Return downloads the archive, checks it and unpacks it into the Atlas folder.
+    editor.ensureComponentVisible(results);
+    results->grabKeyboardFocus();
+    pumpEditorEvents();
+    spoken.messages.clear();
+    expect(results->keyPressed(KeyPress(KeyPress::returnKey)), "Return on the bank row is handled");
+    pumpUntil([&] { return !editor.isCommunityDownloadBusy() && said("Imported bank Test Bank"); }, 15000);
+    const File unpacked = library.folder.getChildFile("Test Bank").getChildFile("Presets");
+    expect(unpacked.getChildFile("Lead").getChildFile("Shared One.atp").existsAsFile() &&
+               unpacked.getChildFile("Shared Two.atp").existsAsFile(),
+           "the bank unpacks into the Atlas folder as Import preset bank does");
+    expect(archive.existsAsFile() && sha256OfFile(archive) == sha256OfFile(good),
+           "the archive is kept in Community/Banks/tester");
+    expect(said("Downloading bank Test Bank from a saved copy of the library") && said("Imported bank Test Bank, 2 files"),
+           "the download and the import are said: " + heard());
+    expect(cell(1, kImported) == "Imported" && details->getText().contains("Test Bank. Imported, Return imports it again"),
+           "the row and the details say Imported: " + details->getText().toStdString());
+    expect(synth.getActiveFile() == File(), "importing a bank loads nothing");
+
+    // A bank whose archive does not match the library's checksum is refused.
+    results->selectRow(0);
+    pumpEditorEvents();
+    spoken.messages.clear();
+    expect(results->keyPressed(KeyPress(KeyPress::returnKey)), "Return on the broken bank row is handled");
+    pumpUntil([&] { return !editor.isCommunityDownloadBusy() && said("Unable to import bank"); }, 15000);
+    expect(!library.folder.getChildFile("Broken Bank").exists() && said("Unable to import bank Broken Bank") &&
+               said("checksum") && cell(0, kImported) == "Not imported",
+           "the bank is refused, the reason said, and nothing unpacked: " + heard());
+
+    // Back among all presets, the bank's presets are there under its name.
+    pumpUntil([&] { return !editor.isPresetLibraryBusy(); }, 60000);
+    collection->selectRow(0);
+    pumpEditorEvents();
+    expect(editor.presetRowCount() == 2 && cell(0, kBank) == "Test Bank" && cell(1, kBank) == "Test Bank" &&
+               facetRows(*uploaders).contains("Test Bank"),
+           "the unpacked presets are among all presets as the bank Test Bank, got " +
+               std::to_string(editor.presetRowCount()) + ": " + (cell(0, kBank) + " | " + cell(1, kBank)).toStdString());
+    expect(results->getHeader().getColumnName(kImported) == "Favourite", "the column is named Favourite again");
     finish();
   }
 
@@ -594,6 +887,8 @@ namespace {
     testSavedLibraryRoundTrip();
     testCommunityCollectionListsAndDownloads();
     testCommunityPreviewPlays();
+    testBanksPageParses();
+    testCommunityBanksListAndImport();
     if (failures == 0)
       std::cout << "Atlas community library tests passed\n";
     return failures == 0 ? 0 : 1;

@@ -133,25 +133,30 @@ namespace {
     if (autoload != nullptr)
       autoload->setToggleState(false, dontSendNotification);
 
-    // The Community row fetches the library's list; a saved empty page stands
+    // The Community rows fetch the library's lists; saved empty pages stand
     // in for the library, so the test needs no network.
-    TemporaryFile saved_library(".json");
-    saved_library.getFile().replaceWithText(R"({"count": 0, "next": null, "results": []})");
-    atlas::community::setLibraryUrlForTesting(URL(saved_library.getFile()).toString(false));
+    const File saved_library = File::getSpecialLocation(File::tempDirectory)
+                                   .getNonexistentChildFile("AtlasSpeechTestLibrary", "", false);
+    saved_library.createDirectory();
+    saved_library.getChildFile("presets.json").replaceWithText(R"({"count": 0, "next": null, "results": []})");
+    saved_library.getChildFile("banks.json").replaceWithText(R"({"count": 0, "next": null, "results": []})");
+    atlas::community::setLibraryUrlForTesting(URL(saved_library.getChildFile("presets.json")).toString(false));
     auto* collection = dynamic_cast<TableListBox*>(titled(editor, "Collection"));
-    expect(collection != nullptr && collection->getNumRows() == 3,
-           "the preset browser lists All presets, Favourites and Community");
-    if (collection != nullptr && collection->getNumRows() == 3) {
+    expect(collection != nullptr && collection->getNumRows() == 4,
+           "the preset browser lists All presets, Favourites, Community presets and Community banks");
+    if (collection != nullptr && collection->getNumRows() == 4) {
       collection->selectRow(0);
-      expectListRowSpoken(*collection, spoken, KeyPress(KeyPress::downKey), "Favourites, 2 of 3", "Collection");
-      expectListRowSpoken(*collection, spoken, KeyPress(KeyPress::downKey), "Community, 3 of 3", "Collection");
-      expectListRowSpoken(*collection, spoken, KeyPress(KeyPress::downKey), "Community, 3 of 3", "Collection at its end");
-      // The list the Community row asked for lands and is said; not part of the rows.
-      pumpUntil([&] { return !editor.isCommunityLibraryBusy(); }, 10000);
+      expectListRowSpoken(*collection, spoken, KeyPress(KeyPress::downKey), "Favourites, 2 of 4", "Collection");
+      expectListRowSpoken(*collection, spoken, KeyPress(KeyPress::downKey), "Community presets, 3 of 4", "Collection");
+      expectListRowSpoken(*collection, spoken, KeyPress(KeyPress::downKey), "Community banks, 4 of 4", "Collection");
+      expectListRowSpoken(*collection, spoken, KeyPress(KeyPress::downKey), "Community banks, 4 of 4", "Collection at its end");
+      // The lists the Community rows asked for land and are said; not part of the rows.
+      pumpUntil([&] { return !editor.isCommunityLibraryBusy() && !editor.isCommunityBankLibraryBusy(); }, 10000);
       spoken.messages.clear();
-      expectListRowSpoken(*collection, spoken, KeyPress(KeyPress::homeKey), "All presets, 1 of 3", "Collection");
+      expectListRowSpoken(*collection, spoken, KeyPress(KeyPress::homeKey), "All presets, 1 of 4", "Collection");
     }
     atlas::community::setLibraryUrlForTesting({});
+    saved_library.deleteRecursively();
 
     auto* results = dynamic_cast<TableListBox*>(titled(editor, "Preset results table"));
     expect(results != nullptr, "the preset browser has its results table");

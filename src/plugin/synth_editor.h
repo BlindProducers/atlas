@@ -95,6 +95,12 @@ struct PresetBrowserItem {
   int64 preview_size = 0;
   double preview_seconds = 0.0;
   bool hasPreview() const { return remote_preview_url.isNotEmpty(); }
+  // A bank shared on the library rather than a preset: `file` is its .atb
+  // archive, `downloaded` says it was fetched and unpacked, and the row says
+  // what it holds ("62 presets") and how much room that takes.
+  bool remote_bank = false;
+  String bank_contents;
+  int64 unpacked_bytes = 0;
 };
 
 struct PresetFacetItem {
@@ -106,8 +112,8 @@ struct PresetFacetItem {
 };
 
 // The Collection facet: every preset on disk, the favourites among them, or
-// the community library's, listed from its JSON API.
-enum class PresetCollection { kAll, kFavourites, kCommunity };
+// the community library's presets or banks, listed from its JSON API.
+enum class PresetCollection { kAll, kFavourites, kCommunity, kCommunityBanks };
 
 // A list keeps the keyboard focus while the arrow, Page and Home/End keys move
 // its selection. JUCE reports the new selection to Windows screen readers on
@@ -387,6 +393,9 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     bool isCommunityLibraryLoaded() const { return community_list_loaded_; }
     bool isCommunityDownloadBusy() const { return !community_downloads_.empty(); }
     String communityLibraryError() const { return community_list_error_; }
+    bool isCommunityBankLibraryBusy() const { return community_banks_loading_; }
+    bool isCommunityBankLibraryLoaded() const { return community_banks_loaded_; }
+    String communityBankLibraryError() const { return community_banks_error_; }
     // Community previews: the cached file of the preview playing or being
     // fetched (none when idle), and whether one is being fetched or plays.
     File communityPreviewFile() const { return preview_file_; }
@@ -564,19 +573,26 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
                          bool stillScanning = false);
     const PresetBrowserItem* presetItemForFile(const File& file) const;
     void refreshPresetList(bool announce = true);
-    // The Collection facet's rows. Its Community row lists the presets shared
-    // on the community library, fetched from its JSON API on a background
-    // thread and shown like the local ones; Return on one downloads it into
-    // the Community library folder, checks it against the library's checksum
-    // and loads it.
+    // The Collection facet's rows. Its Community presets row lists the presets
+    // shared on the community library, fetched from its JSON API on a
+    // background thread and shown like the local ones; Return on one
+    // downloads it into the Community library folder, checks it against the
+    // library's checksum and loads it. Its Community banks row lists the
+    // shared banks the same way; Return on one downloads the archive into
+    // Community/Banks, checks it and unpacks it as Import preset bank does.
     PresetCollection presetCollection() const;
     void setPresetCollection(PresetCollection collection);
     String presetCollectionName() const;
     bool inCommunityCollection() const { return presetCollection() == PresetCollection::kCommunity; }
-    // The items the facets and the table are built from: the community list
-    // in the Community collection, the local index otherwise.
+    bool inCommunityBankCollection() const { return presetCollection() == PresetCollection::kCommunityBanks; }
+    bool inAnyCommunityCollection() const { return inCommunityCollection() || inCommunityBankCollection(); }
+    // The items the facets and the table are built from: a community list in
+    // its collection, the local index otherwise.
     const std::vector<PresetBrowserItem>& activePresetIndex() const;
-    bool activePresetListLoaded() const { return inCommunityCollection() ? community_list_loaded_ : preset_list_loaded_; }
+    bool activePresetListLoaded() const {
+      return inCommunityBankCollection() ? community_banks_loaded_
+           : inCommunityCollection() ? community_list_loaded_ : preset_list_loaded_;
+    }
     void ensureCommunityListLoaded();
     void startCommunityListLoad(bool announce, bool forceRefresh = false);
     void applyCommunityList(std::vector<PresetBrowserItem> items, const String& error, bool announce,
@@ -584,6 +600,15 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void rebuildCommunityLookup();
     void downloadCommunityPreset(const PresetBrowserItem& item, bool loadAfter);
     void finishCommunityDownload(const File& file, const String& name, const String& error, bool loadAfter);
+    void ensureCommunityBankListLoaded();
+    void startCommunityBankListLoad(bool announce, bool forceRefresh = false);
+    void applyCommunityBankList(std::vector<PresetBrowserItem> items, const String& error, bool announce,
+                                bool fetched, int generation);
+    void rebuildCommunityBankLookup();
+    // Fetches a bank's archive (unless the copy here is the one the library
+    // lists) and unpacks it into the Atlas folder, both in the background.
+    void downloadCommunityBank(const PresetBrowserItem& item);
+    void finishCommunityBankImport(const File& file, const String& name, const String& error, int files);
     // Adds a file that just appeared (a download) to the local index and the
     // process-wide cache ahead of the next scan.
     void addPresetToLocalIndex(const File& file);
@@ -1276,6 +1301,13 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     String community_list_error_;
     int community_list_generation_ = 0;
     std::set<std::string> community_downloads_;   // the local paths being fetched
+    // The same for the library's banks.
+    std::vector<PresetBrowserItem> community_bank_index_;
+    std::unordered_map<std::string, size_t> community_bank_index_by_path_;
+    bool community_banks_loaded_ = false;
+    bool community_banks_loading_ = false;
+    String community_banks_error_;
+    int community_banks_generation_ = 0;
     // The community preview playing or being fetched (toggleCommunityPreview).
     AudioFormatManager preview_formats_;
     bool preview_formats_registered_ = false;

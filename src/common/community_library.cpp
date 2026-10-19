@@ -310,6 +310,13 @@ juce::String presetsPageUrl(const juce::String& library_url, int page) {
          "&page=" + juce::String(std::max(1, page));
 }
 
+juce::String banksPageUrl(const juce::String& library_url, int page) {
+  if (library_url.startsWith("file:"))
+    return juce::URL(localFileOf(juce::URL(library_url)).getSiblingFile("banks.json")).toString(false);
+  return library_url.trimCharactersAtEnd("/") + "/api/v1/banks/?page_size=" + juce::String(kPageSize) +
+         "&page=" + juce::String(std::max(1, page));
+}
+
 bool isLibraryUrl(const juce::String& url, const juce::String& library_url) {
   if (library_url.startsWith("file:"))
     return url.startsWith("file:");
@@ -321,24 +328,76 @@ void setLibraryUrlForTesting(const juce::String& url) {
   testingLibraryUrl() = url;
 }
 
-juce::String parsePresetsPage(const std::string& text, std::vector<RemotePreset>& presets, juce::String& next_url) {
-  next_url.clear();
-  json page;
-  try {
-    page = json::parse(text, nullptr, false);
-  }
-  catch (const json::exception&) {
-    page = json();
-  }
-  if (page.is_discarded() || !page.is_object())
-    return "The library sent a page that is not JSON";
-  const auto results = page.find("results");
-  if (results == page.end() || !results->is_array()) {
-    const juce::String error = jsonString(page, "error");
-    return error.isNotEmpty() ? "The library said: " + error : juce::String("The library's page has no presets in it");
+namespace {
+  // Parses a page of results, returning what went wrong or an empty string
+  // and leaving the results array in `results`.
+  juce::String parsePage(const std::string& text, const char* what, json& page, const json*& results,
+                         juce::String& next_url) {
+    next_url.clear();
+    results = nullptr;
+    try {
+      page = json::parse(text, nullptr, false);
+    }
+    catch (const json::exception&) {
+      page = json();
+    }
+    if (page.is_discarded() || !page.is_object())
+      return "The library sent a page that is not JSON";
+    const auto found = page.find("results");
+    if (found == page.end() || !found->is_array()) {
+      const juce::String error = jsonString(page, "error");
+      return error.isNotEmpty() ? "The library said: " + error : "The library's page has no " + juce::String(what) + " in it";
+    }
+    next_url = jsonString(page, "next");
+    results = &*found;
+    return {};
   }
 
-  next_url = jsonString(page, "next");
+  juce::StringArray jsonTags(const json& entry) {
+    juce::StringArray result;
+    const auto tags = entry.find("tags");
+    if (tags != entry.end() && tags->is_array()) {
+      for (const auto& tag : *tags) {
+        if (tag.is_string()) {
+          const juce::String name = juce::String(tag.get_ref<const std::string&>()).trim();
+          if (name.isNotEmpty())
+            result.addIfNotAlreadyThere(name);
+        }
+      }
+    }
+    return result;
+  }
+
+  // Page after page from `first_url`, each read by `parse_page`, following
+  // `next` only within the library and never to the same page again.
+  juce::String fetchPages(const juce::String& first_url, const juce::String& library_url,
+                          const std::function<juce::String(const std::string&, juce::String&)>& parse_page,
+                          const std::atomic<bool>* cancelled) {
+    juce::String url = first_url;
+    for (int page = 0; page < kMaxPages && url.isNotEmpty(); ++page) {
+      std::string text;
+      const juce::String error = fetchText(juce::URL(url), text, cancelled);
+      if (error.isNotEmpty())
+        return error;
+      juce::String next;
+      const juce::String parse_error = parse_page(text, next);
+      if (parse_error.isNotEmpty())
+        return parse_error;
+      if (next == url || !isLibraryUrl(next, library_url))
+        break;
+      url = next;
+    }
+    return {};
+  }
+}
+
+juce::String parsePresetsPage(const std::string& text, std::vector<RemotePreset>& presets, juce::String& next_url) {
+  json page;
+  const json* results = nullptr;
+  const juce::String error = parsePage(text, "presets", page, results, next_url);
+  if (error.isNotEmpty())
+    return error;
+
   for (const auto& entry : *results) {
     if (!entry.is_object())
       continue;
@@ -355,16 +414,7 @@ juce::String parsePresetsPage(const std::string& text, std::vector<RemotePreset>
     const juce::String updated = jsonString(entry, "updated_at");
     if (updated.isNotEmpty())
       preset.updated_ms = juce::Time::fromISO8601(updated).toMilliseconds();
-    const auto tags = entry.find("tags");
-    if (tags != entry.end() && tags->is_array()) {
-      for (const auto& tag : *tags) {
-        if (tag.is_string()) {
-          const juce::String name = juce::String(tag.get_ref<const std::string&>()).trim();
-          if (name.isNotEmpty())
-            preset.tags.addIfNotAlreadyThere(name);
-        }
-      }
-    }
+    preset.tags = jsonTags(entry);
     const json& uploader = jsonObject(entry, "uploader");
     preset.uploader = jsonString(uploader, "username").trim();
     preset.uploader_name = jsonString(uploader, "display_name").trim();
@@ -383,6 +433,76 @@ juce::String parsePresetsPage(const std::string& text, std::vector<RemotePreset>
     presets.push_back(std::move(preset));
   }
   return {};
+}
+
+juce::String parseBanksPage(const std::string& text, std::vector<RemoteBank>& banks, juce::String& next_url) {
+  json page;
+  const json* results = nullptr;
+  const juce::String error = parsePage(text, "banks", page, results, next_url);
+  if (error.isNotEmpty())
+    return error;
+
+  for (const auto& entry : *results) {
+    if (!entry.is_object())
+      continue;
+    RemoteBank bank;
+    bank.id = jsonInteger(entry, "id");
+    bank.name = jsonString(entry, "name").trim();
+    const json& genre = jsonObject(entry, "genre");
+    bank.genre = jsonString(genre, "name").trim();
+    bank.genre_slug = jsonString(genre, "slug").trim();
+    bank.tags = jsonTags(entry);
+    bank.description = jsonString(entry, "description");
+    const json& uploader = jsonObject(entry, "uploader");
+    bank.uploader = jsonString(uploader, "username").trim();
+    bank.uploader_name = jsonString(uploader, "display_name").trim();
+    if (bank.uploader_name.isEmpty())
+      bank.uploader_name = bank.uploader;
+    const json& file = jsonObject(entry, "file");
+    bank.download_url = jsonString(file, "url");
+    bank.file_name = jsonString(file, "name").trim();
+    bank.extension = jsonString(file, "extension").trimCharactersAtStart(".").toLowerCase();
+    bank.file_size = jsonInteger(file, "size");
+    bank.sha256 = jsonString(file, "sha256").trim().toLowerCase();
+    bank.preview = parsePreview(entry);
+    const json& counts = jsonObject(entry, "counts");
+    bank.presets = static_cast<int>(jsonInteger(counts, "preset"));
+    bank.wavetables = static_cast<int>(jsonInteger(counts, "wavetable"));
+    bank.lfos = static_cast<int>(jsonInteger(counts, "lfo"));
+    bank.fx = static_cast<int>(jsonInteger(counts, "fx"));
+    bank.samples = static_cast<int>(jsonInteger(counts, "sample"));
+    bank.total_files = static_cast<int>(jsonInteger(entry, "total_files"));
+    bank.unpacked_bytes = jsonInteger(entry, "unpacked_bytes");
+    bank.downloads = static_cast<int>(jsonInteger(entry, "downloads"));
+    bank.page_url = jsonString(entry, "url");
+    const juce::String updated = jsonString(entry, "updated_at");
+    if (updated.isNotEmpty())
+      bank.updated_ms = juce::Time::fromISO8601(updated).toMilliseconds();
+    if (bank.name.isEmpty() || bank.download_url.isEmpty())
+      continue;
+    banks.push_back(std::move(bank));
+  }
+  return {};
+}
+
+juce::String bankContentsText(const RemoteBank& bank) {
+  juce::StringArray parts;
+  auto add = [&parts](int count, const char* singular, const char* plural) {
+    if (count > 0)
+      parts.add(juce::String(count) + " " + (count == 1 ? singular : plural));
+  };
+  add(bank.presets, "preset", "presets");
+  add(bank.wavetables, "wavetable", "wavetables");
+  add(bank.lfos, "LFO shape", "LFO shapes");
+  add(bank.fx, "effect preset", "effect presets");
+  add(bank.samples, "sample", "samples");
+  if (parts.isEmpty())
+    return "no Atlas files";
+  if (parts.size() == 1)
+    return parts[0];
+  const juce::String last = parts[parts.size() - 1];
+  parts.remove(parts.size() - 1);
+  return parts.joinIntoString(", ") + " and " + last;
 }
 
 juce::File communityDirectory(const juce::File& data_directory) {
@@ -404,6 +524,23 @@ juce::File localFile(const RemotePreset& preset, const juce::File& data_director
       .getChildFile(pathPart(name, "Preset." + extension));
 }
 
+juce::File banksDirectory(const juce::File& data_directory) {
+  return data_directory.getChildFile("Community").getChildFile("Banks");
+}
+
+juce::File localFile(const RemoteBank& bank, const juce::File& data_directory) {
+  const juce::String extension = bank.extension.isNotEmpty() ? bank.extension : juce::String("atb");
+  juce::String name = bank.file_name;
+  if (name.isEmpty())
+    name = bank.name + "." + extension;
+  if (!name.endsWithIgnoreCase("." + extension))
+    name += "." + extension;
+  const juce::String uploader = bank.uploader.isNotEmpty() ? bank.uploader : bank.uploader_name;
+  return banksDirectory(data_directory)
+      .getChildFile(pathPart(uploader, "Unknown uploader"))
+      .getChildFile(pathPart(name, "Bank." + extension));
+}
+
 juce::File previewDirectory(const juce::File& data_directory) {
   return data_directory.getChildFile("Community").getChildFile("Previews");
 }
@@ -414,6 +551,14 @@ juce::File localPreviewFile(const RemotePreset& preset, const juce::File& data_d
       .getChildFile("Presets")
       .getChildFile(pathPart(uploader, "Unknown uploader"))
       .getChildFile(pathPart(previewFileName(preset.preview, preset.name), "Preview.mp3"));
+}
+
+juce::File localPreviewFile(const RemoteBank& bank, const juce::File& data_directory) {
+  const juce::String uploader = bank.uploader.isNotEmpty() ? bank.uploader : bank.uploader_name;
+  return previewDirectory(data_directory)
+      .getChildFile("Banks")
+      .getChildFile(pathPart(uploader, "Unknown uploader"))
+      .getChildFile(pathPart(previewFileName(bank.preview, bank.name), "Preview.mp3"));
 }
 
 juce::String durationText(double seconds) {
@@ -469,22 +614,21 @@ juce::String fetchText(const juce::URL& url, std::string& text, const std::atomi
 juce::String fetchAllPresets(const juce::String& library_url, std::vector<RemotePreset>& presets,
                              const std::atomic<bool>* cancelled) {
   presets.clear();
-  juce::String url = presetsPageUrl(library_url, 1);
-  for (int page = 0; page < kMaxPages && url.isNotEmpty(); ++page) {
-    std::string text;
-    const juce::String error = fetchText(juce::URL(url), text, cancelled);
-    if (error.isNotEmpty())
-      return error;
-    juce::String next;
-    const juce::String parse_error = parsePresetsPage(text, presets, next);
-    if (parse_error.isNotEmpty())
-      return parse_error;
-    // Only the library's own pages, and never the same one again.
-    if (next == url || !isLibraryUrl(next, library_url))
-      break;
-    url = next;
-  }
-  return {};
+  return fetchPages(presetsPageUrl(library_url, 1), library_url,
+                    [&presets](const std::string& text, juce::String& next) {
+                      return parsePresetsPage(text, presets, next);
+                    },
+                    cancelled);
+}
+
+juce::String fetchAllBanks(const juce::String& library_url, std::vector<RemoteBank>& banks,
+                           const std::atomic<bool>* cancelled) {
+  banks.clear();
+  return fetchPages(banksPageUrl(library_url, 1), library_url,
+                    [&banks](const std::string& text, juce::String& next) {
+                      return parseBanksPage(text, banks, next);
+                    },
+                    cancelled);
 }
 
 juce::String downloadFile(const juce::URL& url, const juce::File& target, const juce::String& expected_sha256,

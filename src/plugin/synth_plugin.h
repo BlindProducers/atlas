@@ -140,7 +140,7 @@ class SynthPlugin : public SynthBase, public AudioProcessor, public ValueBridge:
       String preset_bank;
       String preset_category;
       String preset_tag;
-      String preset_collection;   // All presets, Favourites or Community
+      String preset_collection;   // All presets, Favourites, Community presets or Community banks
     };
     EditorMemory& getEditorMemory() { return editor_memory_; }
 

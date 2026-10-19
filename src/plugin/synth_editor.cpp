@@ -89,7 +89,8 @@ namespace {
   constexpr const char* kCommunityLibrary = "Community";   // downloads from the community library
   constexpr const char* kAllPresetsCollection = "All presets";
   constexpr const char* kFavouritesCollection = "Favourites";
-  constexpr const char* kCommunityCollection = "Community";
+  constexpr const char* kCommunityCollection = "Community presets";
+  constexpr const char* kCommunityBanksCollection = "Community banks";
   constexpr const char* kAllBanks = "All banks";
   constexpr const char* kAllCategories = "All categories";
   constexpr const char* kAllTags = "All tags";
@@ -1413,6 +1414,60 @@ namespace {
     return item;
   }
 
+  // A row for a bank shared on the community library: its archive lands in
+  // Community/Banks under its uploader, who is the row's bank as for the
+  // presets, and its genre is the category.
+  PresetBrowserItem communityBankBrowserItem(const atlas::community::RemoteBank& bank, const File& data_directory) {
+    PresetBrowserItem item;
+    item.file = atlas::community::localFile(bank, data_directory);
+    item.downloaded = item.file.existsAsFile();
+    item.file_size = bank.file_size;
+    item.modified_time = bank.updated_ms;
+    item.library = kCommunityLibrary;
+    item.bank = item.file.getParentDirectory().getFileName();
+    item.category = bank.genre.isNotEmpty() ? bank.genre : String("No genre");
+    item.style = bank.genre;
+    item.tags = bank.tags;
+    item.author = bank.uploader_name;
+    item.comments = bank.description;
+    item.remote_url = bank.download_url;
+    item.remote_sha256 = bank.sha256;
+    item.remote_uploader = bank.uploader_name;
+    item.remote_downloads = bank.downloads;
+    item.remote_bank = true;
+    item.bank_contents = atlas::community::bankContentsText(bank);
+    item.unpacked_bytes = bank.unpacked_bytes;
+    if (bank.preview.exists()) {
+      item.remote_preview_url = bank.preview.url;
+      item.preview_file = atlas::community::localPreviewFile(bank, data_directory);
+      item.preview_size = bank.preview.size;
+      item.preview_seconds = bank.preview.duration_seconds;
+    }
+    const String name = item.file.getFileNameWithoutExtension();
+    item.label = name + " - Community bank - " + item.bank + " - " + item.category;
+    item.searchable = (name + " " + bank.name + " bank " + item.library + " " + item.bank + " " + item.category + " " +
+                       item.tags.joinIntoString(" ") + " " + bank.uploader + " " + bank.uploader_name + " " +
+                       item.comments).toLowerCase();
+    return item;
+  }
+
+  // Unpacks a bank archive into `data_directory`, as Import preset bank does.
+  // Returns what went wrong, or an empty string; `files` counts the entries.
+  String unzipBankArchive(const File& archive, const File& data_directory, int* files) {
+    FileInputStream input(archive);
+    if (!input.openedOk())
+      return "The bank file could not be opened";
+    ZipFile zip(input);
+    if (zip.getNumEntries() == 0)
+      return "The bank file holds no files";
+    const Result result = zip.uncompressTo(data_directory);
+    if (!result.wasOk())
+      return result.getErrorMessage();
+    if (files != nullptr)
+      *files = zip.getNumEntries();
+    return {};
+  }
+
   // How far ahead of the audio thread a community preview is read.
   constexpr int kPreviewReadAheadSamples = 32768;
 
@@ -1560,6 +1615,9 @@ namespace {
     std::vector<PresetBrowserItem> items;
     int64 fetched_ms = 0;
     bool valid = false;
+    std::vector<PresetBrowserItem> bank_items;
+    int64 banks_fetched_ms = 0;
+    bool banks_valid = false;
   };
   CommunityCache& communityCache() {
     static CommunityCache cache;
@@ -9976,6 +10034,8 @@ void SynthEditor::showPresetControls() {
 void SynthEditor::ensurePresetListLoaded() {
   if (inCommunityCollection())
     ensureCommunityListLoaded();
+  if (inCommunityBankCollection())
+    ensureCommunityBankListLoaded();
   if (preset_list_loaded_ || preset_list_loading_)
     return;
 
@@ -9984,8 +10044,8 @@ void SynthEditor::ensurePresetListLoaded() {
 
 void SynthEditor::refreshPresetList(bool announce) {
   startPresetListLoad(announce, true);
-  // The community list is fetched again while it is on show; otherwise its
-  // next visit fetches it afresh instead of reading the cached copy.
+  // The community list on show is fetched again; the other's next visit
+  // fetches it afresh instead of reading the cached copy.
   if (inCommunityCollection()) {
     startCommunityListLoad(announce, true);
   }
@@ -9993,6 +10053,14 @@ void SynthEditor::refreshPresetList(bool announce) {
     community_list_loaded_ = false;
     const ScopedLock lock(presetBrowserCacheLock());
     communityCache().valid = false;
+  }
+  if (inCommunityBankCollection()) {
+    startCommunityBankListLoad(announce, true);
+  }
+  else {
+    community_banks_loaded_ = false;
+    const ScopedLock lock(presetBrowserCacheLock());
+    communityCache().banks_valid = false;
   }
 }
 
@@ -10198,6 +10266,12 @@ const PresetBrowserItem* SynthEditor::presetItemForFile(const File& file) const 
       return &community_index_[found->second];
     return nullptr;
   }
+  if (inCommunityBankCollection()) {
+    const auto found = community_bank_index_by_path_.find(path);
+    if (found != community_bank_index_by_path_.end() && found->second < community_bank_index_.size())
+      return &community_bank_index_[found->second];
+    return nullptr;
+  }
   const auto found = preset_index_by_path_.find(path);
   if (found == preset_index_by_path_.end() || found->second >= preset_index_.size())
     return nullptr;
@@ -10209,28 +10283,34 @@ PresetCollection SynthEditor::presetCollection() const {
     return PresetCollection::kFavourites;
   if (last_preset_collection_ == kCommunityCollection)
     return PresetCollection::kCommunity;
+  if (last_preset_collection_ == kCommunityBanksCollection)
+    return PresetCollection::kCommunityBanks;
   return PresetCollection::kAll;
 }
 
 void SynthEditor::setPresetCollection(PresetCollection collection) {
   last_preset_collection_ = collection == PresetCollection::kFavourites ? kFavouritesCollection
                           : collection == PresetCollection::kCommunity ? kCommunityCollection
-                                                                       : kAllPresetsCollection;
-  // The column that says Favourite says Downloaded for the community library's rows.
+                          : collection == PresetCollection::kCommunityBanks ? kCommunityBanksCollection
+                                                                            : kAllPresetsCollection;
+  // The column that says Favourite says Downloaded for the community
+  // library's presets and Imported for its banks.
   preset_table_.getHeader().setColumnName(kPresetFavoriteColumn,
-                                          collection == PresetCollection::kCommunity ? "Downloaded" : "Favourite");
+                                          collection == PresetCollection::kCommunity ? "Downloaded"
+                                          : collection == PresetCollection::kCommunityBanks ? "Imported" : "Favourite");
 }
 
 String SynthEditor::presetCollectionName() const {
   switch (presetCollection()) {
     case PresetCollection::kFavourites: return kFavouritesCollection;
     case PresetCollection::kCommunity: return kCommunityCollection;
+    case PresetCollection::kCommunityBanks: return kCommunityBanksCollection;
     default: return kAllPresetsCollection;
   }
 }
 
 const std::vector<PresetBrowserItem>& SynthEditor::activePresetIndex() const {
-  return inCommunityCollection() ? community_index_ : preset_index_;
+  return inCommunityBankCollection() ? community_bank_index_ : inCommunityCollection() ? community_index_ : preset_index_;
 }
 
 void SynthEditor::rebuildCommunityLookup() {
@@ -10238,6 +10318,13 @@ void SynthEditor::rebuildCommunityLookup() {
   community_index_by_path_.reserve(community_index_.size());
   for (size_t i = 0; i < community_index_.size(); ++i)
     community_index_by_path_[community_index_[i].file.getFullPathName().toStdString()] = i;
+}
+
+void SynthEditor::rebuildCommunityBankLookup() {
+  community_bank_index_by_path_.clear();
+  community_bank_index_by_path_.reserve(community_bank_index_.size());
+  for (size_t i = 0; i < community_bank_index_.size(); ++i)
+    community_bank_index_by_path_[community_bank_index_[i].file.getFullPathName().toStdString()] = i;
 }
 
 void SynthEditor::runPresetBackgroundTask(std::function<void(const std::shared_ptr<std::atomic<bool>>&)> task) {
@@ -10264,6 +10351,178 @@ void SynthEditor::ensureCommunityListLoaded() {
   if (community_list_loaded_ || community_list_loading_)
     return;
   startCommunityListLoad(false);
+}
+
+void SynthEditor::ensureCommunityBankListLoaded() {
+  if (community_banks_loaded_ || community_banks_loading_)
+    return;
+  startCommunityBankListLoad(false);
+}
+
+void SynthEditor::startCommunityBankListLoad(bool announce, bool forceRefresh) {
+  const int generation = ++community_banks_generation_;
+  if (!forceRefresh) {
+    std::vector<PresetBrowserItem> cached_items;
+    bool cache_valid = false;
+    {
+      const ScopedLock lock(presetBrowserCacheLock());
+      const auto& cache = communityCache();
+      cache_valid = cache.banks_valid && Time::currentTimeMillis() - cache.banks_fetched_ms < kCommunityCacheMs;
+      if (cache_valid)
+        cached_items = cache.bank_items;
+    }
+    if (cache_valid) {
+      applyCommunityBankList(std::move(cached_items), {}, announce, false, generation);
+      return;
+    }
+  }
+
+  community_banks_loading_ = true;
+  community_banks_error_.clear();
+  updatePresetSummary();
+  updatePresetManagementControls();   // the table says the list is loading
+
+  Component::SafePointer<SynthEditor> safe_this(this);
+  const String library_url = atlas::community::libraryUrl();
+  runPresetBackgroundTask([safe_this, generation, announce, library_url](const std::shared_ptr<std::atomic<bool>>& cancelled) {
+    std::vector<atlas::community::RemoteBank> remote;
+    const String error = atlas::community::fetchAllBanks(library_url, remote, cancelled.get());
+    if (cancelled->load())
+      return;
+    std::vector<PresetBrowserItem> items;
+    if (error.isEmpty()) {
+      const File data_directory = LoadSave::getDataDirectory();
+      items.reserve(remote.size());
+      for (const auto& bank : remote) {
+        if (atlas::community::isLibraryUrl(bank.download_url, library_url))
+          items.push_back(communityBankBrowserItem(bank, data_directory));
+      }
+      const ScopedLock lock(presetBrowserCacheLock());
+      auto& cache = communityCache();
+      cache.bank_items = items;
+      cache.banks_fetched_ms = Time::currentTimeMillis();
+      cache.banks_valid = true;
+    }
+    if (cancelled->load())
+      return;
+    MessageManager::callAsync([safe_this, generation, announce, error, items = std::move(items)]() mutable {
+      if (safe_this != nullptr)
+        safe_this->applyCommunityBankList(std::move(items), error, announce, true, generation);
+    });
+  });
+}
+
+void SynthEditor::applyCommunityBankList(std::vector<PresetBrowserItem> items, const String& error, bool announce,
+                                         bool fetched, int generation) {
+  if (generation != community_banks_generation_)
+    return;
+  community_banks_loading_ = false;
+  community_banks_error_ = error;
+  if (error.isEmpty()) {
+    community_bank_index_ = std::move(items);
+    community_banks_loaded_ = true;
+    rebuildCommunityBankLookup();
+  }
+  else {
+    LoadSave::writeErrorLog("Community banks: " + error);
+  }
+  if (inCommunityBankCollection()) {
+    populatePresetFilters();
+    filterPresetList();
+  }
+  updatePresetSummary();
+  if (error.isNotEmpty()) {
+    postPresetActionAnnouncement("Unable to load community banks. " + error,
+                                 AccessibilityHandler::AnnouncementPriority::high);
+  }
+  else if (announce || (fetched && inCommunityBankCollection())) {
+    postPresetActionAnnouncement(String(announce ? "Community banks refreshed, " : "Community banks loaded, ") +
+                                     String(community_bank_index_.size()) + " found",
+                                 AccessibilityHandler::AnnouncementPriority::medium);
+  }
+}
+
+void SynthEditor::downloadCommunityBank(const PresetBrowserItem& item) {
+  const File file = item.file;
+  const String name = file.getFileNameWithoutExtension();
+  const std::string key = file.getFullPathName().toStdString();
+  if (community_downloads_.count(key) != 0) {
+    postPresetActionAnnouncement("Still importing bank " + name, AccessibilityHandler::AnnouncementPriority::medium);
+    return;
+  }
+  if (!atlas::community::isLibraryUrl(item.remote_url, atlas::community::libraryUrl())) {
+    postPresetActionAnnouncement("Unable to download bank " + name + ". Its file is not on " +
+                                     atlas::community::libraryHost(),
+                                 AccessibilityHandler::AnnouncementPriority::high);
+    return;
+  }
+  // The archive is fetched unless the copy here is the one the library
+  // lists; either way it is unpacked again into the Atlas folder.
+  const bool fetch = !file.existsAsFile() || (item.file_size > 0 && file.getSize() != item.file_size);
+  File data_directory = LoadSave::getDataDirectory();
+  data_directory.createDirectory();
+  if (!LoadSave::hasDataDirectory())
+    LoadSave::saveDataDirectory(data_directory);
+  community_downloads_.insert(key);
+  if (fetch) {
+    postPresetActionAnnouncement("Downloading bank " + name + " from " + atlas::community::libraryHost() +
+                                     (item.file_size > 0 ? ", " + File::descriptionOfSizeInBytes(item.file_size) : String()),
+                                 AccessibilityHandler::AnnouncementPriority::medium);
+  }
+  else {
+    postPresetActionAnnouncement("Importing bank " + name + " again", AccessibilityHandler::AnnouncementPriority::medium);
+  }
+
+  Component::SafePointer<SynthEditor> safe_this(this);
+  const String url = item.remote_url;
+  const String sha256 = item.remote_sha256;
+  const int64 size = item.file_size;
+  runPresetBackgroundTask([safe_this, file, name, url, sha256, size, fetch, data_directory](const std::shared_ptr<std::atomic<bool>>& cancelled) {
+    String error;
+    int files = 0;
+    if (fetch)
+      error = atlas::community::downloadFile(URL(url), file, sha256, size, cancelled.get());
+    if (cancelled->load())
+      return;
+    if (error.isEmpty())
+      error = unzipBankArchive(file, data_directory, &files);
+    if (cancelled->load())
+      return;
+    MessageManager::callAsync([safe_this, file, name, error, files] {
+      if (safe_this != nullptr)
+        safe_this->finishCommunityBankImport(file, name, error, files);
+    });
+  });
+}
+
+void SynthEditor::finishCommunityBankImport(const File& file, const String& name, const String& error, int files) {
+  community_downloads_.erase(file.getFullPathName().toStdString());
+  if (error.isNotEmpty()) {
+    LoadSave::writeErrorLog("Community bank import failed: " + error);
+    postPresetActionAnnouncement("Unable to import bank " + name + ". " + error,
+                                 AccessibilityHandler::AnnouncementPriority::high);
+    return;
+  }
+  LoadSave::markPackInstalled(name.toStdString());
+  const auto found = community_bank_index_by_path_.find(file.getFullPathName().toStdString());
+  if (found != community_bank_index_by_path_.end() && found->second < community_bank_index_.size())
+    community_bank_index_[found->second].downloaded = true;
+  {
+    const ScopedLock lock(presetBrowserCacheLock());
+    for (auto& item : communityCache().bank_items) {
+      if (item.file == file)
+        item.downloaded = true;
+    }
+  }
+  if (inCommunityBankCollection()) {
+    populatePresetFilters();
+    filterPresetList();
+  }
+  // The unpacked presets join the list through a rescan of the Atlas folder.
+  startPresetListLoad(false, true);
+  postPresetActionAnnouncement("Imported bank " + name + ", " + String(files) + (files == 1 ? " file" : " files") +
+                                   ". Preset list refreshed",
+                               AccessibilityHandler::AnnouncementPriority::medium);
 }
 
 void SynthEditor::startCommunityListLoad(bool announce, bool forceRefresh) {
@@ -10691,6 +10950,8 @@ void SynthEditor::populatePresetFilters() {
            collection == PresetCollection::kFavourites);
   addFacet(kCollectionFacet, "Collection", kCommunityCollection, static_cast<int>(community_index_.size()),
            collection == PresetCollection::kCommunity);
+  addFacet(kCollectionFacet, "Collection", kCommunityBanksCollection, static_cast<int>(community_bank_index_.size()),
+           collection == PresetCollection::kCommunityBanks);
   for (const auto& library : preset_libraries_) {
     const int count = countMatching([&](const PresetBrowserItem& item) {
       return matchesLibrary(item, library);
@@ -10907,9 +11168,12 @@ void SynthEditor::activatePresetFacet(int kind, int row) {
     case kCollectionFacet:
       setPresetCollection(facet.value == kFavouritesCollection ? PresetCollection::kFavourites
                           : facet.value == kCommunityCollection ? PresetCollection::kCommunity
-                                                                : PresetCollection::kAll);
+                          : facet.value == kCommunityBanksCollection ? PresetCollection::kCommunityBanks
+                                                                     : PresetCollection::kAll);
       if (inCommunityCollection())
         ensureCommunityListLoaded();
+      if (inCommunityBankCollection())
+        ensureCommunityBankListLoaded();
       break;
     default:
       return;
@@ -10936,6 +11200,8 @@ String SynthEditor::presetTableCellText(int row, int columnId) const {
 
   switch (columnId) {
     case kPresetFavoriteColumn:
+      if (item->remote_bank)
+        return item->downloaded ? "Imported" : "Not imported";
       if (item->isRemote())
         return item->downloaded ? "Downloaded" : "Not downloaded";
       return isPresetFavorite(file) ? "Favourite" : "Not favourite";
@@ -10975,8 +11241,9 @@ void SynthEditor::presetSelectionChanged(int row, bool allowAutoload) {
   if (!allowAutoload || !preset_preview_.getToggleState())
     return;
   // A community preset not fetched yet never autoloads: Return downloads it.
+  // A bank is not a preset to load at all.
   if (const auto* item = presetItemForFile(filtered_presets_[row]);
-      item != nullptr && item->isRemote() && !item->downloaded)
+      item != nullptr && item->isRemote() && (!item->downloaded || item->remote_bank))
     return;
   // A single press loads at once. Holding an arrow fires a selection per key
   // repeat; loading each would queue loads behind the keys, so while the
@@ -11026,10 +11293,12 @@ void SynthEditor::updatePresetManagementControls() {
     preset_details_.setDescription("No preset selected");
     // Not the details of the preset selected before, which may be gone.
     String state;
-    if (inCommunityCollection() && !community_list_loaded_) {
-      state = community_list_loading_ ? String("Community presets loading")
-            : community_list_error_.isNotEmpty() ? "Community presets not loaded. " + community_list_error_
-                                                  : String("Community presets not loaded");
+    if (inAnyCommunityCollection() && !activePresetListLoaded()) {
+      const String what = inCommunityBankCollection() ? "Community banks" : "Community presets";
+      const bool loading = inCommunityBankCollection() ? community_banks_loading_ : community_list_loading_;
+      const String error = inCommunityBankCollection() ? community_banks_error_ : community_list_error_;
+      state = loading ? what + " loading"
+            : error.isNotEmpty() ? what + " not loaded. " + error : what + " not loaded";
     }
     else {
       state = !activePresetListLoaded() ? String("Preset list loading")
@@ -11043,11 +11312,24 @@ void SynthEditor::updatePresetManagementControls() {
   const bool favorite = isPresetFavorite(file);
   String details = file.getFileNameWithoutExtension();
   if (remote) {
-    details += String(item->downloaded ? ". Downloaded" : ". Not downloaded, Return downloads and loads it") +
-               ". Community preset by " + (item->author.isEmpty() ? String("unknown") : item->author) +
-               ", shared by " + (item->remote_uploader.isEmpty() ? String("unknown") : item->remote_uploader) +
-               ". Category: " + item->category +
-               ". Tags: " + (item->tags.isEmpty() ? String("none") : item->tags.joinIntoString(", ")) +
+    const String uploader = item->remote_uploader.isEmpty() ? String("unknown") : item->remote_uploader;
+    if (item->remote_bank) {
+      details += String(item->downloaded ? ". Imported, Return imports it again"
+                                         : ". Not imported, Return downloads and imports it") +
+                 ". Community bank shared by " + uploader +
+                 ". Genre: " + item->category +
+                 ". Contents: " + item->bank_contents +
+                 ". Download: " + File::descriptionOfSizeInBytes(item->file_size) +
+                 (item->unpacked_bytes > 0 ? ", " + File::descriptionOfSizeInBytes(item->unpacked_bytes) + " unpacked"
+                                           : String());
+    }
+    else {
+      details += String(item->downloaded ? ". Downloaded" : ". Not downloaded, Return downloads and loads it") +
+                 ". Community preset by " + (item->author.isEmpty() ? String("unknown") : item->author) +
+                 ", shared by " + uploader +
+                 ". Category: " + item->category;
+    }
+    details += ". Tags: " + (item->tags.isEmpty() ? String("none") : item->tags.joinIntoString(", ")) +
                ". Downloads: " + String(item->remote_downloads);
     if (item->hasPreview()) {
       const String length = atlas::community::durationText(item->preview_seconds);
@@ -11083,8 +11365,13 @@ void SynthEditor::updatePresetManagementControls() {
 
 void SynthEditor::toggleSelectedPresetFavorite() {
   const File file = selectedPresetFile();
+  const auto* item = presetItemForFile(file);
+  if (item != nullptr && item->remote_bank) {
+    postPresetActionAnnouncement("A bank has no favourite. Import it with Return, then favourite its presets",
+                                 AccessibilityHandler::AnnouncementPriority::high);
+    return;
+  }
   if (!file.existsAsFile()) {
-    const auto* item = presetItemForFile(file);
     postPresetActionAnnouncement(item != nullptr && item->isRemote() ? "Download the preset first, with Return"
                                                                       : "Choose a preset first",
                                  AccessibilityHandler::AnnouncementPriority::high);
@@ -11434,14 +11721,18 @@ void SynthEditor::updatePresetSummary() {
   }
 
   String counts = String(all_presets_.size()) + " presets found, " + String(filtered_presets_.size()) + " shown";
-  if (inCommunityCollection()) {
-    counts = "Community presets from " + atlas::community::libraryHost() + ": ";
-    if (community_list_loading_)
+  if (inAnyCommunityCollection()) {
+    const bool banks = inCommunityBankCollection();
+    const bool loading = banks ? community_banks_loading_ : community_list_loading_;
+    const bool loaded = banks ? community_banks_loaded_ : community_list_loaded_;
+    const String error = banks ? community_banks_error_ : community_list_error_;
+    counts = String(banks ? "Community banks from " : "Community presets from ") + atlas::community::libraryHost() + ": ";
+    if (loading)
       counts += "loading in the background";
-    else if (!community_list_loaded_)
-      counts += community_list_error_.isNotEmpty() ? "not loaded. " + community_list_error_ : String("not loaded");
+    else if (!loaded)
+      counts += error.isNotEmpty() ? "not loaded. " + error : String("not loaded");
     else
-      counts += String(community_index_.size()) + " found, " + String(filtered_presets_.size()) + " shown";
+      counts += String(activePresetIndex().size()) + " found, " + String(filtered_presets_.size()) + " shown";
   }
   const String summary = "Current preset: " + current +
                          ". Atlas resources path: " + LoadSave::getDataDirectory().getFullPathName() +
@@ -11509,15 +11800,21 @@ void SynthEditor::showSelectedPresetMenu(Component& target) {
   const File selected = selectedPresetFile();
   const bool has_selection = selected.existsAsFile();
   const bool editable = isPresetEditable(selected);
-  // A community preset not fetched yet: Return fetches it first.
+  // A community preset not fetched yet: Return fetches it first. A community
+  // bank: Return fetches and unpacks it.
   const auto* selected_item = presetItemForFile(selected);
   const bool awaiting_download = selected_item != nullptr && selected_item->isRemote() && !has_selection;
+  const bool bank_row = selected_item != nullptr && selected_item->remote_bank;
   PopupMenu menu;
   menu.addSectionHeader(has_selection || awaiting_download ? selected.getFileNameWithoutExtension()
                                                            : String("Preset actions"));
-  menu.addItem(1, awaiting_download ? "Download and load preset (Return)" : "Load preset (Return)",
-               has_selection || awaiting_download);
-  menu.addItem(2, isPresetFavorite(selected) ? "Remove from favourites (F)" : "Add to favourites (F)", has_selection);
+  if (bank_row)
+    menu.addItem(1, selected_item->downloaded ? "Import bank again (Return)" : "Download and import bank (Return)");
+  else
+    menu.addItem(1, awaiting_download ? "Download and load preset (Return)" : "Load preset (Return)",
+                 has_selection || awaiting_download);
+  menu.addItem(2, isPresetFavorite(selected) ? "Remove from favourites (F)" : "Add to favourites (F)",
+               has_selection && !bank_row);
   // A community row's preview, when the uploader added one.
   if (selected_item != nullptr && selected_item->isRemote()) {
     menu.addItem(7, isCommunityPreviewOf(*selected_item) ? "Stop preview (P)" : "Play preview (P)",
@@ -11580,7 +11877,7 @@ void SynthEditor::selectPresetFile(const File& file) {
     return;
   }
   // A file on disk is found among all presets, not the community library's.
-  if (inCommunityCollection()) {
+  if (inAnyCommunityCollection()) {
     setPresetCollection(PresetCollection::kAll);
     populatePresetFilters();
   }
@@ -11623,10 +11920,15 @@ void SynthEditor::loadSelectedPreset() {
     return;
   }
   const File file = filtered_presets_[index];
+  const auto* item = presetItemForFile(file);
+  // A community bank is fetched and unpacked, never loaded as a patch.
+  if (item != nullptr && item->remote_bank) {
+    downloadCommunityBank(*item);
+    return;
+  }
   // A community preset is fetched first, again when the library's copy has
   // changed size since; the download loads it when it lands.
-  if (const auto* item = presetItemForFile(file);
-      item != nullptr && item->isRemote() &&
+  if (item != nullptr && item->isRemote() &&
       (!file.existsAsFile() || (item->file_size > 0 && file.getSize() != item->file_size))) {
     downloadCommunityPreset(*item, true);
     return;
@@ -11724,22 +12026,13 @@ void SynthEditor::chooseBankFile() {
 }
 
 void SynthEditor::importBankFile(const File& file) {
-  FileInputStream input_stream(file);
-  if (!input_stream.openedOk()) {
-    showWarningBox("Unable to import bank",
-                   "The bank file could not be opened.");
-    postPluginAnnouncement("Unable to open bank file", AccessibilityHandler::AnnouncementPriority::high);
-    return;
-  }
-
   File data_directory = LoadSave::getDataDirectory();
   data_directory.createDirectory();
   if (!LoadSave::hasDataDirectory())
     LoadSave::saveDataDirectory(data_directory);
 
-  ZipFile import_zip(input_stream);
-  const Result unzip_result = import_zip.uncompressTo(data_directory);
-  if (unzip_result.wasOk()) {
+  const String error = unzipBankArchive(file, data_directory, nullptr);
+  if (error.isEmpty()) {
     LoadSave::markPackInstalled(file.getFileNameWithoutExtension().toStdString());
     refreshPresetList();
     postPluginAnnouncement("Imported bank " + file.getFileNameWithoutExtension() +
@@ -11748,9 +12041,8 @@ void SynthEditor::importBankFile(const File& file) {
     return;
   }
 
-  LoadSave::writeErrorLog("Unzipping bank failed: " + unzip_result.getErrorMessage());
-  showWarningBox("Unable to import bank",
-                 unzip_result.getErrorMessage());
+  LoadSave::writeErrorLog("Unzipping bank failed: " + error);
+  showWarningBox("Unable to import bank", error + ".");
   postPluginAnnouncement("Unable to import bank", AccessibilityHandler::AnnouncementPriority::high);
 }
 

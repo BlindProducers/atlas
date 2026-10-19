@@ -957,7 +957,21 @@ int main(int argc, char** argv) {
     for (const auto& preset : presets) {
       std::cout << "  " << preset.name << " by " << preset.author << ", shared by " << preset.uploader
                 << " (" << preset.style_label << "; " << preset.tags.joinIntoString(", ") << ") "
-                << preset.file_size << " bytes, sha256 " << preset.sha256 << '\n';
+                << preset.file_size << " bytes, sha256 " << preset.sha256
+                << (preset.preview.exists() ? ", preview " + atlas::community::durationText(preset.preview.duration_seconds)
+                                            : String()) << '\n';
+    }
+    std::vector<atlas::community::RemoteBank> banks;
+    const String bank_error = atlas::community::fetchAllBanks(atlas::community::libraryUrl(), banks);
+    if (bank_error.isNotEmpty()) {
+      std::cout << "Community library banks: " << bank_error << '\n';
+      return 1;
+    }
+    std::cout << "Community library " << atlas::community::libraryHost() << ": " << banks.size() << " banks\n";
+    for (const auto& bank : banks) {
+      std::cout << "  " << bank.name << " shared by " << bank.uploader << " (" << bank.genre << "; "
+                << bank.tags.joinIntoString(", ") << ") " << atlas::community::bankContentsText(bank) << ", "
+                << bank.file_size << " bytes, sha256 " << bank.sha256 << (bank.preview.exists() ? ", preview" : "") << '\n';
     }
     return 0;
   }
