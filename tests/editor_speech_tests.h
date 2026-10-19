@@ -133,15 +133,25 @@ namespace {
     if (autoload != nullptr)
       autoload->setToggleState(false, dontSendNotification);
 
+    // The Community row fetches the library's list; a saved empty page stands
+    // in for the library, so the test needs no network.
+    TemporaryFile saved_library(".json");
+    saved_library.getFile().replaceWithText(R"({"count": 0, "next": null, "results": []})");
+    atlas::community::setLibraryUrlForTesting(URL(saved_library.getFile()).toString(false));
     auto* collection = dynamic_cast<TableListBox*>(titled(editor, "Collection"));
-    expect(collection != nullptr && collection->getNumRows() == 2,
-           "the preset browser lists All presets and Favourites");
-    if (collection != nullptr && collection->getNumRows() == 2) {
+    expect(collection != nullptr && collection->getNumRows() == 3,
+           "the preset browser lists All presets, Favourites and Community");
+    if (collection != nullptr && collection->getNumRows() == 3) {
       collection->selectRow(0);
-      expectListRowSpoken(*collection, spoken, KeyPress(KeyPress::downKey), "Favourites, 2 of 2", "Collection");
-      expectListRowSpoken(*collection, spoken, KeyPress(KeyPress::downKey), "Favourites, 2 of 2", "Collection at its end");
-      expectListRowSpoken(*collection, spoken, KeyPress(KeyPress::homeKey), "All presets, 1 of 2", "Collection");
+      expectListRowSpoken(*collection, spoken, KeyPress(KeyPress::downKey), "Favourites, 2 of 3", "Collection");
+      expectListRowSpoken(*collection, spoken, KeyPress(KeyPress::downKey), "Community, 3 of 3", "Collection");
+      expectListRowSpoken(*collection, spoken, KeyPress(KeyPress::downKey), "Community, 3 of 3", "Collection at its end");
+      // The list the Community row asked for lands and is said; not part of the rows.
+      pumpUntil([&] { return !editor.isCommunityLibraryBusy(); }, 10000);
+      spoken.messages.clear();
+      expectListRowSpoken(*collection, spoken, KeyPress(KeyPress::homeKey), "All presets, 1 of 3", "Collection");
     }
+    atlas::community::setLibraryUrlForTesting({});
 
     auto* results = dynamic_cast<TableListBox*>(titled(editor, "Preset results table"));
     expect(results != nullptr, "the preset browser has its results table");

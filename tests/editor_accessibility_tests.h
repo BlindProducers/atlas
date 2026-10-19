@@ -692,8 +692,8 @@ namespace {
         pumpEditorEvents();
       auto* handler = collection->getAccessibilityHandler();
       auto* table = handler ? handler->getTableInterface() : nullptr;
-      expect(table && table->getNumRows() == 2 && table->getRowHandler(0) != nullptr,
-             "All presets and Favourites populate without keyboard focus inside the preset browser");
+      expect(table && table->getNumRows() == 3 && table->getRowHandler(0) != nullptr,
+             "All presets, Favourites and Community populate without keyboard focus inside the preset browser");
     }
     editor.removeFromDesktop();
   }

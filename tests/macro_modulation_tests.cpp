@@ -11,6 +11,7 @@
 #include "file_source.h"
 #include "line_generator.h"
 #include "load_save.h"
+#include "community_library.h"
 #include "phase_modifier.h"
 #include "wave_source.h"
 #include "wavetable_creator.h"
@@ -791,6 +792,7 @@ namespace {
 #include "arpeggiator_tests.h"
 #include "release_hardening_tests.h"
 #include "undo_tests.h"
+#include "community_library_tests.h"
 
 int main(int argc, char** argv) {
   ScopedJuceInitialiser_GUI juce;
@@ -943,6 +945,27 @@ int main(int argc, char** argv) {
   }
   if (argc > 1 && String(argv[1]) == "--release-hardening")
     return runReleaseHardeningTests();
+  if (argc > 1 && String(argv[1]) == "--community-probe") {
+    // By hand, not a test: fetches the live library's list (or ATLAS_COMMUNITY_URL's) and prints it.
+    std::vector<atlas::community::RemotePreset> presets;
+    const String error = atlas::community::fetchAllPresets(atlas::community::libraryUrl(), presets);
+    if (error.isNotEmpty()) {
+      std::cout << "Community library " << atlas::community::libraryHost() << ": " << error << '\n';
+      return 1;
+    }
+    std::cout << "Community library " << atlas::community::libraryHost() << ": " << presets.size() << " patches\n";
+    for (const auto& preset : presets) {
+      std::cout << "  " << preset.name << " by " << preset.author << ", shared by " << preset.uploader
+                << " (" << preset.style_label << "; " << preset.tags.joinIntoString(", ") << ") "
+                << preset.file_size << " bytes, sha256 " << preset.sha256 << '\n';
+    }
+    return 0;
+  }
+  if (argc > 1 && String(argv[1]) == "--community-library") {
+    // What is said must not depend on the user's own speech settings.
+    atlas::speech::useDefaultSettingsForTesting();
+    return runCommunityLibraryTests();
+  }
   if (argc > 1 && String(argv[1]) == "--editor-undo") {
     // What is said must not depend on the user's own speech settings.
     atlas::speech::useDefaultSettingsForTesting();

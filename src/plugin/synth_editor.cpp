@@ -34,6 +34,7 @@
 #include "table_filter.h"
 #include "sound_engine.h"
 #include "load_save.h"
+#include "community_library.h"
 #include "line_generator.h"
 #include "modulation_connection_processor.h"
 #include "producers_module.h"
@@ -85,6 +86,10 @@ namespace {
   constexpr const char* kFactoryLibrary = "Factory";
   constexpr const char* kUserLibrary = "User";
   constexpr const char* kOtherLibrary = "Other";
+  constexpr const char* kCommunityLibrary = "Community";   // downloads from the community library
+  constexpr const char* kAllPresetsCollection = "All presets";
+  constexpr const char* kFavouritesCollection = "Favourites";
+  constexpr const char* kCommunityCollection = "Community";
   constexpr const char* kAllBanks = "All banks";
   constexpr const char* kAllCategories = "All categories";
   constexpr const char* kAllTags = "All tags";
@@ -1192,6 +1197,12 @@ namespace {
     return base.getChildFile(sanitizePresetPathPart(bank, "User"));
   }
 
+  // The top-level folders whose presets the browser files by folder: the
+  // folder under Presets is the bank, the ones below it the category.
+  bool isNamedLibrary(const String& folder) {
+    return folder == kFactoryLibrary || folder == kUserLibrary || folder == kCommunityLibrary;
+  }
+
   String presetLibraryName(const File& preset) {
     const auto parts = presetPathParts(preset);
     if (parts.size() > 0) {
@@ -1199,6 +1210,8 @@ namespace {
         return kFactoryLibrary;
       if (parts[0] == kUserLibrary)
         return kUserLibrary;
+      if (parts[0] == kCommunityLibrary)
+        return kCommunityLibrary;
     }
     return kOtherLibrary;
   }
@@ -1207,7 +1220,7 @@ namespace {
     const auto parts = presetPathParts(preset);
     const int preset_folder = indexOfPathPart(parts, LoadSave::kPresetFolderName);
     if (preset_folder >= 0 && preset_folder + 1 < parts.size() - 1 &&
-        preset_folder == 1 && (parts[0] == kFactoryLibrary || parts[0] == kUserLibrary)) {
+        preset_folder == 1 && isNamedLibrary(parts[0])) {
       return parts[preset_folder + 1];
     }
     if (preset_folder == 0 && preset_folder + 1 < parts.size() - 1)
@@ -1221,7 +1234,7 @@ namespace {
     const auto parts = presetPathParts(preset);
     const int preset_folder = indexOfPathPart(parts, LoadSave::kPresetFolderName);
     int category_start = preset_folder + 1;
-    if (preset_folder >= 0 && preset_folder == 1 && (parts[0] == kFactoryLibrary || parts[0] == kUserLibrary))
+    if (preset_folder >= 0 && preset_folder == 1 && isNamedLibrary(parts[0]))
       category_start = preset_folder + 2;
     else if (preset_folder == 0)
       category_start = preset_folder + 2;
@@ -1365,6 +1378,34 @@ namespace {
     return item;
   }
 
+  // A row for a preset shared on the community library. Its bank and category
+  // are the folders its download lands in (the uploader and the style), so the
+  // row reads the same before and after the download.
+  PresetBrowserItem communityBrowserItem(const atlas::community::RemotePreset& preset, const File& data_directory) {
+    PresetBrowserItem item;
+    item.file = atlas::community::localFile(preset, data_directory);
+    item.downloaded = item.file.existsAsFile();
+    item.file_size = preset.file_size;
+    item.modified_time = preset.updated_ms;
+    item.library = kCommunityLibrary;
+    item.bank = item.file.getParentDirectory().getParentDirectory().getFileName();
+    item.category = item.file.getParentDirectory().getFileName();
+    item.style = preset.style_label;
+    item.tags = preset.tags;
+    item.author = preset.author;
+    item.comments = preset.description;
+    item.remote_url = preset.download_url;
+    item.remote_sha256 = preset.sha256;
+    item.remote_uploader = preset.uploader_name;
+    item.remote_downloads = preset.downloads;
+    const String name = item.file.getFileNameWithoutExtension();
+    item.label = name + " - " + item.library + " - " + item.bank + " - " + item.category;
+    item.searchable = (name + " " + preset.name + " " + item.library + " " + item.bank + " " + item.category + " " +
+                       item.tags.joinIntoString(" ") + " " + item.author + " " + preset.uploader + " " +
+                       preset.uploader_name + " " + item.comments + " " + item.style).toLowerCase();
+    return item;
+  }
+
   constexpr int kPresetIndexSchemaVersion = 2;
 
   File presetIndexDatabaseFile() {
@@ -1499,6 +1540,20 @@ namespace {
   bool& cachedPresetBrowserItemsValid() {
     static bool valid = false;
     return valid;
+  }
+
+  // The community library's list, shared by every editor in the process like
+  // the index above (under presetBrowserCacheLock) and fetched again once it
+  // is kCommunityCacheMs old or the user refreshes.
+  constexpr int64 kCommunityCacheMs = 10 * 60 * 1000;
+  struct CommunityCache {
+    std::vector<PresetBrowserItem> items;
+    int64 fetched_ms = 0;
+    bool valid = false;
+  };
+  CommunityCache& communityCache() {
+    static CommunityCache cache;
+    return cache;
   }
 
   bool isRoutingParameter(const String& id) {
@@ -6294,7 +6349,8 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
     last_preset_library_(synth.getEditorMemory().preset_library),
     last_preset_bank_(synth.getEditorMemory().preset_bank),
     last_preset_category_(synth.getEditorMemory().preset_category),
-    last_preset_tag_(synth.getEditorMemory().preset_tag) {
+    last_preset_tag_(synth.getEditorMemory().preset_tag),
+    last_preset_collection_(synth.getEditorMemory().preset_collection) {
   // A new instance's preset browser starts unfiltered.
   if (last_preset_library_.isEmpty()) last_preset_library_ = kAllLibraries;
   if (last_preset_bank_.isEmpty()) last_preset_bank_ = kAllBanks;
@@ -6407,6 +6463,7 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   preset_header.addColumn("Library", kPresetLibraryColumn, 100, 70, 180);
   preset_header.addColumn("Modified", kPresetModifiedColumn, 160, 110, 230);
   preset_header.setSortColumnId(preset_sort_column_, preset_sort_ascending_);
+  setPresetCollection(presetCollection());   // names the Favourite column for the remembered collection
   preset_table_.onFocusGained = [this] { ensurePresetListLoaded(); };
   preset_table_.onKeyPressed = [this](const KeyPress& key) {
     if (key.getKeyCode() == KeyPress::returnKey) {
@@ -9900,6 +9957,8 @@ void SynthEditor::showPresetControls() {
 }
 
 void SynthEditor::ensurePresetListLoaded() {
+  if (inCommunityCollection())
+    ensureCommunityListLoaded();
   if (preset_list_loaded_ || preset_list_loading_)
     return;
 
@@ -9908,6 +9967,16 @@ void SynthEditor::ensurePresetListLoaded() {
 
 void SynthEditor::refreshPresetList(bool announce) {
   startPresetListLoad(announce, true);
+  // The community list is fetched again while it is on show; otherwise its
+  // next visit fetches it afresh instead of reading the cached copy.
+  if (inCommunityCollection()) {
+    startCommunityListLoad(announce, true);
+  }
+  else {
+    community_list_loaded_ = false;
+    const ScopedLock lock(presetBrowserCacheLock());
+    communityCache().valid = false;
+  }
 }
 
 void SynthEditor::startPresetListLoad(bool announce, bool forceRefresh) {
@@ -10105,10 +10174,247 @@ void SynthEditor::applyPresetList(std::vector<PresetBrowserItem> items, bool ann
 }
 
 const PresetBrowserItem* SynthEditor::presetItemForFile(const File& file) const {
-  const auto found = preset_index_by_path_.find(file.getFullPathName().toStdString());
+  const std::string path = file.getFullPathName().toStdString();
+  if (inCommunityCollection()) {
+    const auto found = community_index_by_path_.find(path);
+    if (found != community_index_by_path_.end() && found->second < community_index_.size())
+      return &community_index_[found->second];
+    return nullptr;
+  }
+  const auto found = preset_index_by_path_.find(path);
   if (found == preset_index_by_path_.end() || found->second >= preset_index_.size())
     return nullptr;
   return &preset_index_[found->second];
+}
+
+PresetCollection SynthEditor::presetCollection() const {
+  if (last_preset_collection_ == kFavouritesCollection)
+    return PresetCollection::kFavourites;
+  if (last_preset_collection_ == kCommunityCollection)
+    return PresetCollection::kCommunity;
+  return PresetCollection::kAll;
+}
+
+void SynthEditor::setPresetCollection(PresetCollection collection) {
+  last_preset_collection_ = collection == PresetCollection::kFavourites ? kFavouritesCollection
+                          : collection == PresetCollection::kCommunity ? kCommunityCollection
+                                                                       : kAllPresetsCollection;
+  // The column that says Favourite says Downloaded for the community library's rows.
+  preset_table_.getHeader().setColumnName(kPresetFavoriteColumn,
+                                          collection == PresetCollection::kCommunity ? "Downloaded" : "Favourite");
+}
+
+String SynthEditor::presetCollectionName() const {
+  switch (presetCollection()) {
+    case PresetCollection::kFavourites: return kFavouritesCollection;
+    case PresetCollection::kCommunity: return kCommunityCollection;
+    default: return kAllPresetsCollection;
+  }
+}
+
+const std::vector<PresetBrowserItem>& SynthEditor::activePresetIndex() const {
+  return inCommunityCollection() ? community_index_ : preset_index_;
+}
+
+void SynthEditor::rebuildCommunityLookup() {
+  community_index_by_path_.clear();
+  community_index_by_path_.reserve(community_index_.size());
+  for (size_t i = 0; i < community_index_.size(); ++i)
+    community_index_by_path_[community_index_[i].file.getFullPathName().toStdString()] = i;
+}
+
+void SynthEditor::runPresetBackgroundTask(std::function<void(const std::shared_ptr<std::atomic<bool>>&)> task) {
+  for (auto it = preset_scans_.begin(); it != preset_scans_.end();) {
+    if (it->finished->load()) {
+      it->thread.join();
+      it = preset_scans_.erase(it);
+    }
+    else
+      ++it;
+  }
+  auto cancelled = preset_scan_cancelled_;
+  auto finished = std::make_shared<std::atomic<bool>>(false);
+  PresetScan scan;
+  scan.finished = finished;
+  scan.thread = std::thread([task = std::move(task), cancelled, finished] {
+    struct Finish { std::shared_ptr<std::atomic<bool>> flag; ~Finish() { flag->store(true); } } finish { finished };
+    task(cancelled);
+  });
+  preset_scans_.push_back(std::move(scan));
+}
+
+void SynthEditor::ensureCommunityListLoaded() {
+  if (community_list_loaded_ || community_list_loading_)
+    return;
+  startCommunityListLoad(false);
+}
+
+void SynthEditor::startCommunityListLoad(bool announce, bool forceRefresh) {
+  const int generation = ++community_list_generation_;
+  if (!forceRefresh) {
+    std::vector<PresetBrowserItem> cached_items;
+    bool cache_valid = false;
+    {
+      const ScopedLock lock(presetBrowserCacheLock());
+      const auto& cache = communityCache();
+      cache_valid = cache.valid && Time::currentTimeMillis() - cache.fetched_ms < kCommunityCacheMs;
+      if (cache_valid)
+        cached_items = cache.items;
+    }
+    if (cache_valid) {
+      applyCommunityList(std::move(cached_items), {}, announce, false, generation);
+      return;
+    }
+  }
+
+  community_list_loading_ = true;
+  community_list_error_.clear();
+  updatePresetSummary();
+  updatePresetManagementControls();   // the table says the list is loading
+
+  Component::SafePointer<SynthEditor> safe_this(this);
+  const String library_url = atlas::community::libraryUrl();
+  runPresetBackgroundTask([safe_this, generation, announce, library_url](const std::shared_ptr<std::atomic<bool>>& cancelled) {
+    std::vector<atlas::community::RemotePreset> remote;
+    const String error = atlas::community::fetchAllPresets(library_url, remote, cancelled.get());
+    if (cancelled->load())
+      return;
+    std::vector<PresetBrowserItem> items;
+    if (error.isEmpty()) {
+      const File data_directory = LoadSave::getDataDirectory();
+      items.reserve(remote.size());
+      for (const auto& preset : remote) {
+        // Only files the library itself serves are offered.
+        if (atlas::community::isLibraryUrl(preset.download_url, library_url))
+          items.push_back(communityBrowserItem(preset, data_directory));
+      }
+      const ScopedLock lock(presetBrowserCacheLock());
+      auto& cache = communityCache();
+      cache.items = items;
+      cache.fetched_ms = Time::currentTimeMillis();
+      cache.valid = true;
+    }
+    if (cancelled->load())
+      return;
+    MessageManager::callAsync([safe_this, generation, announce, error, items = std::move(items)]() mutable {
+      if (safe_this != nullptr)
+        safe_this->applyCommunityList(std::move(items), error, announce, true, generation);
+    });
+  });
+}
+
+void SynthEditor::applyCommunityList(std::vector<PresetBrowserItem> items, const String& error, bool announce,
+                                     bool fetched, int generation) {
+  if (generation != community_list_generation_)
+    return;
+  community_list_loading_ = false;
+  community_list_error_ = error;
+  if (error.isEmpty()) {
+    community_index_ = std::move(items);
+    community_list_loaded_ = true;
+    rebuildCommunityLookup();
+  }
+  else {
+    LoadSave::writeErrorLog("Community presets: " + error);
+  }
+  if (inCommunityCollection()) {
+    populatePresetFilters();
+    filterPresetList();
+  }
+  updatePresetSummary();
+  // A list from the cache is on screen at once; one that was fetched arrives
+  // after the row that asked for it was read, so it is said.
+  if (error.isNotEmpty()) {
+    postPresetActionAnnouncement("Unable to load community presets. " + error,
+                                 AccessibilityHandler::AnnouncementPriority::high);
+  }
+  else if (announce || (fetched && inCommunityCollection())) {
+    postPresetActionAnnouncement(String(announce ? "Community presets refreshed, " : "Community presets loaded, ") +
+                                     String(community_index_.size()) + " found",
+                                 AccessibilityHandler::AnnouncementPriority::medium);
+  }
+}
+
+void SynthEditor::downloadCommunityPreset(const PresetBrowserItem& item, bool loadAfter) {
+  const File file = item.file;
+  const String name = file.getFileNameWithoutExtension();
+  const std::string key = file.getFullPathName().toStdString();
+  if (community_downloads_.count(key) != 0) {
+    postPresetActionAnnouncement("Still downloading " + name, AccessibilityHandler::AnnouncementPriority::medium);
+    return;
+  }
+  if (!atlas::community::isLibraryUrl(item.remote_url, atlas::community::libraryUrl())) {
+    postPresetActionAnnouncement("Unable to download " + name + ". Its file is not on " +
+                                     atlas::community::libraryHost(),
+                                 AccessibilityHandler::AnnouncementPriority::high);
+    return;
+  }
+  community_downloads_.insert(key);
+  postPresetActionAnnouncement("Downloading " + name + " from " + atlas::community::libraryHost(),
+                               AccessibilityHandler::AnnouncementPriority::medium);
+
+  Component::SafePointer<SynthEditor> safe_this(this);
+  const String url = item.remote_url;
+  const String sha256 = item.remote_sha256;
+  const int64 size = item.file_size;
+  runPresetBackgroundTask([safe_this, file, name, url, sha256, size, loadAfter](const std::shared_ptr<std::atomic<bool>>& cancelled) {
+    const String error = atlas::community::downloadFile(URL(url), file, sha256, size, cancelled.get());
+    if (cancelled->load())
+      return;
+    MessageManager::callAsync([safe_this, file, name, error, loadAfter] {
+      if (safe_this != nullptr)
+        safe_this->finishCommunityDownload(file, name, error, loadAfter);
+    });
+  });
+}
+
+void SynthEditor::finishCommunityDownload(const File& file, const String& name, const String& error, bool loadAfter) {
+  community_downloads_.erase(file.getFullPathName().toStdString());
+  if (error.isNotEmpty()) {
+    LoadSave::writeErrorLog("Community preset download failed: " + error);
+    postPresetActionAnnouncement("Unable to download " + name + ". " + error,
+                                 AccessibilityHandler::AnnouncementPriority::high);
+    return;
+  }
+  const auto found = community_index_by_path_.find(file.getFullPathName().toStdString());
+  if (found != community_index_by_path_.end() && found->second < community_index_.size())
+    community_index_[found->second].downloaded = true;
+  {
+    const ScopedLock lock(presetBrowserCacheLock());
+    for (auto& item : communityCache().items) {
+      if (item.file == file)
+        item.downloaded = true;
+    }
+  }
+  addPresetToLocalIndex(file);
+  if (inCommunityCollection()) {
+    populatePresetFilters();
+    filterPresetList();
+  }
+  // Said whatever the Presets announcement setting: the user asked for it and
+  // waits to hear it land. The load then says its own piece under that setting.
+  postPresetActionAnnouncement("Downloaded " + name, AccessibilityHandler::AnnouncementPriority::medium);
+  if (loadAfter)
+    loadPresetFile(file, false, false);
+}
+
+void SynthEditor::addPresetToLocalIndex(const File& file) {
+  const PresetBrowserItem item = buildPresetBrowserItem(file, LoadSave::getDataDirectory());
+  auto add = [&](std::vector<PresetBrowserItem>& items) {
+    for (auto& existing : items) {
+      if (existing.file == file) {
+        existing = item;
+        return;
+      }
+    }
+    items.push_back(item);
+  };
+  add(preset_index_);
+  {
+    const ScopedLock lock(presetBrowserCacheLock());
+    add(cachedPresetBrowserItems());
+  }
+  rebuildPresetLookup();
 }
 
 void SynthEditor::populatePresetFilters() {
@@ -10117,7 +10423,7 @@ void SynthEditor::populatePresetFilters() {
   preset_libraries_.clear();
   preset_libraries_.add(kAllLibraries);
   std::set<String> libraries;
-  for (const auto& item : preset_index_) {
+  for (const auto& item : activePresetIndex()) {
     if (item.library.isNotEmpty())
       libraries.insert(item.library);
   }
@@ -10131,7 +10437,7 @@ void SynthEditor::populatePresetFilters() {
   preset_banks_.clear();
   preset_banks_.add(kAllBanks);
   std::set<String> banks;
-  for (const auto& item : preset_index_) {
+  for (const auto& item : activePresetIndex()) {
     if (last_preset_library_ != kAllLibraries && item.library != last_preset_library_)
       continue;
     if (item.bank.isNotEmpty())
@@ -10147,7 +10453,7 @@ void SynthEditor::populatePresetFilters() {
   preset_categories_.clear();
   preset_categories_.add(kAllCategories);
   std::set<String> categories;
-  for (const auto& item : preset_index_) {
+  for (const auto& item : activePresetIndex()) {
     if (last_preset_library_ != kAllLibraries && item.library != last_preset_library_)
       continue;
     if (last_preset_bank_ != kAllBanks && item.bank != last_preset_bank_)
@@ -10165,7 +10471,7 @@ void SynthEditor::populatePresetFilters() {
   preset_tags_.clear();
   preset_tags_.add(kAllTags);
   std::set<String> tags;
-  for (const auto& item : preset_index_) {
+  for (const auto& item : activePresetIndex()) {
     if (last_preset_library_ != kAllLibraries && item.library != last_preset_library_)
       continue;
     if (last_preset_bank_ != kAllBanks && item.bank != last_preset_bank_)
@@ -10198,7 +10504,7 @@ void SynthEditor::populatePresetFilters() {
   };
   auto countMatching = [this](auto predicate) {
     int count = 0;
-    for (const auto& item : preset_index_) {
+    for (const auto& item : activePresetIndex()) {
       if (predicate(item))
         ++count;
     }
@@ -10219,8 +10525,13 @@ void SynthEditor::populatePresetFilters() {
   });
 
   preset_facets_.clear();
-  addFacet(kCollectionFacet, "Collection", "All presets", all_matching_count, !preset_favorites_only_);
-  addFacet(kCollectionFacet, "Collection", "Favourites", favorite_matching_count, preset_favorites_only_);
+  const PresetCollection collection = presetCollection();
+  addFacet(kCollectionFacet, "Collection", kAllPresetsCollection, all_matching_count,
+           collection == PresetCollection::kAll);
+  addFacet(kCollectionFacet, "Collection", kFavouritesCollection, favorite_matching_count,
+           collection == PresetCollection::kFavourites);
+  addFacet(kCollectionFacet, "Collection", kCommunityCollection, static_cast<int>(community_index_.size()),
+           collection == PresetCollection::kCommunity);
   for (const auto& library : preset_libraries_) {
     const int count = countMatching([&](const PresetBrowserItem& item) {
       return matchesLibrary(item, library);
@@ -10281,7 +10592,7 @@ void SynthEditor::populatePresetFilters() {
 }
 
 void SynthEditor::filterPresetList() {
-  if (!preset_list_loaded_) {
+  if (!activePresetListLoaded()) {
     filtered_presets_.clear();
     preset_table_.updateContent();
     updatePresetSummary();
@@ -10294,8 +10605,9 @@ void SynthEditor::filterPresetList() {
   const File shown = selectedPresetFile();
   filtered_presets_.clear();
   const String filter = preset_search_.getText().trim().toLowerCase();
+  const bool favourites_only = presetCollection() == PresetCollection::kFavourites;
   std::vector<File> matches;
-  for (const auto& item : preset_index_) {
+  for (const auto& item : activePresetIndex()) {
     if (last_preset_library_ != kAllLibraries && item.library != last_preset_library_)
       continue;
     if (last_preset_bank_ != kAllBanks && item.bank != last_preset_bank_)
@@ -10304,7 +10616,7 @@ void SynthEditor::filterPresetList() {
       continue;
     if (last_preset_tag_ != kAllTags && !item.tags.contains(last_preset_tag_))
       continue;
-    if (preset_favorites_only_ && !isPresetFavorite(item.file))
+    if (favourites_only && !isPresetFavorite(item.file))
       continue;
 
     if (filter.isEmpty() || item.searchable.contains(filter))
@@ -10313,7 +10625,8 @@ void SynthEditor::filterPresetList() {
 
   auto valueForColumn = [this](const PresetBrowserItem& item, int column) {
     switch (column) {
-      case kPresetFavoriteColumn: return isPresetFavorite(item.file) ? String("1") : String("0");
+      case kPresetFavoriteColumn:
+        return (item.isRemote() ? item.downloaded : isPresetFavorite(item.file)) ? String("1") : String("0");
       case kPresetCategoryColumn: return item.category;
       case kPresetTagsColumn: return item.tags.joinIntoString(", ");
       case kPresetBankColumn: return item.bank;
@@ -10433,7 +10746,11 @@ void SynthEditor::activatePresetFacet(int kind, int row) {
       last_preset_tag_ = facet.value;
       break;
     case kCollectionFacet:
-      preset_favorites_only_ = facet.value == "Favourites";
+      setPresetCollection(facet.value == kFavouritesCollection ? PresetCollection::kFavourites
+                          : facet.value == kCommunityCollection ? PresetCollection::kCommunity
+                                                                : PresetCollection::kAll);
+      if (inCommunityCollection())
+        ensureCommunityListLoaded();
       break;
     default:
       return;
@@ -10459,7 +10776,10 @@ String SynthEditor::presetTableCellText(int row, int columnId) const {
     return columnId == kPresetNameColumn ? file.getFileNameWithoutExtension() : String();
 
   switch (columnId) {
-    case kPresetFavoriteColumn: return isPresetFavorite(file) ? "Favourite" : "Not favourite";
+    case kPresetFavoriteColumn:
+      if (item->isRemote())
+        return item->downloaded ? "Downloaded" : "Not downloaded";
+      return isPresetFavorite(file) ? "Favourite" : "Not favourite";
     case kPresetNameColumn: return file.getFileNameWithoutExtension();
     case kPresetCategoryColumn: return item->category;
     case kPresetTagsColumn: return item->tags.isEmpty() ? String("No tags") : item->tags.joinIntoString(", ");
@@ -10494,6 +10814,10 @@ void SynthEditor::presetSelectionChanged(int row, bool allowAutoload) {
   select_after_refresh_.clear();   // the user's pick wins over a saved preset still waiting for the rescan
   updatePresetManagementControls();
   if (!allowAutoload || !preset_preview_.getToggleState())
+    return;
+  // A community preset not fetched yet never autoloads: Return downloads it.
+  if (const auto* item = presetItemForFile(filtered_presets_[row]);
+      item != nullptr && item->isRemote() && !item->downloaded)
     return;
   // A single press loads at once. Holding an arrow fires a selection per key
   // repeat; loading each would queue loads behind the keys, so while the
@@ -10533,31 +10857,56 @@ void SynthEditor::presetSelectionChanged(int row, bool allowAutoload) {
 
 void SynthEditor::updatePresetManagementControls() {
   const File file = selectedPresetFile();
-  const bool selected = file.existsAsFile();
+  const auto* item = presetItemForFile(file);
+  // A community preset is selectable before its file is here.
+  const bool remote = item != nullptr && item->isRemote();
+  const bool selected = file.existsAsFile() || remote;
 
   if (!selected) {
     preset_details_.setText("No preset selected", dontSendNotification);
     preset_details_.setDescription("No preset selected");
     // Not the details of the preset selected before, which may be gone.
-    preset_table_.setDescription(!preset_list_loaded_ ? String("Preset list loading")
-                                 : filtered_presets_.isEmpty() ? String("No presets match the filters")
-                                                               : String("No preset selected"));
+    String state;
+    if (inCommunityCollection() && !community_list_loaded_) {
+      state = community_list_loading_ ? String("Community presets loading")
+            : community_list_error_.isNotEmpty() ? "Community presets not loaded. " + community_list_error_
+                                                  : String("Community presets not loaded");
+    }
+    else {
+      state = !activePresetListLoaded() ? String("Preset list loading")
+            : filtered_presets_.isEmpty() ? String("No presets match the filters")
+                                          : String("No preset selected");
+    }
+    preset_table_.setDescription(state);
     return;
   }
 
   const bool favorite = isPresetFavorite(file);
-  const auto* item = presetItemForFile(file);
   String details = file.getFileNameWithoutExtension();
-  if (item != nullptr) {
-    details += ". " + String(favorite ? "Favourite" : "Not favourite") +
-               ". Library: " + item->library + ". Bank: " + item->bank +
+  if (remote) {
+    details += String(item->downloaded ? ". Downloaded" : ". Not downloaded, Return downloads and loads it") +
+               ". Community preset by " + (item->author.isEmpty() ? String("unknown") : item->author) +
+               ", shared by " + (item->remote_uploader.isEmpty() ? String("unknown") : item->remote_uploader) +
                ". Category: " + item->category +
                ". Tags: " + (item->tags.isEmpty() ? String("none") : item->tags.joinIntoString(", ")) +
-               ". Author: " + (item->author.isEmpty() ? String("unknown") : item->author);
+               ". Downloads: " + String(item->remote_downloads);
     if (item->comments.isNotEmpty())
-      details += ". Comments: " + item->comments;
+      details += ". Description: " + item->comments;
+    if (item->downloaded)
+      details += ". File: " + file.getFullPathName();
   }
-  details += ". File: " + file.getFullPathName();
+  else {
+    if (item != nullptr) {
+      details += ". " + String(favorite ? "Favourite" : "Not favourite") +
+                 ". Library: " + item->library + ". Bank: " + item->bank +
+                 ". Category: " + item->category +
+                 ". Tags: " + (item->tags.isEmpty() ? String("none") : item->tags.joinIntoString(", ")) +
+                 ". Author: " + (item->author.isEmpty() ? String("unknown") : item->author);
+      if (item->comments.isNotEmpty())
+        details += ". Comments: " + item->comments;
+    }
+    details += ". File: " + file.getFullPathName();
+  }
   preset_details_.setText(details, dontSendNotification);
   preset_details_.setDescription(details);
   preset_table_.setDescription(details + ". " + presetTableKeysHelp());
@@ -10568,7 +10917,10 @@ void SynthEditor::updatePresetManagementControls() {
 void SynthEditor::toggleSelectedPresetFavorite() {
   const File file = selectedPresetFile();
   if (!file.existsAsFile()) {
-    postPresetActionAnnouncement("Choose a preset first", AccessibilityHandler::AnnouncementPriority::high);
+    const auto* item = presetItemForFile(file);
+    postPresetActionAnnouncement(item != nullptr && item->isRemote() ? "Download the preset first, with Return"
+                                                                      : "Choose a preset first",
+                                 AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
 
@@ -10914,14 +11266,23 @@ void SynthEditor::updatePresetSummary() {
     return;
   }
 
+  String counts = String(all_presets_.size()) + " presets found, " + String(filtered_presets_.size()) + " shown";
+  if (inCommunityCollection()) {
+    counts = "Community presets from " + atlas::community::libraryHost() + ": ";
+    if (community_list_loading_)
+      counts += "loading in the background";
+    else if (!community_list_loaded_)
+      counts += community_list_error_.isNotEmpty() ? "not loaded. " + community_list_error_ : String("not loaded");
+    else
+      counts += String(community_index_.size()) + " found, " + String(filtered_presets_.size()) + " shown";
+  }
   const String summary = "Current preset: " + current +
                          ". Atlas resources path: " + LoadSave::getDataDirectory().getFullPathName() +
-                         ". " + String(all_presets_.size()) + " presets found, " +
-                         String(filtered_presets_.size()) + " shown. Library: " +
+                         ". " + counts + ". Library: " +
                          last_preset_library_ + ". Bank: " + last_preset_bank_ +
                          ". Category: " + last_preset_category_ +
                          ". Tag: " + last_preset_tag_ +
-                         ". Collection: " + (preset_favorites_only_ ? String("Favourites") : String("All presets")) +
+                         ". Collection: " + presetCollectionName() +
                          (preset_list_loading_ ? ". Refreshing the preset list" +
                             (preset_index_progress_.isNotEmpty() ? ", " + preset_index_progress_.toLowerCase() : String()) :
                             String()) +
@@ -10981,9 +11342,14 @@ void SynthEditor::showSelectedPresetMenu(Component& target) {
   const File selected = selectedPresetFile();
   const bool has_selection = selected.existsAsFile();
   const bool editable = isPresetEditable(selected);
+  // A community preset not fetched yet: Return fetches it first.
+  const auto* selected_item = presetItemForFile(selected);
+  const bool awaiting_download = selected_item != nullptr && selected_item->isRemote() && !has_selection;
   PopupMenu menu;
-  menu.addSectionHeader(has_selection ? selected.getFileNameWithoutExtension() : String("Preset actions"));
-  menu.addItem(1, "Load preset (Return)", has_selection);
+  menu.addSectionHeader(has_selection || awaiting_download ? selected.getFileNameWithoutExtension()
+                                                           : String("Preset actions"));
+  menu.addItem(1, awaiting_download ? "Download and load preset (Return)" : "Load preset (Return)",
+               has_selection || awaiting_download);
   menu.addItem(2, isPresetFavorite(selected) ? "Remove from favourites (F)" : "Add to favourites (F)", has_selection);
   menu.addSeparator();
   menu.addItem(3, "Rename preset... (R)", editable);
@@ -11039,6 +11405,11 @@ void SynthEditor::selectPresetFile(const File& file) {
     updatePresetSummary();
     return;
   }
+  // A file on disk is found among all presets, not the community library's.
+  if (inCommunityCollection()) {
+    setPresetCollection(PresetCollection::kAll);
+    populatePresetFilters();
+  }
 
   const auto* item = presetItemForFile(file);
   // A preset just saved is not in the list until the rescan lands; looking
@@ -11063,7 +11434,7 @@ void SynthEditor::selectPresetFile(const File& file) {
   if (preset_categories_.contains(category))
     last_preset_category_ = category;
   last_preset_tag_ = kAllTags;
-  preset_favorites_only_ = false;
+  setPresetCollection(PresetCollection::kAll);
   populatePresetFilters();
   filterPresetList();
 }
@@ -11077,7 +11448,16 @@ void SynthEditor::loadSelectedPreset() {
     postPluginAnnouncement("Choose a preset first", AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
-  loadPresetFile(filtered_presets_[index], false, false);
+  const File file = filtered_presets_[index];
+  // A community preset is fetched first, again when the library's copy has
+  // changed size since; the download loads it when it lands.
+  if (const auto* item = presetItemForFile(file);
+      item != nullptr && item->isRemote() &&
+      (!file.existsAsFile() || (item->file_size > 0 && file.getSize() != item->file_size))) {
+    downloadCommunityPreset(*item, true);
+    return;
+  }
+  loadPresetFile(file, false, false);
 }
 
 void SynthEditor::choosePresetFile() {

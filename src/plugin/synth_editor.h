@@ -78,6 +78,16 @@ struct PresetBrowserItem {
   String style;
   String label;
   String searchable;
+  // A preset shared on the community library (atlas.blindproducers.org)
+  // rather than one on disk: where to fetch it, what the download must hash
+  // to, and what the site says about it. `file` is where the download lands,
+  // which may not exist yet; `downloaded` says whether it does.
+  String remote_url;
+  String remote_sha256;
+  String remote_uploader;
+  int remote_downloads = 0;
+  bool downloaded = false;
+  bool isRemote() const { return remote_url.isNotEmpty(); }
 };
 
 struct PresetFacetItem {
@@ -87,6 +97,10 @@ struct PresetFacetItem {
   int count = 0;
   bool active = false;
 };
+
+// The Collection facet: every preset on disk, the favourites among them, or
+// the community library's, listed from its JSON API.
+enum class PresetCollection { kAll, kFavourites, kCommunity };
 
 // A list keeps the keyboard focus while the arrow, Page and Home/End keys move
 // its selection. JUCE reports the new selection to Windows screen readers on
@@ -360,6 +374,12 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
       return isPositiveAndBelow(row, filtered_presets_.size()) ? filtered_presets_[row] : File();
     }
     int presetRowCount() const { return filtered_presets_.size(); }
+    // Community library: whether its list is being fetched or a preset is being
+    // downloaded, whether the list arrived, and why it did not.
+    bool isCommunityLibraryBusy() const { return community_list_loading_; }
+    bool isCommunityLibraryLoaded() const { return community_list_loaded_; }
+    bool isCommunityDownloadBusy() const { return !community_downloads_.empty(); }
+    String communityLibraryError() const { return community_list_error_; }
     // Tests: what a message box, file chooser or dialog window does once it
     // closes, having opened while `returnTo` had the focus.
     void closeOsWindowForTesting(Component& returnTo) {
@@ -532,6 +552,32 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
                          bool stillScanning = false);
     const PresetBrowserItem* presetItemForFile(const File& file) const;
     void refreshPresetList(bool announce = true);
+    // The Collection facet's rows. Its Community row lists the presets shared
+    // on the community library, fetched from its JSON API on a background
+    // thread and shown like the local ones; Return on one downloads it into
+    // the Community library folder, checks it against the library's checksum
+    // and loads it.
+    PresetCollection presetCollection() const;
+    void setPresetCollection(PresetCollection collection);
+    String presetCollectionName() const;
+    bool inCommunityCollection() const { return presetCollection() == PresetCollection::kCommunity; }
+    // The items the facets and the table are built from: the community list
+    // in the Community collection, the local index otherwise.
+    const std::vector<PresetBrowserItem>& activePresetIndex() const;
+    bool activePresetListLoaded() const { return inCommunityCollection() ? community_list_loaded_ : preset_list_loaded_; }
+    void ensureCommunityListLoaded();
+    void startCommunityListLoad(bool announce, bool forceRefresh = false);
+    void applyCommunityList(std::vector<PresetBrowserItem> items, const String& error, bool announce,
+                            bool fetched, int generation);
+    void rebuildCommunityLookup();
+    void downloadCommunityPreset(const PresetBrowserItem& item, bool loadAfter);
+    void finishCommunityDownload(const File& file, const String& name, const String& error, bool loadAfter);
+    // Adds a file that just appeared (a download) to the local index and the
+    // process-wide cache ahead of the next scan.
+    void addPresetToLocalIndex(const File& file);
+    // Runs `task` on a thread that is joined when the editor closes, as the
+    // preset scans are; `task` stops when the flag it is given is set.
+    void runPresetBackgroundTask(std::function<void(const std::shared_ptr<std::atomic<bool>>&)> task);
     void populatePresetFilters();
     void filterPresetList();
     void schedulePresetFilterUpdate(bool rebuildFilters);
@@ -945,6 +991,7 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     String& last_preset_bank_;
     String& last_preset_category_;
     String& last_preset_tag_;
+    String& last_preset_collection_;
     void addCpuMeter(Component& parent, int x, int& y, int width, int& focusOrder);
     std::unique_ptr<CpuUsageMeter> cpu_meter_;
     Label title_;
@@ -1190,7 +1237,15 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     bool preset_autoload_scheduled_ = false;
     bool preset_filter_update_pending_ = false;
     bool preset_filter_rebuild_pending_ = false;
-    bool preset_favorites_only_ = false;
+    // The community library's presets, as PresetBrowserItems whose files may
+    // not exist yet, and what is known about fetching them.
+    std::vector<PresetBrowserItem> community_index_;
+    std::unordered_map<std::string, size_t> community_index_by_path_;
+    bool community_list_loaded_ = false;
+    bool community_list_loading_ = false;
+    String community_list_error_;
+    int community_list_generation_ = 0;
+    std::set<std::string> community_downloads_;   // the local paths being fetched
     int preset_sort_column_ = 1;
     bool preset_sort_ascending_ = true;
     bool preset_metadata_edit_mode_ = false;
