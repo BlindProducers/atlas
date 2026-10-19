@@ -387,8 +387,8 @@ namespace vital {
     voice_handler_->disableModulationConnection(change.modulation_processor);
 
     if (change.mono_destination != nullptr && change.mono_modulation_switch != nullptr &&
-        change.mono_destination->connectedInputs() == 1 &&
-        (change.poly_destination == nullptr || change.poly_destination->connectedInputs() == 0)) {
+        change.mono_destination->connectedPluggedInputs() == 1 &&
+        (change.poly_destination == nullptr || change.poly_destination->connectedPluggedInputs() == 0)) {
       change.mono_modulation_switch->set(0);
 
       if (change.poly_modulation_switch) {

@@ -291,6 +291,9 @@ namespace vital {
 
       // Count how many inputs are connected to processors
       int connectedInputs();
+      // Connected inputs from the plugging start on: the modulations summed into
+      // a ModulationSum, not its note reset.
+      int connectedPluggedInputs();
 
       // Remove a connection between two processors.
       virtual void unplugIndex(unsigned int input_index);
