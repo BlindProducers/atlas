@@ -194,8 +194,8 @@ namespace {
     return host == "127.0.0.1" || host == "localhost" || host == "[::1]" || host == "::1";
   }
 
-  juce::String insecureTokenError(const juce::URL& url) {
-    return "The API token is sent only over https, and " + url.getDomain() + " is plain http";
+  juce::String insecureTokenError() {
+    return "unsecure address, host not using HTTPS.";
   }
 
   // The file a file: URL names, without its query string (a download URL
@@ -786,7 +786,7 @@ namespace {
       return request;
     }
     if (!mayCarryToken(target)) {
-      request.error = insecureTokenError(target);
+      request.error = insecureTokenError();
       return request;
     }
     if (!file.existsAsFile()) {
@@ -984,7 +984,7 @@ juce::String fetchAccount(const juce::String& library_url, const juce::String& t
   if (!isWebUrl(url))
     return "Logging in needs the library's web address";
   if (!mayCarryToken(url))
-    return insecureTokenError(url);
+    return insecureTokenError();
   const juce::String key = token.trim().removeCharacters("\r\n");
   if (key.isEmpty())
     return "No API token";
