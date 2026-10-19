@@ -1186,7 +1186,7 @@ namespace {
       expect(focused != nullptr && focused->getAccessibilityHandler() != nullptr &&
              focused->getAccessibilityHandler()->hasFocus(false),
              "accessibility focus follows the moved slot too");
-      expect(focused == nullptr || focused->getTitle() != "Editor menu", "focus must not fall back to the Editor menu");
+      expect(focused == nullptr || focused->getTitle() != "Settings", "focus must not fall back to the Settings button");
     }
     editor.removeFromDesktop();
   }

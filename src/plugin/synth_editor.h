@@ -359,8 +359,6 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     // The context menu of an effect slot header: copy, paste to another bus, replace, remove.
     // Each item carries its own action, so the menu can be exercised without showing it.
     PopupMenu createEffectSlotContextMenu(const String& sectionName, int slot, const String& focusedTitle);
-    // The Editor menu's MIDI learn mappings: one item per mapping removes it.
-    PopupMenu createMidiLearnMenu();
     // Runs one poll of the 20 Hz state timer now (tests interleave it with actions).
     void pollStateNow() { timerCallback(); }
     // What a row's Assign modulation does, with `amountText` typed into the amount prompt.
@@ -399,6 +397,8 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
       showSettings();
       return settings_window_.getComponent();
     }
+    // The Settings window, if open (the Settings button opens it).
+    DialogWindow* settingsWindowForTesting() const { return settings_window_.getComponent(); }
     // "2.0.0 beta 2": the version and, for a pre-release, the beta the
     // release workflow builds (ATLAS_PRERELEASE in .github/workflows/release.yml).
     static String versionText();
@@ -569,16 +569,17 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     // (kSectionKeysStepThroughEffectGroups).
     std::vector<Component*> effectChainStops(const String& sectionName) const;
     void focusEffectChainStop(Component& stop);
-    void showNavigationMenu();
     void armOrCancelMidiLearn(const String& parameterId);
-    // The Editor menu's Settings window: Plugin info (version, links to the
-    // repository), Accessibility (the speech categories) and Online community
-    // browser (show or hide it, the API token and the account it belongs to).
+    // The Settings window, which the Settings button opens: Plugin info, Undo
+    // and redo, Tuning, MIDI learn mappings, Accessibility, Online community
+    // browser and Keyboard help, each a group a screen reader enters.
     void showSettings();
     // Shows or hides the community library in the preset browser and the
     // Preset menu, for every editor from now on (community_library.h).
     void setCommunityBrowserShown(bool shown);
-    void showKeyboardHelp();
+    // Every keyboard shortcut, with this platform's key names, as the Keyboard
+    // help group of Settings shows it.
+    static String keyboardHelpText();
     void initializePatch();
     void savePatchAsDefault();
     File defaultPatchFile() const;
@@ -702,7 +703,8 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void importBankFile(const File& file);
     void chooseFolderToExportBank();
     void exportFolderAsBank(const File& sourceFolder, const File& destinationFile);
-    void loadTuningFile();
+    // Loads a tuning chosen in Settings and says so.
+    void loadTuningFile(const File& file);
     void clearTuning();
     void exportPreset();
     void savePresetToUserDirectory();
@@ -1090,7 +1092,7 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void addCpuMeter(Component& parent, int x, int& y, int width, int& focusOrder);
     std::unique_ptr<CpuUsageMeter> cpu_meter_;
     Label title_;
-    TextButton menu_button_ { "Menu" };
+    TextButton settings_button_ { "Settings" };
     // The group that number keys 1 to 9 choose an element from.
     String current_group_;
     Label preset_summary_;
@@ -1310,7 +1312,6 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     std::unique_ptr<FileChooser> fx_bus_chooser_;
     std::unique_ptr<FileChooser> ir_chooser_;
     std::unique_ptr<FileChooser> bank_chooser_;
-    std::unique_ptr<FileChooser> tuning_chooser_;
     std::unique_ptr<FileChooser> export_chooser_;
     String pending_modulation_source_;
     String pending_modulation_destination_;

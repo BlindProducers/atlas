@@ -1459,9 +1459,11 @@ namespace {
 
   Component* titledIn(Component& parent, const String& title) { return titled(parent, title); }
 
-  // Editor menu > Settings: Plugin info, Accessibility and Online community
-  // browser, each a group; the browser can be hidden, which takes it out of
-  // the preset browser; logging in and out asks the library whose token it is.
+  // The Settings button opens Settings: Plugin info, Undo and redo, Tuning,
+  // MIDI learn mappings, Accessibility, Online community browser and Keyboard
+  // help, each a group a screen reader enters, none of them flat in the
+  // window. The browser can be hidden, which takes it out of the preset
+  // browser; logging in and out asks the library whose token it is.
   void testSettingsWindow() {
     TemporaryUndoLibrary library;
     expect(library.isolated(), "the test's library is its own temporary folder");
@@ -1488,6 +1490,8 @@ namespace {
     auto heard = [&] { return spoken.messages.joinIntoString(" | ").toStdString(); };
 
     SynthPlugin synth;
+    // The mappings the user's own config brought along go; the test's config is its own.
+    synth.clearAllMidiLearn();
     SynthEditor editor(synth);
     editor.updateFullGui();
     editor.addToDesktop(0);
@@ -1497,20 +1501,119 @@ namespace {
     editor.refreshPresetLibrary();
     pumpUntil([&] { return !editor.isPresetLibraryBusy(); }, 60000);
 
-    Component::SafePointer<DialogWindow> window(editor.showSettingsForTesting());
+    // The editor is called Atlas, and nothing is read after its name.
+    expect(editor.getTitle() == "Atlas" && editor.getDescription().isEmpty(),
+           "the editor's name is Atlas alone, description: " + editor.getDescription().toStdString());
+
+    // A change to undo, for the Undo and redo group.
+    const std::string cutoff_id = "filter_1_cutoff";
+    const float cutoff_before = controlValue(synth, cutoff_id);
+    if (auto* cutoff = editor.controlForParameter(String(cutoff_id)))
+      cutoff->keyPressed(KeyPress(KeyPress::upKey));
+    pumpEditorEvents();
+    const float cutoff_after = controlValue(synth, cutoff_id);
+    expect(cutoff_after != cutoff_before, "the arrow moves Filter 1 Cutoff");
+
+    // The Settings button, first in the window, opens Settings at once: no menu.
+    Button* settings_button = nullptr;
+    for (auto* component : editor.getKeyboardFocusOrder())
+      if (auto* button = dynamic_cast<Button*>(component); button != nullptr && button->getTitle() == "Settings")
+        settings_button = button;
+    expect(settings_button != nullptr && settings_button->getButtonText() == "Settings" &&
+               settings_button->getDescription().isEmpty() && !editor.getKeyboardFocusOrder().empty() &&
+               editor.getKeyboardFocusOrder().front() == settings_button,
+           "the editor starts with the Settings button");
+    if (settings_button != nullptr)
+      settings_button->triggerClick();
+    pumpUntil([&] { return editor.settingsWindowForTesting() != nullptr; }, 5000);
+    Component::SafePointer<DialogWindow> window(editor.settingsWindowForTesting());
     pumpEditorEvents();
     auto* content = window != nullptr ? window->getContentComponent() : nullptr;
-    expect(content != nullptr && window->getName() == "Atlas Settings", "Settings opens its window");
+    expect(content != nullptr && window->getName() == "Atlas Settings", "the Settings button opens the Settings window");
     if (content == nullptr) {
       editor.removeFromDesktop();
       return;
     }
-    for (const auto* group : { "Plugin info", "Accessibility", "Online community browser" }) {
-      auto* found = titledIn(*content, group);
-      expect(found != nullptr && found->getAccessibilityHandler() != nullptr &&
-                 found->getAccessibilityHandler()->getRole() == AccessibilityRole::group,
-             std::string("the window has the group ") + group);
+
+    // Each group holds its controls, and the window holds the groups: a
+    // screen reader enters one group at a time instead of reading one flat list.
+    auto childTitles = [](AccessibilityHandler* handler) {
+      StringArray titles;
+      if (handler != nullptr)
+        for (auto* child : handler->getChildren())
+          titles.add(child->getTitle());
+      return titles;
+    };
+    const StringArray window_children = childTitles(window->getAccessibilityHandler());
+    const std::pair<const char*, const char*> groups[] = {
+      { "Plugin info", "Report an issue on GitHub" },
+      { "Undo and redo", nullptr },
+      { "Tuning", "Load tuning file..." },
+      { "MIDI learn mappings", nullptr },
+      { "Accessibility", "Other announcements" },
+      { "Online community browser", "Show the community library in the preset browser" },
+      { "Keyboard help", "Keyboard shortcuts" } };
+    for (const auto& [title, control] : groups) {
+      auto* group = titledIn(*content, title);
+      auto* handler = group != nullptr ? group->getAccessibilityHandler() : nullptr;
+      expect(handler != nullptr && handler->getRole() == AccessibilityRole::group && group->isFocusContainer(),
+             std::string("the window has the group ") + title);
+      expect(window_children.contains(title), std::string("the window's elements include the group ") + title);
+      if (control == nullptr)
+        continue;
+      const StringArray inside = childTitles(handler);
+      expect(inside.contains(control) && !window_children.contains(control),
+             std::string(control) + " is inside " + title + ", not loose in the window: " +
+                 inside.joinIntoString(", ").toStdString());
+#if JUCE_MAC
+      // What VoiceOver itself is given when it enters the group.
+      if (handler != nullptr)
+        expect(nativeAccessibilityChildTitles(*handler).contains(control),
+               std::string("VoiceOver finds ") + control + " inside " + title);
+#endif
     }
+    expect(!window_children.contains("Atlas settings"),
+           "the window's layout is no element of its own: " + window_children.joinIntoString(", ").toStdString());
+
+    // Undo and redo, named after what they would do.
+    std::vector<Button*> history;
+    if (auto* group = titledIn(*content, "Undo and redo"))
+      for (auto* child : group->getChildren())
+        if (auto* button = dynamic_cast<Button*>(child))
+          history.push_back(button);
+    auto historyTitles = [&] {
+      StringArray titles;
+      for (auto* button : history)
+        titles.add(button->getTitle());
+      return titles.joinIntoString(" | ").toStdString();
+    };
+    expect(history.size() == 2 && history[0]->getTitle().startsWith("Undo ") &&
+               history[1]->getTitle() == "Nothing to redo",
+           "Undo names the change, Redo has nothing yet: " + historyTitles());
+    if (history.size() == 2) {
+      spoken.messages.clear();
+      history[0]->onClick();
+      pumpEditorEvents();
+      close(controlValue(synth, cutoff_id), cutoff_before, "Undo in Settings puts Filter 1 Cutoff back");
+      expect(said("Undo"), "and says what it undid: " + heard());
+      expect(history[0]->getTitle() == "Nothing to undo" && history[1]->getTitle().startsWith("Redo "),
+             "the buttons follow the history: " + historyTitles());
+      history[1]->onClick();
+      pumpEditorEvents();
+      close(controlValue(synth, cutoff_id), cutoff_after, "Redo in Settings puts the change back");
+    }
+
+    // Tuning: the standard one, with nothing to clear.
+    auto* tuning_name = dynamic_cast<Label*>(titledIn(*content, "Current tuning"));
+    auto* clear_tuning = dynamic_cast<Button*>(titledIn(*content, "Clear tuning"));
+    expect(tuning_name != nullptr && tuning_name->getText() == "Tuning: standard twelve-tone equal temperament." &&
+               clear_tuning != nullptr && !clear_tuning->isVisible(),
+           "Tuning says the standard tuning, with no Clear tuning");
+
+    // MIDI learn mappings: none yet.
+    auto* midi_status = dynamic_cast<Label*>(titledIn(*content, "MIDI learn mapping count"));
+    expect(midi_status != nullptr && midi_status->getText().startsWith("No MIDI learn mappings."),
+           "MIDI learn mappings says there are none");
 
     // Plugin info.
     auto* version = dynamic_cast<Label*>(titledIn(*content, "Version"));
@@ -1604,9 +1707,25 @@ namespace {
     for (const auto& message : spoken.messages)
       expect(!message.contains(kTestToken) && !message.contains("bpa_"), "the token is never said");
 
-    // Opened again, it asks the library for the account behind the saved token.
+    // While Settings is closed: a tuning and two MIDI learn mappings.
     delete window.getComponent();
     pumpEditorEvents();
+    const File scale = library.folder.getChildFile("Test Fifths.scl");
+    scale.replaceWithText("! Test Fifths.scl\nFifths only\n 1\n!\n 701.955\n");
+    synth.loadTuningFile(scale);
+    prepare(synth);
+    auto learn = [&](const char* parameter, int controller) {
+      synth.armMidiLearn(parameter);
+      MidiBuffer midi;
+      midi.addEvent(MidiMessage::controllerEvent(1, controller, 100), 0);
+      renderMidi(synth, midi);
+      synth.midiLearnMappings();
+    };
+    learn("osc_1_tune", 16);
+    learn("osc_2_tune", 17);
+    expect(synth.midiLearnMappings().size() == 2, "two MIDI learn mappings are made");
+
+    // Opened again, it asks the library for the account behind the saved token.
     window = editor.showSettingsForTesting();
     pumpEditorEvents();
     content = window != nullptr ? window->getContentComponent() : nullptr;
@@ -1614,6 +1733,57 @@ namespace {
     pumpUntil([&] { return account != nullptr && account->getText().contains("shared"); }, 10000);
     expect(account != nullptr && account->getText() == "Logged in as Jay Ladder (jayladdermusic). 3 presets and 1 bank shared.",
            "the saved token's account is checked when Settings opens");
+
+    // The tuning, which Clear tuning takes back to the standard one.
+    tuning_name = content != nullptr ? dynamic_cast<Label*>(titledIn(*content, "Current tuning")) : nullptr;
+    clear_tuning = content != nullptr ? dynamic_cast<Button*>(titledIn(*content, "Clear tuning")) : nullptr;
+    expect(tuning_name != nullptr && tuning_name->getText() == "Tuning: Test Fifths." && clear_tuning != nullptr &&
+               clear_tuning->isVisible(),
+           "Tuning names the loaded tuning, with Clear tuning: " +
+               (tuning_name != nullptr ? tuning_name->getText().toStdString() : std::string()));
+    if (clear_tuning != nullptr && tuning_name != nullptr) {
+      spoken.messages.clear();
+      clear_tuning->onClick();
+      pumpEditorEvents();
+      expect(synth.getTuning()->isDefault() && tuning_name->getText() == "Tuning: standard twelve-tone equal temperament." &&
+                 !clear_tuning->isVisible() && said("Tuning cleared"),
+             "Clear tuning goes back to the standard tuning and says so: " + heard());
+    }
+
+    // The mappings, a Remove button each, and Remove all.
+    auto mappingButtons = [&] {
+      std::vector<Button*> buttons;
+      if (auto* group = content != nullptr ? titledIn(*content, "MIDI learn mappings") : nullptr)
+        for (auto* child : group->getChildren())
+          if (auto* button = dynamic_cast<Button*>(child);
+              button != nullptr && button->isVisible() && button->getTitle().startsWith("Remove CC"))
+            buttons.push_back(button);
+      return buttons;
+    };
+    midi_status = content != nullptr ? dynamic_cast<Label*>(titledIn(*content, "MIDI learn mapping count")) : nullptr;
+    auto* remove_all = content != nullptr ? dynamic_cast<Button*>(titledIn(*content, "Remove all MIDI learn mappings"))
+                                          : nullptr;
+    auto buttons = mappingButtons();
+    expect(midi_status != nullptr && midi_status->getText() == "2 MIDI learn mappings." && buttons.size() == 2 &&
+               buttons[0]->getTitle().startsWith("Remove CC 16 to ") && buttons[1]->getTitle().startsWith("Remove CC 17 to ") &&
+               remove_all != nullptr && remove_all->isVisible(),
+           "MIDI learn mappings lists both, each with its Remove button");
+    if (buttons.size() == 2 && midi_status != nullptr && remove_all != nullptr) {
+      const String second = buttons[1]->getTitle();
+      spoken.messages.clear();
+      buttons[0]->onClick();
+      pumpEditorEvents();
+      buttons = mappingButtons();
+      expect(synth.midiLearnMappings().size() == 1 && midi_status->getText() == "1 MIDI learn mapping." &&
+                 buttons.size() == 1 && buttons[0]->getTitle() == second && said("Removed CC 16 to "),
+             "Remove takes one mapping away and says so: " + heard());
+      spoken.messages.clear();
+      remove_all->onClick();
+      pumpEditorEvents();
+      expect(synth.midiLearnMappings().empty() && midi_status->getText().startsWith("No MIDI learn mappings.") &&
+                 mappingButtons().empty() && !remove_all->isVisible() && said("Removed all MIDI learn mappings"),
+             "Remove all takes the rest and says so: " + heard());
+    }
 
     // Log out.
     log_out = content != nullptr ? dynamic_cast<Button*>(titledIn(*content, "Log out")) : nullptr;
@@ -1625,7 +1795,17 @@ namespace {
                account != nullptr && account->getText() == "Not logged in.",
            "Log out forgets the token and its account: " + heard());
 
-    // The window closes with the editor.
+    // The keyboard help, whose text box hands Escape to the window: it closes.
+    auto* help = content != nullptr ? dynamic_cast<TextEditor*>(titledIn(*content, "Keyboard shortcuts")) : nullptr;
+    expect(help != nullptr && help->getText().contains("Settings has them too") &&
+               help->getText().contains("Escape - Close Settings") && !help->getText().contains("Editor menu"),
+           "the keyboard help is in Settings and names it");
+    if (help != nullptr) {
+      help->keyPressed(KeyPress(KeyPress::escapeKey));
+      pumpUntil([&] { return window == nullptr; }, 5000);
+    }
+    expect(window == nullptr, "Escape in the keyboard help closes Settings");
+
     editor.removeFromDesktop();
   }
 

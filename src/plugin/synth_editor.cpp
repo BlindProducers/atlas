@@ -530,6 +530,14 @@ namespace {
       postAnnouncement(message, AccessibilityHandler::AnnouncementPriority::high);
   }
 
+  // What a Settings action did (a tuning loaded or cleared, a MIDI learn
+  // mapping removed). The user pressed the button and waits to hear it, so
+  // no optional category silences it.
+  void postSettingsAnnouncement(const String& message) {
+    if (accessibilitySpeechSettings().speech_feedback)
+      postAnnouncement(message, AccessibilityHandler::AnnouncementPriority::high);
+  }
+
   // What the screen reader would read from a control where JUCE gives NVDA
   // nothing to read: the row a list's selection keys landed on (see
   // SelectionKeyList) and a toggle's new state (see SpokenToggleButton).
@@ -4710,7 +4718,7 @@ namespace {
       ParameterSlider& slider_;
   };
 
-  class OffscreenButtonAccessibilityHandler final : public AccessibilityHandler {
+  class OffscreenButtonAccessibilityHandler : public AccessibilityHandler {
     public:
       explicit OffscreenButtonAccessibilityHandler(Button& buttonToWrap, AccessibilityRole role) :
           AccessibilityHandler(buttonToWrap, role, buttonActions(buttonToWrap), buttonInterfaces(buttonToWrap)),
@@ -6033,7 +6041,7 @@ class AccessibleParameterRow : public Component {
         menu.addItem(kContextClearMidi, "Clear MIDI learn");
       }
       if (macro_index >= 0) {
-        menu.addItem(kContextRenameMacro, "Rename macro\xe2\x80\xa6");
+        menu.addItem(kContextRenameMacro, "Rename macro...");
         menu.addItem(kContextToggleBipolar, "Toggle bipolar range");
       }
 
@@ -6424,8 +6432,8 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   if (last_preset_bank_.isEmpty()) last_preset_bank_ = kAllBanks;
   if (last_preset_category_.isEmpty()) last_preset_category_ = kAllCategories;
   if (last_preset_tag_.isEmpty()) last_preset_tag_ = kAllTags;
+  // Its name alone: a screen reader reads a description after it, every time.
   setTitle("Atlas");
-  setDescription("Keyboard and VoiceOver accessible editor for Atlas");
   setWantsKeyboardFocus(true);
   setFocusContainerType(Component::FocusContainerType::keyboardFocusContainer);
 
@@ -6435,12 +6443,12 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   title_.setColour(Label::textColourId, Colours::white);
   addAndMakeVisible(title_);
 
-  menu_button_.setTitle("Editor menu");
-  menu_button_.setDescription("Open tuning, accessibility settings and keyboard help. Patch saving and presets are in the Preset menu");
-  menu_button_.setHelpText("Press Enter to save the current patch, initialize the patch, or change accessibility settings");
-  menu_button_.setWantsKeyboardFocus(true);
-  menu_button_.onClick = [this] { showNavigationMenu(); };
-  addAndMakeVisible(menu_button_);
+  settings_button_.setTitle("Settings");
+  settings_button_.setHelpText("Opens Settings: plugin info, undo and redo, tuning, MIDI learn mappings, "
+                               "accessibility, the community browser and the keyboard help");
+  settings_button_.setWantsKeyboardFocus(true);
+  settings_button_.onClick = [this] { showSettings(); };
+  addAndMakeVisible(settings_button_);
 
   preset_summary_.setTitle("Preset summary");
   preset_summary_.setDescription("Current preset and Atlas resources path");
@@ -6886,7 +6894,7 @@ void SynthEditor::resized() {
   auto bounds = getLocalBounds().reduced(16);
   title_.setBounds(bounds.removeFromTop(40));
   auto navigation = bounds.removeFromTop(38);
-  menu_button_.setBounds(navigation.removeFromLeft(120).reduced(3));
+  settings_button_.setBounds(navigation.removeFromLeft(120).reduced(3));
   if (modulation_amount_prompt_visible_ || parameter_value_prompt_visible_) {
     bounds.removeFromTop(8);
     modulation_amount_prompt_.setBounds(bounds.removeFromTop(34));
@@ -9372,78 +9380,21 @@ void SynthEditor::armOrCancelMidiLearn(const String& parameterId) {
                          AccessibilityHandler::AnnouncementPriority::high);
 }
 
-PopupMenu SynthEditor::createMidiLearnMenu() {
-  PopupMenu menu;
-  const auto mappings = synth_.midiLearnMappings();
-  if (mappings.empty()) {
-    menu.addItem("No MIDI learn mappings", false, false, nullptr);
-    return menu;
-  }
-  for (const auto& mapping : mappings) {
-    const int controller = mapping.first;
-    const String destination(mapping.second);
-    menu.addItem("Remove " + midiControlName(controller) + " to " + modulationDestinationLabelForId(destination),
-                 [this, destination, controller] {
-                   synth_.clearMidiLearn(destination.toStdString());
-                   postPluginAnnouncement("Removed " + midiControlName(controller) + " to " +
-                                              modulationDestinationLabelForId(destination),
-                                          AccessibilityHandler::AnnouncementPriority::high);
-                 });
-  }
-  menu.addSeparator();
-  menu.addItem("Remove all MIDI learn mappings", [this] {
-    synth_.clearAllMidiLearn();
-    postPluginAnnouncement("Removed all MIDI learn mappings", AccessibilityHandler::AnnouncementPriority::high);
-  });
-  return menu;
-}
-
-void SynthEditor::showNavigationMenu() {
-  PopupMenu menu;
-  menu.addSectionHeader("Editor");
-  // Undo and redo, named after what they would do, for a host that keeps
-  // Command Z for itself.
-  auto& history = synth_.undoHistory();
-  const String undo = history.undoDescription();
-  const String redo = history.redoDescription();
-  const String command = atlas::keys::commandName();
-  menu.addItem(9, (undo.isEmpty() ? String("Undo") : "Undo " + undo) + " (" + command + " Z)", undo.isNotEmpty());
-  menu.addItem(10, (redo.isEmpty() ? String("Redo") : "Redo " + redo) + " (Shift " + command + " Z)", redo.isNotEmpty());
-  menu.addSeparator();
-  menu.addItem(6, "Load tuning file...");
-  if (!synth_.getTuning()->isDefault())
-    menu.addItem(7, "Clear tuning: " + String(synth_.getTuning()->getName()));
-  menu.addSeparator();
-  const int mapping_count = static_cast<int>(synth_.midiLearnMappings().size());
-  menu.addSubMenu("MIDI learn mappings (" + String(mapping_count) + ")", createMidiLearnMenu());
-  menu.addItem(4, "Settings...");
-  menu.addItem(8, "Keyboard help");
-
-  showAccessibleMenuAsync(menu, PopupMenu::Options().withTargetComponent(menu_button_),
-                     [this](int result) {
-    if (result == 6)
-      loadTuningFile();
-    else if (result == 7)
-      clearTuning();
-    else if (result == 4)
-      showSettings();
-    else if (result == 8)
-      showKeyboardHelp();
-    else if (result == 9 || result == 10)
-      undoOrRedo(result == 10);
-  });
-}
-
 namespace {
   constexpr const char* kRepositoryUrl = "https://github.com/BlindProducers/atlas";
 
-  // A titled group of the Settings window: a screen reader names its controls
-  // by it, and it draws its title above them.
+  // A titled group of the Settings window. It is a focus container, so a
+  // screen reader presents it with its controls inside it: VoiceOver enters it
+  // (VO Shift Down) and NVDA names it as the focus moves in. It is not a
+  // keyboard focus container, so Tab still moves through the controls of every
+  // group in turn. Like everything in the window, a screen reader reaches it
+  // while it is scrolled out of view.
   class SettingsGroup : public Component {
     public:
       explicit SettingsGroup(const String& title) {
         setTitle(title);
         setName(title);
+        setFocusContainerType(FocusContainerType::focusContainer);
       }
 
       static constexpr int kHeadingHeight = 28;
@@ -9457,7 +9408,95 @@ namespace {
       }
 
       std::unique_ptr<AccessibilityHandler> createAccessibilityHandler() override {
-        return std::make_unique<AccessibilityHandler>(*this, AccessibilityRole::group);
+        class Handler final : public AccessibilityHandler {
+          public:
+            explicit Handler(Component& group) : AccessibilityHandler(group, AccessibilityRole::group) { }
+
+            AccessibleState getCurrentState() const override {
+              return AccessibilityHandler::getCurrentState().withAccessibleOffscreen();
+            }
+        };
+        return std::make_unique<Handler>(*this);
+      }
+  };
+
+  // The parts of the Settings window that only hold and scroll its groups.
+  // Screen readers skip them, so the groups are the window's own elements
+  // rather than sitting inside unnamed, empty ones.
+  class SettingsLayout : public Component {
+    public:
+      std::unique_ptr<AccessibilityHandler> createAccessibilityHandler() override {
+        return createIgnoredAccessibilityHandler(*this);
+      }
+  };
+
+  class SettingsViewport : public Viewport {
+    public:
+      std::unique_ptr<AccessibilityHandler> createAccessibilityHandler() override {
+        return createIgnoredAccessibilityHandler(*this);
+      }
+  };
+
+  // A line of text in the Settings window, read as what it says, as JUCE's
+  // own label is. Tab reaches it, and so does a screen reader while it is
+  // scrolled out of view.
+  class SettingsText : public Label {
+    public:
+      SettingsText() {
+        setColour(Label::textColourId, Colours::white);
+        setWantsKeyboardFocus(true);
+      }
+
+      std::unique_ptr<AccessibilityHandler> createAccessibilityHandler() override {
+        class Handler final : public AccessibilityHandler {
+          public:
+            explicit Handler(Label& label) :
+                AccessibilityHandler(label, AccessibilityRole::label, {},
+                                     AccessibilityHandler::Interfaces{ std::make_unique<Text>(label) }),
+                label_(label) { }
+
+            String getTitle() const override { return label_.getText(); }
+            String getDescription() const override { return {}; }
+            String getHelp() const override { return {}; }
+
+            AccessibleState getCurrentState() const override {
+              return AccessibilityHandler::getCurrentState().withAccessibleOffscreen();
+            }
+
+          private:
+            class Text final : public AccessibilityTextValueInterface {
+              public:
+                explicit Text(Label& label) : label_(label) { }
+
+                bool isReadOnly() const override { return true; }
+                String getCurrentValueAsString() const override { return label_.getText(); }
+                void setValueAsString(const String&) override { }
+
+              private:
+                Label& label_;
+            };
+
+            Label& label_;
+        };
+        return std::make_unique<Handler>(*this);
+      }
+  };
+
+  // A toggle of the Settings window: it says its new state on Windows, as
+  // SpokenToggleButton does, keeps its description, and a screen reader
+  // reaches it while it is scrolled out of view.
+  class SettingsToggle final : public SpokenToggleButton {
+    public:
+      explicit SettingsToggle(const String& text) : SpokenToggleButton(text) { }
+
+      std::unique_ptr<AccessibilityHandler> createAccessibilityHandler() override {
+        class Handler final : public OffscreenButtonAccessibilityHandler {
+          public:
+            using OffscreenButtonAccessibilityHandler::OffscreenButtonAccessibilityHandler;
+
+            String getDescription() const override { return getComponent().getDescription(); }
+        };
+        return std::make_unique<Handler>(*this, AccessibilityRole::toggleButton);
       }
   };
 
@@ -9472,17 +9511,27 @@ namespace {
            << pluralCount(account.banks, "bank", "banks") << " shared.";
     return text;
   }
+
+  // "mod wheel to Filter 1 Cutoff": a MIDI learn mapping as the Settings window names it.
+  String midiLearnMappingName(int controller, const std::string& destination) {
+    return midiControlName(controller) + " to " + modulationDestinationLabelForId(String(destination));
+  }
 }
 
-// The Settings window's content (SynthEditor::showSettings): three groups,
-// read and changed from the keyboard, Tab moving through them in order.
-class AtlasSettingsContent : public Component {
+// The Settings window's content (SynthEditor::showSettings): a group for each
+// part, read and changed from the keyboard. Tab moves through every control in
+// order, and a screen reader enters one group at a time. Taller than the
+// screen, the groups scroll, and the focused control is scrolled into view.
+class AtlasSettingsContent : public Component, private FocusChangeListener {
   public:
     explicit AtlasSettingsContent(SynthEditor& editor) : editor_(&editor) {
       setTitle("Atlas settings");
+      viewport_.setViewedComponent(&inner_, false);
+      viewport_.setScrollBarsShown(true, false);
+      addAndMakeVisible(viewport_);
 
       // Plugin info.
-      addAndMakeVisible(info_);
+      inner_.addAndMakeVisible(info_);
       String format = AudioProcessor::getWrapperTypeDescription(editor.synth_.wrapperType);
       if (format == "AudioUnit")
         format = "Audio Unit";
@@ -9490,16 +9539,43 @@ class AtlasSettingsContent : public Component {
                            (format != "Undefined" ? ", " + format + " plug-in" : String()),
                        dontSendNotification);
       version_.setTitle("Version");
-      version_.setDescription(version_.getText());
-      version_.setColour(Label::textColourId, Colours::white);
-      version_.setWantsKeyboardFocus(true);
       info_.addAndMakeVisible(version_);
       addLink(issue_, "Report an issue", String(kRepositoryUrl) + "/issues/new");
       addLink(source_, "Source code", kRepositoryUrl);
       addLink(releases_, "Releases", String(kRepositoryUrl) + "/releases");
 
-      // Accessibility: the speech categories, as the Accessibility settings window had them.
-      addAndMakeVisible(accessibility_);
+      // Undo and redo, named after what they would do. The keys do the same
+      // anywhere in Atlas, but some hosts keep them for themselves.
+      inner_.addAndMakeVisible(history_);
+      const String command = atlas::keys::commandName();
+      configureButton(undo_, "Undo", command + " Z anywhere in Atlas undoes as well");
+      undo_.onClick = [this] { undoOrRedo(false); };
+      configureButton(redo_, "Redo", "Shift " + command + " Z anywhere in Atlas redoes as well");
+      redo_.onClick = [this] { undoOrRedo(true); };
+      history_.addAndMakeVisible(undo_);
+      history_.addAndMakeVisible(redo_);
+
+      // Tuning.
+      inner_.addAndMakeVisible(tuning_);
+      tuning_name_.setTitle("Current tuning");
+      tuning_.addAndMakeVisible(tuning_name_);
+      configureButton(load_tuning_, "Load tuning file...", "A Scala scale (.scl), keyboard map (.kbm) or .tun file");
+      load_tuning_.onClick = [this] { chooseTuningFile(); };
+      configureButton(clear_tuning_, "Clear tuning", "Goes back to standard twelve-tone equal temperament");
+      clear_tuning_.onClick = [this] { clearTuning(); };
+      tuning_.addAndMakeVisible(load_tuning_);
+      tuning_.addChildComponent(clear_tuning_);
+
+      // MIDI learn mappings: a button for each removes it.
+      inner_.addAndMakeVisible(midi_);
+      midi_status_.setTitle("MIDI learn mapping count");
+      midi_.addAndMakeVisible(midi_status_);
+      configureButton(remove_all_mappings_, "Remove all MIDI learn mappings", {});
+      remove_all_mappings_.onClick = [this] { removeAllMappings(); };
+      midi_.addChildComponent(remove_all_mappings_);
+
+      // Accessibility: the speech categories.
+      inner_.addAndMakeVisible(accessibility_);
       struct Entry {
         const char* label;
         bool AccessibilitySpeechSettings::* field;
@@ -9518,7 +9594,7 @@ class AtlasSettingsContent : public Component {
       };
       auto& settings = accessibilitySpeechSettings();
       for (const auto& entry : kEntries) {
-        auto toggle = std::make_unique<SpokenToggleButton>(entry.label);
+        auto toggle = std::make_unique<SettingsToggle>(entry.label);
         toggle->setTitle(entry.label);
         toggle->setToggleState(settings.*(entry.field), dontSendNotification);
         auto* raw = toggle.get();
@@ -9532,7 +9608,7 @@ class AtlasSettingsContent : public Component {
       }
 
       // Online community browser.
-      addAndMakeVisible(community_);
+      inner_.addAndMakeVisible(community_);
       const String host = atlas::community::libraryHost();
       show_community_.setTitle("Show the community library in the preset browser");
       show_community_.setDescription("Adds Community presets and Community banks to the Collection list, and Share "
@@ -9549,8 +9625,6 @@ class AtlasSettingsContent : public Component {
       };
       community_.addAndMakeVisible(show_community_);
       account_.setTitle("Account");
-      account_.setColour(Label::textColourId, Colours::white);
-      account_.setWantsKeyboardFocus(true);
       community_.addChildComponent(account_);
       token_.setTitle("API token");
       token_.setDescription("From the API tokens page of your account on " + host + ". It starts with bpa_");
@@ -9560,6 +9634,8 @@ class AtlasSettingsContent : public Component {
       token_.setSelectAllWhenFocused(true);
       token_.setWantsKeyboardFocus(true);
       token_.onReturnKey = [this] { logIn(); };
+      // A text box keeps Escape for itself; here it closes the window, as everywhere else in it.
+      token_.onEscapeKey = [this] { closeWindow(); };
       community_.addChildComponent(token_);
       configureButton(log_in_, "Log in", "Checks the API token with " + host + " and keeps it in Atlas's settings");
       log_in_.onClick = [this] { logIn(); };
@@ -9570,9 +9646,43 @@ class AtlasSettingsContent : public Component {
       for (auto* button : { &log_in_, &log_out_, &website_ })
         community_.addChildComponent(*button);
 
+      // Keyboard help: every shortcut, in a text box read line by line.
+      inner_.addAndMakeVisible(keyboard_help_);
+      help_text_.setMultiLine(true, true);
+      // Editable (not read-only) on purpose: a read-only JUCE TextEditor is exposed to the OS
+      // accessibility layer as static text with no navigable caret, so screen readers re-read the
+      // same line on every arrow press. An editable field exposes a movable caret and gives proper
+      // line/word/character navigation. Edits are harmless: the text is set again each time the
+      // window opens.
+      help_text_.setReadOnly(false);
+      help_text_.setScrollbarsShown(true);
+      help_text_.setCaretVisible(true);
+      help_text_.setTabKeyUsedAsCharacter(false);
+      help_text_.setWantsKeyboardFocus(true);
+      help_text_.setTitle("Keyboard shortcuts");
+      help_text_.setText(SynthEditor::keyboardHelpText(), dontSendNotification);
+      help_text_.onEscapeKey = [this] { closeWindow(); };
+      keyboard_help_.addAndMakeVisible(help_text_);
+
+      updateUndoButtons();
+      updateTuning();
+      updateMappings();
       updateCommunityControls();
       refreshAccount();
+      Desktop::getInstance().addFocusChangeListener(this);
     }
+
+    ~AtlasSettingsContent() override {
+      Desktop::getInstance().removeFocusChangeListener(this);
+    }
+
+    // Only the groups are the window's elements (see SettingsLayout).
+    std::unique_ptr<AccessibilityHandler> createAccessibilityHandler() override {
+      return createIgnoredAccessibilityHandler(*this);
+    }
+
+    // What the window opens on: the version.
+    Component& firstControl() { return version_; }
 
     // The community group's controls follow the toggle and the token.
     void updateCommunityControls() {
@@ -9596,7 +9706,10 @@ class AtlasSettingsContent : public Component {
         focus_target->grabKeyboardFocus();
     }
 
-    void resized() override { layout(); }
+    void resized() override {
+      viewport_.setBounds(getLocalBounds());
+      layout();
+    }
 
     String accountText() const { return account_.getText(); }
 
@@ -9607,7 +9720,7 @@ class AtlasSettingsContent : public Component {
       info_.addAndMakeVisible(button);
     }
 
-    void configureButton(TextButton& button, const String& title, const String& help) {
+    static void configureButton(TextButton& button, const String& title, const String& help) {
       button.setButtonText(title);
       button.setTitle(title);
       button.setDescription(help);
@@ -9615,9 +9728,181 @@ class AtlasSettingsContent : public Component {
       button.setWantsKeyboardFocus(true);
     }
 
+    void closeWindow() {
+      if (auto* window = findParentComponentOfClass<DialogWindow>())
+        window->exitModalState(0);
+    }
+
+    // A file chooser took the keyboard: back to the window and the button that opened it.
+    static void focusAfterOsWindow(Component& target) {
+      Component::SafePointer<Component> safe_target(&target);
+      MessageManager::callAsync([safe_target] {
+        if (safe_target == nullptr || !safe_target->isShowing())
+          return;
+        if (auto* window = safe_target->getTopLevelComponent())
+          window->toFront(true);
+        safe_target->grabKeyboardFocus();
+      });
+    }
+
+    // Undo and redo. The editor keeps the focus here when it rebuilds its rows.
+    void undoOrRedo(bool redo) {
+      if (editor_ != nullptr)
+        editor_->undoOrRedo(redo);
+      updateUndoButtons();
+    }
+
+    void updateUndoButtons() {
+      if (editor_ == nullptr)
+        return;
+      auto& history = editor_->synth_.undoHistory();
+      const String undo = history.undoDescription();
+      const String redo = history.redoDescription();
+      configureButton(undo_, undo.isEmpty() ? String("Nothing to undo") : "Undo " + undo, undo_.getHelpText());
+      configureButton(redo_, redo.isEmpty() ? String("Nothing to redo") : "Redo " + redo, redo_.getHelpText());
+    }
+
+    // Tuning.
+    void chooseTuningFile() {
+      if (editor_ == nullptr || tuning_chooser_ != nullptr)
+        return;
+      tuning_chooser_ = std::make_unique<FileChooser>("Load Tuning", LoadSave::getDataDirectory(),
+                                                      Tuning::allFileExtensions());
+      Component::SafePointer<AtlasSettingsContent> safe_this(this);
+      tuning_chooser_->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
+                                   [safe_this](const FileChooser& chooser) {
+        if (safe_this == nullptr)
+          return;
+        const File file = chooser.getResult();
+        if (file.existsAsFile() && safe_this->editor_ != nullptr)
+          safe_this->editor_->loadTuningFile(file);
+        safe_this->updateTuning();
+        focusAfterOsWindow(safe_this->load_tuning_);
+        safe_this->tuning_chooser_.reset();
+      });
+    }
+
+    void clearTuning() {
+      if (editor_ != nullptr)
+        editor_->clearTuning();
+      updateTuning();
+    }
+
+    void updateTuning() {
+      if (editor_ == nullptr)
+        return;
+      auto* tuning = editor_->synth_.getTuning();
+      const bool custom = !tuning->isDefault();
+      const String name = String(tuning->getName()).trim();
+      tuning_name_.setText(custom ? "Tuning: " + (name.isNotEmpty() ? name : String("custom")) + "."
+                                  : String("Tuning: standard twelve-tone equal temperament."),
+                           dontSendNotification);
+      if (clear_tuning_.isVisible() == custom)
+        return;
+      // Off the Clear button before it goes, so the focus stays in the window.
+      if (!custom && clear_tuning_.hasKeyboardFocus(false))
+        load_tuning_.grabKeyboardFocus();
+      clear_tuning_.setVisible(custom);
+      layout();
+    }
+
+    // MIDI learn mappings. Read when the window opens and after it changes
+    // them: reading them takes the audio callback's lock, so nothing polls.
+    void updateMappings() {
+      if (editor_ == nullptr)
+        return;
+      mappings_ = editor_->synth_.midiLearnMappings();
+      const int count = static_cast<int>(mappings_.size());
+
+      // Off a button about to go, so the focus stays in the window: the
+      // mapping before it, or the count once none are left.
+      Component* focus_target = nullptr;
+      for (int i = count; i < static_cast<int>(mapping_buttons_.size()); ++i) {
+        if (mapping_buttons_[static_cast<size_t>(i)]->hasKeyboardFocus(false))
+          focus_target = count > 0 ? static_cast<Component*>(mapping_buttons_[static_cast<size_t>(count - 1)].get())
+                                   : &midi_status_;
+      }
+      if (count == 0 && remove_all_mappings_.hasKeyboardFocus(false))
+        focus_target = &midi_status_;
+      if (focus_target != nullptr)
+        focus_target->grabKeyboardFocus();
+
+      // The buttons are kept and renamed, so the focused one stays where it
+      // is and now removes the next mapping.
+      while (static_cast<int>(mapping_buttons_.size()) > count)
+        mapping_buttons_.pop_back();
+      while (static_cast<int>(mapping_buttons_.size()) < count) {
+        mapping_buttons_.push_back(std::make_unique<AccessibleTextButton>());
+        midi_.addAndMakeVisible(*mapping_buttons_.back());
+      }
+      for (int i = 0; i < count; ++i) {
+        const auto& mapping = mappings_[static_cast<size_t>(i)];
+        const String name = midiLearnMappingName(mapping.first, mapping.second);
+        auto& button = *mapping_buttons_[static_cast<size_t>(i)];
+        configureButton(button, "Remove " + name, {});
+        const std::string destination = mapping.second;
+        button.onClick = [this, destination, name] { removeMapping(destination, name); };
+      }
+      midi_status_.setText(count == 0 ? String("No MIDI learn mappings. Shift L on a control maps it to the next "
+                                               "MIDI control you move.")
+                                      : pluralCount(count, "MIDI learn mapping.", "MIDI learn mappings."),
+                           dontSendNotification);
+      remove_all_mappings_.setVisible(count > 0);
+      layout();
+    }
+
+    // By value: the button that called this is renamed or removed once it returns.
+    void removeMapping(std::string destination, String name) {
+      if (editor_ == nullptr)
+        return;
+      editor_->synth_.clearMidiLearn(destination);
+      postSettingsAnnouncement("Removed " + name);
+      updateMappingsAfterClick();
+    }
+
+    void removeAllMappings() {
+      if (editor_ == nullptr)
+        return;
+      editor_->synth_.clearAllMidiLearn();
+      postSettingsAnnouncement("Removed all MIDI learn mappings");
+      updateMappingsAfterClick();
+    }
+
+    // The click that removed a mapping finishes before its button changes.
+    void updateMappingsAfterClick() {
+      Component::SafePointer<AtlasSettingsContent> safe_this(this);
+      MessageManager::callAsync([safe_this] {
+        if (safe_this != nullptr)
+          safe_this->updateMappings();
+      });
+    }
+
+    // The focused control is scrolled into view, with its group's title when
+    // it is the group's first.
+    void globalFocusChanged(Component* focused) override {
+      if (focused == nullptr || !inner_.isParentOf(focused))
+        return;
+      auto area = inner_.getLocalArea(focused, focused->getLocalBounds());
+      if (auto* group = focused->findParentComponentOfClass<SettingsGroup>()) {
+        const auto group_area = inner_.getLocalArea(group, group->getLocalBounds());
+        if (area.getY() - group_area.getY() <= SettingsGroup::kHeadingHeight + 8)
+          area = area.withTop(group_area.getY());
+      }
+      area = area.expanded(0, 8);
+      const int current_y = viewport_.getViewPositionY();
+      const int visible_height = viewport_.getViewHeight();
+      int target_y = current_y;
+      if (area.getY() < current_y)
+        target_y = area.getY();
+      else if (area.getBottom() > current_y + visible_height)
+        target_y = jmin(area.getY(), area.getBottom() - visible_height);
+      target_y = jlimit(0, jmax(0, inner_.getHeight() - visible_height), target_y);
+      if (target_y != current_y)
+        viewport_.setViewPosition(0, target_y);
+    }
+
     void setAccountText(const String& text) {
       account_.setText(text, dontSendNotification);
-      account_.setDescription(text);
       if (auto* handler = account_.getAccessibilityHandler())
         handler->notifyAccessibilityEvent(AccessibilityEvent::titleChanged);
     }
@@ -9722,45 +10007,85 @@ class AtlasSettingsContent : public Component {
       postPresetActionAnnouncement("Logged out", AccessibilityHandler::AnnouncementPriority::high);
     }
 
+    // The window is as tall as its groups, up to what the screen holds; the
+    // rest scrolls.
+    int maximumHeight() const {
+      int available = 800;
+      if (editor_ != nullptr)
+        if (const auto* display = Desktop::getInstance().getDisplays().getDisplayForRect(editor_->getScreenBounds()))
+          available = roundToInt(display->userBounds.getHeight());
+      // Room for the window's title bar and a margin.
+      return jmax(320, available - 120);
+    }
+
     void layout() {
       constexpr int kMargin = 10;
       constexpr int kRow = 30;
-      const int width = 520;
-      const int inner = width - 2 * kMargin - 20;
+      constexpr int kHelpHeight = 300;
+      constexpr int kWidth = 560;
+      const int inner = kWidth - 2 * kMargin - 20;
       int y = kMargin;
       auto placeGroup = [&](SettingsGroup& group, const std::vector<Component*>& rows) {
         int row_y = SettingsGroup::kHeadingHeight;
         for (auto* row : rows) {
-          if (!row->isVisible())
+          if (row == nullptr || !row->isVisible())
             continue;
-          row->setBounds(10, row_y, inner, kRow - 4);
-          row_y += kRow;
+          const int height = row == &help_text_ ? kHelpHeight : kRow - 4;
+          row->setBounds(10, row_y, inner, height);
+          row_y += height + 4;
         }
-        group.setBounds(kMargin, y, width - 2 * kMargin, row_y + 6);
+        group.setBounds(kMargin, y, kWidth - 2 * kMargin, row_y + 6);
         y += group.getHeight() + kMargin;
       };
       placeGroup(info_, { &version_, &issue_, &source_, &releases_ });
+      placeGroup(history_, { &undo_, &redo_ });
+      placeGroup(tuning_, { &tuning_name_, &load_tuning_, &clear_tuning_ });
+      std::vector<Component*> midi_rows { &midi_status_ };
+      for (auto& button : mapping_buttons_)
+        midi_rows.push_back(button.get());
+      midi_rows.push_back(&remove_all_mappings_);
+      placeGroup(midi_, midi_rows);
       std::vector<Component*> speech;
       for (auto& toggle : speech_toggles_)
         speech.push_back(toggle.get());
       placeGroup(accessibility_, speech);
       placeGroup(community_, { &show_community_, &account_, &token_, &log_in_, &log_out_, &website_ });
-      // The window follows the content's size.
-      if (getWidth() != width || getHeight() != y)
-        setSize(width, y);
+      placeGroup(keyboard_help_, { &help_text_ });
+      inner_.setSize(kWidth, y);
+      // The window follows the content's size, with room for the scroll bar
+      // when the groups are taller than the screen.
+      const int height = jmin(y, maximumHeight());
+      const int width = kWidth + (y > height ? viewport_.getScrollBarThickness() : 0);
+      if (getWidth() != width || getHeight() != height)
+        setSize(width, height);
     }
 
     Component::SafePointer<SynthEditor> editor_;
+    SettingsViewport viewport_;
+    SettingsLayout inner_;
     SettingsGroup info_ { "Plugin info" };
+    SettingsGroup history_ { "Undo and redo" };
+    SettingsGroup tuning_ { "Tuning" };
+    SettingsGroup midi_ { "MIDI learn mappings" };
     SettingsGroup accessibility_ { "Accessibility" };
     SettingsGroup community_ { "Online community browser" };
-    Label version_;
+    SettingsGroup keyboard_help_ { "Keyboard help" };
+    SettingsText version_;
     AccessibleTextButton issue_, source_, releases_;
+    AccessibleTextButton undo_, redo_;
+    SettingsText tuning_name_;
+    AccessibleTextButton load_tuning_, clear_tuning_;
+    std::unique_ptr<FileChooser> tuning_chooser_;
+    SettingsText midi_status_;
+    std::vector<std::pair<int, std::string>> mappings_;
+    std::vector<std::unique_ptr<AccessibleTextButton>> mapping_buttons_;
+    AccessibleTextButton remove_all_mappings_;
     std::vector<std::unique_ptr<ToggleButton>> speech_toggles_;
-    SpokenToggleButton show_community_ { "Show the community library in the preset browser" };
-    Label account_;
+    SettingsToggle show_community_ { "Show the community library in the preset browser" };
+    SettingsText account_;
     AccessibleTextEditor token_;
     AccessibleTextButton log_in_, log_out_, website_;
+    AccessibleTextEditor help_text_;
     bool checking_ = false;
     int account_generation_ = 0;
 };
@@ -9782,23 +10107,21 @@ void SynthEditor::showSettings() {
     open->toFront(true);
     return;
   }
+  auto* content = new AtlasSettingsContent(*this);
+  Component::SafePointer<Component> first(&content->firstControl());
   DialogWindow::LaunchOptions options;
   options.dialogTitle = "Atlas Settings";
-  options.content.setOwned(new AtlasSettingsContent(*this));
+  options.content.setOwned(content);
   options.componentToCentreAround = this;
   options.useNativeTitleBar = true;
   options.resizable = false;
   options.escapeKeyTriggersCloseButton = true;
   settings_window_ = launchDialogWindow(options);
-  if (auto* window = settings_window_.getComponent()) {
-    Component::SafePointer<DialogWindow> safe_window(window);
-    MessageManager::callAsync([safe_window] {
-      if (safe_window == nullptr)
-        return;
-      // The version first: what the window is about, then Tab on through it.
-      if (auto* content = safe_window->getContentComponent())
-        if (auto* version = content->getChildComponent(0) != nullptr ? content->getChildComponent(0)->getChildComponent(0) : nullptr)
-          version->grabKeyboardFocus();
+  if (settings_window_ != nullptr) {
+    // The version first: what the window is about, then Tab on through it.
+    MessageManager::callAsync([first] {
+      if (first != nullptr && first->isShowing())
+        first->grabKeyboardFocus();
     });
   }
 }
@@ -9841,11 +10164,12 @@ namespace {
   }
 }
 
-void SynthEditor::showKeyboardHelp() {
-  // NOTE: This text is the single source of on-screen keyboard help. Whenever a keyboard shortcut
-  // is added or changed anywhere in the plugin (focusShortcutTarget, OffscreenSlider::keyPressed,
-  // SynthEditor::keyPressed, handleLfoMsegShortcut, handleWavetableShortcut, handleMacroShortcut, and the preset/popup
-  // browser keyPressed overrides), add or update its entry below under the matching group.
+String SynthEditor::keyboardHelpText() {
+  // NOTE: This text is the single source of on-screen keyboard help, shown in the Keyboard help
+  // group of Settings. Whenever a keyboard shortcut is added or changed anywhere in the plugin
+  // (focusShortcutTarget, OffscreenSlider::keyPressed, SynthEditor::keyPressed, handleLfoMsegShortcut,
+  // handleWavetableShortcut, handleMacroShortcut, and the preset/popup browser keyPressed overrides),
+  // add or update its entry below under the matching group.
   static const char* const kHelpText =
       "ATLAS keyboard shortcuts\n"
       "\nTrance gate editor\n"
@@ -9859,7 +10183,7 @@ void SynthEditor::showKeyboardHelp() {
       "Most single-letter shortcuts work when a parameter or the editor has focus, but not while a "
       "text field is focused.\n"
       "\n"
-      "Undo and redo (anywhere in Atlas; the Editor menu has them too)\n"
+      "Undo and redo (anywhere in Atlas; Settings has them too, for a host that keeps {Cmd}+Z)\n"
       "  {Cmd}+Z - Undo the last change: a value, a preset load, Initialize patch, Save patch as default, "
       "an effect added, removed or moved, a modulation route, or an LFO or wavetable edit\n"
       "  Shift+{Cmd}+Z or {Cmd}+Y - Redo\n"
@@ -9897,7 +10221,7 @@ void SynthEditor::showKeyboardHelp() {
       "  Backspace / Delete - Reset to default\n"
       "  {ContextMenuKeys} - Open context menu\n"
       "  Shift+L - MIDI learn: the next MIDI control moved is mapped; Shift+L again cancels\n"
-      "  Shift+C - Clear MIDI learn (Editor menu, MIDI learn mappings, lists and removes them all)\n"
+      "  Shift+C - Clear MIDI learn (Settings lists every mapping under MIDI learn mappings and removes them)\n"
       "  Levels and modulation amounts read and accept percentages: 0% to 100%, or -100% to 100%\n"
       "\n"
       "Choosing from a menu (Type, Model, Style and other choices that change which controls are shown)\n"
@@ -10004,90 +10328,13 @@ void SynthEditor::showKeyboardHelp() {
       "  Delete - Ask before moving the selected editable user preset to Trash\n"
       "  Esc - Close the browser\n"
       "\n"
-      "This dialog\n"
-      "  Tab - Move to the Close button\n"
-      "  Enter (on Close) or Esc - Close this dialog\n";
+      "Settings (the Settings button at the top of Atlas)\n"
+      "  Tab / Shift+Tab - Move through the controls of every group: Plugin info, Undo and redo, Tuning, "
+      "MIDI learn mappings, Accessibility, Online community browser and Keyboard help\n"
+      "  A screen reader presents each group with its controls inside it\n"
+      "  Escape - Close Settings\n";
 
-  class DialogContent : public Component, public TextEditor::Listener {
-  public:
-    DialogContent() {
-      text_.setMultiLine(true, true);
-      // Editable (not read-only) on purpose: a read-only JUCE TextEditor is exposed to the OS
-      // accessibility layer as static text with no navigable caret, so screen readers re-read the
-      // same line on every arrow press. An editable field exposes a movable caret and gives proper
-      // line/word/character navigation. This mirrors the Airwindows Consolidated documentation
-      // viewer's fix; edits are harmless since the text is reset on every open and discarded on
-      // close. See the keyboard-help-dialog memory.
-      text_.setReadOnly(false);
-      text_.setScrollbarsShown(true);
-      text_.setCaretVisible(true);
-      text_.setAccessible(true);
-      text_.setTabKeyUsedAsCharacter(false);
-      text_.setWantsKeyboardFocus(true);
-      text_.setExplicitFocusOrder(1);
-      text_.setTitle("Keyboard shortcuts");
-      text_.setText(keyboardHelpForPlatform(kHelpText), dontSendNotification);
-      // The editable TextEditor swallows Escape, so it never reaches the DialogWindow's
-      // escapeKeyTriggersCloseButton. Catch it here and close ourselves.
-      text_.addListener(this);
-      addAndMakeVisible(text_);
-
-      close_.setWantsKeyboardFocus(true);
-      close_.setExplicitFocusOrder(2);
-      close_.setTitle("Close");
-      close_.onClick = [this] { closeDialog(); };
-      addAndMakeVisible(close_);
-
-      setSize(520, 560);
-    }
-
-    void resized() override {
-      const int margin = 8;
-      const int button_height = 28;
-      const int button_width = 100;
-      text_.setBounds(margin, margin, getWidth() - 2 * margin,
-                      getHeight() - button_height - 3 * margin);
-      close_.setBounds((getWidth() - button_width) / 2,
-                       getHeight() - button_height - margin, button_width, button_height);
-    }
-
-    bool keyPressed(const KeyPress& key) override {
-      if (key.getKeyCode() == KeyPress::returnKey && close_.hasKeyboardFocus(false)) {
-        closeDialog();
-        return true;
-      }
-      return Component::keyPressed(key);
-    }
-
-    void textEditorEscapeKeyPressed(TextEditor&) override { closeDialog(); }
-
-  private:
-    void closeDialog() {
-      if (auto* dw = findParentComponentOfClass<DialogWindow>())
-        dw->exitModalState(0);
-    }
-
-    TextEditor text_;
-    TextButton close_{"Close"};
-  };
-
-  DialogWindow::LaunchOptions opts;
-  opts.dialogTitle = "Keyboard help";
-  opts.content.setOwned(new DialogContent());
-  opts.componentToCentreAround = this;
-  opts.useNativeTitleBar = true;
-  opts.resizable = true;
-  opts.escapeKeyTriggersCloseButton = true;
-  auto* dlg = launchDialogWindow(opts);
-  if (dlg) {
-    Component::SafePointer<DialogWindow> safe_dlg(dlg);
-    MessageManager::callAsync([safe_dlg]() {
-      if (safe_dlg && safe_dlg->getContentComponent()) {
-        if (auto* first = safe_dlg->getContentComponent()->getChildComponent(0))
-          first->grabKeyboardFocus();
-      }
-    });
-  }
+  return keyboardHelpForPlatform(kHelpText);
 }
 
 File SynthEditor::defaultPatchFile() const {
@@ -10199,8 +10446,8 @@ String SynthEditor::undoAnnouncement(const UndoHistory::Outcome& outcome, bool r
 void SynthEditor::rebuildFocusOrder() {
   focus_order_.clear();
   accessibility_focus_order_.clear();
-  focus_order_.push_back(&menu_button_);
-  accessibility_focus_order_.push_back(&menu_button_);
+  focus_order_.push_back(&settings_button_);
+  accessibility_focus_order_.push_back(&settings_button_);
   if (modulation_amount_prompt_visible_ || parameter_value_prompt_visible_) {
     if (!confirmation_prompt_visible_) {
       focus_order_.push_back(&modulation_amount_editor_);
@@ -11988,7 +12235,7 @@ void SynthEditor::deleteSelectedPreset() {
     return;
   }
   NativeMessageBox::showYesNoBox(MessageBoxIconType::QuestionIcon, "Move preset to Trash?",
-                                 "Move “" + name + "” to Trash? It can be recovered from the Trash.",
+                                 "Move " + name + " to Trash? It can be recovered from the Trash.",
                                  &preset_table_, ModalCallbackFunction::create([move_to_trash](int result) {
     if (result == 1)
       move_to_trash();
@@ -13027,27 +13274,17 @@ void SynthEditor::finishShare(const atlas::community::UploadResult& result, cons
   }
 }
 
-void SynthEditor::loadTuningFile() {
-  tuning_chooser_ = std::make_unique<FileChooser>("Load Tuning", LoadSave::getDataDirectory(),
-                                                  Tuning::allFileExtensions());
-  launchFileChooser(*tuning_chooser_, FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
-                                      [this](const FileChooser& chooser) {
-    const File file = chooser.getResult();
-    if (file.existsAsFile()) {
-      synth_.undoHistory().describeNextStep("load tuning " + file.getFileNameWithoutExtension());
-      synth_.loadTuningFile(file);
-      postPluginAnnouncement("Loaded tuning " + String(synth_.getTuning()->getName()),
-                             AccessibilityHandler::AnnouncementPriority::high);
-    }
-    tuning_chooser_.reset();
-  });
+void SynthEditor::loadTuningFile(const File& file) {
+  synth_.undoHistory().describeNextStep("load tuning " + file.getFileNameWithoutExtension());
+  synth_.loadTuningFile(file);
+  postSettingsAnnouncement("Loaded tuning " + String(synth_.getTuning()->getName()));
 }
 
 void SynthEditor::clearTuning() {
   synth_.undoHistory().describeNextStep("clear tuning");
   synth_.getTuning()->setDefaultTuning();
   synth_.markStateChanged("atlas/tuning");
-  postPluginAnnouncement("Tuning cleared", AccessibilityHandler::AnnouncementPriority::high);
+  postSettingsAnnouncement("Tuning cleared");
 }
 
 void SynthEditor::exportPreset() {

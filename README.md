@@ -17,8 +17,10 @@ shown, such as an oscillator's Type or a filter's Model, are menus: the arrow ke
 step through the choices, and Enter or Space opens the list. Focus stays on the menu
 when the controls around it change.
 Shift M opens a control's context menu to add modulation, MIDI learn or reset it.
-Comma and period jump between sections. The Editor menu holds tuning, accessibility
-settings, the keyboard help and the list of MIDI learn mappings. The Preset menu saves,
+Comma and period jump between sections. The Settings button, first in the window, opens
+Settings: the version and links to this repository, undo and redo, tuning, the MIDI learn
+mappings, the accessibility settings, the community library and the keyboard help, each a
+group a screen reader enters. The Preset menu saves,
 initialises, imports and exports patches and banks, and the preset browser searches
 and filters the library by bank, category, tag and favourites. The Community presets and
 Community banks rows of its Collection list show the patches and banks shared on
@@ -27,15 +29,13 @@ downloads a patch into the Community library and loads it, or downloads a bank a
 it into the Atlas folder, and P plays the recording its uploader attached, when there is one.
 The Preset menu's Share patch and Share bank items upload the current patch or a folder of
 the user library to the same site, with the API token from your account there.
-Settings shows the version, links to this repository, and logs in to the site or turns
-the community library off.
+Settings logs in to the site or turns the community library off.
 
 Atlas's own announcements, such as the cursor position in the LFO, Trance gate and
 wavetable editors, are spoken by the screen reader. On Windows they go straight to
 NVDA's speech and braille. With another screen reader they are sent as UI Automation
 notifications. Atlas never speaks with the Windows SAPI voice. On macOS they go to
-VoiceOver. The Accessibility group of Settings, in the Editor menu, chooses which kinds of
-announcement you hear.
+VoiceOver. The Accessibility group of Settings chooses which kinds of announcement you hear.
 
 ## Oscillators
 
