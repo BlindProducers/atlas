@@ -936,6 +936,11 @@ namespace {
                buildPresetUpload("https://atlas.blindproducers.org", folder.getChildFile("gone.atp"), fields,
                                  kTestToken).error.contains("missing"),
            "a saved library, a missing token and a missing file stop the upload before it is sent");
+    expect(buildPresetUpload("http://atlas.blindproducers.org", preset, fields, kTestToken).error.contains("https") &&
+               buildBankUpload("http://example.com", preset, fields, kTestToken).headers.isEmpty() &&
+               buildPresetUpload("http://127.0.0.1:8000", preset, fields, kTestToken).error.isEmpty() &&
+               buildPresetUpload("http://localhost:8000", preset, fields, kTestToken).error.isEmpty(),
+           "the token goes over plain http only to this computer");
     expect(upload(buildPresetUpload("file:///saved/presets.json", preset, fields, kTestToken)).error.contains("web address"),
            "and are what the upload reports");
     folder.deleteRecursively();
@@ -1599,6 +1604,9 @@ namespace {
     expect(error.contains("refused") && !account.known(), "a refused token is said: " + error.toStdString());
     expect(atlas::community::fetchAccount("file:///saved/presets.json", kTestToken, account).contains("web address"),
            "a saved library has no accounts");
+    expect(atlas::community::fetchAccount("http://atlas.blindproducers.org", kTestToken, account).contains("https") &&
+               !account.known(),
+           "an account is never asked for over plain http to another computer");
   }
 
   Component* titledIn(Component& parent, const String& title) { return titled(parent, title); }

@@ -182,6 +182,22 @@ namespace {
     return url.isWellFormed() && (scheme == "https" || scheme == "http");
   }
 
+  // Whether the API token may go to `url`: over https, or over http only to
+  // this computer (the tests' server). Anywhere else plain http would carry
+  // the token across the network unencrypted.
+  bool mayCarryToken(const juce::URL& url) {
+    if (!isWebUrl(url))
+      return false;
+    if (url.getScheme() == "https")
+      return true;
+    const juce::String host = url.getDomain().toLowerCase();
+    return host == "127.0.0.1" || host == "localhost" || host == "[::1]" || host == "::1";
+  }
+
+  juce::String insecureTokenError(const juce::URL& url) {
+    return "The API token is sent only over https, and " + url.getDomain() + " is plain http";
+  }
+
   // The file a file: URL names, without its query string (a download URL
   // carries ?v=<version>, which is not part of a saved file's name).
   juce::File localFileOf(const juce::URL& url) {
@@ -769,6 +785,10 @@ namespace {
       request.error = "Sharing needs the library's web address, not " + endpoint;
       return request;
     }
+    if (!mayCarryToken(target)) {
+      request.error = insecureTokenError(target);
+      return request;
+    }
     if (!file.existsAsFile()) {
       request.error = "The file to share, " + file.getFileName() + ", is missing";
       return request;
@@ -963,6 +983,8 @@ juce::String fetchAccount(const juce::String& library_url, const juce::String& t
   const juce::URL url(meEndpoint(library_url));
   if (!isWebUrl(url))
     return "Logging in needs the library's web address";
+  if (!mayCarryToken(url))
+    return insecureTokenError(url);
   const juce::String key = token.trim().removeCharacters("\r\n");
   if (key.isEmpty())
     return "No API token";
