@@ -375,6 +375,9 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     // Tests: what moving a preset to Trash does to its file (a test
     // deletes the presets it made instead). Empty for the real move.
     static std::function<bool(const File&)>& trashFileForTesting();
+    // Tests: the Preset menu's Save patch as default and Initialize patch.
+    void savePatchAsDefaultForTesting() { savePatchAsDefault(); }
+    void initializePatchForTesting() { initializePatch(); }
     // The grouped source menu a parameter row offers (tests walk it like the slot menus).
     PopupMenu createModulationSourceSubmenu(const String& destinationId, std::map<int, String>& choices,
                                             int firstItemId);
@@ -518,6 +521,10 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void initializePatch();
     void savePatchAsDefault();
     File defaultPatchFile() const;
+    // Command Z and Shift Command Z (or Command Y): undoes or redoes the last
+    // change, shows the patch as it is then and says what was undone.
+    void undoOrRedo(bool redo);
+    String undoAnnouncement(const UndoHistory::Outcome& outcome, bool redo) const;
     void rebuildFocusOrder();
     void ensurePresetListLoaded();
     void startPresetListLoad(bool announce, bool forceRefresh = false);
@@ -868,6 +875,11 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void setLfoPointCurve(int curveIndex);
     LineGenerator* lfoGeneratorForIndex(int lfoIndex) const;
     LineGenerator* activeLfoGenerator() const;
+    // The part of the state an LFO, wavetable or filter table edit changes,
+    // for SynthPlugin::markStateChanged (UndoHistory::noteStructureEdit).
+    std::string lfoUndoBlock(const LineGenerator* generator) const;
+    std::string wavetableUndoBlock(int oscillator) const;
+    std::string wavetableUndoBlock(const WavetableCreator* creator) const;
     int selectedLfoPointIndex() const;
     int lfoPointIndexAtPhase(float phase) const;
     int currentLfoPointIndex() const;

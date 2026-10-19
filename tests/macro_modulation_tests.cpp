@@ -790,6 +790,7 @@ namespace {
 #include "oscillator_modulation_tests.h"
 #include "arpeggiator_tests.h"
 #include "release_hardening_tests.h"
+#include "undo_tests.h"
 
 int main(int argc, char** argv) {
   ScopedJuceInitialiser_GUI juce;
@@ -864,6 +865,48 @@ int main(int argc, char** argv) {
     std::cout << "state bytes=" << state.getSize() << std::endl;
     return 0;
   }
+  if (argc > 1 && String(argv[1]) == "--undo-timing") {
+    // Timing only: what recording and undoing costs the message thread, on
+    // the default patch or, with a preset file, on that preset.
+    const auto ms = [](auto&& function) {
+      const auto start = Time::getMillisecondCounterHiRes();
+      function();
+      return Time::getMillisecondCounterHiRes() - start;
+    };
+    SynthPlugin synth;
+    synth.setPlayConfigDetails(0, 2, 48000, 512);
+    synth.prepareToPlay(48000, 512);
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    auto& history = synth.undoHistory();
+    if (argc > 2) {
+      std::string error;
+      const File preset = File(String(argv[2]));
+      std::cout << "load " << preset.getFileName() << " ms=" << ms([&] { synth.loadFromFile(preset, error); })
+                << std::endl;
+      std::cout << "record the load ms=" << ms([&] { history.commitPendingEdits(); }) << std::endl;
+    }
+    std::cout << "full snapshot ms=" << ms([&] { history.rebaseline(); }) << std::endl;
+    auto* bridge = parameter(synth, "filter_1_cutoff");
+    constexpr int kEdits = 50;
+    double record = 0.0;
+    for (int i = 0; i < kEdits; ++i) {
+      bridge->beginChangeGesture();
+      bridge->setValueNotifyingHost(i % 2 == 0 ? 0.25f : 0.75f);
+      bridge->endChangeGesture();
+      record += ms([&] { history.commitPendingEdits(); });
+    }
+    std::cout << "record one value change ms=" << record / kEdits << std::endl;
+    std::cout << "undo a value change ms=" << ms([&] { history.undo(); }) << std::endl;
+    if (argc > 2) {
+      while (history.numUndoSteps() > 1)
+        history.undo();
+      std::cout << "undo the preset load ms=" << ms([&] { history.undo(); }) << std::endl;
+      std::cout << "editor refresh after it ms=" << ms([&] { editor.updateFullGui(); }) << std::endl;
+      std::cout << "redo the preset load ms=" << ms([&] { history.redo(); }) << std::endl;
+    }
+    return 0;
+  }
   if (argc > 1 && String(argv[1]) == "--editor-timing") {
     // Timing only: what opening and running the editor costs the message thread.
     const auto ms = [](auto&& function) {
@@ -900,6 +943,11 @@ int main(int argc, char** argv) {
   }
   if (argc > 1 && String(argv[1]) == "--release-hardening")
     return runReleaseHardeningTests();
+  if (argc > 1 && String(argv[1]) == "--editor-undo") {
+    // What is said must not depend on the user's own speech settings.
+    atlas::speech::useDefaultSettingsForTesting();
+    return runUndoTests();
+  }
   if (argc > 1 && String(argv[1]) == "--oscillator-modulation") {
     testOscillatorSourcesReachOnlyAudioRateControls();
     testOscillatorRoutesFollowTheirSourceWithinTheBlock();

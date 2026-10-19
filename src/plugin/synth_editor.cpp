@@ -516,6 +516,13 @@ namespace {
       postAnnouncement(message, priority);
   }
 
+  // What undo and redo did. The user pressed the key and waits to hear it,
+  // so no optional category silences it.
+  void postUndoAnnouncement(const String& message) {
+    if (accessibilitySpeechSettings().speech_feedback)
+      postAnnouncement(message, AccessibilityHandler::AnnouncementPriority::high);
+  }
+
   // What the screen reader would read from a control where JUCE gives NVDA
   // nothing to read: the row a list's selection keys landed on (see
   // SelectionKeyList) and a toggle's new state (see SpokenToggleButton).
@@ -2945,6 +2952,12 @@ namespace {
     return readableId(id);
   }
 
+  // How undo names a route the user made, or the amount they gave one.
+  String modulationUndoDescription(const String& sourceId, const String& destinationId, bool created) {
+    return String(created ? "add modulation from " : "modulation amount from ") + modulationSourceLabelForId(sourceId) +
+           " to " + modulationDestinationLabelForId(destinationId);
+  }
+
   // The arpeggiator runs outside the voices and reads its modulation as one
   // value a block, and every step it plays is a new note. A source that a
   // note restarts or sets (an envelope, the note-on random, velocity, pitch,
@@ -4021,6 +4034,27 @@ namespace {
 #else
     return modifiers.isCtrlDown() && !modifiers.isAltDown();
 #endif
+  }
+
+  // Command Z undoes; Shift Command Z, and Command Y, redo. -1 for undo, 1
+  // for redo, 0 for any other key.
+  int undoRedoDirection(const KeyPress& key) {
+    const ModifierKeys modifiers = key.getModifiers();
+    if (!isCommandChord(modifiers))
+      return 0;
+    const juce_wchar character = CharacterFunctions::toLowerCase(static_cast<juce_wchar>(key.getKeyCode()));
+    if (character == 'z')
+      return modifiers.isShiftDown() ? 1 : -1;
+    if (character == 'y' && !modifiers.isShiftDown())
+      return 1;
+    return 0;
+  }
+
+  // The undo or redo chord is held down now (a key-down being handled).
+  bool isUndoRedoChordDown() {
+    if (!isCommandChord(ModifierKeys::getCurrentModifiersRealtime()))
+      return false;
+    return KeyPress::isKeyCurrentlyDown('Z') || KeyPress::isKeyCurrentlyDown('Y');
   }
 
   bool isEffectMoveEarlierKey(const KeyPress& key) {
@@ -6587,6 +6621,9 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   // an older, smaller editor size, so enforce the usable minimum here.
   setResizeLimits(900, 720, 1400, 1000);
   setSize(900, 720);
+  // What the user changes from now on can be undone. A history recorded while
+  // the editor was closed before stays.
+  synth_.undoHistory().ensureBaseline();
   startTimerHz(20);
 }
 
@@ -6695,6 +6732,8 @@ void SynthEditor::buildSections() {
     else {
       bridge = std::make_unique<ValueBridge>(id.toStdString(), found->second);
       bridge->setListener(&synth_);
+      // Its gestures mark the user's changes for undo, as on the host's parameters.
+      bridge->addListener(&synth_.undoGestureListener());
       if (vital::suppressor::isFrequency(id.toStdString()))
         bridge->suppressorSampleRate = [this] { return synth_.getFxSampleRate(); };
     }
@@ -9109,6 +9148,15 @@ PopupMenu SynthEditor::createMidiLearnMenu() {
 void SynthEditor::showNavigationMenu() {
   PopupMenu menu;
   menu.addSectionHeader("Editor");
+  // Undo and redo, named after what they would do, for a host that keeps
+  // Command Z for itself.
+  auto& history = synth_.undoHistory();
+  const String undo = history.undoDescription();
+  const String redo = history.redoDescription();
+  const String command = atlas::keys::commandName();
+  menu.addItem(9, (undo.isEmpty() ? String("Undo") : "Undo " + undo) + " (" + command + " Z)", undo.isNotEmpty());
+  menu.addItem(10, (redo.isEmpty() ? String("Redo") : "Redo " + redo) + " (Shift " + command + " Z)", redo.isNotEmpty());
+  menu.addSeparator();
   menu.addItem(6, "Load tuning file...");
   if (!synth_.getTuning()->isDefault())
     menu.addItem(7, "Clear tuning: " + String(synth_.getTuning()->getName()));
@@ -9128,6 +9176,8 @@ void SynthEditor::showNavigationMenu() {
       showAccessibilitySettingsMenu();
     else if (result == 8)
       showKeyboardHelp();
+    else if (result == 9 || result == 10)
+      undoOrRedo(result == 10);
   });
 }
 
@@ -9240,6 +9290,12 @@ void SynthEditor::showKeyboardHelp() {
       "\n"
       "Most single-letter shortcuts work when a parameter or the editor has focus, but not while a "
       "text field is focused.\n"
+      "\n"
+      "Undo and redo (anywhere in Atlas; the Editor menu has them too)\n"
+      "  {Cmd}+Z - Undo the last change: a value, a preset load, Initialize patch, Save patch as default, "
+      "an effect added, removed or moved, a modulation route, or an LFO or wavetable edit\n"
+      "  Shift+{Cmd}+Z or {Cmd}+Y - Redo\n"
+      "  Quick changes to the same control are undone together. In a text box {Cmd}+Z undoes the typing.\n"
       "\n"
       "Section navigation\n"
       "  O - Oscillators\n"
@@ -9473,6 +9529,7 @@ void SynthEditor::initializePatch() {
   const String parameter_id = focusedParameterId();
   const String accessible_title = focusedAccessibleTitle();
   auto* persistent_focus = persistentFocusedComponent();
+  synth_.undoHistory().describeNextStep("initialize patch");
   const File default_file = defaultPatchFile();
   std::string error;
   if (default_file.existsAsFile() && synth_.loadFromFile(default_file, error)) {
@@ -9496,16 +9553,77 @@ void SynthEditor::initializePatch() {
 
 void SynthEditor::savePatchAsDefault() {
   const File destination = defaultPatchFile().withFileExtension(vital::kPresetExtension);
+  // The default it replaces, so that undo can put it back (or take away a
+  // default that did not exist).
+  std::optional<MemoryBlock> previous;
+  bool previous_read = true;
+  if (destination.existsAsFile()) {
+    MemoryBlock data;
+    previous_read = destination.loadFileAsData(data);
+    if (previous_read)
+      previous = std::move(data);
+  }
   if (!synth_.saveCopyToFile(destination)) {
     showWarningBox("Unable to save default patch",
                    "The default patch could not be written.");
     postPluginAnnouncement("Unable to save default patch", AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
+  // A default that could not be read could not be put back: no step then.
+  MemoryBlock saved;
+  if (previous_read && destination.loadFileAsData(saved))
+    synth_.undoHistory().recordFileChange(destination, "save patch as default", std::move(previous), std::move(saved));
 
   refreshPresetList();
   updatePresetSummary();
   postPluginAnnouncement("Saved patch as default", AccessibilityHandler::AnnouncementPriority::high);
+}
+
+void SynthEditor::undoOrRedo(bool redo) {
+  // Where the focus is, to find it again if the rows are rebuilt.
+  const String parameter_id = focusedParameterId();
+  const String accessible_title = focusedAccessibleTitle();
+  const String section = focusedSectionKey();
+  auto* persistent_focus = persistentFocusedComponent();
+
+  auto& history = synth_.undoHistory();
+  const UndoHistory::Outcome outcome = redo ? history.redo() : history.undo();
+  if (!outcome.applied) {
+    if (outcome.failure.isNotEmpty())
+      postUndoAnnouncement(String(redo ? "Could not redo " : "Could not undo ") + outcome.description + ". " +
+                           outcome.failure);
+    else
+      postUndoAnnouncement(redo ? "Nothing to redo" : "Nothing to undo");
+    return;
+  }
+
+  if (outcome.file_changed)
+    refreshPresetList(false);
+  if (outcome.reloaded || outcome.effects_changed || outcome.names_changed) {
+    // The patch's parts, effects or names changed: build the rows again, as
+    // after a preset load, and keep the focus where it was.
+    updateFullGui();
+    updatePresetSummary();
+    restoreFocusAfterRebuild(parameter_id, persistent_focus, accessible_title, section);
+  }
+  else {
+    // The rows show the values again; a choice that decides them rebuilds them.
+    timerCallback();
+  }
+  postUndoAnnouncement(undoAnnouncement(outcome, redo));
+}
+
+String SynthEditor::undoAnnouncement(const UndoHistory::Outcome& outcome, bool redo) const {
+  const String verb = redo ? "Redo " : "Undo ";
+  // One control: its name and the value it has now, as its row reads it.
+  if (!outcome.reloaded && outcome.controls.size() == 1) {
+    if (auto* bridge = parameterBridge(String(outcome.controls.front())))
+      return verb + bridge->getName(128) + ", " + accessibleParameterText(*bridge, bridge->getValue());
+  }
+  String message = verb + outcome.description;
+  if (outcome.preset_name_changed)
+    message << ". Current preset: " << (synth_.getPresetName().isEmpty() ? String("Untitled") : synth_.getPresetName());
+  return message;
 }
 
 
@@ -9625,6 +9743,7 @@ void SynthEditor::removeModulationFromParameter(const String& sourceId, const St
   // A control outside the rows outlives the rebuild, though its title may
   // change now that the route is gone, so keep a pointer to it as well.
   Component::SafePointer<Component> persistent(rows_container_.isParentOf(&target) ? nullptr : &target);
+  synth_.undoHistory().describeNextStep("remove modulation from " + source_label + " to " + destination_label);
   synth_.disconnectModulation(sourceId.toStdString(), destinationId.toStdString());
   refreshVisibleModulationLabels();
   showAllSections(false);
@@ -9641,6 +9760,7 @@ void SynthEditor::clearModulationSlot(int slot) {
   if (connection == nullptr || (connection->source_name.empty() && connection->destination_name.empty()))
     return;
 
+  synth_.undoHistory().describeNextStep("clear modulation slot " + String(slot));
   synth_.disconnectModulation(connection);
   // A slot holding only a source or only a destination was never connected.
   connection->resetConnection("", "");
@@ -9650,6 +9770,7 @@ void SynthEditor::clearModulationSlot(int slot) {
     setParameterEngineValue(prefix + suffix, 0.0f);
   if (connection->modulation_processor != nullptr)
     connection->modulation_processor->lineMapGenerator()->initLinear();
+  synth_.markStateChanged("settings/modulations");
 
   refreshVisibleModulationLabels();
   const String announcement = modulationSlotHeaderTitle(slot) + " cleared";
@@ -10507,8 +10628,12 @@ void SynthEditor::renameSelectedPreset() {
       LoadSave::removeFavorite(file);
       LoadSave::addFavorite(destination);
     }
-    if (safe_this->synth_.getActiveFile() == file)
+    if (safe_this->synth_.getActiveFile() == file) {
+      safe_this->synth_.undoHistory().commitPendingEdits();
       safe_this->synth_.setActiveFile(destination);
+      // The loaded preset's file moved, not the patch: nothing to undo.
+      safe_this->synth_.undoHistory().rebaseline();
+    }
     safe_this->replacePresetInBrowser(file, destination);
     safe_this->refreshPresetList(false);
     postPresetActionAnnouncement("Renamed preset to " + name, AccessibilityHandler::AnnouncementPriority::high);
@@ -10967,6 +11092,10 @@ void SynthEditor::loadPresetFile(File file, bool preview, bool updateBrowserFilt
   auto* persistent_focus = persistentFocusedComponent();
   // The table sits inside the rows, so persistentFocusedComponent never names it.
   const bool loaded_from_table = preset_table_.hasKeyboardFocus(true);
+  // Presets autoloaded one after another while browsing are one step: undo
+  // goes back to the patch from before the browsing.
+  synth_.undoHistory().describeNextStep("load preset " + file.getFileNameWithoutExtension(),
+                                        preview ? "autoload" : "");
   std::string error;
   if (!synth_.loadFromFile(file, error)) {
     if (!quiet_errors)
@@ -11171,6 +11300,7 @@ void SynthEditor::loadTuningFile() {
                                       [this](const FileChooser& chooser) {
     const File file = chooser.getResult();
     if (file.existsAsFile()) {
+      synth_.undoHistory().describeNextStep("load tuning " + file.getFileNameWithoutExtension());
       synth_.loadTuningFile(file);
       postPluginAnnouncement("Loaded tuning " + String(synth_.getTuning()->getName()),
                              AccessibilityHandler::AnnouncementPriority::high);
@@ -11180,8 +11310,9 @@ void SynthEditor::loadTuningFile() {
 }
 
 void SynthEditor::clearTuning() {
+  synth_.undoHistory().describeNextStep("clear tuning");
   synth_.getTuning()->setDefaultTuning();
-  synth_.markStateChanged();
+  synth_.markStateChanged("atlas/tuning");
   postPluginAnnouncement("Tuning cleared", AccessibilityHandler::AnnouncementPriority::high);
 }
 
@@ -11198,9 +11329,13 @@ void SynthEditor::exportPreset() {
     const File destination = chooser.getResult();
     if (destination != File()) {
       const File preset = destination.withFileExtension(vital::kPresetExtension);
-      if (synth_.saveToFile(preset))
+      synth_.undoHistory().commitPendingEdits();
+      if (synth_.saveToFile(preset)) {
+        // Saving names the patch after its file: not a step to undo.
+        synth_.undoHistory().rebaseline();
         postPluginAnnouncement("Exported preset " + preset.getFileNameWithoutExtension(),
                                AccessibilityHandler::AnnouncementPriority::high);
+      }
       else {
         showWarningBox("Unable to export preset",
                        "The preset could not be written to disk.");
@@ -11357,12 +11492,15 @@ void SynthEditor::commitSavePresetDialog() {
       LoadSave::addFavorite(destination);
     }
     if (synth_.getActiveFile() == source) {
+      synth_.undoHistory().commitPendingEdits();
       synth_.setPresetName(preset_name);
       synth_.setAuthor(author);
       synth_.setStyle(category);
       synth_.setTags(tags);
       synth_.setComments(comments);
       synth_.setActiveFile(destination);
+      // The loaded preset's file changed, not the patch: nothing to undo.
+      synth_.undoHistory().rebaseline();
     }
     // The list shows the edit at once, before focus goes back to it.
     const String library = last_preset_library_;
@@ -11385,11 +11523,14 @@ void SynthEditor::commitSavePresetDialog() {
     return;
   }
 
+  // The name and details are part of saving, not a step to undo.
+  synth_.undoHistory().commitPendingEdits();
   synth_.setPresetName(preset_name);
   synth_.setAuthor(author);
   synth_.setStyle(category);
   synth_.setTags(tags);
   synth_.setComments(comments);
+  synth_.undoHistory().rebaseline();
 
   File destination = presetCategoryDirectory(userPresetBankDirectory(bank), category);
   destination = destination.getChildFile(preset_name);
@@ -11437,12 +11578,15 @@ void SynthEditor::commitSavePresetDialog() {
 }
 
 void SynthEditor::savePresetFile(const File& file) {
+  // Edits before the save stay undoable; the new name and file are not a step.
+  synth_.undoHistory().commitPendingEdits();
   if (!synth_.saveToFile(file)) {
     showWarningBox("Unable to save preset",
                    "The preset could not be written to disk.");
     postPluginAnnouncement("Unable to save preset", AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
+  synth_.undoHistory().rebaseline();
   last_preset_path_ = synth_.getActiveFile().getFullPathName();
   refreshPresetList();
   selectPresetFile(synth_.getActiveFile());
@@ -11467,6 +11611,28 @@ LineGenerator* SynthEditor::lfoGeneratorForIndex(int lfoIndex) const {
 
 LineGenerator* SynthEditor::activeLfoGenerator() const {
   return lfoGeneratorForIndex(active_lfo_index_);
+}
+
+std::string SynthEditor::lfoUndoBlock(const LineGenerator* generator) const {
+  for (int i = 0; i < vital::kNumLfos; ++i) {
+    if (synth_.getLfoSource(i) == generator)
+      return "settings/lfos/" + std::to_string(i);
+  }
+  return {};
+}
+
+std::string SynthEditor::wavetableUndoBlock(int oscillator) const {
+  return isPositiveAndBelow(oscillator, vital::kNumOscillators) ? "settings/wavetables/" + std::to_string(oscillator)
+                                                                : std::string();
+}
+
+std::string SynthEditor::wavetableUndoBlock(const WavetableCreator* creator) const {
+  for (int i = 0; i < vital::kNumOscillators; ++i) {
+    if (synth_.getWavetableCreator(i) == creator)
+      return wavetableUndoBlock(i);
+  }
+  // Otherwise a filter's table.
+  return creator != nullptr ? "settings/filter_tables" : std::string();
 }
 
 int SynthEditor::selectedLfoPointIndex() const {
@@ -11654,7 +11820,7 @@ void SynthEditor::writeLfoPoints(LineGenerator* generator, std::vector<CopiedLfo
   }
   generator->setSmooth(smooth);
   generator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(lfoUndoBlock(generator));
 }
 
 void SynthEditor::replaceLfoEditorBlock(const std::vector<CopiedLfoPoint>& replacement,
@@ -12151,7 +12317,7 @@ void SynthEditor::stepLfoCurve(int direction) {
       generator->setPower(index, powerForCurveIndex(next_curve));
   }
   generator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(lfoUndoBlock(generator));
 
   if (mode == LineGenerator::kModePerformer)
     postLfoAnnouncement("Performer shape curve " + curveNameForIndex(next_curve) + ", " +
@@ -12216,7 +12382,7 @@ void SynthEditor::clearLfoShape() {
   generator->setPower(1, power);
   generator->setSmooth(false);
   generator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(lfoUndoBlock(generator));
   lfo_cursor_phase_ = 0.0f;
   selected_lfo_point_phases_.clear();
   syncLfoEditorState();
@@ -12494,7 +12660,7 @@ void SynthEditor::pasteLfoPoints() {
     generator->setPower(i, points[static_cast<size_t>(i)].power);
   }
   generator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(lfoUndoBlock(generator));
 
   lfo_cursor_phase_ = paste_start;
   syncLfoEditorState();
@@ -12534,7 +12700,7 @@ void SynthEditor::pasteLfoShape() {
   generator->setShapeMode(copied_lfo_shape_mode_);
   generator->setSmooth(copied_lfo_shape_smooth_);
   generator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(lfoUndoBlock(generator));
 
   lfo_cursor_phase_ = 0.0f;
   selected_lfo_point_phases_.clear();
@@ -12879,7 +13045,7 @@ void SynthEditor::applyLfoShapePreset() {
       }
       generator->setSmooth(false);
       generator->render();
-      synth_.markStateChanged();
+      synth_.markStateChanged(lfoUndoBlock(generator));
     };
 
     auto insertPoints = [this, generator](const std::vector<ShapePoint>& source) {
@@ -12930,7 +13096,7 @@ void SynthEditor::applyLfoShapePreset() {
     if (mode == LineGenerator::kModeLfo && (shape == 1 || shape == 18 || shape == 19)) {
       generator->setSmooth(true);
       generator->render();
-      synth_.markStateChanged();
+      synth_.markStateChanged(lfoUndoBlock(generator));
     }
   }
   generator->setShapeMode(mode);
@@ -12963,7 +13129,7 @@ void SynthEditor::addLfoPoint() {
   const float output_value = generator->valueAtPhase(lfo_cursor_phase_);
   generator->addPoint(insert_index, { lfo_cursor_phase_, 1.0f - output_value });
   generator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(lfoUndoBlock(generator));
   syncLfoEditorState();
   setLfoEditorItem(insert_index, false);
   selected_lfo_point_phases_.clear();
@@ -13009,7 +13175,7 @@ void SynthEditor::deleteLfoPoint() {
     generator->removePoint(index);
   }
   generator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(lfoUndoBlock(generator));
   selected_lfo_point_phases_.clear();
   syncLfoEditorState();
   if (indices.size() == 1)
@@ -13097,7 +13263,7 @@ void SynthEditor::moveLfoPointTime(float delta) {
     generator->setPower(i, points[static_cast<size_t>(i)].power);
   }
   generator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(lfoUndoBlock(generator));
   lfo_cursor_phase_ = selected_lfo_point_phases_.empty() ? lfo_cursor_phase_ : selected_lfo_point_phases_.front();
   syncLfoEditorState();
   const int moved_index = lfoPointIndexAtPhase(lfo_cursor_phase_);
@@ -13158,7 +13324,7 @@ void SynthEditor::moveLfoPointValue(float delta) {
       selected_lfo_point_phases_.push_back(point.first);
     }
     generator->render();
-    synth_.markStateChanged();
+    synth_.markStateChanged(lfoUndoBlock(generator));
     lfo_cursor_phase_ = start;
     syncLfoEditorState();
     postLfoAnnouncement("Performer shape range " + percentString(minimum + applied_delta) + " to " +
@@ -13182,7 +13348,7 @@ void SynthEditor::moveLfoPointValue(float delta) {
     generator->setPoint(index, { point.first, 1.0f - output_value });
   }
   generator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(lfoUndoBlock(generator));
   syncLfoEditorState();
   if (indices.size() == 1)
     postLfoAnnouncement("Value " + percentString(output_value) + ", " + lfoPointDescription(indices.front()));
@@ -13222,7 +13388,7 @@ void SynthEditor::setLfoPointCurve(int curve_index) {
       generator->setPower(index, powerForCurveIndex(curve_index));
   }
   generator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(lfoUndoBlock(generator));
   if (mode == LineGenerator::kModePerformer)
     postLfoAnnouncement("Performer shape curve " + curveNameForIndex(curve_index) + ", " +
                         lfoTimeDescription(lfoEditorBlockStart(lfo_cursor_phase_)));
@@ -13249,8 +13415,10 @@ void SynthEditor::setParameterEngineValue(const String& id, float engineValue) {
 
   auto& controls = synth_.getControls();
   auto found = controls.find(id.toStdString());
-  if (found != controls.end() && found->second != nullptr)
+  if (found != controls.end() && found->second != nullptr) {
+    synth_.undoHistory().noteValueEdit(id.toStdString());
     synth_.valueChanged(id.toStdString(), engineValue);
+  }
 }
 
 void SynthEditor::randomizeAmplitudeSeed(const String& id) {
@@ -13274,8 +13442,11 @@ void SynthEditor::randomizeAmplitudeSeed(const String& id) {
 void SynthEditor::setInternalParameterEngineValue(const String& id, float engineValue) {
   auto& controls = synth_.getControls();
   auto found = controls.find(id.toStdString());
-  if (found != controls.end() && found->second != nullptr)
+  if (found != controls.end() && found->second != nullptr) {
+    // No gesture or host parameter sees this change: tell undo directly.
+    synth_.undoHistory().noteValueEdit(id.toStdString());
     synth_.valueChanged(id.toStdString(), engineValue);
+  }
 }
 
 int SynthEditor::oscillatorIndexForSectionName(const String& sectionName) const {
@@ -13405,6 +13576,7 @@ void SynthEditor::pasteOscillatorClipboard(int targetOscillator, Component& targ
     return;
 
   const String target_prefix = "osc_" + String(targetOscillator + 1) + "_";
+  synth_.undoHistory().describeNextStep("paste to Oscillator " + String(targetOscillator + 1));
   synth_.pauseProcessing(true);
   if (!copied_oscillator_.wavetable.is_null()) {
     if (auto* creator = synth_.getWavetableCreator(targetOscillator)) {
@@ -13416,8 +13588,10 @@ void SynthEditor::pasteOscillatorClipboard(int targetOscillator, Component& targ
   for (const auto& parameter : copied_oscillator_.parameters)
     setParameterEngineValue(target_prefix + parameter.suffix, parameter.engine_value);
   if (!copied_oscillator_.sample.is_null()) {
-    if (auto* sample = synth_.getSample(targetOscillator))
+    if (auto* sample = synth_.getSample(targetOscillator)) {
       sample->jsonToState(copied_oscillator_.sample);
+      synth_.undoHistory().noteStructureEdit();
+    }
   }
   synth_.pauseProcessing(false);
 
@@ -13512,6 +13686,7 @@ void SynthEditor::refreshRoutingControls() {
 }
 
 void SynthEditor::applyRoutingPreset(int preset) {
+  synth_.undoHistory().describeNextStep("filter routing");
   if (preset == 0) {
     setParameterEngineValue("filter_1_filter_input", 0.0f);
     setParameterEngineValue("filter_2_filter_input", 0.0f);
@@ -13762,6 +13937,9 @@ void SynthEditor::swapEffectSlotModuleState(const String& firstPrefix, const Str
   }
 
   synth_.swapMidiLearnPrefixes(firstPrefix.toStdString(), secondPrefix.toStdString());
+  // Two effects of the same type swapped leave their types alone: undo must
+  // still look at the impulse responses and tables that moved.
+  synth_.undoHistory().noteStructureEdit();
 }
 
 void SynthEditor::clearEffectSlot(const String& sectionName, int slot) {
@@ -13822,6 +14000,7 @@ void SynthEditor::removeEffectSlot(const String& sectionName, int slot, const St
     return;
 
   const String removed = effectSlotTitle(sectionName, slot);
+  synth_.undoHistory().describeNextStep("remove " + effectName(effectSlotType(sectionName, slot) - 1));
   clearEffectSlot(sectionName, slot);
   scheduleEffectChainRebuild(sectionName, focusedTitle);
   postPluginAnnouncement("Removed " + removed, AccessibilityHandler::AnnouncementPriority::high);
@@ -13839,6 +14018,7 @@ void SynthEditor::replaceEffectSlot(const String& sectionName, int slot, int eff
   const int index = static_cast<int>(std::distance(slots.begin(), found));
   const String replaced = effectName(effectSlotType(sectionName, slot) - 1);
   const String slot_prefix = effectSlotPrefix(sectionName, slot);
+  synth_.undoHistory().describeNextStep("replace " + replaced + " with " + effectName(effect));
   clearEffectSlot(sectionName, slot);
   synth_.pauseProcessing(true);
   setInternalParameterEngineValue(slot_prefix + "enabled", 0.0f);
@@ -14002,6 +14182,7 @@ void SynthEditor::pasteEffectSlotClipboard(const String& targetSection, const St
   }
 
   const String slot_prefix = effectSlotPrefix(targetSection, slot);
+  synth_.undoHistory().describeNextStep("paste " + name);
   synth_.pauseProcessing(true);
   setInternalParameterEngineValue(slot_prefix + "enabled", 0.0f);
   setInternalParameterEngineValue(slot_prefix + "type", static_cast<float>(type));
@@ -14127,6 +14308,7 @@ void SynthEditor::addEffectToChain(const String& sectionName, int effect, Compon
   }
 
   const String slot_prefix = effectSlotPrefix(sectionName, slot);
+  synth_.undoHistory().describeNextStep("add " + effectName(effect));
   synth_.pauseProcessing(true);
   setInternalParameterEngineValue(slot_prefix + "enabled", 0.0f);
   setInternalParameterEngineValue(slot_prefix + "type", static_cast<float>(effect + 1));
@@ -14294,6 +14476,7 @@ void SynthEditor::addEffectSlotGroups(const String& sectionName, Component& pare
 
       const String moved = effectSlotTitle(sectionName, slot);
       const String moved_title = "Slot " + String(next + 1) + " (" + effectName(type - 1) + ")";
+      synth_.undoHistory().describeNextStep("move " + effectName(type - 1));
       swapEffectSlots(sectionName, slot, slots_now[static_cast<size_t>(next)]);
       scheduleEffectChainRebuild(sectionName, moved_title);
       postPluginAnnouncement(moved + " moved to position " + String(next + 1),
@@ -14820,6 +15003,9 @@ void SynthEditor::setAutomationProxyCallbacks(AccessibleParameterRow& row) {
       },
       [this](const String& parameterId, bool remove) {
         const String parameter_name = modulationDestinationLabelForId(parameterId);
+        auto& history = synth_.undoHistory();
+        history.describeNextStep((remove ? "remove automation from " : "automate ") + parameter_name);
+        history.noteStructureEdit("atlas/fx_automation");
         if (remove) {
           const String slot_name = synth_.fxAutomationSlotNameForParameter(parameterId.toStdString());
           if (synth_.removeFxParameterAutomation(parameterId.toStdString()))
@@ -15034,6 +15220,10 @@ void SynthEditor::connectModulationAndPromptForAmount(const String& sourceId, co
     return;
   }
 
+  // The route and the amount typed into the prompt after it are one step.
+  const bool existed = synth_.getConnectionIndex(sourceId.toStdString(), destinationId.toStdString()) >= 0;
+  synth_.undoHistory().describeNextStep(modulationUndoDescription(sourceId, destinationId, !existed),
+                                        "modulation " + sourceId + " " + destinationId);
   const bool created = synth_.connectModulation(sourceId.toStdString(), destinationId.toStdString());
   const int connection = synth_.getConnectionIndex(sourceId.toStdString(), destinationId.toStdString());
   if (connection < 0) {
@@ -15185,7 +15375,9 @@ void SynthEditor::promptForMacroName(int macroIndex, Component& target) {
                          if (name.isEmpty())
                            name = "MACRO " + String(macroIndex + 1);
 
+                         synth_.undoHistory().describeNextStep("rename Macro " + String(macroIndex + 1));
                          synth_.setMacroName(macroIndex, name);
+                         synth_.markStateChanged("macro" + std::to_string(macroIndex + 1));
                          if (target_pointer != nullptr) {
                            target_pointer->setTitle(name);
                            target_pointer->setDescription("Adjust " + name);
@@ -15397,6 +15589,9 @@ void SynthEditor::applyInitialModulationAmount() {
   const float amount = modulationAmountFromPeakText(destination_id, modulation_amount_editor_.getText());
   const int connection = synth_.getConnectionIndex(source_id.toStdString(), destination_id.toStdString());
   if (connection >= 0) {
+    // Joins the step that made the route.
+    synth_.undoHistory().describeNextStep(modulationUndoDescription(source_id, destination_id, rebuild_modulation_slots),
+                                          "modulation " + source_id + " " + destination_id);
     setParameterEngineValue("modulation_" + String(connection + 1) + "_amount", amount);
     refreshVisibleModulationLabels();
   }
@@ -15632,6 +15827,7 @@ bool SynthEditor::moveEffectInSection(const String& sectionName, const String& e
   std::swap(order[selected], order[next]);
   const String moved = effectName(order[next]);
   const String parameter_id = focusedParameterId();
+  synth_.undoHistory().describeNextStep("move " + moved);
   writeEffectChainOrder(sectionName, order);
   scheduleEffectChainRebuild(sectionName, focusedTitle, parameter_id);
   postPluginAnnouncement(moved + " moved to position " + String(next + 1),
@@ -15950,7 +16146,7 @@ void SynthEditor::addModulationRemapPoint() {
 
   generator->addMiddlePoint(insertion_index);
   generator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged("settings/modulations");
   modulation_remap_point_index_ = insertion_index;
   finishModulationRemapEdit("Added " + modulationRemapPointDescription(insertion_index));
 }
@@ -15966,7 +16162,7 @@ void SynthEditor::deleteModulationRemapPoint() {
 
   generator->removePoint(point_index);
   generator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged("settings/modulations");
   modulation_remap_point_index_ = jmin(point_index, generator->getNumPoints() - 1);
   finishModulationRemapEdit("Deleted point. " + modulationRemapPointDescription(modulation_remap_point_index_));
 }
@@ -15984,7 +16180,7 @@ void SynthEditor::moveModulationRemapPointInput(float delta) {
                        generator->getPoint(point_index + 1).first, point.first + delta);
   generator->setPoint(point_index, point);
   generator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged("settings/modulations");
   finishModulationRemapEdit("Input " + compactFloat(point.first * 100.0f, 1) + "%");
 }
 
@@ -15999,7 +16195,7 @@ void SynthEditor::moveModulationRemapPointOutput(float delta) {
   point.second = 1.0f - output;
   generator->setPoint(point_index, point);
   generator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged("settings/modulations");
   finishModulationRemapEdit("Output " + compactFloat(output * 100.0f, 1) + "%");
 }
 
@@ -16013,7 +16209,7 @@ void SynthEditor::setModulationRemapCurve(int curve) {
   generator->setSmooth(smoothForCurveIndex(curve));
   generator->setPower(point_index, powerForCurveIndex(curve));
   generator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged("settings/modulations");
   finishModulationRemapEdit(curveNameForIndex(curve));
 }
 
@@ -16234,7 +16430,7 @@ bool SynthEditor::loadWavetableIntoCreator(WavetableCreator& creator, const File
     }
     creator.setFileLoaded(file.getFullPathName().toStdString());
     creator.render();
-    synth_.markStateChanged();
+    synth_.markStateChanged(wavetableUndoBlock(&creator));
     return true;
   }
   catch (const std::exception& e) {
@@ -16331,7 +16527,7 @@ void SynthEditor::synthesizePresetToWavetable(int oscillator) {
       if (file_source != nullptr) {
         file_source->setWindowSize(sample_rate / vital::utils::midiNoteToFrequency(kCaptureNote));
         creator->render();
-        safe_this->synth_.markStateChanged();
+        safe_this->synth_.markStateChanged(safe_this->wavetableUndoBlock(creator));
       }
 
       auto& state = safe_this->wavetable_keyboard_state_[oscillator];
@@ -16501,6 +16697,7 @@ void SynthEditor::addFilterTableControlsGroup(const String& filter_prefix, Compo
   add_button("Reset wavetable", "Restore the default low-pass wavetable in " + section_name,
              [this, filter_prefix, section_name] {
                synth_.resetFilterTable(filter_prefix.toStdString());
+               synth_.markStateChanged("settings/filter_tables");
                postPluginAnnouncement("Default low-pass wavetable restored in " + section_name,
                                       AccessibilityHandler::AnnouncementPriority::high);
                refreshFilterTableControls(filter_prefix);
@@ -17446,7 +17643,7 @@ void SynthEditor::adjustWavetableHarmonicLevel(int oscillator, float deltaPercen
     wave_frame->toFrequencyDomain();
   }
   creator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(wavetableUndoBlock(oscillator));
   postWavetableEditorAnnouncement(wavetableHarmonicStatusText(oscillator, true, false) +
                                       (targets.size() > 1 ? ", " + String(targets.size()) + " frames" : ""),
                                   AccessibilityHandler::AnnouncementPriority::high);
@@ -17473,7 +17670,7 @@ void SynthEditor::adjustWavetableHarmonicPhase(int oscillator, float deltaDegree
     wave_frame->toFrequencyDomain();
   }
   creator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(wavetableUndoBlock(oscillator));
   postWavetableEditorAnnouncement(wavetableHarmonicStatusText(oscillator, false, true) +
                                       (targets.size() > 1 ? ", " + String(targets.size()) + " frames" : ""),
                                   AccessibilityHandler::AnnouncementPriority::high);
@@ -17533,7 +17730,7 @@ void SynthEditor::pasteWavetableFrames(int oscillator) {
     }
   }
   creator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(wavetableUndoBlock(oscillator));
   postWavetableEditorAnnouncement("Pasted into " + String(targets.size()) + " wavetable frame" +
                                   (targets.size() == 1 ? String() : String("s")),
                                   AccessibilityHandler::AnnouncementPriority::high);
@@ -17570,7 +17767,7 @@ void SynthEditor::addWavetableFrame(int oscillator) {
   state.frame = source->indexOf(inserted);
   state.selected_frames.clear();
   creator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(wavetableUndoBlock(oscillator));
   postWavetableEditorAnnouncement("Frame added, " + wavetableFrameStatusText(oscillator),
                                   AccessibilityHandler::AnnouncementPriority::high);
 }
@@ -17597,7 +17794,7 @@ void SynthEditor::deleteWavetableFrames(int oscillator) {
   state.frame = jlimit(0, source->numFrames() - 1, next_cursor);
   state.selected_frames.clear();
   creator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(wavetableUndoBlock(oscillator));
   postWavetableEditorAnnouncement("Deleted " + String(targets.size()) + " wavetable frame" +
                                   (targets.size() == 1 ? String() : String("s")) + ", " +
                                   wavetableFrameStatusText(oscillator),
@@ -17630,7 +17827,7 @@ void SynthEditor::setWavetableFramePosition(int oscillator, int frame, int posit
   source->reposition(keyframe);
   wavetable_keyboard_state_[oscillator].frame = source->indexOf(keyframe);
   creator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(wavetableUndoBlock(oscillator));
 }
 
 void SynthEditor::clearWavetableDc(int oscillator) {
@@ -17648,7 +17845,7 @@ void SynthEditor::clearWavetableDc(int oscillator) {
     wave_frame->toFrequencyDomain();
   }
   creator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(wavetableUndoBlock(oscillator));
   postWavetableEditorAnnouncement("Removed DC offset from " + String(targets.size()) + " wavetable frame" +
                                   (targets.size() == 1 ? String() : String("s")),
                                   AccessibilityHandler::AnnouncementPriority::high);
@@ -17705,7 +17902,7 @@ void SynthEditor::addWavetableModifier(int oscillator, int modifier_type) {
   if (component == nullptr)
     return;
   creator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(wavetableUndoBlock(oscillator));
   const int component_index = group->numComponents() - 1;
   const String name = atlas::wavetable_edit::componentName(component);
   postWavetableEditorAnnouncement(name + " added to layer " + String(layer + 1), AccessibilityHandler::AnnouncementPriority::high);
@@ -17722,7 +17919,7 @@ void SynthEditor::removeWavetableModifier(int oscillator, int component_index) {
   creator->getGroup(layer)->removeComponent(component_index);
   wavetable_keyboard_state_[oscillator].keyframes.clear();
   creator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(wavetableUndoBlock(oscillator));
   postWavetableEditorAnnouncement(name + " removed", AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, "Add modifier");
 }
@@ -17757,7 +17954,7 @@ void SynthEditor::moveWavetableModifier(int oscillator, int component_index, int
   auto& keyframes = wavetable_keyboard_state_[oscillator].keyframes;
   std::swap(keyframes[component_index], keyframes[destination]);
   creator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(wavetableUndoBlock(oscillator));
   postWavetableEditorAnnouncement(name + (direction < 0 ? " moved up" : " moved down"), AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, name + " " + String(destination) + " keyframe interpolation");
 }
@@ -17835,7 +18032,7 @@ void SynthEditor::addWavetableLayer(int oscillator, int sourceType) {
   if (atlas::wavetable_edit::addLayer(*creator, sourceType) == nullptr)
     return;
   creator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(wavetableUndoBlock(oscillator));
   auto& state = wavetable_keyboard_state_[oscillator];
   state.layer = creator->numGroups() - 1;
   state.frame = 0;
@@ -17870,7 +18067,7 @@ void SynthEditor::addWavetableAudioLayer(int oscillator, const File& file) {
     return;
   atlas::wavetable_edit::loadAudioLayer(group->getComponent(0), buffer.getReadPointer(0), buffer.getNumSamples(), sample_rate);
   creator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(wavetableUndoBlock(oscillator));
   auto& state = wavetable_keyboard_state_[oscillator];
   state.layer = creator->numGroups() - 1;
   state.keyframes.clear();
@@ -17917,7 +18114,7 @@ void SynthEditor::removeWavetableLayer(int oscillator) {
     return;
   }
   creator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(wavetableUndoBlock(oscillator));
   state.layer = jlimit(0, creator->numGroups() - 1, removed);
   state.frame = 0;
   state.selected_frames.clear();
@@ -17935,7 +18132,7 @@ void SynthEditor::moveWavetableLayer(int oscillator, int direction) {
     return;
   state.layer += direction < 0 ? -1 : 1;
   creator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(wavetableUndoBlock(oscillator));
   postWavetableEditorAnnouncement("Layer moved to position " + String(state.layer + 1), AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, direction < 0 ? "Move layer earlier" : "Move layer later");
 }
@@ -18242,7 +18439,7 @@ void SynthEditor::applyWavetableHarmonicEdit(int oscillator, int frame, bool all
     wave_frame->toFrequencyDomain();
   }
   creator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(wavetableUndoBlock(oscillator));
 
   postWavetableEditorAnnouncement("Set harmonic " + String(harmonic) +
                                   (targets.size() == 1 ? " on frame " + String(targets.front() + 1) :
@@ -18278,7 +18475,7 @@ void SynthEditor::applyWavetableStartingShape(int oscillator, int frame, bool al
   for (int index : targets)
     source->getKeyframe(index)->wave_frame()->copy(starting_frame);
   creator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(wavetableUndoBlock(oscillator));
 
   static const char* const kShapeNames[] = {
     "Sine", "Saturated sine", "Triangle", "Square", "Pulse 25 percent", "Saw"
@@ -18318,7 +18515,7 @@ void SynthEditor::clearWavetableHarmonic(int oscillator, int frame, bool allFram
     wave_frame->toFrequencyDomain();
   }
   creator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(wavetableUndoBlock(oscillator));
 
   postWavetableEditorAnnouncement("Cleared harmonic " + String(harmonic) +
                                   (targets.size() == 1 ? " on frame " + String(targets.front() + 1) :
@@ -18353,7 +18550,7 @@ void SynthEditor::normalizeWavetableFrame(int oscillator, int frame, bool allFra
     wave_frame->toFrequencyDomain();
   }
   creator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(wavetableUndoBlock(oscillator));
 
   postWavetableEditorAnnouncement(targets.size() == 1 ? "Normalized wavetable frame " + String(targets.front() + 1) :
                                                         "Normalized " + String(static_cast<int>(targets.size())) +
@@ -18474,6 +18671,7 @@ void SynthEditor::showWavetableActionsMenu(int oscillator, Component& target) {
           if (renamed == nullptr || name.isEmpty())
             return;
           renamed->setName(name.toStdString());
+          synth_.markStateChanged(wavetableUndoBlock(oscillator));
           refreshWavetableNameLabel(oscillator);
           postPluginAnnouncement("Wavetable renamed " + name, AccessibilityHandler::AnnouncementPriority::high);
         });
@@ -18483,7 +18681,7 @@ void SynthEditor::showWavetableActionsMenu(int oscillator, Component& target) {
         if (auto* creator = synth_.getWavetableCreator(oscillator)) {
           creator->loadDefaultCreator();
           creator->render();
-          synth_.markStateChanged();
+          synth_.markStateChanged(wavetableUndoBlock(oscillator));
           refreshWavetableNameLabel(oscillator);
           wavetable_keyboard_state_[oscillator] = {};
           if (wavetable_editor_visible_[oscillator])
@@ -19859,6 +20057,7 @@ void SynthEditor::loadEffectPresetFile(const String& sectionName, const File& fi
   }
 
   const String chain_prefix = effectChainPrefixForSection(sectionName);
+  synth_.undoHistory().describeNextStep("load FX preset " + file.getFileNameWithoutExtension());
   int changed = 0;
   for (auto it = data["parameters"].begin(); it != data["parameters"].end(); ++it) {
     if (!it.value().is_number())
@@ -20308,6 +20507,10 @@ bool SynthEditor::keyStateChanged(bool isKeyDown) {
   // keeps every key (see keyPressed).
   if (isConfirmationButtonFocused())
     return true;
+  // Command Z and Command Y are Atlas's undo and redo (keyPressed): the host
+  // must not get their key-down too, or REAPER would undo its own last action.
+  if (isKeyDown && isUndoRedoChordDown())
+    return true;
   if (!isQwertyKeyboardActive())
     return false;
 
@@ -20360,6 +20563,18 @@ bool SynthEditor::keyPressed(const KeyPress& key) {
   // after Tab has left the form the key would otherwise go to the host.
   if (save_patch_dialog_visible_ && key.getKeyCode() == KeyPress::escapeKey) {
     hideSavePresetDialog();
+    return true;
+  }
+  if (const int direction = undoRedoDirection(key); direction != 0) {
+    // A text box undoes its own typing; one with nothing left to undo passes
+    // the key on, and the patch must not change while the user types.
+    if (dynamic_cast<TextEditor*>(Component::getCurrentlyFocusedComponent()) != nullptr)
+      return true;
+    // A prompt or the save form is waiting on the patch as it is.
+    if (modulation_amount_prompt_visible_ || parameter_value_prompt_visible_ || save_patch_dialog_visible_)
+      postUndoAnnouncement(direction > 0 ? "Close the prompt to redo" : "Close the prompt to undo");
+    else
+      undoOrRedo(direction > 0);
     return true;
   }
   {

@@ -704,6 +704,8 @@ if(ATLAS_BUILD_TIMING_TESTS)
   add_test(NAME atlas_editor_speech COMMAND AtlasMacroTests --editor-speech)
   add_test(NAME atlas_editor_rebuild_focus COMMAND AtlasMacroTests --editor-rebuild-focus)
   add_test(NAME atlas_editor_focus COMMAND AtlasMacroTests --editor-focus)
+  # Undo and redo of values, presets, the default patch, effects, routes and LFO edits.
+  add_test(NAME atlas_editor_undo COMMAND AtlasMacroTests --editor-undo)
   add_test(NAME atlas_oscillator_modulation COMMAND AtlasMacroTests --oscillator-modulation)
   add_test(NAME atlas_arpeggiator COMMAND AtlasMacroTests --arpeggiator)
   # Voice allocation with arpeggiator tails, MIDI learn, state restore and

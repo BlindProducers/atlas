@@ -175,6 +175,8 @@ SynthPlugin::SynthPlugin() {
       bridge->setEnvelopeSyncContext(controls_.at(prefix + "_tempo_sync"), controls_.at("beats_per_minute"));
     }
     bridge->setListener(this);
+    // The editor's gestures on it mark the user's changes for undo.
+    bridge->addListener(&undo_gesture_listener_);
     bridge_lookup_[engine_name] = bridge;
     addParameter(bridge);
   }
@@ -227,6 +229,9 @@ void SynthPlugin::endChangeGesture(const std::string& name) {
 }
 
 void SynthPlugin::setValueNotifyHost(const std::string& name, vital::mono_float value) {
+  // A value MIDI learn or the audio thread set is where undo starts from.
+  if (!MessageManager::existsAndIsCurrentThread())
+    undo_history_.absorbExternalChange(name);
   const auto direct = bridge_lookup_.find(name);
   if (direct != bridge_lookup_.end()) {
     vital::mono_float plugin_value = direct->second->convertToPluginValue(value);
@@ -249,9 +254,27 @@ void SynthPlugin::StateChangeNotifier::handleAsyncUpdate() {
 }
 
 void SynthPlugin::markStateChanged() {
+  markStateChanged(std::string());
+}
+
+void SynthPlugin::markStateChanged(const std::string& undoBlock) {
+  if (restoring_state_ || !MessageManager::existsAndIsCurrentThread())
+    return;
+  undo_history_.noteStructureEdit(undoBlock);
+  state_change_notifier_.triggerAsyncUpdate();
+}
+
+void SynthPlugin::notifyHostStateChanged() {
   if (restoring_state_ || !MessageManager::existsAndIsCurrentThread())
     return;
   state_change_notifier_.triggerAsyncUpdate();
+}
+
+void SynthPlugin::applyUndoValue(const std::string& name, vital::mono_float value) {
+  beginChangeGesture(name);
+  valueChanged(name, value);
+  setValueNotifyHost(name, value);
+  endChangeGesture(name);
 }
 
 void SynthPlugin::pauseProcessing(bool pause) {
@@ -518,7 +541,14 @@ AudioProcessorEditor* SynthPlugin::createEditor() {
 }
 
 void SynthPlugin::parameterChanged(const std::string& name, vital::mono_float value) {
+  // Inside one of the editor's gestures the change is the user's, a step for
+  // undo; otherwise the host or its automation made it, and undo starts from it.
+  const bool user_edit = undo_history_.isRecordingUserEdit();
+  if (user_edit)
+    undo_history_.noteValueEdit(name);
   valueChangedExternal(name, value);
+  if (!user_edit)
+    undo_history_.absorbExternalChange(name);
   const auto direct = bridge_lookup_.find(name);
   if (direct == bridge_lookup_.end()) {
     if (auto* proxy = fxAutomationParameterForTarget(name)) {
@@ -528,7 +558,7 @@ void SynthPlugin::parameterChanged(const std::string& name, vital::mono_float va
     else {
       // An editor control the host does not see (an effect's parameters, an
       // oscillator type's own controls): the host learns of it no other way.
-      markStateChanged();
+      notifyHostStateChanged();
     }
   }
   updateLatencyAfterControlChange(name);
@@ -1019,6 +1049,9 @@ void SynthPlugin::setStateInformation(const void* data, int size_in_bytes) {
     explicit Restoring(bool& restoring) : flag(restoring) { flag = true; }
     ~Restoring() { flag = false; }
   } restoring(restoring_state_);
+  // The host's own state (a project, the host's undo, a host preset): the
+  // patch's undo history no longer fits it.
+  undo_history_.clear();
 
   // Parse while this instance still plays: only applying the state needs
   // processing paused. The state is JSON text, normally ending in a NUL.
@@ -1103,8 +1136,11 @@ void SynthPlugin::setStateInformation(const void* data, int size_in_bytes) {
   suspendProcessing(false);
 
   SynthGuiInterface* editor = getGuiInterface();
-  if (editor)
+  if (editor) {
     editor->updateFullGui();
+    // The editor is open: what the user does next starts from this state.
+    undo_history_.ensureBaseline();
+  }
 }
 
 AudioProcessor* JUCE_CALLTYPE createPluginFilter() {
