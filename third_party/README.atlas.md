@@ -9,6 +9,15 @@ Fetched by default, needed to build Atlas:
 
 - `JUCE8/`: JUCE 8.0.14 (https://github.com/juce-framework/JUCE), used under
   the AGPLv3 (see `JUCE8/LICENSE.md`). Atlas is GPLv3, which the AGPL allows.
+  CMake applies the patches in `patches/juce8-*.patch` to the submodule's
+  working tree when it configures (`.gitmodules` ignores the changes they
+  leave there):
+  - `juce8-mac-idle-vblank.patch`: on macOS JUCE 8 wakes the message thread
+    on every display refresh (60 or 120 times a second) for as long as a
+    window is open, even when nothing needs drawing. The patch skips that
+    wake-up while the window has no pending repaint and no `VBlankListener`;
+    a repaint or a new listener starts it again. With Atlas's editor open
+    and idle this saved about two points of one core.
 - `nlohmann_json/`: nlohmann json 3.1.2 (MIT), from the release-tracking
   repository https://github.com/ArthurSonzogni/nlohmann_json_cmake_fetchcontent,
   which carries only the released header (`include/nlohmann/json.hpp`, the

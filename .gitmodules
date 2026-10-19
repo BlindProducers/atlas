@@ -2,6 +2,7 @@
 	path = third_party/JUCE8
 	url = https://github.com/juce-framework/JUCE.git
 	shallow = true
+	ignore = dirty
 [submodule "third_party/concurrentqueue"]
 	path = third_party/concurrentqueue
 	url = https://github.com/cameron314/concurrentqueue.git

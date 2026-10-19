@@ -46,6 +46,26 @@ foreach(dependency "${ATLAS_JUCE_SOURCE}/CMakeLists.txt"
     message(FATAL_ERROR "Missing ${dependency}. Fetch the submodules with: git submodule update --init")
   endif()
 endforeach()
+
+# Atlas's changes to JUCE, applied to the submodule's working tree once (a
+# patch that already applies in reverse is in place). third_party/README.atlas.md
+# says what each one does.
+find_package(Git REQUIRED)
+file(GLOB ATLAS_JUCE_PATCHES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/patches/juce8-*.patch")
+foreach(patch ${ATLAS_JUCE_PATCHES})
+  execute_process(COMMAND "${GIT_EXECUTABLE}" apply --reverse --check "${patch}"
+                  WORKING_DIRECTORY "${ATLAS_JUCE_SOURCE}" RESULT_VARIABLE already_applied
+                  OUTPUT_QUIET ERROR_QUIET)
+  if(NOT already_applied EQUAL 0)
+    execute_process(COMMAND "${GIT_EXECUTABLE}" apply "${patch}"
+                    WORKING_DIRECTORY "${ATLAS_JUCE_SOURCE}" RESULT_VARIABLE patch_result
+                    ERROR_VARIABLE patch_error)
+    if(NOT patch_result EQUAL 0)
+      message(FATAL_ERROR "Could not apply ${patch} to ${ATLAS_JUCE_SOURCE}:\n${patch_error}")
+    endif()
+    message(STATUS "Applied ${patch}")
+  endif()
+endforeach()
 add_subdirectory("${ATLAS_JUCE_SOURCE}" JUCE)
 
 # espeak-ng (GPL-3.0-or-later) speaks the Speech oscillator's text: its
