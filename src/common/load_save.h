@@ -108,6 +108,7 @@ class LoadSave {
     static std::string getLicense(json state);
 
     static File getConfigFile();
+    static File defaultConfigFile();
     // Tests point the config somewhere else, leaving the user's file alone.
     static void setConfigFileForTesting(const File& file);
     static void writeCrashLog(String crash_log);
