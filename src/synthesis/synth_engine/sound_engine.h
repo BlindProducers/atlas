@@ -117,6 +117,7 @@ namespace vital {
       Sample* getSample(int index);
       SourceSlotModule* getSourceSlot(int index);
       MultiSampleSlot* getMultiSample(int index);
+      ReorderableEffectChain* getMainEffectChain() { return effect_chain_; }
       SpeechSlot* getSpeechSlot(int index);
       // Every Speech slot's next note sings its first syllable.
       void rewindSpeech();

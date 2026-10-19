@@ -1092,6 +1092,101 @@ void effectCpu(const std::string& only) {
   }
 }
 
+// A slot sleeps once its input and output have stayed silent for its hold
+// time, and wakes on the next note's first block. Every effect, alone in the
+// main chain's first slot at its defaults: it either keeps sounding (noise) or
+// sleeps, and after sleeping a note sounds through it at once. A 4 s Delay
+// with feedback must not sleep between its echoes.
+void effectSleep() {
+  using namespace vital;
+  constexpr int kBlock = 512;
+  constexpr int kRate = 48000;
+  auto prepare = [&](SynthPlugin& plugin, int type) {
+    plugin.setPlayConfigDetails(0, 2, kRate, kBlock);
+    plugin.prepareToPlay(kRate, kBlock);
+    selectEffect(plugin, "fx_slot_1_", type);
+    plugin.getEngine()->prepareSelectedEffects();
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(250);
+  };
+  auto peak = [](const juce::AudioBuffer<float>& audio) {
+    return std::max(audio.getMagnitude(0, 0, audio.getNumSamples()), audio.getMagnitude(1, 0, audio.getNumSamples()));
+  };
+  for (int type = 0; type < constants::kNumEffects; ++type) {
+    const std::string name = strings::kEffectOrder[type];
+    SynthPlugin plugin;
+    prepare(plugin, type);
+    auto* chain = plugin.getEngine()->getMainEffectChain();
+    juce::AudioBuffer<float> audio(2, kBlock);
+    juce::MidiBuffer midi;
+    midi.addEvent(juce::MidiMessage::noteOn(1, 60, .8f), 0);
+    for (int block = 0; block < 20; ++block) {
+      audio.clear();
+      plugin.processBlock(audio, midi);
+      midi.clear();
+    }
+    midi.addEvent(juce::MidiMessage::noteOff(1, 60), 0);
+    int slept_block = -1;
+    for (int block = 0; block < 60 * kRate / kBlock && slept_block < 0; ++block) {
+      audio.clear();
+      plugin.processBlock(audio, midi);
+      midi.clear();
+      if (chain->isSlotAsleep(0))
+        slept_block = block;
+    }
+    if (slept_block < 0) {
+      std::cout << "effect=" << name << " keeps sounding" << std::endl;
+      continue;
+    }
+    // Asleep, the slot passes its silent input through.
+    float asleep_peak = 0.0f;
+    for (int block = 0; block < 40; ++block) {
+      audio.clear();
+      plugin.processBlock(audio, midi);
+      asleep_peak = std::max(asleep_peak, peak(audio));
+    }
+    expect(chain->isSlotAsleep(0), name + " stays asleep in silence");
+    expect(asleep_peak < 1.0e-4f, name + " is silent while asleep");
+    midi.addEvent(juce::MidiMessage::noteOn(1, 64, .8f), 0);
+    float woken_peak = 0.0f;
+    for (int block = 0; block < 10; ++block) {
+      audio.clear();
+      plugin.processBlock(audio, midi);
+      midi.clear();
+      if (block == 0)
+        expect(!chain->isSlotAsleep(0), name + " wakes on the note's first block");
+      woken_peak = std::max(woken_peak, peak(audio));
+    }
+    expect(woken_peak > 1.0e-3f, name + " sounds after waking");
+    std::cout << "effect=" << name << " slept_after_s=" << (slept_block + 1) * double(kBlock) / kRate
+              << " woken_peak=" << woken_peak << std::endl;
+  }
+
+  // Echoes 4 s apart: the slot must stay awake through the gap.
+  SynthPlugin plugin;
+  prepare(plugin, constants::kDelay);
+  plugin.valueChanged("fx_slot_1_delay_sync", 0.0f);
+  plugin.valueChanged("fx_slot_1_delay_frequency", -2.0f);
+  plugin.valueChanged("fx_slot_1_delay_feedback", 0.5f);
+  auto* chain = plugin.getEngine()->getMainEffectChain();
+  juce::AudioBuffer<float> audio(2, kBlock);
+  juce::MidiBuffer midi;
+  midi.addEvent(juce::MidiMessage::noteOn(1, 60, .8f), 0);
+  midi.addEvent(juce::MidiMessage::noteOff(1, 60), kBlock / 2);
+  float echo_peak = 0.0f;
+  bool slept_before_echo = false;
+  for (int block = 0; block < 5 * kRate / kBlock; ++block) {
+    audio.clear();
+    plugin.processBlock(audio, midi);
+    midi.clear();
+    const double seconds = block * double(kBlock) / kRate;
+    if (seconds < 3.8 && chain->isSlotAsleep(0)) slept_before_echo = true;
+    if (seconds > 3.8 && seconds < 4.6) echo_peak = std::max(echo_peak, peak(audio));
+  }
+  expect(!slept_before_echo, "a 4 s Delay stays awake between echoes");
+  expect(echo_peak > 1.0e-3f, "a 4 s Delay's echo still sounds");
+  std::cout << "4 s delay echo_peak=" << echo_peak << std::endl;
+}
+
 // The arpeggiator's cost in realtime blocks of 512 at 48 kHz: a preset (or the
 // default patch) holding a four-note chord, with and without Arp 1 at 1/16 and
 // a Distortion, Reverb, Chorus and Delay chain. Prints the mean and worst
@@ -1580,6 +1675,10 @@ int main(int argc, char** argv) {
     return compareRenders(argv[2], argv[3]);
   if (argc > 1 && String(argv[1]) == "--effect-cpu") {
     effectCpu(argc > 2 ? argv[2] : "");
+    return failures ? 1 : 0;
+  }
+  if (argc > 1 && String(argv[1]) == "--effect-sleep") {
+    effectSleep();
     return failures ? 1 : 0;
   }
   if (argc > 1 && String(argv[1]) == "--arp-cpu") {
