@@ -1159,17 +1159,42 @@ void idleCpu(const std::string& only) {
       return std::make_pair(usage.ru_utime.tv_sec + 1.0e-6 * usage.ru_utime.tv_usec,
                             usage.ru_stime.tv_sec + 1.0e-6 * usage.ru_stime.tv_usec);
     };
+    auto plugin = std::make_unique<SynthPlugin>();
+    prepare(*plugin, 1.0f, chain);
+    // As in a host, an audio thread renders a block every 512 samples while
+    // the message thread runs, so the process CPU includes it and the time
+    // per block shows what the editor adds to the audio thread.
+    std::atomic<bool> rendering { true };
+    std::atomic<int64_t> render_ns { 0 };
+    std::atomic<int> render_blocks { 0 };
+    std::thread audio_thread([&] {
+      juce::AudioBuffer<float> audio(2, kBlock);
+      juce::MidiBuffer midi;
+      const auto period = std::chrono::microseconds(static_cast<int64_t>(budget_us));
+      auto next = std::chrono::steady_clock::now();
+      while (rendering.load()) {
+        const auto start = std::chrono::steady_clock::now();
+        audio.clear();
+        plugin->processBlock(audio, midi);
+        render_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count();
+        ++render_blocks;
+        next += period;
+        std::this_thread::sleep_until(next);
+      }
+    });
     auto measure_cpu = [&](const char* name, int ms) {
+      render_ns = 0;
+      render_blocks = 0;
       const auto start = cpu_times();
       pump(ms);
       const auto end = cpu_times();
       const double seconds = ms / 1000.0;
+      const double block_us = render_blocks > 0 ? 1.0e-3 * render_ns / render_blocks : 0.0;
       std::cout << name << " cpu_percent=" << 100.0 * (end.first - start.first + end.second - start.second) / seconds
                 << " user_percent=" << 100.0 * (end.first - start.first) / seconds
-                << " system_percent=" << 100.0 * (end.second - start.second) / seconds << std::endl;
+                << " system_percent=" << 100.0 * (end.second - start.second) / seconds
+                << " audio_us_per_block=" << block_us << std::endl;
     };
-    auto plugin = std::make_unique<SynthPlugin>();
-    prepare(*plugin, 1.0f, chain);
     pump(1000);
     measure_cpu("message thread, no editor,", 5000);
     std::unique_ptr<juce::AudioProcessorEditor> editor(plugin->createEditorIfNeeded());
@@ -1187,6 +1212,8 @@ void idleCpu(const std::string& only) {
       std::cout << "editor could not take the keyboard focus" << std::endl;
     plugin->editorBeingDeleted(editor.get());
     editor.reset();
+    rendering = false;
+    audio_thread.join();
   }
 }
 
