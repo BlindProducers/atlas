@@ -173,6 +173,9 @@ namespace vital {
 
       static constexpr mono_float kInstrumentGateSeconds = 0.005f;
       poly_float envelope_gate_ = 0.0f;
+      // Outputs written last block, cleared when nothing writes them this one.
+      // All at first: a new voice copy has not cleared its buffers yet.
+      unsigned written_outputs_ = (1u << (kDirectOut + 1)) - 1;
 
       Value* portamento_glide_zones_;
       Value* zone_crossfade_;

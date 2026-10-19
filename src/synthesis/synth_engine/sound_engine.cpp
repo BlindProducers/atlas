@@ -73,13 +73,26 @@ namespace vital {
       Processor* clone() const override { return new BusRouter(*this); }
 
       void process(int num_samples) override {
-        for (int output_index = 0; output_index < kNumOutputs; ++output_index)
-          utils::zeroBuffer(output(output_index)->buffer, num_samples);
+        // Only the chosen output carries the bus. The others stay silent, so
+        // clear them (whole, for longer blocks later) only when the choice moves.
+        const int destination_index = outputIndex();
+        if (destination_index != cleared_for_) {
+          for (int output_index = 0; output_index < kNumOutputs; ++output_index) {
+            if (output_index != destination_index)
+              utils::zeroBuffer(output(output_index)->buffer, output(output_index)->buffer_size);
+          }
+          cleared_for_ = destination_index;
+        }
 
         const poly_float* source = input(kAudio)->source->buffer;
-        poly_float* destination = output(outputIndex())->buffer;
+        poly_float* destination = output(destination_index)->buffer;
         for (int i = 0; i < num_samples; ++i)
           destination[i] = source[i];
+      }
+
+      void setOversampleAmount(int oversample) override {
+        Processor::setOversampleAmount(oversample);
+        cleared_for_ = -1;
       }
 
       int outputIndex() const {
@@ -99,6 +112,7 @@ namespace vital {
 
     private:
       int bus_index_;
+      int cleared_for_ = -1;
   };
 
 
