@@ -133,6 +133,10 @@ namespace vital {
         bool started = false;
         bool phases_initialized = false;
         int last_transient_frame = -1;
+        // Tilt's gain per bin, recomputed only when the tilt moves.
+        bool tilt_gain_valid = false;
+        float tilt_gain_tilt = 0.0f;
+        std::array<float, SpectralAnalysis::kNumBins> tilt_gain {};
         std::array<float, SpectralAnalysis::kFftSize> overlap {};
         std::array<float, SpectralAnalysis::kNumBins> synth_phase {};
         std::array<float, SpectralAnalysis::kFftSize * 2> work {};

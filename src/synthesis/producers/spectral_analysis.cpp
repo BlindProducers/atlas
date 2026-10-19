@@ -156,6 +156,20 @@ namespace vital {
     return true;
   }
 
+  SpectralAnalysis::FramePair SpectralAnalysis::framePair(double position) const noexcept {
+    const int num_frames = static_cast<int>(frames_.size());
+    if (num_frames == 0)
+      return {};
+    if (num_frames == 1)
+      return { &frames_[0], nullptr, 0.0f };
+
+    const double clamped = juce::jlimit(0.0, num_frames - 1.0, position);
+    const int frame_0_index = static_cast<int>(std::floor(clamped));
+    const int frame_1_index = std::min(frame_0_index + 1, num_frames - 1);
+    return { &frames_[static_cast<size_t>(frame_0_index)], &frames_[static_cast<size_t>(frame_1_index)],
+             static_cast<float>(clamped - frame_0_index) };
+  }
+
   void SpectralAnalysis::readFrameInterpolated(double position, float* out_mag, float* out_freq,
                                                float* out_phase, bool* transient) const noexcept {
     const int num_frames = static_cast<int>(frames_.size());
@@ -201,13 +215,11 @@ namespace vital {
       const float freq_0 = frame_0.true_freq[static_cast<size_t>(bin)];
       const float freq_1 = frame_1.true_freq[static_cast<size_t>(bin)];
       out_freq[bin] = freq_0 + t * (freq_1 - freq_0);
-      if (out_phase) {
-        const float expected = freq_1 * kHop;
-        const float delta = expected + std::remainder(frame_1.phase[static_cast<size_t>(bin)] -
-            frame_0.phase[static_cast<size_t>(bin)] - expected, juce::MathConstants<float>::twoPi);
-        out_phase[bin] = std::remainder(frame_0.phase[static_cast<size_t>(bin)] + t * delta,
-                                      juce::MathConstants<float>::twoPi);
-      }
+    }
+    if (out_phase) {
+      const FramePair frames { &frame_0, &frame_1, t };
+      for (int bin = 0; bin < kNumBins; ++bin)
+        out_phase[bin] = interpolatedPhase(frames, bin);
     }
     if (transient)
       *transient = closest.transient;
