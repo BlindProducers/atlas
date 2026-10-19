@@ -88,6 +88,13 @@ struct PresetBrowserItem {
   int remote_downloads = 0;
   bool downloaded = false;
   bool isRemote() const { return remote_url.isNotEmpty(); }
+  // Its audio preview on the library, when the uploader added one: where to
+  // fetch it, where the fetched copy is kept, its size and its length.
+  String remote_preview_url;
+  File preview_file;
+  int64 preview_size = 0;
+  double preview_seconds = 0.0;
+  bool hasPreview() const { return remote_preview_url.isNotEmpty(); }
 };
 
 struct PresetFacetItem {
@@ -380,6 +387,11 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     bool isCommunityLibraryLoaded() const { return community_list_loaded_; }
     bool isCommunityDownloadBusy() const { return !community_downloads_.empty(); }
     String communityLibraryError() const { return community_list_error_; }
+    // Community previews: the cached file of the preview playing or being
+    // fetched (none when idle), and whether one is being fetched or plays.
+    File communityPreviewFile() const { return preview_file_; }
+    bool isCommunityPreviewBusy() const { return preview_fetching_; }
+    bool isCommunityPreviewPlaying() const { return preview_transport_.isPlaying(); }
     // Tests: what a message box, file chooser or dialog window does once it
     // closes, having opened while `returnTo` had the focus.
     void closeOsWindowForTesting(Component& returnTo) {
@@ -575,6 +587,24 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     // Adds a file that just appeared (a download) to the local index and the
     // process-wide cache ahead of the next scan.
     void addPresetToLocalIndex(const File& file);
+    // A community row's audio preview, played through the plugin's output
+    // beside the synth (SynthPlugin::setAuditionSource). P on the row, or its
+    // context menu, fetches the preview into Community/Previews the first
+    // time, decodes it with a JUCE AudioFormatReader read ahead on
+    // preview_thread_ and plays it from preview_transport_; the same key,
+    // another row's preview or closing the editor stops it, and the end of
+    // the recording is said.
+    void toggleCommunityPreview();
+    void startCommunityPreview(const PresetBrowserItem& item);
+    void playCommunityPreview(const File& file, const String& name, int generation);
+    void stopCommunityPreview(bool announce);
+    // Lets go of the preview: stops it, takes it out of the plugin's output
+    // and drops a fetch under way.
+    void detachCommunityPreview();
+    // Whether `item`'s preview is the one playing or being fetched.
+    bool isCommunityPreviewOf(const PresetBrowserItem& item) const;
+    // From the timer: lets go of a preview that has reached its end and says so.
+    void finishCommunityPreviewIfEnded();
     // Runs `task` on a thread that is joined when the editor closes, as the
     // preset scans are; `task` stops when the flag it is given is set.
     void runPresetBackgroundTask(std::function<void(const std::shared_ptr<std::atomic<bool>>&)> task);
@@ -1246,6 +1276,16 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     String community_list_error_;
     int community_list_generation_ = 0;
     std::set<std::string> community_downloads_;   // the local paths being fetched
+    // The community preview playing or being fetched (toggleCommunityPreview).
+    AudioFormatManager preview_formats_;
+    bool preview_formats_registered_ = false;
+    TimeSliceThread preview_thread_ { "Atlas preview" };
+    std::unique_ptr<AudioFormatReaderSource> preview_reader_;
+    AudioTransportSource preview_transport_;
+    File preview_file_;
+    String preview_name_;
+    bool preview_fetching_ = false;
+    int preview_generation_ = 0;
     int preset_sort_column_ = 1;
     bool preset_sort_ascending_ = true;
     bool preset_metadata_edit_mode_ = false;

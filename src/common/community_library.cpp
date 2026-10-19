@@ -2,8 +2,10 @@
 #include "community_library.h"
 #include "nlohmann/json.hpp"
 #include <algorithm>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <utility>
 
 namespace atlas::community {
 namespace {
@@ -243,6 +245,45 @@ namespace {
       text = fallback;
     return text;
   }
+
+  // The `preview` object of a preset or bank; none when it is null.
+  RemotePreview parsePreview(const json& entry) {
+    RemotePreview preview;
+    const json& object = jsonObject(entry, "preview");
+    preview.url = jsonString(object, "url");
+    preview.file_name = jsonString(object, "name").trim();
+    preview.content_type = jsonString(object, "content_type").trim().toLowerCase();
+    preview.size = jsonInteger(object, "size");
+    const auto duration = object.find("duration");
+    if (duration != object.end() && duration->is_number())
+      preview.duration_seconds = std::max(0.0, duration->get<double>());
+    return preview;
+  }
+
+  // The extension a preview's content type implies, for a name without one.
+  juce::String extensionForContentType(const juce::String& content_type) {
+    static const std::pair<const char*, const char*> kExtensions[] = {
+      { "audio/mpeg", "mp3" }, { "audio/mp3", "mp3" }, { "audio/ogg", "ogg" }, { "audio/wav", "wav" },
+      { "audio/x-wav", "wav" }, { "audio/flac", "flac" }, { "audio/mp4", "m4a" }, { "audio/aac", "aac" },
+      { "audio/aiff", "aiff" }, { "audio/x-aiff", "aiff" } };
+    for (const auto& [type, extension] : kExtensions) {
+      if (content_type == type)
+        return extension;
+    }
+    return "mp3";
+  }
+
+  // The file name a cached preview gets: the library's, which names the
+  // format Atlas decodes it with, or the item's name with the type's extension.
+  juce::String previewFileName(const RemotePreview& preview, const juce::String& item_name) {
+    juce::String name = preview.file_name;
+    if (name.isEmpty())
+      name = item_name + " preview";
+    const juce::String extension = name.contains(".") ? name.fromLastOccurrenceOf(".", false, false) : juce::String();
+    if (extension.isEmpty() || extension.length() > 5 || extension.containsAnyOf(" /\\"))
+      name += "." + extensionForContentType(preview.content_type);
+    return name;
+  }
 }
 
 juce::String libraryUrl() {
@@ -335,6 +376,7 @@ juce::String parsePresetsPage(const std::string& text, std::vector<RemotePreset>
     preset.extension = jsonString(file, "extension").trimCharactersAtStart(".").toLowerCase();
     preset.file_size = jsonInteger(file, "size");
     preset.sha256 = jsonString(file, "sha256").trim().toLowerCase();
+    preset.preview = parsePreview(entry);
     // Without a name or a file there is nothing to show or fetch.
     if (preset.name.isEmpty() || preset.download_url.isEmpty())
       continue;
@@ -360,6 +402,34 @@ juce::File localFile(const RemotePreset& preset, const juce::File& data_director
       .getChildFile(pathPart(uploader, "Unknown uploader"))
       .getChildFile(pathPart(style, "Other"))
       .getChildFile(pathPart(name, "Preset." + extension));
+}
+
+juce::File previewDirectory(const juce::File& data_directory) {
+  return data_directory.getChildFile("Community").getChildFile("Previews");
+}
+
+juce::File localPreviewFile(const RemotePreset& preset, const juce::File& data_directory) {
+  const juce::String uploader = preset.uploader.isNotEmpty() ? preset.uploader : preset.uploader_name;
+  return previewDirectory(data_directory)
+      .getChildFile("Presets")
+      .getChildFile(pathPart(uploader, "Unknown uploader"))
+      .getChildFile(pathPart(previewFileName(preset.preview, preset.name), "Preview.mp3"));
+}
+
+juce::String durationText(double seconds) {
+  if (!(seconds > 0.0))
+    return {};
+  const int whole = static_cast<int>(std::lround(seconds));
+  if (whole < 1)
+    return "under a second";
+  const int minutes = whole / 60;
+  const int rest = whole % 60;
+  juce::String text;
+  if (minutes > 0)
+    text = juce::String(minutes) + (minutes == 1 ? " minute" : " minutes");
+  if (rest > 0 || minutes == 0)
+    text += (text.isEmpty() ? juce::String() : juce::String(" ")) + juce::String(rest) + (rest == 1 ? " second" : " seconds");
+  return text;
 }
 
 juce::String sha256Hex(const void* data, size_t size) {

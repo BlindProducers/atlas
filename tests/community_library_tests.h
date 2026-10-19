@@ -21,7 +21,9 @@ namespace {
        "uploader": {"username": "jay", "display_name": "Jay Ladder", "url": "https://atlas.blindproducers.org/users/jay/"},
        "file": {"url": "https://atlas.blindproducers.org/presets/7/download/?v=abc", "name": "Glow Lead.atp",
                 "extension": "atp", "size": 1234, "sha256": "ABCDEF"},
-       "preview": null, "downloads": 3, "created_at": "2026-10-19T03:03:42.102Z",
+       "preview": {"url": "https://atlas.blindproducers.org/presets/7/preview/?v=abc", "name": "Glow Lead preview.mp3",
+                   "content_type": "audio/mpeg", "size": 4321, "duration": 65.4},
+       "downloads": 3, "created_at": "2026-10-19T03:03:42.102Z",
        "updated_at": "2026-10-19T04:05:06.007Z",
        "url": "https://atlas.blindproducers.org/presets/7/", "api_url": "https://atlas.blindproducers.org/api/v1/presets/7/"},
       {"id": 8, "type": "preset", "kind": "patch", "kind_label": "Patch", "name": "../Sneaky: Bass?",
@@ -77,10 +79,15 @@ namespace {
            "downloads, description and page");
     expect(glow.updated_ms > 0 && glow.updated_ms == Time::fromISO8601("2026-10-19T04:05:06.007Z").toMilliseconds(),
            "the time of the last change");
+    expect(glow.preview.exists() && glow.preview.url == "https://atlas.blindproducers.org/presets/7/preview/?v=abc" &&
+               glow.preview.file_name == "Glow Lead preview.mp3" && glow.preview.content_type == "audio/mpeg" &&
+               glow.preview.size == 4321 && std::abs(glow.preview.duration_seconds - 65.4) < 1.0e-9,
+           "the preview's url, name, type, size and length");
 
     const auto& sneaky = presets[1];
     expect(sneaky.style_label.isEmpty() && sneaky.tags.isEmpty() && sneaky.description.isEmpty(),
            "missing fields stay empty");
+    expect(!sneaky.preview.exists() && sneaky.preview.duration_seconds == 0.0, "a null preview is none");
     expect(sneaky.uploader_name == "../root", "the display name falls back to the account name");
     expect(sneaky.extension == "atp", "a dotted extension loses its dot");
 
@@ -114,6 +121,24 @@ namespace {
                sneaky.getFullPathName().toStdString());
     expect(sneaky.hasFileExtension("atp") && sneaky.getFileName() == "Sneaky Bass.atp",
            "the file keeps a legal name with the preset extension: " + sneaky.getFileName().toStdString());
+    expect(atlas::community::previewDirectory(data) == data.getChildFile("Community").getChildFile("Previews"),
+           "previews are kept in Community/Previews under the data folder");
+    const File glow_preview = atlas::community::localPreviewFile(presets[0], data);
+    expect(glow_preview == atlas::community::previewDirectory(data).getChildFile("Presets").getChildFile("jay")
+                               .getChildFile("Glow Lead preview.mp3"),
+           "a preview lands under Presets and its uploader with the library's file name: " +
+               glow_preview.getFullPathName().toStdString());
+    atlas::community::RemotePreset unnamed = presets[0];
+    unnamed.preview.file_name.clear();
+    unnamed.preview.content_type = "audio/ogg";
+    expect(atlas::community::localPreviewFile(unnamed, data).getFileName() == "Glow Lead preview.ogg",
+           "a preview without a name is named after its preset with the type's extension: " +
+               atlas::community::localPreviewFile(unnamed, data).getFileName().toStdString());
+    using atlas::community::durationText;
+    expect(durationText(65.4) == "1 minute 5 seconds" && durationText(12.0) == "12 seconds" &&
+               durationText(120.0) == "2 minutes" && durationText(1.0) == "1 second" && durationText(0.2) == "under a second" &&
+               durationText(0.0).isEmpty(),
+           "lengths are said in minutes and seconds: " + durationText(65.4).toStdString());
 
     expect(atlas::community::isLibraryUrl("https://atlas.blindproducers.org/presets/7/download/", "https://atlas.blindproducers.org") &&
                !atlas::community::isLibraryUrl("https://elsewhere.example/evil.atp", "https://atlas.blindproducers.org") &&
@@ -382,12 +407,193 @@ namespace {
     finish();
   }
 
+  // A short recording, to stand in for a preview the library serves.
+  bool writeTestPreview(const File& file, double seconds) {
+    file.getParentDirectory().createDirectory();
+    file.deleteFile();
+    constexpr double kRate = 48000.0;
+    const int frames = static_cast<int>(kRate * seconds);
+    AudioBuffer<float> audio(1, frames);
+    for (int i = 0; i < frames; ++i) {
+      audio.setSample(0, i, 0.5f * std::sin(MathConstants<float>::twoPi * 440.0f * static_cast<float>(i) /
+                                            static_cast<float>(kRate)));
+    }
+    WavAudioFormat wav;
+    std::unique_ptr<FileOutputStream> stream(file.createOutputStream());
+    if (stream == nullptr)
+      return false;
+    std::unique_ptr<AudioFormatWriter> writer(wav.createWriterFor(stream.get(), kRate, 1, 16, {}, 0));
+    if (writer == nullptr)
+      return false;
+    stream.release();   // the writer owns the stream now
+    return writer->writeFromAudioSampleBuffer(audio, 0, frames);
+  }
+
+  // A community preset's preview: the details say it is there and how long
+  // it is, P fetches it into Community/Previews and plays it through the
+  // plugin's output, P again stops it, and the end of the recording is said.
+  void testCommunityPreviewPlays() {
+    TemporaryUndoLibrary library;
+    expect(library.isolated(), "the test's library is its own temporary folder");
+    if (!library.isolated())
+      return;
+    SpokenMessages spoken;
+    auto said = [&](const String& words) {
+      for (const auto& message : spoken.messages)
+        if (message.contains(words))
+          return true;
+      return false;
+    };
+    auto heard = [&] { return spoken.messages.joinIntoString(" | ").toStdString(); };
+
+    // The saved library: two presets, one with a two second preview.
+    const File saved = library.folder.getChildFile("SavedLibrary");
+    saved.createDirectory();
+    SynthPlugin synth;
+    synth.setPlayConfigDetails(0, 2, 48000.0, 128);
+    synth.prepareToPlay(48000.0, 128);
+    const File shared = saved.getChildFile("Shared Lead.atp");
+    const File quiet = saved.getChildFile("Quiet Bass.atp");
+    const File preview = saved.getChildFile("Shared Lead preview.wav");
+    const bool made = synth.saveCopyToFile(shared) && synth.saveCopyToFile(quiet) && writeTestPreview(preview, 2.0);
+    expect(made, "presets and a recording are saved to stand in for the library's files");
+    json lead = communityPresetJson(1, "Shared Lead", shared, sha256OfFile(shared), "lead", "Lead", { "glow" });
+    lead["preview"] = { { "url", (URL(preview).toString(false) + "?v=1").toStdString() },
+                        { "name", "Shared Lead preview.wav" },
+                        { "content_type", "audio/wav" },
+                        { "size", preview.getSize() },
+                        { "duration", 2.0 } };
+    json page;
+    page["count"] = 2;
+    page["next"] = nullptr;
+    page["results"] = json::array();
+    page["results"].push_back(lead);
+    page["results"].push_back(communityPresetJson(2, "Quiet Bass", quiet, sha256OfFile(quiet), "bass", "Bass", {}));
+    const File page_file = saved.getChildFile("presets.json");
+    page_file.replaceWithText(String(page.dump()));
+    atlas::community::setLibraryUrlForTesting(URL(page_file).toString(false));
+    struct RealLibraryAgain { ~RealLibraryAgain() { atlas::community::setLibraryUrlForTesting({}); } } real_library_again;
+
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    editor.toFront(true);
+    pumpEditorEvents();
+    editor.refreshPresetLibrary();
+    pumpUntil([&] { return !editor.isPresetLibraryBusy(); }, 60000);
+
+    auto* collection = dynamic_cast<TableListBox*>(titled(editor, "Collection"));
+    auto* results = dynamic_cast<TableListBox*>(titled(editor, "Preset results table"));
+    auto* details = dynamic_cast<Label*>(titled(editor, "Selected preset details"));
+    auto* autoload = dynamic_cast<Button*>(titled(editor, "Autoload preset when scrolling"));
+    const bool browser = made && collection != nullptr && results != nullptr && details != nullptr && autoload != nullptr;
+    expect(browser, "the editor has its preset browser");
+    if (!browser) {
+      editor.removeFromDesktop();
+      return;
+    }
+    const bool autoload_was_on = autoload->getToggleState();
+    autoload->setToggleState(false, dontSendNotification);
+    auto finish = [&] {
+      autoload->setToggleState(autoload_was_on, dontSendNotification);
+      editor.removeFromDesktop();
+    };
+    // Renders the plugin's output until a block carries sound, or `blocks` have gone by.
+    auto renderedSound = [&](int blocks) {
+      AudioBuffer<float> out(2, 128);
+      MidiBuffer midi;
+      for (int block = 0; block < blocks; ++block) {
+        out.clear();
+        synth.processBlock(out, midi);
+        if (out.getMagnitude(0, 128) > 0.05f)
+          return true;
+        Thread::sleep(2);
+      }
+      return false;
+    };
+
+    collection->selectRow(2);
+    pumpEditorEvents();
+    pumpUntil([&] { return !editor.isCommunityLibraryBusy(); }, 10000);
+    expect(editor.isCommunityLibraryLoaded() && editor.presetRowCount() == 2,
+           "the community list arrives with both presets: " + editor.communityLibraryError().toStdString());
+    if (editor.presetRowCount() != 2) {
+      finish();
+      return;
+    }
+    editor.ensureComponentVisible(results);
+    results->grabKeyboardFocus();
+    pumpEditorEvents();
+
+    // Sorted by name: Quiet Bass, then Shared Lead. The bass has no preview.
+    results->selectRow(0);
+    pumpEditorEvents();
+    expect(details->getText().contains(". No preview"),
+           "a row without a preview says so: " + details->getText().toStdString());
+    spoken.messages.clear();
+    expect(results->keyPressed(characterKey('p')), "P on the row without a preview is handled");
+    pumpEditorEvents();
+    expect(said("No preview for Quiet Bass") && !editor.isCommunityPreviewPlaying(),
+           "P on a row without a preview says so: " + heard());
+
+    // The lead's preview is fetched and plays through the plugin.
+    results->selectRow(1);
+    pumpEditorEvents();
+    expect(details->getText().contains("Preview: 2 seconds, P plays it"),
+           "the details say the preview is there and how long it is: " + details->getText().toStdString());
+    spoken.messages.clear();
+    expect(results->keyPressed(characterKey('p')), "P on the row with a preview is handled");
+    pumpUntil([&] { return editor.isCommunityPreviewPlaying(); }, 10000);
+    const File cached = atlas::community::previewDirectory(library.folder).getChildFile("Presets").getChildFile("tester")
+                            .getChildFile("Shared Lead preview.wav");
+    expect(cached.existsAsFile() && cached.getSize() == preview.getSize(),
+           "the preview is fetched into Community/Previews/Presets/tester: " + cached.getFullPathName().toStdString());
+    expect(editor.isCommunityPreviewPlaying() && editor.communityPreviewFile() == cached, "and plays");
+    expect(said("Fetching the preview of Shared Lead") && said("Playing preview of Shared Lead"),
+           "the fetch and the start are said: " + heard());
+    expect(renderedSound(400), "the plugin's output carries the preview");
+    expect(details->getText().contains("Preview: 2 seconds, playing, P stops it"),
+           "the details say it is playing: " + details->getText().toStdString());
+
+    // P again stops it.
+    spoken.messages.clear();
+    expect(results->keyPressed(characterKey('p')), "P again is handled");
+    pumpEditorEvents();
+    expect(!editor.isCommunityPreviewPlaying() && said("Stopped"), "P again stops the preview and says so: " + heard());
+    expect(!renderedSound(20), "the output is quiet once the preview has stopped");
+    expect(details->getText().contains("Preview: 2 seconds, P plays it"),
+           "the details no longer say playing: " + details->getText().toStdString());
+
+    // Played again, from the fetched copy, it runs to its end, which is said.
+    spoken.messages.clear();
+    expect(results->keyPressed(characterKey('p')), "P plays the fetched copy");
+    pumpUntil([&] { return editor.isCommunityPreviewPlaying(); }, 10000);
+    expect(editor.isCommunityPreviewPlaying() && !said("Fetching"), "the fetched copy plays without another fetch: " + heard());
+    // Rendered a little faster than real time, with the message loop running
+    // between blocks so the read-ahead thread keeps up and the timer sees the end.
+    AudioBuffer<float> out(2, 128);
+    MidiBuffer midi;
+    const uint32 started = Time::getMillisecondCounter();
+    while (editor.isCommunityPreviewPlaying() && Time::getMillisecondCounter() - started < 15000) {
+      out.clear();
+      synth.processBlock(out, midi);
+      MessageManager::getInstance()->runDispatchLoopUntil(1);
+    }
+    pumpUntil([&] { return said("finished"); }, 5000);
+    expect(!editor.isCommunityPreviewPlaying() && editor.communityPreviewFile() == File() &&
+               said("Preview of Shared Lead finished"),
+           "the end of the recording is said: " + heard());
+    finish();
+  }
+
   int runCommunityLibraryTests() {
     testSha256MatchesTheStandardVectors();
     testPresetsPageParses();
     testDownloadsLandInTheCommunityFolder();
     testSavedLibraryRoundTrip();
     testCommunityCollectionListsAndDownloads();
+    testCommunityPreviewPlays();
     if (failures == 0)
       std::cout << "Atlas community library tests passed\n";
     return failures == 0 ? 0 : 1;

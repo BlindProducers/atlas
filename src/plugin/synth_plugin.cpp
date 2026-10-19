@@ -357,6 +357,40 @@ void SynthPlugin::prepareToPlay(double sample_rate, int buffer_size) {
   prepareSelectedEffects();
   midi_manager_->setSampleRate(sample_rate);
   updateHostLatency();
+  {
+    const SpinLock::ScopedLockType lock(audition_lock_);
+    audition_buffer_.setSize(2, jmax(1, buffer_size));
+    if (audition_source_ != nullptr)
+      audition_source_->prepareToPlay(jmax(1, buffer_size), sample_rate);
+  }
+}
+
+void SynthPlugin::setAuditionSource(AudioSource* source) {
+  const SpinLock::ScopedLockType lock(audition_lock_);
+  audition_source_ = source;
+  const double sample_rate = AudioProcessor::getSampleRate();
+  if (source != nullptr && sample_rate > 0.0)
+    source->prepareToPlay(jmax(1, getBlockSize()), sample_rate);
+}
+
+void SynthPlugin::mixAudition(AudioSampleBuffer& buffer) {
+  // Never waits: the message thread holds the lock only to swap the source
+  // or prepare it, and a block that meets that goes out without the preview.
+  const SpinLock::ScopedTryLockType lock(audition_lock_);
+  if (!lock.isLocked() || audition_source_ == nullptr)
+    return;
+  const int channels = jmin(buffer.getNumChannels(), audition_buffer_.getNumChannels());
+  const int chunk = audition_buffer_.getNumSamples();
+  if (channels <= 0 || chunk <= 0)
+    return;
+  for (int offset = 0; offset < buffer.getNumSamples();) {
+    const int samples = jmin(buffer.getNumSamples() - offset, chunk);
+    AudioSourceChannelInfo info(&audition_buffer_, 0, samples);
+    audition_source_->getNextAudioBlock(info);
+    for (int channel = 0; channel < channels; ++channel)
+      buffer.addFrom(channel, offset, audition_buffer_, channel, 0, samples);
+    offset += samples;
+  }
 }
 
 void SynthPlugin::updateFxSampleRate() {
@@ -524,6 +558,8 @@ void SynthPlugin::processBlock(AudioSampleBuffer& buffer, MidiBuffer& midi_messa
     last_seconds_time_ += num_samples * sample_time;
     sample_offset += num_samples;
   }
+  // A community preset's preview the editor is playing, beside the synth.
+  mixAudition(buffer);
   // MIDI-learned changes may have updated a slot inside the host block.
   setLatencySamples(engine_->getLatencySamples());
   // A slot selected without SynthBase::valueChanged (or before its

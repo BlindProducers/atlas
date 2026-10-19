@@ -70,6 +70,12 @@ class SynthPlugin : public SynthBase, public AudioProcessor, public ValueBridge:
     void releaseResources() override;
     bool isBusesLayoutSupported(const BusesLayout& layouts) const override;
     void processBlock(AudioSampleBuffer&, MidiBuffer&) override;
+    // An audio source the editor plays through the output beside the synth
+    // (a community preset's preview). It must outlive its time here; null
+    // takes it out. Message thread: processBlock reads it only while it can
+    // take the lock without waiting, and prepareToPlay prepares it for the
+    // host's rate and block size.
+    void setAuditionSource(AudioSource* source);
 
     AudioProcessorEditor* createEditor() override;
     bool hasEditor() const override;
@@ -148,6 +154,12 @@ class SynthPlugin : public SynthBase, public AudioProcessor, public ValueBridge:
     bool restoring_state_ = false;
 
     EditorMemory editor_memory_;
+    // The editor's audition source (setAuditionSource), its scratch block and
+    // the lock the audio thread tries for it.
+    SpinLock audition_lock_;
+    AudioSource* audition_source_ = nullptr;
+    AudioBuffer<float> audition_buffer_ { 2, 1024 };
+    void mixAudition(AudioSampleBuffer& buffer);
     void updateFxSampleRate();
     std::atomic<double> fx_sample_rate_ { 44100.0 };
     void updateHostLatency();

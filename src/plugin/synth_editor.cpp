@@ -193,8 +193,9 @@ namespace {
 
   // The preset results table's keys, said after the selected preset.
   String presetTableKeysHelp() {
-    return String("Press Return to load, F to change favourite, R to rename, E to edit metadata, S to choose the "
-                  "next sort column, Shift S to reverse the sort, or Delete to move an editable preset to Trash.");
+    return String("Press Return to load, F to change favourite, R to rename, E to edit metadata, P to play or stop a "
+                  "community preset's preview, S to choose the next sort column, Shift S to reverse the sort, or "
+                  "Delete to move an editable preset to Trash.");
   }
 
   enum PresetFacetKind {
@@ -1398,6 +1399,12 @@ namespace {
     item.remote_sha256 = preset.sha256;
     item.remote_uploader = preset.uploader_name;
     item.remote_downloads = preset.downloads;
+    if (preset.preview.exists()) {
+      item.remote_preview_url = preset.preview.url;
+      item.preview_file = atlas::community::localPreviewFile(preset, data_directory);
+      item.preview_size = preset.preview.size;
+      item.preview_seconds = preset.preview.duration_seconds;
+    }
     const String name = item.file.getFileNameWithoutExtension();
     item.label = name + " - " + item.library + " - " + item.bank + " - " + item.category;
     item.searchable = (name + " " + preset.name + " " + item.library + " " + item.bank + " " + item.category + " " +
@@ -1405,6 +1412,9 @@ namespace {
                        preset.uploader_name + " " + item.comments + " " + item.style).toLowerCase();
     return item;
   }
+
+  // How far ahead of the audio thread a community preview is read.
+  constexpr int kPreviewReadAheadSamples = 32768;
 
   constexpr int kPresetIndexSchemaVersion = 2;
 
@@ -6447,7 +6457,7 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   const String command = atlas::keys::commandName();
   preset_table_.setDescription("Sortable preset results with Name first. " + presetTableKeysHelp() + " " +
                                command + " S saves the patch, Shift " + command + " S saves it as a new preset.");
-  preset_table_.setHelpText("Use arrow keys to select a preset. Return loads, F toggles favourite, R renames, E edits metadata, S chooses the next sort column, Shift S reverses the sort, and column headers can also be pressed to sort. " +
+  preset_table_.setHelpText("Use arrow keys to select a preset. Return loads, F toggles favourite, R renames, E edits metadata, P plays or stops a community preset's preview, S chooses the next sort column, Shift S reverses the sort, and column headers can also be pressed to sort. " +
                             command + " S saves the patch and Shift " + command + " S saves it as a new preset.");
   preset_table_.setWantsKeyboardFocus(true);
   preset_table_.setRowHeight(30);
@@ -6486,6 +6496,10 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
     }
     if (character_shortcut && character == 'e') {
       showPresetMetadataDialog();
+      return true;
+    }
+    if (character_shortcut && character == 'p') {
+      toggleCommunityPreview();
       return true;
     }
     if (key.getKeyCode() == KeyPress::deleteKey) {
@@ -6700,6 +6714,9 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
 
 SynthEditor::~SynthEditor() {
   stopTimer();
+  // The preview plays through the plugin, which must not read it once this
+  // editor is gone.
+  detachCommunityPreview();
   // Key releases can no longer reach this editor; don't leave notes held.
   allQwertyNotesOff();
   detachQwertyKeyInterceptor();
@@ -10417,6 +10434,148 @@ void SynthEditor::addPresetToLocalIndex(const File& file) {
   rebuildPresetLookup();
 }
 
+bool SynthEditor::isCommunityPreviewOf(const PresetBrowserItem& item) const {
+  return item.hasPreview() && preview_file_ == item.preview_file &&
+         (preview_fetching_ || preview_transport_.isPlaying());
+}
+
+void SynthEditor::toggleCommunityPreview() {
+  const File file = selectedPresetFile();
+  const auto* item = presetItemForFile(file);
+  if (item == nullptr || !item->isRemote()) {
+    postPresetActionAnnouncement(file == File() ? "Choose a preset first"
+                                                : "Only the community library's presets have previews",
+                                 AccessibilityHandler::AnnouncementPriority::high);
+    return;
+  }
+  if (!item->hasPreview()) {
+    postPresetActionAnnouncement("No preview for " + file.getFileNameWithoutExtension(),
+                                 AccessibilityHandler::AnnouncementPriority::high);
+    return;
+  }
+  if (isCommunityPreviewOf(*item))
+    stopCommunityPreview(true);
+  else
+    startCommunityPreview(*item);
+}
+
+void SynthEditor::startCommunityPreview(const PresetBrowserItem& item) {
+  detachCommunityPreview();
+  const String name = item.file.getFileNameWithoutExtension();
+  if (!atlas::community::isLibraryUrl(item.remote_preview_url, atlas::community::libraryUrl())) {
+    postPresetActionAnnouncement("Unable to play the preview of " + name + ". Its file is not on " +
+                                     atlas::community::libraryHost(),
+                                 AccessibilityHandler::AnnouncementPriority::high);
+    updatePresetManagementControls();
+    return;
+  }
+  const int generation = preview_generation_;
+  preview_file_ = item.preview_file;
+  preview_name_ = name;
+  // A copy already fetched plays at once, unless the library's has changed size since.
+  if (preview_file_.existsAsFile() && (item.preview_size <= 0 || preview_file_.getSize() == item.preview_size)) {
+    playCommunityPreview(preview_file_, name, generation);
+    return;
+  }
+  preview_fetching_ = true;
+  updatePresetManagementControls();
+  postPresetActionAnnouncement("Fetching the preview of " + name, AccessibilityHandler::AnnouncementPriority::medium);
+
+  Component::SafePointer<SynthEditor> safe_this(this);
+  const String url = item.remote_preview_url;
+  const File file = item.preview_file;
+  const int64 size = item.preview_size;
+  runPresetBackgroundTask([safe_this, generation, name, url, file, size](const std::shared_ptr<std::atomic<bool>>& cancelled) {
+    // The library lists no checksum for a preview; its size is checked.
+    const String error = atlas::community::downloadFile(URL(url), file, {}, size, cancelled.get());
+    if (cancelled->load())
+      return;
+    MessageManager::callAsync([safe_this, generation, name, file, error] {
+      if (safe_this == nullptr || generation != safe_this->preview_generation_)
+        return;
+      safe_this->preview_fetching_ = false;
+      if (error.isNotEmpty()) {
+        safe_this->preview_file_ = File();
+        safe_this->preview_name_.clear();
+        LoadSave::writeErrorLog("Community preview download failed: " + error);
+        safe_this->updatePresetManagementControls();
+        postPresetActionAnnouncement("Unable to play the preview of " + name + ". " + error,
+                                     AccessibilityHandler::AnnouncementPriority::high);
+        return;
+      }
+      safe_this->playCommunityPreview(file, name, generation);
+    });
+  });
+}
+
+void SynthEditor::playCommunityPreview(const File& file, const String& name, int generation) {
+  if (generation != preview_generation_)
+    return;
+  if (!preview_formats_registered_) {
+    // WAV, AIFF, FLAC and Ogg Vorbis everywhere; MP3, M4A and AAC through
+    // the system's decoders (CoreAudio, Windows Media).
+    preview_formats_.registerBasicFormats();
+    preview_formats_registered_ = true;
+  }
+  std::unique_ptr<AudioFormatReader> reader(preview_formats_.createReaderFor(file));
+  if (reader == nullptr || reader->sampleRate <= 0.0 || reader->lengthInSamples <= 0) {
+    preview_file_ = File();
+    preview_name_.clear();
+    updatePresetManagementControls();
+    postPresetActionAnnouncement("Unable to play the preview of " + name + ". Atlas cannot decode its " +
+                                     file.getFileExtension().trimCharactersAtStart(".").toUpperCase() + " file",
+                                 AccessibilityHandler::AnnouncementPriority::high);
+    return;
+  }
+  const double source_rate = reader->sampleRate;
+  preview_reader_ = std::make_unique<AudioFormatReaderSource>(reader.release(), true);
+  if (!preview_thread_.isThreadRunning())
+    preview_thread_.startThread();
+  // The reader is read ahead on preview_thread_ and resampled from the file's
+  // rate; the plugin prepares the transport for the host's rate as it takes
+  // it, and processBlock mixes it into the output from then on.
+  preview_transport_.setSource(preview_reader_.get(), kPreviewReadAheadSamples, &preview_thread_, source_rate);
+  preview_transport_.setPosition(0.0);
+  synth_.setAuditionSource(&preview_transport_);
+  preview_transport_.start();
+  updatePresetManagementControls();
+  postPresetActionAnnouncement("Playing preview of " + name, AccessibilityHandler::AnnouncementPriority::medium);
+}
+
+void SynthEditor::detachCommunityPreview() {
+  ++preview_generation_;   // a fetch under way plays nothing when it lands
+  preview_fetching_ = false;
+  preview_transport_.stop();
+  synth_.setAuditionSource(nullptr);
+  preview_transport_.setSource(nullptr);
+  preview_reader_.reset();
+  preview_file_ = File();
+  preview_name_.clear();
+}
+
+void SynthEditor::stopCommunityPreview(bool announce) {
+  detachCommunityPreview();
+  updatePresetManagementControls();
+  if (announce)
+    postPresetActionAnnouncement("Stopped", AccessibilityHandler::AnnouncementPriority::medium);
+}
+
+void SynthEditor::finishCommunityPreviewIfEnded() {
+  // A reader still attached to a transport that has stopped, or has read to
+  // the recording's end, is the end of the preview: a stop asked for lets go
+  // of the reader at once. The position is checked here rather than left to
+  // the transport, which misses an end that falls one sample past the length.
+  if (preview_reader_ == nullptr || preview_fetching_)
+    return;
+  if (preview_transport_.isPlaying() &&
+      preview_transport_.getCurrentPosition() < preview_transport_.getLengthInSeconds())
+    return;
+  const String name = preview_name_;
+  detachCommunityPreview();
+  updatePresetManagementControls();
+  postPresetActionAnnouncement("Preview of " + name + " finished", AccessibilityHandler::AnnouncementPriority::medium);
+}
+
 void SynthEditor::populatePresetFilters() {
   ScopedValueSetter<bool> guard(updating_preset_list_, true);
 
@@ -10890,6 +11049,14 @@ void SynthEditor::updatePresetManagementControls() {
                ". Category: " + item->category +
                ". Tags: " + (item->tags.isEmpty() ? String("none") : item->tags.joinIntoString(", ")) +
                ". Downloads: " + String(item->remote_downloads);
+    if (item->hasPreview()) {
+      const String length = atlas::community::durationText(item->preview_seconds);
+      details += ". Preview" + (length.isNotEmpty() ? ": " + length : String(" available")) +
+                 (isCommunityPreviewOf(*item) ? String(", playing, P stops it") : String(", P plays it"));
+    }
+    else {
+      details += ". No preview";
+    }
     if (item->comments.isNotEmpty())
       details += ". Description: " + item->comments;
     if (item->downloaded)
@@ -11351,6 +11518,11 @@ void SynthEditor::showSelectedPresetMenu(Component& target) {
   menu.addItem(1, awaiting_download ? "Download and load preset (Return)" : "Load preset (Return)",
                has_selection || awaiting_download);
   menu.addItem(2, isPresetFavorite(selected) ? "Remove from favourites (F)" : "Add to favourites (F)", has_selection);
+  // A community row's preview, when the uploader added one.
+  if (selected_item != nullptr && selected_item->isRemote()) {
+    menu.addItem(7, isCommunityPreviewOf(*selected_item) ? "Stop preview (P)" : "Play preview (P)",
+                 selected_item->hasPreview());
+  }
   menu.addSeparator();
   menu.addItem(3, "Rename preset... (R)", editable);
   menu.addItem(4, "Edit preset metadata... (E)", editable);
@@ -11374,6 +11546,8 @@ void SynthEditor::showSelectedPresetMenu(Component& target) {
       safe_this->revealSelectedPreset();
     else if (result == 6)
       safe_this->deleteSelectedPreset();
+    else if (result == 7)
+      safe_this->toggleCommunityPreview();
   });
 }
 
@@ -21080,6 +21254,7 @@ void SynthEditor::timerCallback() {
   refreshConvolutionIrLoads();
   refreshMultiSampleStatus();
   refreshSpeechStatus();
+  finishCommunityPreviewIfEnded();
   if (cpu_meter_ != nullptr && cpu_meter_->isShowing())
     cpu_meter_->refresh();
   synth_.dispatchPendingGuiUpdates(*this);

@@ -14,6 +14,18 @@
 // is how the tests run without a network.
 namespace atlas::community {
 
+// The audio preview of a shared preset or bank: a recording the uploader
+// attached, served by the library like the files. The library lists no
+// checksum for it, only its size.
+struct RemotePreview {
+  juce::String url;
+  juce::String file_name;           // "Glow Lead 01 preview.mp3"
+  juce::String content_type;        // "audio/mpeg"
+  juce::int64 size = 0;
+  double duration_seconds = 0.0;    // 0 when the library does not know
+  bool exists() const { return url.isNotEmpty(); }
+};
+
 // A published patch, as the API's /presets/ page describes it.
 struct RemotePreset {
   juce::int64 id = 0;
@@ -31,6 +43,7 @@ struct RemotePreset {
   juce::String extension;           // "atp"
   juce::int64 file_size = 0;
   juce::String sha256;              // hex, what the download must hash to
+  RemotePreview preview;            // none unless the uploader added one
   int downloads = 0;
   juce::String page_url;            // the preset's page on the site
   juce::int64 updated_ms = 0;       // when it was last changed, in Unix milliseconds
@@ -64,6 +77,12 @@ juce::File communityDirectory(const juce::File& data_directory);
 // Where `preset` lands: <data>/Community/Presets/<uploader>/<style>/<file name>,
 // so the browser shows the uploader as its bank and the style as its category.
 juce::File localFile(const RemotePreset& preset, const juce::File& data_directory);
+// Where fetched previews are kept: <data>/Community/Previews. A preset's lands
+// at Presets/<uploader>/<preview file name> below it.
+juce::File previewDirectory(const juce::File& data_directory);
+juce::File localPreviewFile(const RemotePreset& preset, const juce::File& data_directory);
+// A length as it is said: "12 seconds", "1 minute 5 seconds"; empty for none.
+juce::String durationText(double seconds);
 
 // Lower-case hex SHA-256.
 juce::String sha256Hex(const void* data, size_t size);
