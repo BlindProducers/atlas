@@ -5739,7 +5739,17 @@ class AccessibleParameterRow : public Component {
         const double parameter_value = jlimit(min_normalized_value_, max_normalized_value_,
                                               static_cast<double>(parameter_.getValue()));
         slider_.setValue(sliderValueForParameterValue(parameter_value), dontSendNotification);
-        if (bridge != nullptr && bridge->hasEnvelopeSyncContext()) {
+        // The timer refreshes every row 20 times a second. Format the time
+        // again only when something it shows has changed.
+        const float beats_per_second = bridge != nullptr && bridge->hasEnvelopeSyncContext() ?
+            bridge->envelopeBeatsPerSecond() : 0.0f;
+        if (bridge != nullptr && bridge->hasEnvelopeSyncContext() &&
+            (!envelope_text_current_ || parameter_value != envelope_text_value_ ||
+             synced_envelope_time_ != envelope_text_synced_ || beats_per_second != envelope_text_bps_)) {
+          envelope_text_current_ = true;
+          envelope_text_value_ = parameter_value;
+          envelope_text_synced_ = synced_envelope_time_;
+          envelope_text_bps_ = beats_per_second;
           const String text = slider_.getTextFromValue(slider_.getValue());
           if (text != envelope_time_text_) {
             envelope_time_text_ = text;
@@ -6030,6 +6040,10 @@ class AccessibleParameterRow : public Component {
     bool updating_ = false;
     bool synced_envelope_time_ = false;
     String envelope_time_text_;
+    bool envelope_text_current_ = false;
+    double envelope_text_value_ = 0.0;
+    bool envelope_text_synced_ = false;
+    float envelope_text_bps_ = 0.0f;
 
     void beginParameterChange() {
       parameter_.beginChangeGesture();
