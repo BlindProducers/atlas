@@ -717,8 +717,9 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     // Save patch's. For a patch, its name, style, tags, description and the
     // API token; for a bank, the library folder to share, its name, genre,
     // tags, description and the token. The token box hides what is typed; a
-    // token that worked is kept in Atlas's config file (community_library.h)
-    // and the box is left empty to use it, with Forget saved token to clear it.
+    // token that worked is kept in the system's credential store
+    // (community_library.h, storeApiToken) and the box is left empty to use
+    // it, with Log out to clear it.
     // Share writes the patch or exports the folder to a temporary file and
     // posts it on a background thread; the library's answer is said, and the
     // form stays open on its field errors.

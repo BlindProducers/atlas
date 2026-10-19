@@ -6696,9 +6696,10 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   configureShareEditor(share_tags_, "Share tags", "Tags separated by commas, for example dark, 808", "Tags");
   configureShareEditor(share_description_, "Share description",
                        "What the sound or bank is. Empty uses the comments in the file.", "Description");
+  // Where a token is kept is said once the form opens (updateShareTokenControls).
   configureShareEditor(share_token_, "API token",
                        "Your personal API token from the API tokens page of your account on " +
-                           atlas::community::libraryHost() + ". It starts with bpa_ and is kept in Atlas's settings",
+                           atlas::community::libraryHost() + ". It starts with bpa_",
                        "API token");
   // A password box: what is typed is drawn as dots and screen readers are
   // told it is protected, so the token is never shown or read out.
@@ -6745,7 +6746,7 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   };
   configureShareButton(share_ok_, "Share", "Upload to the community library");
   share_ok_.onClick = [this] { commitShareForm(); };
-  configureShareButton(share_forget_token_, "Log out", "Removes the API token from Atlas's settings");
+  configureShareButton(share_forget_token_, "Log out", "Removes the saved API token");
   share_forget_token_.onClick = [this] { forgetShareToken(); };
   configureShareButton(share_cancel_, "Cancel sharing", "Close the share form without uploading");
   share_cancel_.onClick = [this] { hideShareForm(); };
@@ -9626,6 +9627,8 @@ class AtlasSettingsContent : public Component, private FocusChangeListener {
       community_.addAndMakeVisible(show_community_);
       account_.setTitle("Account");
       community_.addChildComponent(account_);
+      token_storage_.setTitle("API token storage");
+      community_.addChildComponent(token_storage_);
       token_.setTitle("API token");
       token_.setDescription("From the API tokens page of your account on " + host + ". It starts with bpa_");
       token_.setHelpText(token_.getDescription());
@@ -9637,9 +9640,10 @@ class AtlasSettingsContent : public Component, private FocusChangeListener {
       // A text box keeps Escape for itself; here it closes the window, as everywhere else in it.
       token_.onEscapeKey = [this] { closeWindow(); };
       community_.addChildComponent(token_);
-      configureButton(log_in_, "Log in", "Checks the API token with " + host + " and keeps it in Atlas's settings");
+      // Their help names where the token is kept (updateCommunityControls).
+      configureButton(log_in_, "Log in", "Checks the API token with " + host);
       log_in_.onClick = [this] { logIn(); };
-      configureButton(log_out_, "Log out", "Removes the API token from Atlas's settings");
+      configureButton(log_out_, "Log out", "Removes the API token");
       log_out_.onClick = [this] { logOut(); };
       configureButton(website_, "Open " + host, "Opens " + atlas::community::libraryUrl() + " in your browser");
       website_.onClick = [] { URL(atlas::community::libraryUrl()).launchInDefaultBrowser(); };
@@ -9684,17 +9688,31 @@ class AtlasSettingsContent : public Component, private FocusChangeListener {
     // What the window opens on: the version.
     Component& firstControl() { return version_; }
 
-    // The community group's controls follow the toggle and the token.
+    // The community group's controls follow the toggle and the login, which
+    // the config tells without reading the token from its store.
     void updateCommunityControls() {
       const bool shown = show_community_.getToggleState();
-      const bool logged_in = atlas::community::storedApiToken().isNotEmpty();
+      const bool logged_in = shown && atlas::community::hasApiToken();
       // Off what is about to go, so the focus stays in the window.
       Component* focus_target = nullptr;
       if (logged_in && (token_.hasKeyboardFocus(true) || log_in_.hasKeyboardFocus(false)))
         focus_target = &log_out_;
       else if (!logged_in && log_out_.hasKeyboardFocus(false))
         focus_target = &token_;
+      if (shown) {
+        const String storage = atlas::community::tokenStorageText(logged_in);
+        if (token_storage_.getText() != storage) {
+          token_storage_.setText(storage, dontSendNotification);
+          if (auto* handler = token_storage_.getAccessibilityHandler())
+            handler->notifyAccessibilityEvent(AccessibilityEvent::titleChanged);
+        }
+        const String place = atlas::community::tokenPlace();
+        configureButton(log_in_, "Log in",
+                        "Checks the API token with " + atlas::community::libraryHost() + " and keeps it in " + place);
+        configureButton(log_out_, "Log out", "Removes the API token from " + place);
+      }
       account_.setVisible(shown);
+      token_storage_.setVisible(shown);
       token_.setVisible(shown && !logged_in);
       log_in_.setVisible(shown && !logged_in);
       log_out_.setVisible(shown && logged_in);
@@ -9908,12 +9926,20 @@ class AtlasSettingsContent : public Component, private FocusChangeListener {
     }
 
     // Who the saved token belongs to: what was seen last at once, then what
-    // the library says now, asked in the background. Nothing is fetched while
-    // the browser is hidden or no token is saved.
+    // the library says now, asked in the background. Nothing is read or
+    // fetched while the browser is hidden or this DAW is not logged in.
     void refreshAccount() {
-      const String token = atlas::community::storedApiToken();
-      if (!show_community_.getToggleState() || token.isEmpty() || editor_ == nullptr)
+      if (!show_community_.getToggleState() || editor_ == nullptr || !atlas::community::hasApiToken())
         return;
+      String problem;
+      const String token = atlas::community::storedApiToken(&problem);
+      if (token.isEmpty()) {
+        // Gone from the store, which logs this DAW out, or the store would not give it.
+        updateCommunityControls();
+        setAccountText("Atlas could not read the saved API token, because " + problem + "." +
+                       (atlas::community::hasApiToken() ? " Log out, then log in again." : " Log in again."));
+        return;
+      }
       const auto known = atlas::community::storedAccount();
       setAccountText(known.known() ? loggedInText(known, false) : String("Checking the API token."));
       checking_ = true;
@@ -9995,7 +10021,11 @@ class AtlasSettingsContent : public Component, private FocusChangeListener {
       token_.clear();
       setAccountText(loggedInText(account, true));
       updateCommunityControls();
-      postPresetActionAnnouncement("Logged in as " + atlas::community::accountName(account),
+      // Said only when the store would not keep the token: it is gone once the DAW closes.
+      postPresetActionAnnouncement("Logged in as " + atlas::community::accountName(account) +
+                                       (atlas::community::tokenInMemoryOnly()
+                                            ? ". " + atlas::community::tokenStorageText(true).trimCharactersAtEnd(".")
+                                            : String()),
                                    AccessibilityHandler::AnnouncementPriority::high);
     }
 
@@ -10049,7 +10079,7 @@ class AtlasSettingsContent : public Component, private FocusChangeListener {
       for (auto& toggle : speech_toggles_)
         speech.push_back(toggle.get());
       placeGroup(accessibility_, speech);
-      placeGroup(community_, { &show_community_, &account_, &token_, &log_in_, &log_out_, &website_ });
+      placeGroup(community_, { &show_community_, &account_, &token_storage_, &token_, &log_in_, &log_out_, &website_ });
       placeGroup(keyboard_help_, { &help_text_ });
       inner_.setSize(kWidth, y);
       // The window follows the content's size, with room for the scroll bar
@@ -10083,6 +10113,7 @@ class AtlasSettingsContent : public Component, private FocusChangeListener {
     std::vector<std::unique_ptr<ToggleButton>> speech_toggles_;
     SettingsToggle show_community_ { "Show the community library in the preset browser" };
     SettingsText account_;
+    SettingsText token_storage_;
     AccessibleTextEditor token_;
     AccessibleTextButton log_in_, log_out_, website_;
     AccessibleTextEditor help_text_;
@@ -13010,20 +13041,25 @@ void SynthEditor::hideShareForm() {
   resized();
 }
 
+// What the token box and Log out say follows the login, which the config tells
+// without reading the token from its store.
 void SynthEditor::updateShareTokenControls() {
-  const String stored = atlas::community::storedApiToken();
+  const bool stored = atlas::community::hasApiToken();
   const auto account = atlas::community::storedAccount();
-  const String help = stored.isNotEmpty()
+  const String place = atlas::community::tokenPlace();
+  const String help = stored
       ? "API token. Leave it empty to " +
             (account.known() ? "share as " + atlas::community::accountName(account)
-                             : "use " + atlas::community::tokenHint(stored) + ", saved in Atlas's settings") +
+                             : "use the saved token, kept in " + place) +
             ", or type another to replace it"
       : "Your personal API token from the API tokens page of your account on " + atlas::community::libraryHost() +
-            ". It starts with bpa_. Once it works it is kept in Atlas's settings";
+            ". It starts with bpa_. Once it works it is kept in " + place;
   share_token_.setDescription(help);
   share_token_.setHelpText(help);
-  share_token_.setTextToShowWhenEmpty(stored.isNotEmpty() ? "Saved token" : "API token", Colours::grey);
-  const bool show_forget = share_form_visible_ && stored.isNotEmpty();
+  share_token_.setTextToShowWhenEmpty(stored ? "Saved token" : "API token", Colours::grey);
+  share_forget_token_.setDescription("Removes the API token from " + place);
+  share_forget_token_.setHelpText(share_forget_token_.getDescription());
+  const bool show_forget = share_form_visible_ && stored;
   if (share_forget_token_.isVisible() != show_forget) {
     share_forget_token_.setVisible(show_forget);
     if (share_form_visible_) {
@@ -13034,7 +13070,7 @@ void SynthEditor::updateShareTokenControls() {
 }
 
 void SynthEditor::forgetShareToken() {
-  const bool had = atlas::community::storedApiToken().isNotEmpty();
+  const bool had = atlas::community::hasApiToken();
   // Off the button before it goes, so the focus stays in the form.
   if (share_forget_token_.hasKeyboardFocus(false) && share_token_.isShowing())
     share_token_.grabKeyboardFocus();
@@ -13138,11 +13174,18 @@ void SynthEditor::commitShareForm() {
   }
   const String host = atlas::community::libraryHost();
   const String typed_token = share_token_.getText().trim();
-  const String token = typed_token.isNotEmpty() ? typed_token : atlas::community::storedApiToken();
+  // The saved token is read from its store only here, to send it.
+  String problem;
+  const String token = typed_token.isNotEmpty() ? typed_token : atlas::community::storedApiToken(&problem);
   if (token.isEmpty() || !atlas::community::looksLikeApiToken(token)) {
+    // A token gone from its store has logged this DAW out.
+    updateShareTokenControls();
     share_token_.grabKeyboardFocus();
-    postPresetActionAnnouncement(token.isEmpty() ? "Type your API token. Make one on the API tokens page of your account on " + host
-                                                 : String("That is not an API token. Tokens start with bpa_"),
+    postPresetActionAnnouncement(problem.isNotEmpty()
+                                     ? "Atlas could not read the saved API token, because " + problem + ". Type it again"
+                                 : token.isEmpty()
+                                     ? "Type your API token. Make one on the API tokens page of your account on " + host
+                                     : String("That is not an API token. Tokens start with bpa_"),
                                  AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
@@ -13237,16 +13280,17 @@ void SynthEditor::finishShare(const atlas::community::UploadResult& result, cons
   if (!result.shared()) {
     LoadSave::writeErrorLog("Community share failed (" + String(result.status) + "): " + result.error);
     String message = "Unable to share " + name + ". " + result.error;
-    if (result.tokenRefused() && typed_token.isEmpty() && atlas::community::storedApiToken().isNotEmpty())
-      message += ". The saved token may have been deleted on the site; Forget saved token removes it";
+    if (result.tokenRefused() && typed_token.isEmpty() && atlas::community::hasApiToken())
+      message += ". The saved token may have been deleted on the site; Log out removes it";
     postPresetActionAnnouncement(message, AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
 
-  // A token that worked is kept for next time, in Atlas's settings only.
+  // A token that worked is kept for next time, in the system's credential
+  // store (atlas::community::storeApiToken), never in a file.
   if (typed_token.isNotEmpty())
     atlas::community::storeApiToken(typed_token);
-  if (result.uploader.known() && atlas::community::storedApiToken().isNotEmpty())
+  if (result.uploader.known() && atlas::community::hasApiToken())
     atlas::community::storeAccount(result.uploader);
   // The library's lists now hold the new item: fetched afresh on their next showing.
   {
@@ -13257,8 +13301,11 @@ void SynthEditor::finishShare(const atlas::community::UploadResult& result, cons
     community_banks_loaded_ = false;
   else
     community_list_loaded_ = false;
-  const String message = "Shared " + (result.name.isNotEmpty() ? result.name : name) + " on " +
-                         atlas::community::libraryHost();
+  String message = "Shared " + (result.name.isNotEmpty() ? result.name : name) + " on " +
+                   atlas::community::libraryHost();
+  // Said only when the store would not keep a typed token: it is gone once the DAW closes.
+  if (typed_token.isNotEmpty() && atlas::community::tokenInMemoryOnly())
+    message << ". " << atlas::community::tokenStorageText(true).trimCharactersAtEnd(".");
   {
     // What the focus move says would cut the news short.
     const ScopedAnnouncementHold hold;

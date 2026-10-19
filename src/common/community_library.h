@@ -3,8 +3,13 @@
 #include <JuceHeader.h>
 #include <atomic>
 #include <functional>
+#include <memory>
 #include <string>
 #include <vector>
+
+namespace atlas::credentials {
+  class Store;
+}
 
 // The community preset library at https://atlas.blindproducers.org, read
 // through its JSON API (/api/v1/; reading needs no account). Nothing here
@@ -148,8 +153,9 @@ juce::String downloadFile(const juce::URL& url, const juce::File& target, const 
 
 // Sharing. Uploading needs a personal API token ("bpa_..."), made on the
 // account's API tokens page on the site and sent as "Authorization: Bearer".
-// It is a password: kept in Atlas's config file only, never in a preset or
-// the host's project, never logged, and never shown or said in full.
+// It is a password: kept in the system's credential store (storeApiToken),
+// never in a file, a preset or the host's project, never logged, and never
+// shown or said in full.
 
 // The patch styles the library knows, as /api/v1/styles/ lists them.
 struct Style {
@@ -228,10 +234,40 @@ UploadResult uploadPreset(const juce::String& library_url, const juce::String& t
 UploadResult uploadBank(const juce::String& library_url, const juce::String& token, const juce::File& bank,
                         const ShareFields& fields, const std::atomic<bool>* cancelled = nullptr);
 
-// The token kept in Atlas's config file, or empty; storing an empty one
-// forgets it, and storing another forgets the account saved with it.
-juce::String storedApiToken();
+// The API token is a password, kept in the system's credential store and
+// never in a file. On macOS that is the login keychain, where each DAW keeps
+// its own: the keychain ties an item to the app that saved it and asks for the
+// user's password before another app reads it, so each DAW logs in on its own
+// and none of them ever asks. On Windows it is Credential Manager, one token
+// for every DAW on the computer. Where the store will not keep it, or there is
+// none, the token is held in memory until the DAW closes. Atlas's config says
+// only which DAWs are logged in, and as whom (community_logins). A token kept
+// in the config by an older Atlas (community_api_token) moves into the store
+// the first time any of these is called, and leaves the config either way.
+//
+// The token, read from the store once a process and then from memory. Read it
+// only to use it: hasApiToken() says whether there is one. When a saved token
+// cannot be read, `problem` says why ("the keychain is locked").
+juce::String storedApiToken(juce::String* problem = nullptr);
+// Saves the token for this DAW, trimmed; an empty one logs out, taking it out
+// of the store and memory. Storing another forgets the account seen with the
+// last one.
 void storeApiToken(const juce::String& token);
+// Whether this DAW is logged in, from the config, without reading the store.
+bool hasApiToken();
+// Where the token is kept, as Settings says it. Logged in: "Your API token is
+// kept in your keychain, for Reaper only. Each DAW logs in on its own."; not
+// yet: "Logging in keeps your API token in your keychain, ...".
+juce::String tokenStorageText(bool logged_in);
+// "your keychain", "Windows Credential Manager" or "memory", for the help of
+// the controls that log in and out.
+juce::String tokenPlace();
+// Whether the token is held in memory alone, the store having refused it.
+bool tokenInMemoryOnly();
+// Tests: the store tokens go to (one in memory, so that no test reaches the
+// real keychain), or the system's again with none. Also forgets what memory
+// holds, as a new process would start.
+void setCredentialStoreForTesting(std::shared_ptr<credentials::Store> store);
 
 juce::String meEndpoint(const juce::String& library_url);
 // Reads /api/v1/me/'s answer; returns what went wrong, or an empty string.
@@ -241,7 +277,8 @@ juce::String fetchAccount(const juce::String& library_url, const juce::String& t
                           const std::atomic<bool>* cancelled = nullptr);
 // "Jay Ladder (jayladdermusic)", or the account name alone.
 juce::String accountName(const Account& account);
-// The account last seen for the saved token, kept beside it in the config.
+// The account last seen with this DAW's token, kept in the config with its
+// login. Storing one while logged out does nothing.
 Account storedAccount();
 void storeAccount(const Account& account);
 

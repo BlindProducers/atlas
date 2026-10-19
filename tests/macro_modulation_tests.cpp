@@ -12,6 +12,7 @@
 #include "line_generator.h"
 #include "load_save.h"
 #include "community_library.h"
+#include "credential_store.h"
 #include "phase_modifier.h"
 #include "wave_source.h"
 #include "wavetable_creator.h"
@@ -796,6 +797,11 @@ namespace {
 
 int main(int argc, char** argv) {
   ScopedJuceInitialiser_GUI juce;
+  // API tokens go to a store in memory: no test reaches the real keychain or
+  // Credential Manager. --credential-store alone tries the real one.
+  atlas::community::setCredentialStoreForTesting(std::make_shared<atlas::credentials::MemoryStore>());
+  if (argc > 1 && String(argv[1]) == "--credential-store")
+    return runCredentialStoreTests();
   if (argc > 1 && String(argv[1]) == "--editor-rebuild-focus") {
     testEditorRebuildFocus();
     if (failures == 0)

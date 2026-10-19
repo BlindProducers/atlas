@@ -66,6 +66,11 @@ namespace {
       if (!contents.is_object())
         contents = json::object();
       contents["data_directory"] = folder.getFullPathName().toStdString();
+      // Never the user's community login, nor an old token an older Atlas
+      // left in their config.
+      for (const char* key : { "community_api_token", "community_account_username", "community_account_name",
+                               "community_logins" })
+        contents.erase(key);
       config.getFile().replaceWithText(contents.dump());
       LoadSave::setConfigFileForTesting(config.getFile());
     }

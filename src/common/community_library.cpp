@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "community_library.h"
+#include "credential_store.h"
 #include "load_save.h"
 #include "nlohmann/json.hpp"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <mutex>
 #include <utility>
 
 namespace atlas::community {
@@ -987,28 +989,180 @@ juce::String accountName(const Account& account) {
   return account.username;
 }
 
-Account storedAccount() {
-  Account account;
-  const json config = LoadSave::getConfigJson();
-  if (config.is_object()) {
+namespace {
+  constexpr const char* kCredentialService = "org.blindproducers.atlas.community";
+  // Which DAWs are logged in, as whom, by login key:
+  // {"com.cockos.reaper": {"username": "jay", "name": "Jay Ladder", "saved": 1792000000000}}.
+  // "saved" marks each token saved, so that another process holding the last
+  // one knows to read the store again. The tokens are in the store.
+  constexpr const char* kLoginsKey = "community_logins";
+  constexpr const char* kLoginUsernameKey = "username";
+  constexpr const char* kLoginNameKey = "name";
+  constexpr const char* kLoginSavedKey = "saved";
+  // The login key where every DAW shares one token (Windows).
+  constexpr const char* kSharedLoginKey = "all";
+
+  // What this process holds of the token, for every Atlas in it.
+  struct TokenMemory {
+    std::mutex lock;
+    std::shared_ptr<credentials::Store> store;   // the system's, until a test sets one
+    juce::String token;                          // as read or saved; empty when none is held
+    juce::int64 saved = 0;                       // the login's "saved" mark `token` belongs to
+    bool session_only = false;                   // the store would not keep it: memory alone holds it
+    Account session_account;                     // its account, then
+    juce::String session_reason;                 // why the store would not keep it
+  };
+
+  TokenMemory& tokenMemory() {
+    static TokenMemory memory;
+    return memory;
+  }
+
+  // The rest take the memory's lock first.
+  credentials::Store& tokenStore(TokenMemory& memory) {
+    if (memory.store == nullptr)
+      memory.store = credentials::systemStore(kCredentialService);
+    return *memory.store;
+  }
+
+  std::string loginKey(credentials::Store& store) {
+    const std::string scope = store.scope();
+    return scope.empty() ? std::string(kSharedLoginKey) : scope;
+  }
+
+  // The DAW the plugin runs in, as Settings names it: "Reaper", "Apple Logic".
+  juce::String dawName() {
+    const juce::String described = juce::PluginHostType().getHostDescription();
+    if (described.isNotEmpty() && described != "Unknown")
+      return described;
+    const juce::String file = juce::File::getSpecialLocation(juce::File::hostApplicationPath)
+                                  .getFileNameWithoutExtension();
+    return file.isNotEmpty() ? file : juce::String("this DAW");
+  }
+
+  void forgetHeldToken(TokenMemory& memory) {
+    memory.token = {};
+    memory.saved = 0;
+    memory.session_only = false;
+    memory.session_account = {};
+    memory.session_reason = {};
+  }
+
+  json* findLogin(json& config, const std::string& key) {
+    if (!config.is_object())
+      return nullptr;
+    const auto logins = config.find(kLoginsKey);
+    if (logins == config.end() || !logins->is_object())
+      return nullptr;
+    const auto login = logins->find(key);
+    return login != logins->end() && login->is_object() ? &*login : nullptr;
+  }
+
+  void eraseLogin(json& config, const std::string& key) {
+    const auto logins = config.find(kLoginsKey);
+    if (logins == config.end() || !logins->is_object())
+      return;
+    logins->erase(key);
+    if (logins->empty())
+      config.erase(kLoginsKey);
+  }
+
+  Account loginAccount(const json& login) {
+    Account account;
+    account.username = jsonString(login, kLoginUsernameKey).trim();
+    account.display_name = jsonString(login, kLoginNameKey).trim();
+    return account;
+  }
+
+  void setLoginAccount(json& login, const Account& account) {
+    if (account.known()) {
+      login[kLoginUsernameKey] = account.username.toStdString();
+      login[kLoginNameKey] = account.display_name.toStdString();
+    }
+    else {
+      login.erase(kLoginUsernameKey);
+      login.erase(kLoginNameKey);
+    }
+  }
+
+  // Saves `token` for this DAW in the store, with `account`, and holds it; or,
+  // where the store will not keep it, holds it in memory alone. The caller
+  // saves `config`.
+  void keepToken(TokenMemory& memory, json& config, const juce::String& token, const Account& account) {
+    auto& store = tokenStore(memory);
+    const std::string key = loginKey(store);
+    const juce::String label = store.scope().empty() ? juce::String("Atlas community library token")
+                                                     : "Atlas community library token for " + dawName();
+    std::string error;
+    const auto status = store.write(key, label.toStdString(), token.toStdString(), error);
+    const json* last = findLogin(config, key);
+    const juce::int64 last_saved = last != nullptr ? jsonInteger(*last, kLoginSavedKey) : 0;
+    forgetHeldToken(memory);
+    memory.token = token;
+    if (status == credentials::Status::ok) {
+      json login = json::object();
+      setLoginAccount(login, account);
+      memory.saved = std::max(juce::Time::currentTimeMillis(), last_saved + 1);
+      login[kLoginSavedKey] = memory.saved;
+      if (!config[kLoginsKey].is_object())
+        config[kLoginsKey] = json::object();
+      config[kLoginsKey][key] = login;
+      return;
+    }
+    // Not in the store, so not logged in by the config either. Nothing more is
+    // asked of the store: a locked keychain would only ask again.
+    eraseLogin(config, key);
+    memory.session_only = true;
+    memory.session_account = account;
+    memory.session_reason = error.empty() ? juce::String("the credential store would not keep it") : juce::String(error);
+  }
+
+  // An older Atlas kept the token in its config: it moves into the store, or
+  // into memory alone where the store will not keep it, and leaves the config
+  // either way.
+  void moveConfigToken(TokenMemory& memory) {
+    json config = LoadSave::getConfigJson();
+    if (!config.is_object() || (config.find(kTokenConfigKey) == config.end() &&
+                                config.find(kAccountUsernameKey) == config.end() &&
+                                config.find(kAccountNameKey) == config.end()))
+      return;
+    const juce::String token = jsonString(config, kTokenConfigKey).trim();
+    Account account;
     account.username = jsonString(config, kAccountUsernameKey).trim();
     account.display_name = jsonString(config, kAccountNameKey).trim();
+    config.erase(kTokenConfigKey);
+    config.erase(kAccountUsernameKey);
+    config.erase(kAccountNameKey);
+    if (token.isNotEmpty())
+      keepToken(memory, config, token, account);
+    LoadSave::saveJsonToConfig(config);
   }
-  return account;
+}
+
+Account storedAccount() {
+  auto& memory = tokenMemory();
+  const std::lock_guard<std::mutex> hold(memory.lock);
+  moveConfigToken(memory);
+  if (memory.session_only)
+    return memory.session_account;
+  json config = LoadSave::getConfigJson();
+  const json* login = findLogin(config, loginKey(tokenStore(memory)));
+  return login != nullptr ? loginAccount(*login) : Account {};
 }
 
 void storeAccount(const Account& account) {
+  auto& memory = tokenMemory();
+  const std::lock_guard<std::mutex> hold(memory.lock);
+  moveConfigToken(memory);
+  if (memory.session_only) {
+    memory.session_account = account.known() ? account : Account {};
+    return;
+  }
   json config = LoadSave::getConfigJson();
-  if (!config.is_object())
-    config = json::object();
-  if (account.known()) {
-    config[kAccountUsernameKey] = account.username.toStdString();
-    config[kAccountNameKey] = account.display_name.toStdString();
-  }
-  else {
-    config.erase(kAccountUsernameKey);
-    config.erase(kAccountNameKey);
-  }
+  json* login = findLogin(config, loginKey(tokenStore(memory)));
+  if (login == nullptr)
+    return;
+  setLoginAccount(*login, account);
   LoadSave::saveJsonToConfig(config);
 }
 
@@ -1037,28 +1191,129 @@ void forgetBrowserShownForTesting() {
   browserShownState().store(-1, std::memory_order_relaxed);
 }
 
-juce::String storedApiToken() {
-  const json config = LoadSave::getConfigJson();
-  if (!config.is_object())
+juce::String storedApiToken(juce::String* problem) {
+  auto& memory = tokenMemory();
+  const std::lock_guard<std::mutex> hold(memory.lock);
+  if (problem != nullptr)
+    problem->clear();
+  moveConfigToken(memory);
+  if (memory.session_only)
+    return memory.token;
+  json config = LoadSave::getConfigJson();
+  auto& store = tokenStore(memory);
+  const std::string key = loginKey(store);
+  const json* login = findLogin(config, key);
+  if (login == nullptr) {
+    // Logged out, perhaps by another process.
+    forgetHeldToken(memory);
     return {};
-  return jsonString(config, kTokenConfigKey).trim();
+  }
+  const juce::int64 saved = jsonInteger(*login, kLoginSavedKey);
+  if (memory.token.isNotEmpty() && memory.saved == saved)
+    return memory.token;
+
+  std::string secret;
+  std::string error;
+  const auto status = store.read(key, secret, error);
+  forgetHeldToken(memory);
+  if (status == credentials::Status::ok) {
+    memory.token = juce::String::fromUTF8(secret.data(), static_cast<int>(secret.size())).trim();
+    memory.saved = saved;
+    return memory.token;
+  }
+  if (status == credentials::Status::not_found) {
+    // Taken out of the store behind Atlas's back (in Keychain Access, say):
+    // this DAW is logged out.
+    eraseLogin(config, key);
+    LoadSave::saveJsonToConfig(config);
+    error = "it is no longer in " + store.place();
+  }
+  if (problem != nullptr)
+    *problem = error.empty() ? juce::String("the credential store would not give it") : juce::String(error);
+  return {};
 }
 
 void storeApiToken(const juce::String& token) {
+  auto& memory = tokenMemory();
+  const std::lock_guard<std::mutex> hold(memory.lock);
+  moveConfigToken(memory);
   json config = LoadSave::getConfigJson();
   if (!config.is_object())
     config = json::object();
-  const juce::String key = token.trim();
-  // An account belongs to the token it was seen with.
-  if (jsonString(config, kTokenConfigKey).trim() != key) {
-    config.erase(kAccountUsernameKey);
-    config.erase(kAccountNameKey);
+  auto& store = tokenStore(memory);
+  const std::string key = loginKey(store);
+  const juce::String trimmed = token.trim();
+  if (trimmed.isEmpty()) {
+    // Logging out. The store is asked only when it holds this DAW's token.
+    if (findLogin(config, key) != nullptr) {
+      std::string error;
+      store.remove(key, error);
+      eraseLogin(config, key);
+      LoadSave::saveJsonToConfig(config);
+    }
+    forgetHeldToken(memory);
+    return;
   }
-  if (key.isEmpty())
-    config.erase(kTokenConfigKey);
-  else
-    config[kTokenConfigKey] = key.toStdString();
+  // An account belongs to the token it was seen with.
+  Account account;
+  if (memory.token == trimmed) {
+    if (memory.session_only)
+      account = memory.session_account;
+    else if (const json* login = findLogin(config, key))
+      account = loginAccount(*login);
+  }
+  keepToken(memory, config, trimmed, account);
   LoadSave::saveJsonToConfig(config);
+}
+
+bool hasApiToken() {
+  auto& memory = tokenMemory();
+  const std::lock_guard<std::mutex> hold(memory.lock);
+  moveConfigToken(memory);
+  if (memory.session_only)
+    return memory.token.isNotEmpty();
+  json config = LoadSave::getConfigJson();
+  if (findLogin(config, loginKey(tokenStore(memory))) != nullptr)
+    return true;
+  forgetHeldToken(memory);
+  return false;
+}
+
+juce::String tokenStorageText(bool logged_in) {
+  auto& memory = tokenMemory();
+  const std::lock_guard<std::mutex> hold(memory.lock);
+  auto& store = tokenStore(memory);
+  const juce::String daw = dawName();
+  const juce::String place = store.place();
+  const juce::String start = logged_in ? "Your API token is kept in " : "Logging in keeps your API token in ";
+  if ((logged_in && memory.session_only) || place.isEmpty()) {
+    const juce::String reason = memory.session_only ? memory.session_reason : juce::String(store.unavailableReason());
+    return start + "memory until " + daw + " closes" + (reason.isNotEmpty() ? ", because " + reason : juce::String()) +
+           ".";
+  }
+  if (store.scope().empty())
+    return start + place + ", for every DAW on this computer.";
+  return start + place + ", for " + daw + " only. Each DAW logs in on its own.";
+}
+
+juce::String tokenPlace() {
+  auto& memory = tokenMemory();
+  const std::lock_guard<std::mutex> hold(memory.lock);
+  const juce::String place = tokenStore(memory).place();
+  return memory.session_only || place.isEmpty() ? juce::String("memory") : place;
+}
+
+bool tokenInMemoryOnly() {
+  auto& memory = tokenMemory();
+  const std::lock_guard<std::mutex> hold(memory.lock);
+  return memory.session_only && memory.token.isNotEmpty();
+}
+
+void setCredentialStoreForTesting(std::shared_ptr<credentials::Store> store) {
+  auto& memory = tokenMemory();
+  const std::lock_guard<std::mutex> hold(memory.lock);
+  memory.store = std::move(store);
+  forgetHeldToken(memory);
 }
 
 juce::String tokenHint(const juce::String& token) {

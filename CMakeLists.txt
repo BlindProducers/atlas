@@ -250,9 +250,21 @@ target_sources(Atlas PRIVATE
   ${ATLAS_ZL_COMPRESSOR_SOURCES}
   # Maim by Arden Butterfield (GPL v3): the Maim effect.
   ${ATLAS_MAIM_SOURCES}
+  # The community library's API token in the system's credential store. On
+  # its own so that Security.h (Carbon's Component) and <windows.h> never
+  # meet JUCE's names in the unity files.
+  src/common/credential_store.cpp
   src/unity_build/common.cpp
   src/unity_build/synthesis.cpp
   src/unity_build/plugin.cpp)
+# The keychain on macOS, Credential Manager on Windows. juce_core links both
+# already (Security in its module header, advapi32 by #pragma); named here so
+# the credential store does not lean on that.
+if(APPLE)
+  target_link_libraries(Atlas PRIVATE "-framework Security" "-framework CoreFoundation")
+elseif(WIN32)
+  target_link_libraries(Atlas PRIVATE advapi32)
+endif()
 
 # Rust's all-pass recurrences use separate multiply/add operations. Do not
 # contract these into FMA or apply Atlas's unity fast-math transformations.
@@ -745,6 +757,10 @@ if(ATLAS_BUILD_TIMING_TESTS)
   # The Community collection: the library's pages parse, downloads are checked
   # against its checksums, and the browser lists and fetches from a saved copy.
   add_test(NAME atlas_community_library COMMAND AtlasMacroTests --community-library)
+  # The system's credential store (keychain, Credential Manager): a secret
+  # saved, read, replaced and removed under a service of the tests' own, with
+  # keychain dialogs off. Skipped where there is no store or it is locked.
+  add_test(NAME atlas_credential_store COMMAND AtlasMacroTests --credential-store)
   add_test(NAME atlas_oscillator_modulation COMMAND AtlasMacroTests --oscillator-modulation)
   add_test(NAME atlas_arpeggiator COMMAND AtlasMacroTests --arpeggiator)
   # Voice allocation with arpeggiator tails, MIDI learn, state restore and

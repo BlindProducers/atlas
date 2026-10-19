@@ -8,6 +8,7 @@
 // undo_tests.h, whose helpers it uses.
 
 #include "community_library.h"
+#include "credential_store.h"
 
 namespace {
   // Two patches as /api/v1/presets/ describes them: one complete, one with
@@ -965,22 +966,83 @@ namespace {
     expect(!result.shared() && result.error.contains("not JSON"), "a 201 that is not JSON is not taken as shared");
   }
 
-  // The token lives in Atlas's config file and nowhere else.
-  void testApiTokenIsKeptInTheConfigOnly() {
+  // A fresh store in memory for API tokens, standing for the keychain as the
+  // DAW `scope` sees it.
+  std::shared_ptr<atlas::credentials::MemoryStore> useTestCredentialStore(const std::string& scope = "com.example.daw") {
+    auto store = std::make_shared<atlas::credentials::MemoryStore>(scope);
+    atlas::community::setCredentialStoreForTesting(store);
+    return store;
+  }
+
+  // The DAWs the config says are logged in.
+  StringArray loggedInDaws() {
+    StringArray daws;
+    const json config = LoadSave::getConfigJson();
+    const auto logins = config.is_object() ? config.find("community_logins") : config.end();
+    if (logins != config.end() && logins->is_object())
+      for (const auto& login : logins->items())
+        daws.add(login.key());
+    return daws;
+  }
+
+  // The token lives in the credential store (here one in memory standing for
+  // the keychain) and never in a file: the config says only which DAW is
+  // logged in. Each DAW keeps its own; one the store will not keep is held in
+  // memory until the DAW closes; and a token an older Atlas left in the config
+  // moves into the store.
+  void testApiTokenIsKeptInTheCredentialStore() {
     using namespace atlas::community;
     TemporaryUndoLibrary library;   // its own config file
     expect(library.isolated(), "the test's config is its own");
     if (!library.isolated())
       return;
-    expect(storedApiToken().isEmpty(), "no token is saved at first");
+    auto store = useTestCredentialStore("com.example.first-daw");
+    const auto configText = [] { return LoadSave::getConfigFile().loadFileAsString(); };
+    expect(!hasApiToken() && storedApiToken().isEmpty(), "no token is saved at first");
     storeApiToken(" " + kTestToken + " ");
-    expect(storedApiToken() == kTestToken, "a token is saved trimmed");
-    expect(LoadSave::getConfigFile().loadFileAsString().contains(kTestToken), "in Atlas's config file");
+    expect(hasApiToken() && storedApiToken() == kTestToken, "a token is saved trimmed");
+    expect(store->secretOf("com.example.first-daw") == kTestToken.toStdString() &&
+               store->labelOf("com.example.first-daw").rfind("Atlas community library token for ", 0) == 0,
+           "in the store, under this DAW's name: " + store->labelOf("com.example.first-daw"));
+    expect(!configText().contains(kTestToken) && !configText().contains("bpa_") &&
+               loggedInDaws() == StringArray { "com.example.first-daw" },
+           "the config says only that this DAW is logged in: " + configText().toStdString());
+    expect(tokenStorageText(true).startsWith("Your API token is kept in the test store, for ") &&
+               tokenStorageText(true).endsWith(" only. Each DAW logs in on its own.") && tokenPlace() == "the test store",
+           "Settings can say where it is kept: " + tokenStorageText(true).toStdString());
     expect(tokenHint(kTestToken) == "the token ending in face" && !tokenHint(kTestToken).contains("bpa_"),
            "only its last four characters are ever said: " + tokenHint(kTestToken).toStdString());
     expect(looksLikeApiToken(kTestToken) && !looksLikeApiToken("bpa_xyz") && !looksLikeApiToken("hello") &&
                !looksLikeApiToken(""),
            "a token looks like one the library issues");
+
+    // Read from the store once a process, then from memory; whether there is
+    // one is known without reading it.
+    setCredentialStoreForTesting(store);   // as a new process starts
+    const int reads = store->reads();
+    expect(hasApiToken() && store->reads() == reads, "whether a token is saved is known without reading it");
+    expect(storedApiToken() == kTestToken && storedApiToken() == kTestToken && store->reads() == reads + 1,
+           "it is read once, then held in memory");
+
+    // Another DAW keeps its own.
+    store->setScope("com.example.second-daw");
+    setCredentialStoreForTesting(store);
+    expect(!hasApiToken() && storedApiToken().isEmpty() &&
+               tokenStorageText(false).startsWith("Logging in keeps your API token in the test store, for ") &&
+               tokenStorageText(false).endsWith("Each DAW logs in on its own."),
+           "another DAW is not logged in by the first one's token: " + tokenStorageText(false).toStdString());
+    const String other = "bpa_" + String::repeatedString("cd", 20);
+    storeApiToken(other);
+    expect(storedApiToken() == other && store->secretOf("com.example.first-daw") == kTestToken.toStdString() &&
+               loggedInDaws().size() == 2,
+           "it logs in on its own, and the first keeps its token");
+    storeApiToken({});
+    expect(!hasApiToken() && !store->holds("com.example.second-daw") && store->holds("com.example.first-daw") &&
+               loggedInDaws() == StringArray { "com.example.first-daw" },
+           "logging out there leaves the first logged in");
+    store->setScope("com.example.first-daw");
+    setCredentialStoreForTesting(store);
+    expect(hasApiToken() && storedApiToken() == kTestToken, "the first DAW still has its token");
 
     SynthPlugin synth;
     MemoryBlock state;
@@ -991,9 +1053,87 @@ namespace {
                !preset.loadFileAsString().contains(kTestToken),
            "the token is in neither the host's state nor a preset");
 
+    // Another process of the same DAW logs out, then saves a new token: the
+    // config says so, and what memory holds follows.
+    json config = LoadSave::getConfigJson();
+    const json login = config["community_logins"]["com.example.first-daw"];
+    config.erase("community_logins");
+    LoadSave::saveJsonToConfig(config);
+    expect(!hasApiToken() && storedApiToken().isEmpty(), "a logout in another process is seen");
+    std::string error;
+    store->write("com.example.first-daw", "Atlas community library token", other.toStdString(), error);
+    config = LoadSave::getConfigJson();
+    config["community_logins"]["com.example.first-daw"] = login;
+    config["community_logins"]["com.example.first-daw"]["saved"] = login.at("saved").get<int64>() + 1;
+    LoadSave::saveJsonToConfig(config);
+    expect(storedApiToken() == other, "a token another process saved is read again");
+    storeApiToken(kTestToken);
+
+    // Taken out of the store behind Atlas's back (in Keychain Access, say).
+    store->erase("com.example.first-daw");
+    setCredentialStoreForTesting(store);
+    String problem;
+    expect(hasApiToken() && storedApiToken(&problem).isEmpty() && problem == "it is no longer in the test store" &&
+               !hasApiToken() && loggedInDaws().isEmpty(),
+           "a token gone from the store logs this DAW out, and says why: " + problem.toStdString());
+
+    // A store that will not keep it: memory alone holds it, until the DAW closes.
+    store->setRefusingWrites(true);
+    storeApiToken(kTestToken);
+    expect(hasApiToken() && storedApiToken() == kTestToken && tokenInMemoryOnly() &&
+               !store->holds("com.example.first-daw") && loggedInDaws().isEmpty() && !configText().contains(kTestToken),
+           "a token the store refuses is held in memory alone, and never written to the config");
+    expect(tokenStorageText(true).startsWith("Your API token is kept in memory until ") &&
+               tokenStorageText(true).endsWith(" closes, because the test store refused it.") && tokenPlace() == "memory",
+           "Settings says so: " + tokenStorageText(true).toStdString());
+    setCredentialStoreForTesting(store);   // the DAW closes
+    expect(!hasApiToken() && storedApiToken().isEmpty(), "and it is gone once the DAW closes");
+    store->setRefusingWrites(false);
+
+    // No store at all, as on Linux.
+    store->setUnavailable("Atlas has no credential store on this system");
+    setCredentialStoreForTesting(store);
+    expect(tokenStorageText(false).startsWith("Logging in keeps your API token in memory until ") &&
+               tokenStorageText(false).endsWith(" closes, because Atlas has no credential store on this system."),
+           "with no store, Settings says the token would be held in memory: " + tokenStorageText(false).toStdString());
+    storeApiToken(kTestToken);
+    expect(hasApiToken() && storedApiToken() == kTestToken && tokenInMemoryOnly() && loggedInDaws().isEmpty() &&
+               !configText().contains(kTestToken),
+           "memory alone holds it");
     storeApiToken({});
-    expect(storedApiToken().isEmpty() && !LoadSave::getConfigFile().loadFileAsString().contains(kTestToken),
-           "storing nothing forgets it");
+    expect(!hasApiToken() && storedApiToken().isEmpty(), "until logging out");
+    store->setUnavailable({});
+
+    // A token an older Atlas left in the config moves into the store, with
+    // its account, and leaves the config.
+    const auto leaveOldToken = [&] {
+      json old = LoadSave::getConfigJson();
+      old["community_api_token"] = kTestToken.toStdString();
+      old["community_account_username"] = "jayladdermusic";
+      old["community_account_name"] = "Jay Ladder";
+      LoadSave::saveJsonToConfig(old);
+    };
+    leaveOldToken();
+    setCredentialStoreForTesting(store);
+    expect(hasApiToken() && store->secretOf("com.example.first-daw") == kTestToken.toStdString() &&
+               !configText().contains(kTestToken) && !configText().contains("community_api_token") &&
+               !configText().contains("community_account_") && storedAccount().username == "jayladdermusic" &&
+               storedAccount().display_name == "Jay Ladder",
+           "an older Atlas's token moves from the config into the store, with its account: " + configText().toStdString());
+    expect(storedApiToken() == kTestToken, "and is used from there");
+    storeApiToken({});
+    store->setRefusingWrites(true);
+    leaveOldToken();
+    setCredentialStoreForTesting(store);
+    expect(hasApiToken() && tokenInMemoryOnly() && storedApiToken() == kTestToken && !configText().contains(kTestToken) &&
+               !configText().contains("community_api_token") && storedAccount().username == "jayladdermusic",
+           "where the store refuses it, memory holds it and it still leaves the config");
+    store->setRefusingWrites(false);
+
+    storeApiToken({});
+    expect(!hasApiToken() && storedApiToken().isEmpty() && !store->holds("com.example.first-daw") &&
+               loggedInDaws().isEmpty() && !configText().contains(kTestToken),
+           "storing nothing logs out: out of the store, memory and the config");
   }
 
   // A web server on 127.0.0.1 standing in for the library: it answers each
@@ -1187,12 +1327,13 @@ namespace {
   // asks for a token, passes on the library's field errors and keeps the
   // form open, shares and says so, keeps the token that worked and gives the
   // focus back; the bank form exports the chosen folder, needs a genre and
-  // uses the saved token; Forget saved token clears it; Escape closes.
+  // uses the saved token; Log out clears it; Escape closes.
   void testShareFormsUploadAndSpeak() {
     TemporaryUndoLibrary library;
     expect(library.isolated(), "the test's library is its own temporary folder");
     if (!library.isolated())
       return;
+    const auto credentials = useTestCredentialStore();
     TestLibraryServer server;
     expect(server.isListening(), "the test library listens on 127.0.0.1");
     if (!server.isListening())
@@ -1305,8 +1446,9 @@ namespace {
     pumpUntil([&] { return said("Shared Shared Patch"); }, 2000);
     expect(said("Shared Shared Patch on 127.0.0.1") && !editor.isShareFormVisible(),
            "the share is said and the form closes: " + heard());
-    expect(atlas::community::storedApiToken() == kTestToken && token->getText().isEmpty(),
-           "the token that worked is kept in the settings, and the box is empty");
+    expect(atlas::community::storedApiToken() == kTestToken && credentials->secretOf("com.example.daw") == kTestToken.toStdString() &&
+               token->getText().isEmpty(),
+           "the token that worked is kept in the store, and the box is empty");
     expect(preset_menu->hasKeyboardFocus(false), "the focus is back on the Preset menu");
     auto requests = server.requests();
     expect(requests.size() == 2, "two uploads reached the library, got " + std::to_string(requests.size()));
@@ -1325,9 +1467,9 @@ namespace {
     expect(folder->isShowing() && genre->isShowing() && !style->isVisible() && forget->isShowing(),
            "the bank form shows the folder and genre, and Log out with a token saved");
     expect(folder->hasKeyboardFocus(false) && said("Share bank on 127.0.0.1"), "the folder menu has the focus: " + heard());
-    expect(token->getDescription().contains("use the token ending in face, saved in Atlas's settings") &&
-               !token->getDescription().contains(kTestToken),
-           "the token box says a token is saved by its last characters only: " + token->getDescription().toStdString());
+    expect(token->getDescription().contains("use the saved token, kept in the test store") &&
+               !token->getDescription().contains(kTestToken) && forget->getDescription() == "Removes the API token from the test store",
+           "the token box says a token is saved and where, never the token: " + token->getDescription().toStdString());
     int my_bank = -1;
     for (int i = 0; i < folder->getNumItems(); ++i) {
       if (folder->getItemText(i) == "My Bank")
@@ -1368,8 +1510,9 @@ namespace {
     spoken.messages.clear();
     forget->onClick();
     pumpEditorEvents();
-    expect(atlas::community::storedApiToken().isEmpty() && !forget->isVisible() && said("Logged out"),
-           "Log out clears the token: " + heard());
+    expect(atlas::community::storedApiToken().isEmpty() && !credentials->holds("com.example.daw") && !forget->isVisible() &&
+               said("Logged out"),
+           "Log out clears the token, from the store too: " + heard());
     expect(Component::getCurrentlyFocusedComponent() == nullptr || editor.isParentOf(Component::getCurrentlyFocusedComponent()),
            "the focus stays in the editor");
     name->grabKeyboardFocus();
@@ -1420,6 +1563,7 @@ namespace {
     setBrowserShown(true);
     expect(browserShown(), "and on again");
 
+    useTestCredentialStore();
     storeApiToken(kTestToken);
     Account jay;
     jay.username = "jayladdermusic";
@@ -1469,6 +1613,7 @@ namespace {
     expect(library.isolated(), "the test's library is its own temporary folder");
     if (!library.isolated())
       return;
+    const auto credentials = useTestCredentialStore();
     atlas::community::forgetBrowserShownForTesting();
     TestLibraryServer server;
     expect(server.isListening(), "the test library listens on 127.0.0.1");
@@ -1652,13 +1797,14 @@ namespace {
     // Online community browser.
     auto* show = dynamic_cast<Button*>(titledIn(*content, "Show the community library in the preset browser"));
     auto* account = dynamic_cast<Label*>(titledIn(*content, "Account"));
+    auto* storage = dynamic_cast<Label*>(titledIn(*content, "API token storage"));
     auto* token = dynamic_cast<TextEditor*>(titledIn(*content, "API token"));
     auto* log_in = dynamic_cast<Button*>(titledIn(*content, "Log in"));
     auto* log_out = dynamic_cast<Button*>(titledIn(*content, "Log out"));
     auto* website = dynamic_cast<Button*>(titledIn(*content, "Open 127.0.0.1"));
     auto* collection = dynamic_cast<TableListBox*>(titled(editor, "Collection"));
-    const bool controls = show != nullptr && account != nullptr && token != nullptr && log_in != nullptr &&
-                          log_out != nullptr && website != nullptr && collection != nullptr;
+    const bool controls = show != nullptr && account != nullptr && storage != nullptr && token != nullptr &&
+                          log_in != nullptr && log_out != nullptr && website != nullptr && collection != nullptr;
     expect(controls, "the community group has its controls");
     if (!controls) {
       delete window.getComponent();
@@ -1669,6 +1815,9 @@ namespace {
     expect(account->isShowing() && account->getText() == "Not logged in." && token->isShowing() && log_in->isShowing() &&
                !log_out->isVisible() && website->isShowing() && website->getDescription().contains(server.url()),
            "not logged in: the token box, Log in and the website: " + account->getText().toStdString());
+    expect(storage->isShowing() && storage->getText().startsWith("Logging in keeps your API token in the test store, for ") &&
+               log_in->getDescription().endsWith(" and keeps it in the test store"),
+           "and where a token would be kept: " + storage->getText().toStdString());
     expect(token->getAccessibilityHandler() != nullptr && token->getAccessibilityHandler()->getTextInterface() != nullptr &&
                token->getAccessibilityHandler()->getTextInterface()->isDisplayingProtectedText(),
            "the token box hides what is typed");
@@ -1704,6 +1853,11 @@ namespace {
     expect(account->getText() == "Logged in as Jay Ladder (jayladdermusic). 3 presets and 1 bank shared." &&
                log_out->isShowing() && !token->isVisible() && !log_in->isVisible() && token->getText().isEmpty(),
            "the account is shown, with Log out in place of the token box: " + account->getText().toStdString());
+    expect(credentials->secretOf("com.example.daw") == kTestToken.toStdString() &&
+               storage->getText().startsWith("Your API token is kept in the test store, for ") &&
+               storage->getText().endsWith(" only. Each DAW logs in on its own.") &&
+               log_out->getDescription() == "Removes the API token from the test store",
+           "the token is in the store, and Settings says where: " + storage->getText().toStdString());
     for (const auto& message : spoken.messages)
       expect(!message.contains(kTestToken) && !message.contains("bpa_"), "the token is never said");
 
@@ -1792,8 +1946,8 @@ namespace {
       log_out->onClick();
     pumpEditorEvents();
     expect(said("Logged out") && atlas::community::storedApiToken().isEmpty() && !atlas::community::storedAccount().known() &&
-               account != nullptr && account->getText() == "Not logged in.",
-           "Log out forgets the token and its account: " + heard());
+               !credentials->holds("com.example.daw") && account != nullptr && account->getText() == "Not logged in.",
+           "Log out forgets the token, in the store too, and its account: " + heard());
 
     // The keyboard help, whose text box hands Escape to the window: it closes.
     auto* help = content != nullptr ? dynamic_cast<TextEditor*>(titledIn(*content, "Keyboard shortcuts")) : nullptr;
@@ -1827,6 +1981,46 @@ namespace {
     expect(window == nullptr, "and closes when the editor does");
   }
 
+  // The system's credential store itself, under a service of the tests' own:
+  // a secret is saved, read, replaced and removed. Keychain dialogs are turned
+  // off for this process, so where the keychain would ask (locked, as on a
+  // build machine) the test is skipped, as it is where there is no store.
+  int runCredentialStoreTests() {
+    using atlas::credentials::Status;
+    atlas::credentials::disallowInteractionForTesting();
+#if JUCE_MAC
+    // The tests are signed ad hoc, as a self-built host is: the plugin gives
+    // such an app no keychain, which would ask for the user's password after
+    // each new build.
+    const auto guarded = atlas::credentials::systemStore("org.blindproducers.atlas.tests");
+    expect(guarded->place().empty() && guarded->unavailableReason().find("no developer signature") != std::string::npos,
+           "an app signed ad hoc gets no keychain: " + guarded->unavailableReason());
+#endif
+    const auto store = atlas::credentials::systemStore("org.blindproducers.atlas.tests", false);
+    const std::string account = "round-trip-" + Uuid().toString().toStdString();
+    const std::string first = "not-a-token-" + Uuid().toString().toStdString();
+    const std::string second = first + "-replaced";
+    std::string error;
+    const Status written = store->write(account, "Atlas tests", first, error);
+    if (written == Status::unavailable || written == Status::refused) {
+      std::cout << "Atlas credential store test skipped: " << (error.empty() ? std::string("no store") : error) << '\n';
+      return 0;
+    }
+    expect(written == Status::ok, "a secret is saved in " + store->place());
+    std::string secret;
+    expect(store->read(account, secret, error) == Status::ok && secret == first, "and read back: " + error);
+    expect(store->write(account, "Atlas tests", second, error) == Status::ok &&
+               store->read(account, secret, error) == Status::ok && secret == second,
+           "saving again replaces it: " + error);
+    expect(store->remove(account, error) == Status::ok, "it is removed: " + error);
+    expect(store->read(account, secret, error) == Status::not_found && store->remove(account, error) == Status::not_found,
+           "and is gone");
+    store->remove(account, error);   // whatever failed above, nothing is left behind
+    if (failures == 0)
+      std::cout << "Atlas credential store tests passed (" << store->place() << ")\n";
+    return failures == 0 ? 0 : 1;
+  }
+
   int runCommunityLibraryTests() {
     testSha256MatchesTheStandardVectors();
     testPresetsPageParses();
@@ -1837,7 +2031,7 @@ namespace {
     testBanksPageParses();
     testCommunityBanksListAndImport();
     testShareRequestsAndAnswers();
-    testApiTokenIsKeptInTheConfigOnly();
+    testApiTokenIsKeptInTheCredentialStore();
     testUploadReachesTheLibrary();
     testShareFormsUploadAndSpeak();
     testAccountsAndTheBrowserSetting();
