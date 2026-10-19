@@ -22,6 +22,7 @@
 #include "sequence_keyboard_component.h"
 #include "trance_gate_editor.h"
 #include "synth_gui_interface.h"
+#include "community_library.h"
 
 #include <map>
 #include <memory>
@@ -393,6 +394,11 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     bool isCommunityLibraryLoaded() const { return community_list_loaded_; }
     bool isCommunityDownloadBusy() const { return !community_downloads_.empty(); }
     String communityLibraryError() const { return community_list_error_; }
+    // The Preset menu's Share patch and Share bank forms, for the tests.
+    void showSharePatchFormForTesting() { showShareForm(false); }
+    void showShareBankFormForTesting() { showShareForm(true); }
+    bool isShareFormVisible() const { return share_form_visible_; }
+    bool isShareBusy() const { return share_busy_; }
     bool isCommunityBankLibraryBusy() const { return community_banks_loading_; }
     bool isCommunityBankLibraryLoaded() const { return community_banks_loaded_; }
     String communityBankLibraryError() const { return community_banks_error_; }
@@ -691,6 +697,26 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void showSavePresetDialog();
     void hideSavePresetDialog();
     void commitSavePresetDialog();
+    // Share patch / Share bank on the community library: an inline form like
+    // Save patch's. For a patch, its name, style, tags, description and the
+    // API token; for a bank, the library folder to share, its name, genre,
+    // tags, description and the token. The token box hides what is typed; a
+    // token that worked is kept in Atlas's config file (community_library.h)
+    // and the box is left empty to use it, with Forget saved token to clear it.
+    // Share writes the patch or exports the folder to a temporary file and
+    // posts it on a background thread; the library's answer is said, and the
+    // form stays open on its field errors.
+    void showShareForm(bool bank);
+    void hideShareForm();
+    void commitShareForm();
+    void forgetShareToken();
+    void populateShareFolders(const File& select);
+    void chooseShareFolder();
+    void loadShareGenres();
+    void finishShare(const atlas::community::UploadResult& result, const String& name, const String& typed_token,
+                     bool bank, int generation);
+    void updateShareTokenControls();
+    bool shareFormHasFocus() const;
     void savePresetFile(const File& file);
     void showPresetControls();
     void updatePresetSummary();
@@ -1073,6 +1099,17 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     TextEditor save_patch_comments_;
     TextButton save_patch_ok_ { "Save" };
     TextButton save_patch_cancel_ { "Cancel" };
+    Label share_prompt_;
+    AccessibleComboBox share_folder_;
+    AccessibleTextEditor share_name_;
+    AccessibleComboBox share_style_;
+    AccessibleComboBox share_genre_;
+    AccessibleTextEditor share_tags_;
+    AccessibleTextEditor share_description_;
+    AccessibleTextEditor share_token_;
+    AccessibleTextButton share_ok_ { "Share" };
+    AccessibleTextButton share_forget_token_ { "Forget saved token" };
+    AccessibleTextButton share_cancel_ { "Cancel" };
     Label routing_summary_;
     AccessibleComboBox routing_mode_;
     TextButton routing_default_ { "Default routing" };
@@ -1327,6 +1364,18 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     // rescan lands (selectPresetFile); cleared when the user picks another.
     String select_after_refresh_;
     bool save_patch_dialog_visible_ = false;
+    // The Share form (showShareForm): whether it shows and for a bank, the
+    // folders its menu offers, the genres the library lists, whether a share
+    // is under way, and where focus goes back to when it closes.
+    bool share_form_visible_ = false;
+    bool share_bank_ = false;
+    bool share_busy_ = false;
+    int share_generation_ = 0;
+    Array<File> share_folders_;
+    std::vector<atlas::community::Genre> share_genres_;
+    bool share_genres_loading_ = false;
+    std::unique_ptr<FileChooser> share_folder_chooser_;
+    FocusReturn share_return_focus_;
     // Where focus was when the save or metadata form opened; it goes back
     // there, or to its replacement after a rebuild, when the form closes.
     FocusReturn save_patch_return_focus_;

@@ -880,6 +880,506 @@ namespace {
     finish();
   }
 
+  // A made-up token in the library's format; never a real one.
+  const String kTestToken = "bpa_" + String::repeatedString("0123456789abcdef", 2) + "feedface";
+
+  // The library's styles and genres, and its answers to an upload, as the API
+  // sends them.
+  void testShareRequestsAndAnswers() {
+    using namespace atlas::community;
+    expect(styleIdForText("Basses") == "bass" && styleIdForText("Lead") == "lead" && styleIdForText("drums") == "percussion" &&
+               styleIdForText("pads") == "pad" && styleIdForText("Keys and things") == "keys" && styleIdForText("").isEmpty() &&
+               styleIdForText("Wobble").isEmpty(),
+           "a patch's style reads as the library reads it");
+    expect(styles().size() == 10 && String(styles().front().id) == "bass" && String(styles().back().label) == "Other",
+           "the library's ten styles");
+
+    std::vector<Genre> genres;
+    expect(parseGenresPage(R"({"results": [{"name": "Acid House", "slug": "acid-house", "presets": 0, "banks": 0},
+                                           {"name": "", "slug": "nameless"}, {"name": "Ambient", "slug": "ambient"}]})",
+                           genres).isEmpty() &&
+               genres.size() == 2 && genres[0].name == "Acid House" && genres[0].slug == "acid-house" &&
+               genres[1].slug == "ambient",
+           "the genres page is read, without nameless entries");
+    expect(genresPageUrl("https://atlas.blindproducers.org") == "https://atlas.blindproducers.org/api/v1/genres/",
+           "the genres page's address");
+
+    // The request: the endpoint, the fields that are not empty, the file and the token.
+    const File folder = File::getSpecialLocation(File::tempDirectory).getNonexistentChildFile("AtlasShareRequest", "", false);
+    folder.createDirectory();
+    const File preset = folder.getChildFile("Glow Lead.atp");
+    preset.replaceWithText("{}");
+    ShareFields fields;
+    fields.name = " Glow Lead ";
+    fields.style = "lead";
+    fields.genre = "ambient";
+    fields.tags = "glow, soft";
+    UploadRequest request = buildPresetUpload("https://atlas.blindproducers.org/", preset, fields, kTestToken);
+    expect(request.error.isEmpty() && request.url.toString(false) == "https://atlas.blindproducers.org/api/v1/presets/",
+           "a patch is posted to /api/v1/presets/: " + request.url.toString(false).toStdString());
+    expect(request.url.getParameterNames() == StringArray { "name", "style", "genre", "tags" } &&
+               request.url.getParameterValues() == StringArray { "Glow Lead", "lead", "ambient", "glow, soft" },
+           "the fields go with it, trimmed, and empty ones are left out: " +
+               request.url.getParameterNames().joinIntoString(", ").toStdString());
+    expect(request.headers.contains("Authorization: Bearer " + kTestToken + "\r\n") &&
+               request.headers.contains("Accept: application/json"),
+           "the token is sent as a Bearer header");
+    request = buildBankUpload("https://atlas.blindproducers.org", preset, fields, kTestToken + "\r\nX-Evil: 1");
+    expect(request.url.toString(false) == "https://atlas.blindproducers.org/api/v1/banks/" &&
+               !request.url.getParameterNames().contains("style") && request.url.getParameterNames().contains("genre"),
+           "a bank is posted to /api/v1/banks/ with a genre and no style");
+    expect(!request.headers.contains("\r\nX-Evil") && request.headers.contains(kTestToken + "X-Evil: 1\r\n"),
+           "line breaks in a token never make headers of their own");
+    expect(buildPresetUpload("file:///saved/presets.json", preset, fields, kTestToken).error.contains("web address") &&
+               buildPresetUpload("https://atlas.blindproducers.org", preset, fields, " ").error.contains("API token") &&
+               buildPresetUpload("https://atlas.blindproducers.org", folder.getChildFile("gone.atp"), fields,
+                                 kTestToken).error.contains("missing"),
+           "a saved library, a missing token and a missing file stop the upload before it is sent");
+    expect(upload(buildPresetUpload("file:///saved/presets.json", preset, fields, kTestToken)).error.contains("web address"),
+           "and are what the upload reports");
+    folder.deleteRecursively();
+
+    // The answers.
+    UploadResult result = parseUploadAnswer(201, R"({"id": 63, "type": "preset", "name": "Glow Lead",
+        "url": "https://atlas.blindproducers.org/presets/63/", "file": {"size": 2}})");
+    expect(result.shared() && result.id == 63 && result.name == "Glow Lead" &&
+               result.page_url == "https://atlas.blindproducers.org/presets/63/",
+           "201 is shared, with the new item's id, name and page");
+    result = parseUploadAnswer(400, R"({"error": "The upload was not accepted.",
+        "errors": {"file": ["This patch has no settings section, so Atlas could not load it."],
+                   "genre": ["This field is required.", "Choose a genre."], "__all__": ["Try again later."]}})");
+    expect(!result.shared() && result.field_errors.size() == 3 &&
+               result.field_errors.contains("File: This patch has no settings section, so Atlas could not load it.") &&
+               result.field_errors.contains("Genre: This field is required. Choose a genre.") &&
+               result.field_errors.contains("Try again later.") &&
+               result.error.startsWith("The upload was not accepted. ") && result.error.contains("Genre: This field is required."),
+           "400 names each field the library refused: " + result.error.toStdString());
+    result = parseUploadAnswer(401, R"({"error": "A valid API token is required."})");
+    expect(!result.shared() && result.tokenRefused() && result.error.contains("refused the API token"),
+           "401 says the token was refused: " + result.error.toStdString());
+    result = parseUploadAnswer(413, "<html>Too large</html>");
+    expect(!result.shared() && result.error.contains("larger than the library accepts"), "413 says the file is too large");
+    result = parseUploadAnswer(502, "<html>Bad gateway</html>");
+    expect(!result.shared() && result.error.contains("is having trouble (502)"), "other answers say the status");
+    result = parseUploadAnswer(201, "<html>");
+    expect(!result.shared() && result.error.contains("not JSON"), "a 201 that is not JSON is not taken as shared");
+  }
+
+  // The token lives in Atlas's config file and nowhere else.
+  void testApiTokenIsKeptInTheConfigOnly() {
+    using namespace atlas::community;
+    TemporaryUndoLibrary library;   // its own config file
+    expect(library.isolated(), "the test's config is its own");
+    if (!library.isolated())
+      return;
+    expect(storedApiToken().isEmpty(), "no token is saved at first");
+    storeApiToken(" " + kTestToken + " ");
+    expect(storedApiToken() == kTestToken, "a token is saved trimmed");
+    expect(LoadSave::getConfigFile().loadFileAsString().contains(kTestToken), "in Atlas's config file");
+    expect(tokenHint(kTestToken) == "the token ending in face" && !tokenHint(kTestToken).contains("bpa_"),
+           "only its last four characters are ever said: " + tokenHint(kTestToken).toStdString());
+    expect(looksLikeApiToken(kTestToken) && !looksLikeApiToken("bpa_xyz") && !looksLikeApiToken("hello") &&
+               !looksLikeApiToken(""),
+           "a token looks like one the library issues");
+
+    SynthPlugin synth;
+    MemoryBlock state;
+    synth.getStateInformation(state);
+    const File preset = library.folder.getChildFile("Token check.atp");
+    expect(synth.saveCopyToFile(preset), "a preset is saved");
+    expect(!state.toString().contains(kTestToken) && !state.toString().contains("bpa_") &&
+               !preset.loadFileAsString().contains(kTestToken),
+           "the token is in neither the host's state nor a preset");
+
+    storeApiToken({});
+    expect(storedApiToken().isEmpty() && !LoadSave::getConfigFile().loadFileAsString().contains(kTestToken),
+           "storing nothing forgets it");
+  }
+
+  // A web server on 127.0.0.1 standing in for the library: it answers each
+  // request with the next answer queued for its method and path (the last one
+  // stays) and records what it was sent.
+  class TestLibraryServer : private Thread {
+    public:
+      struct Request {
+        String method, path;
+        StringPairArray headers;
+        MemoryBlock body;
+        String bodyText() const { return String::fromUTF8(static_cast<const char*>(body.getData()), static_cast<int>(body.getSize())); }
+        // For a body with binary parts (a zip), which is not text.
+        bool bodyContains(const String& text) const {
+          const std::string needle = text.toStdString();
+          const auto* begin = static_cast<const char*>(body.getData());
+          const auto* end = begin + body.getSize();
+          return std::search(begin, end, needle.begin(), needle.end()) != end;
+        }
+      };
+
+      TestLibraryServer() : Thread("Atlas test library") {
+        listening_ = listener_.createListener(0, "127.0.0.1");
+        if (listening_)
+          startThread();
+      }
+      ~TestLibraryServer() override {
+        signalThreadShouldExit();
+        listener_.close();
+        stopThread(5000);
+      }
+
+      bool isListening() const { return listening_; }
+      String url() const { return "http://127.0.0.1:" + String(listener_.getBoundPort()); }
+
+      void answer(const String& method, const String& path, int status, const String& body) {
+        const ScopedLock lock(lock_);
+        auto& queue = answers_[method + " " + path];
+        // The last answer stays for later requests until another is queued.
+        if (queue.size() == 1 && queue.front().served)
+          queue.clear();
+        queue.push_back({ status, body });
+      }
+      std::vector<Request> requests() const {
+        const ScopedLock lock(lock_);
+        return requests_;
+      }
+
+    private:
+      struct Answer {
+        int status;
+        String body;
+        bool served = false;
+      };
+
+      void run() override {
+        while (!threadShouldExit()) {
+          std::unique_ptr<StreamingSocket> client(listener_.waitForNextConnection());
+          if (client != nullptr)
+            handle(*client);
+        }
+      }
+
+      static bool readSome(StreamingSocket& socket, MemoryBlock& into) {
+        if (socket.waitUntilReady(true, 5000) <= 0)
+          return false;
+        char chunk[65536];
+        const int read = socket.read(chunk, sizeof(chunk), false);
+        if (read <= 0)
+          return false;
+        into.append(chunk, static_cast<size_t>(read));
+        return true;
+      }
+
+      static int headerEnd(const MemoryBlock& data) {
+        const auto* bytes = static_cast<const char*>(data.getData());
+        for (size_t i = 0; i + 3 < data.getSize(); ++i) {
+          if (bytes[i] == '\r' && bytes[i + 1] == '\n' && bytes[i + 2] == '\r' && bytes[i + 3] == '\n')
+            return static_cast<int>(i);
+        }
+        return -1;
+      }
+
+      void handle(StreamingSocket& socket) {
+        MemoryBlock data;
+        int end = -1;
+        while ((end = headerEnd(data)) < 0) {
+          if (!readSome(socket, data))
+            return;
+        }
+        StringArray lines;
+        lines.addLines(String::fromUTF8(static_cast<const char*>(data.getData()), end));
+        Request request;
+        StringArray first;
+        first.addTokens(lines[0], " ", "");
+        request.method = first[0];
+        request.path = first[1];
+        for (int i = 1; i < lines.size(); ++i) {
+          const String line = lines[i];
+          if (line.contains(":"))
+            request.headers.set(line.upToFirstOccurrenceOf(":", false, false).trim().toLowerCase(),
+                                line.fromFirstOccurrenceOf(":", false, false).trim());
+        }
+        const int64 length = request.headers["content-length"].getLargeIntValue();
+        const size_t body_start = static_cast<size_t>(end) + 4;
+        while (static_cast<int64>(data.getSize() - body_start) < length) {
+          if (!readSome(socket, data))
+            break;
+        }
+        if (data.getSize() > body_start)
+          request.body.append(static_cast<const char*>(data.getData()) + body_start, data.getSize() - body_start);
+
+        Answer reply { 404, R"({"error": "No such page."})" };
+        {
+          const ScopedLock lock(lock_);
+          requests_.push_back(request);
+          auto found = answers_.find(request.method + " " + request.path);
+          if (found != answers_.end() && !found->second.empty()) {
+            found->second.front().served = true;
+            reply = found->second.front();
+            if (found->second.size() > 1)
+              found->second.erase(found->second.begin());
+          }
+        }
+        const std::string body = reply.body.toStdString();
+        const String head = "HTTP/1.1 " + String(reply.status) + (reply.status < 300 ? " OK" : " Error") +
+                            "\r\nContent-Type: application/json\r\nContent-Length: " + String(body.size()) +
+                            "\r\nConnection: close\r\n\r\n";
+        const std::string text = head.toStdString() + body;
+        socket.write(text.data(), static_cast<int>(text.size()));
+      }
+
+      StreamingSocket listener_;
+      bool listening_ = false;
+      CriticalSection lock_;
+      std::map<String, std::vector<Answer>> answers_;
+      std::vector<Request> requests_;
+  };
+
+  String presetAnswer(int id, const String& name) {
+    json answer;
+    answer["id"] = id;
+    answer["type"] = "preset";
+    answer["name"] = name.toStdString();
+    answer["url"] = ("https://atlas.blindproducers.org/presets/" + String(id) + "/").toStdString();
+    return String(answer.dump());
+  }
+
+  // A real multipart POST, to the server above: the fields, the file and the
+  // token arrive, and the answer is read.
+  void testUploadReachesTheLibrary() {
+    TestLibraryServer server;
+    expect(server.isListening(), "the test library listens on 127.0.0.1");
+    if (!server.isListening())
+      return;
+    server.answer("POST", "/api/v1/presets/", 201, presetAnswer(64, "Glow Lead"));
+    const File folder = File::getSpecialLocation(File::tempDirectory).getNonexistentChildFile("AtlasShareUpload", "", false);
+    folder.createDirectory();
+    const File preset = folder.getChildFile("Glow Lead.atp");
+    preset.replaceWithText(R"({"preset_name": "Glow Lead", "settings": {}})");
+    atlas::community::ShareFields fields;
+    fields.name = "Glow Lead";
+    fields.style = "lead";
+    fields.tags = "glow";
+    auto result = atlas::community::uploadPreset(server.url(), kTestToken, preset, fields);
+    expect(result.shared() && result.id == 64 && result.name == "Glow Lead",
+           "the library's 201 is read: " + std::to_string(result.status) + " " + result.error.toStdString());
+    const auto requests = server.requests();
+    expect(requests.size() == 1, "one request reached the library");
+    if (requests.size() == 1) {
+      const auto& request = requests[0];
+      const String body = request.bodyText();
+      expect(request.method == "POST" && request.path == "/api/v1/presets/", "it is a POST to /api/v1/presets/");
+      expect(request.headers["authorization"] == "Bearer " + kTestToken, "with the token as a Bearer header");
+      expect(request.headers["content-type"].startsWith("multipart/form-data; boundary="), "as multipart form data");
+      expect(body.contains("name=\"name\"\r\n\r\nGlow Lead\r\n") && body.contains("name=\"style\"\r\n\r\nlead\r\n") &&
+                 body.contains("name=\"tags\"\r\n\r\nglow\r\n") &&
+                 body.contains("name=\"file\"; filename=\"Glow Lead.atp\"") &&
+                 body.contains(R"({"preset_name": "Glow Lead", "settings": {}})"),
+             "carrying the fields and the file: " + body.substring(0, 400).toStdString());
+    }
+
+    server.answer("POST", "/api/v1/presets/", 401, R"({"error": "A valid API token is required."})");
+    result = atlas::community::uploadPreset(server.url(), kTestToken, preset, fields);
+    expect(result.tokenRefused() && !result.shared(), "a 401 from the library is a refused token: " +
+                                                          std::to_string(result.status) + " " + result.error.toStdString());
+    folder.deleteRecursively();
+  }
+
+  // The Preset menu's Share forms, against the test library: the patch form
+  // asks for a token, passes on the library's field errors and keeps the
+  // form open, shares and says so, keeps the token that worked and gives the
+  // focus back; the bank form exports the chosen folder, needs a genre and
+  // uses the saved token; Forget saved token clears it; Escape closes.
+  void testShareFormsUploadAndSpeak() {
+    TemporaryUndoLibrary library;
+    expect(library.isolated(), "the test's library is its own temporary folder");
+    if (!library.isolated())
+      return;
+    TestLibraryServer server;
+    expect(server.isListening(), "the test library listens on 127.0.0.1");
+    if (!server.isListening())
+      return;
+    server.answer("GET", "/api/v1/genres/", 200,
+                  R"({"results": [{"name": "Ambient", "slug": "ambient"}, {"name": "Speed Garage", "slug": "speed-garage"}]})");
+    server.answer("POST", "/api/v1/presets/", 400,
+                  R"({"error": "The upload was not accepted.", "errors": {"name": ["Ensure this value has at most 120 characters."]}})");
+    server.answer("POST", "/api/v1/presets/", 201, presetAnswer(70, "Shared Patch"));
+    server.answer("POST", "/api/v1/banks/", 201, R"({"id": 3, "type": "bank", "name": "My Bank", "url": "https://atlas.blindproducers.org/banks/3/"})");
+    atlas::community::setLibraryUrlForTesting(server.url());
+    struct RealLibraryAgain { ~RealLibraryAgain() { atlas::community::setLibraryUrlForTesting({}); } } real_library_again;
+
+    SpokenMessages spoken;
+    auto said = [&](const String& words) {
+      for (const auto& message : spoken.messages)
+        if (message.contains(words))
+          return true;
+      return false;
+    };
+    auto heard = [&] { return spoken.messages.joinIntoString(" | ").toStdString(); };
+
+    SynthPlugin synth;
+    // A bank folder in the user library to share.
+    const File bank_folder = LoadSave::getUserPresetDirectory().getChildFile("My Bank");
+    expect(synth.saveCopyToFile(bank_folder.getChildFile("Bank Patch.atp")), "a preset is saved in the user library's My Bank");
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    editor.toFront(true);
+    pumpEditorEvents();
+
+    auto* preset_menu = titled(editor, "Preset menu");
+    expect(preset_menu != nullptr, "the editor has its Preset menu");
+    if (preset_menu == nullptr) {
+      editor.removeFromDesktop();
+      return;
+    }
+    editor.ensureComponentVisible(preset_menu);
+    preset_menu->grabKeyboardFocus();
+    pumpEditorEvents();
+
+    // The patch form.
+    spoken.messages.clear();
+    editor.showSharePatchFormForTesting();
+    pumpEditorEvents();
+    auto* name = dynamic_cast<TextEditor*>(titled(editor, "Share name"));
+    auto* style = dynamic_cast<ComboBox*>(titled(editor, "Share style"));
+    auto* tags = dynamic_cast<TextEditor*>(titled(editor, "Share tags"));
+    auto* token = dynamic_cast<TextEditor*>(titled(editor, "API token"));
+    auto* share = dynamic_cast<Button*>(titled(editor, "Share"));
+    auto* forget = dynamic_cast<Button*>(titled(editor, "Forget saved token"));
+    auto* folder = dynamic_cast<ComboBox*>(titled(editor, "Folder to share"));
+    auto* genre = dynamic_cast<ComboBox*>(titled(editor, "Share genre"));
+    const bool form = editor.isShareFormVisible() && name != nullptr && style != nullptr && tags != nullptr &&
+                      token != nullptr && share != nullptr && forget != nullptr && folder != nullptr && genre != nullptr;
+    expect(form, "Share patch opens the share form with its controls");
+    if (!form) {
+      editor.removeFromDesktop();
+      return;
+    }
+    expect(name->isShowing() && style->isShowing() && !folder->isVisible() && !genre->isVisible() && !forget->isVisible(),
+           "the patch form shows name and style, not the bank's folder and genre, and no Forget with no token saved");
+    expect(name->hasKeyboardFocus(false), "the name box has the focus");
+    expect(said("Share patch on 127.0.0.1"), "the form says what it is for: " + heard());
+    expect(token->getPasswordCharacter() != 0 && token->getAccessibilityHandler() != nullptr &&
+               token->getAccessibilityHandler()->getTextInterface() != nullptr &&
+               token->getAccessibilityHandler()->getTextInterface()->isDisplayingProtectedText(),
+           "the token box hides what is typed from the eye and the screen reader");
+    const auto& order = editor.getKeyboardFocusOrder();
+    expect(std::find(order.begin(), order.end(), token) != order.end() &&
+               std::find(order.begin(), order.end(), share) != order.end(),
+           "Tab reaches the token box and the Share button");
+    expect(style->getNumItems() == 11 && style->getItemText(0).startsWith("The patch's own style"),
+           "the style menu offers the patch's own style and the library's ten");
+    name->setText("Shared Patch", true);
+    style->setSelectedItemIndex(2, sendNotificationSync);   // Lead
+    tags->setText("glow, test", true);
+
+    spoken.messages.clear();
+    share->onClick();
+    pumpEditorEvents();
+    expect(said("Type your API token") && token->hasKeyboardFocus(false) && server.requests().empty(),
+           "Share without a token asks for one and sends nothing: " + heard());
+    token->setText("hello", true);
+    spoken.messages.clear();
+    share->onClick();
+    pumpEditorEvents();
+    expect(said("That is not an API token") && server.requests().empty(), "a token that is not one is refused: " + heard());
+
+    // The library refuses a field: said, form open, token not kept.
+    token->setText(kTestToken, true);
+    spoken.messages.clear();
+    share->onClick();
+    pumpUntil([&] { return !editor.isShareBusy(); }, 15000);
+    expect(said("Sharing Shared Patch on 127.0.0.1") &&
+               said("Unable to share Shared Patch. The upload was not accepted. Name: Ensure this value has at most 120 characters."),
+           "the library's field errors are said: " + heard());
+    expect(editor.isShareFormVisible() && atlas::community::storedApiToken().isEmpty(),
+           "the form stays open and the token is not kept");
+    for (const auto& message : spoken.messages)
+      expect(!message.contains(kTestToken) && !message.contains("bpa_"), "the token is never said");
+
+    // Shared: said, form closed, focus back, token kept.
+    spoken.messages.clear();
+    share->onClick();
+    pumpUntil([&] { return !editor.isShareBusy() && !editor.isShareFormVisible(); }, 15000);
+    // Announcements wait while the screen reader is moved back to the Preset menu.
+    pumpUntil([&] { return said("Shared Shared Patch"); }, 2000);
+    expect(said("Shared Shared Patch on 127.0.0.1") && !editor.isShareFormVisible(),
+           "the share is said and the form closes: " + heard());
+    expect(atlas::community::storedApiToken() == kTestToken && token->getText().isEmpty(),
+           "the token that worked is kept in the settings, and the box is empty");
+    expect(preset_menu->hasKeyboardFocus(false), "the focus is back on the Preset menu");
+    auto requests = server.requests();
+    expect(requests.size() == 2, "two uploads reached the library, got " + std::to_string(requests.size()));
+    if (requests.size() == 2) {
+      const String body = requests[1].bodyText();
+      expect(requests[1].path == "/api/v1/presets/" && requests[1].headers["authorization"] == "Bearer " + kTestToken &&
+                 body.contains("filename=\"Shared Patch.atp\"") && body.contains("name=\"style\"\r\n\r\nlead\r\n") &&
+                 body.contains("name=\"tags\"\r\n\r\nglow, test\r\n") && body.contains("\"settings\""),
+             "the patch went with its name, style, tags and the token");
+    }
+
+    // The bank form: the folder, a genre, the saved token.
+    spoken.messages.clear();
+    editor.showShareBankFormForTesting();
+    pumpUntil([&] { return genre->getNumItems() == 3 && said("Share bank on"); }, 10000);
+    expect(folder->isShowing() && genre->isShowing() && !style->isVisible() && forget->isShowing(),
+           "the bank form shows the folder and genre, and Forget with a token saved");
+    expect(folder->hasKeyboardFocus(false) && said("Share bank on 127.0.0.1"), "the folder menu has the focus: " + heard());
+    expect(token->getDescription().contains("the token ending in face") && !token->getDescription().contains(kTestToken),
+           "the token box says a token is saved by its last characters only: " + token->getDescription().toStdString());
+    int my_bank = -1;
+    for (int i = 0; i < folder->getNumItems(); ++i) {
+      if (folder->getItemText(i) == "My Bank")
+        my_bank = i;
+    }
+    expect(folder->getItemText(0) == "The whole user library" && my_bank > 0 &&
+               folder->getItemText(folder->getNumItems() - 1) == "Choose another folder...",
+           "the folder menu offers the user library, its banks and another folder");
+    folder->setSelectedItemIndex(my_bank, sendNotificationSync);
+    expect(name->getText() == "My Bank", "choosing a folder names the bank after it");
+    spoken.messages.clear();
+    share->onClick();
+    pumpEditorEvents();
+    expect(said("Choose the bank's genre") && genre->hasKeyboardFocus(false), "a bank needs a genre: " + heard());
+    genre->setSelectedItemIndex(2, sendNotificationSync);   // Speed Garage
+    spoken.messages.clear();
+    share->onClick();
+    pumpUntil([&] { return !editor.isShareBusy() && !editor.isShareFormVisible(); }, 15000);
+    pumpUntil([&] { return said("Shared My Bank"); }, 2000);
+    expect(said("Sharing bank My Bank on 127.0.0.1") && said("Shared My Bank on 127.0.0.1"),
+           "the bank is shared and it is said: " + heard());
+    requests = server.requests();
+    const auto bank_request = std::find_if(requests.begin(), requests.end(),
+                                           [](const auto& request) { return request.path == "/api/v1/banks/"; });
+    expect(bank_request != requests.end(), "the bank reached the library");
+    if (bank_request != requests.end()) {
+      const auto& sent = *bank_request;
+      expect(sent.headers["authorization"] == "Bearer " + kTestToken &&
+                 sent.bodyContains("name=\"genre\"\r\n\r\nspeed-garage\r\n") &&
+                 sent.bodyContains("filename=\"My Bank.atb\"") && sent.bodyContains("Content-Type: application/zip") &&
+                 sent.bodyContains("PK") && sent.bodyContains("My Bank/Presets/Bank Patch.atp"),
+             "as an archive of the folder, with its genre and the saved token");
+    }
+
+    // Forget saved token, then Escape closes the form and the focus goes back.
+    editor.showShareBankFormForTesting();
+    pumpEditorEvents();
+    spoken.messages.clear();
+    forget->onClick();
+    pumpEditorEvents();
+    expect(atlas::community::storedApiToken().isEmpty() && !forget->isVisible() && said("Forgot the saved API token"),
+           "Forget saved token clears it: " + heard());
+    expect(Component::getCurrentlyFocusedComponent() == nullptr || editor.isParentOf(Component::getCurrentlyFocusedComponent()),
+           "the focus stays in the editor");
+    name->grabKeyboardFocus();
+    Component& name_box = *name;
+    name_box.keyPressed(KeyPress(KeyPress::escapeKey));
+    pumpEditorEvents();
+    expect(!editor.isShareFormVisible() && preset_menu->hasKeyboardFocus(false),
+           "Escape closes the form and the focus goes back to the Preset menu");
+    editor.removeFromDesktop();
+  }
+
   int runCommunityLibraryTests() {
     testSha256MatchesTheStandardVectors();
     testPresetsPageParses();
@@ -889,6 +1389,10 @@ namespace {
     testCommunityPreviewPlays();
     testBanksPageParses();
     testCommunityBanksListAndImport();
+    testShareRequestsAndAnswers();
+    testApiTokenIsKeptInTheConfigOnly();
+    testUploadReachesTheLibrary();
+    testShareFormsUploadAndSpeak();
     if (failures == 0)
       std::cout << "Atlas community library tests passed\n";
     return failures == 0 ? 0 : 1;

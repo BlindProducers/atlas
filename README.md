@@ -25,6 +25,8 @@ Community banks rows of its Collection list show the patches and banks shared on
 [atlas.blindproducers.org](https://atlas.blindproducers.org), filtered the same way; Return
 downloads a patch into the Community library and loads it, or downloads a bank and unpacks
 it into the Atlas folder, and P plays the recording its uploader attached, when there is one.
+The Preset menu's Share patch and Share bank items upload the current patch or a folder of
+the user library to the same site, with the API token from your account there.
 
 Atlas's own announcements, such as the cursor position in the LFO, Trance gate and
 wavetable editors, are spoken by the screen reader. On Windows they go straight to

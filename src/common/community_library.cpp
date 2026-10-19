@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "community_library.h"
+#include "load_save.h"
 #include "nlohmann/json.hpp"
 #include <algorithm>
 #include <cmath>
@@ -21,6 +22,9 @@ namespace {
   // never ends stops here.
   constexpr int kMaxPages = 100;
   constexpr int kChunkBytes = 64 * 1024;
+  // An upload may be a bank of hundreds of megabytes.
+  constexpr int kUploadTimeoutMs = 120000;
+  constexpr const char* kTokenConfigKey = "community_api_token";
 
   juce::String& testingLibraryUrl() {
     static juce::String url;
@@ -674,5 +678,275 @@ juce::String downloadFile(const juce::URL& url, const juce::File& target, const 
     return "Could not move the download to " + target.getFullPathName();
   }
   return {};
+}
+
+const std::vector<Style>& styles() {
+  static const std::vector<Style> kStyles = {
+    { "bass", "Bass" }, { "lead", "Lead" }, { "keys", "Keys" }, { "pad", "Pad" }, { "percussion", "Percussion" },
+    { "sequence", "Sequence" }, { "experiment", "Experiment" }, { "sfx", "SFX" }, { "template", "Template" },
+    { "other", "Other" } };
+  return kStyles;
+}
+
+juce::String styleIdForText(const juce::String& text) {
+  // The library's own reading (library/models.py, style_from_text).
+  const juce::String value = text.trim().toLowerCase();
+  if (value.isEmpty())
+    return {};
+  for (const auto& style : styles()) {
+    if (value == style.id || value == juce::String(style.label).toLowerCase())
+      return style.id;
+  }
+  static const std::pair<const char*, const char*> kAliases[] = {
+    { "experimental", "experiment" }, { "fx", "sfx" }, { "sound effects", "sfx" }, { "drums", "percussion" },
+    { "drum", "percussion" }, { "perc", "percussion" }, { "key", "keys" }, { "pads", "pad" }, { "leads", "lead" },
+    { "basses", "bass" }, { "seq", "sequence" }, { "sequences", "sequence" } };
+  for (const auto& [alias, id] : kAliases) {
+    if (value == alias)
+      return id;
+  }
+  for (const auto& style : styles()) {
+    if (juce::String(style.id) != "other" && value.startsWith(style.id))
+      return style.id;
+  }
+  return {};
+}
+
+juce::String genresPageUrl(const juce::String& library_url) {
+  if (library_url.startsWith("file:"))
+    return juce::URL(localFileOf(juce::URL(library_url)).getSiblingFile("genres.json")).toString(false);
+  return library_url.trimCharactersAtEnd("/") + "/api/v1/genres/";
+}
+
+juce::String parseGenresPage(const std::string& text, std::vector<Genre>& genres) {
+  json page;
+  const json* results = nullptr;
+  juce::String next;
+  const juce::String error = parsePage(text, "genres", page, results, next);
+  if (error.isNotEmpty())
+    return error;
+  for (const auto& entry : *results) {
+    if (!entry.is_object())
+      continue;
+    Genre genre;
+    genre.name = jsonString(entry, "name").trim();
+    genre.slug = jsonString(entry, "slug").trim();
+    if (genre.name.isNotEmpty() && genre.slug.isNotEmpty())
+      genres.push_back(std::move(genre));
+  }
+  return {};
+}
+
+juce::String fetchGenres(const juce::String& library_url, std::vector<Genre>& genres,
+                         const std::atomic<bool>* cancelled) {
+  genres.clear();
+  std::string text;
+  const juce::String error = fetchText(juce::URL(genresPageUrl(library_url)), text, cancelled);
+  if (error.isNotEmpty())
+    return error;
+  return parseGenresPage(text, genres);
+}
+
+juce::String presetsEndpoint(const juce::String& library_url) {
+  return library_url.trimCharactersAtEnd("/") + "/api/v1/presets/";
+}
+
+juce::String banksEndpoint(const juce::String& library_url) {
+  return library_url.trimCharactersAtEnd("/") + "/api/v1/banks/";
+}
+
+namespace {
+  UploadRequest buildUpload(const juce::String& endpoint, const juce::File& file, const juce::String& mime_type,
+                            const ShareFields& fields, bool with_style, bool with_genre, const juce::String& token) {
+    UploadRequest request;
+    const juce::URL target(endpoint);
+    if (!isWebUrl(target)) {
+      request.error = "Sharing needs the library's web address, not " + endpoint;
+      return request;
+    }
+    if (!file.existsAsFile()) {
+      request.error = "The file to share, " + file.getFileName() + ", is missing";
+      return request;
+    }
+    const juce::String key = token.trim();
+    if (key.isEmpty()) {
+      request.error = "No API token. Make one on your account's API tokens page on " + target.getDomain();
+      return request;
+    }
+    juce::URL url = target;
+    auto add = [&url](const char* name, const juce::String& value) {
+      if (value.trim().isNotEmpty())
+        url = url.withParameter(name, value.trim());
+    };
+    add("name", fields.name);
+    if (with_style)
+      add("style", fields.style);
+    if (with_genre)
+      add("genre", fields.genre);
+    add("tags", fields.tags);
+    add("description", fields.description);
+    request.url = url.withFileToUpload("file", file, mime_type);
+    // No line breaks may reach the headers from the token.
+    request.headers = "User-Agent: " + userAgent() + "\r\nAccept: application/json\r\nAuthorization: Bearer " +
+                      key.removeCharacters("\r\n") + "\r\n";
+    return request;
+  }
+
+  juce::String fieldLabel(const juce::String& field) {
+    if (field == "__all__")
+      return {};
+    if (field == "file")
+      return "File";
+    return field.substring(0, 1).toUpperCase() + field.substring(1).replaceCharacter('_', ' ');
+  }
+}
+
+UploadRequest buildPresetUpload(const juce::String& library_url, const juce::File& preset, const ShareFields& fields,
+                                const juce::String& token) {
+  return buildUpload(presetsEndpoint(library_url), preset, "application/octet-stream", fields, true, true, token);
+}
+
+UploadRequest buildBankUpload(const juce::String& library_url, const juce::File& bank, const ShareFields& fields,
+                              const juce::String& token) {
+  return buildUpload(banksEndpoint(library_url), bank, "application/zip", fields, false, true, token);
+}
+
+UploadResult parseUploadAnswer(int status, const std::string& body) {
+  UploadResult result;
+  result.status = status;
+  json answer;
+  try {
+    answer = json::parse(body, nullptr, false);
+  }
+  catch (const json::exception&) {
+    answer = json();
+  }
+  const bool is_object = !answer.is_discarded() && answer.is_object();
+  if (status == 201) {
+    if (!is_object) {
+      result.error = "The library's answer is not JSON";
+      return result;
+    }
+    result.id = jsonInteger(answer, "id");
+    result.name = jsonString(answer, "name").trim();
+    result.page_url = jsonString(answer, "url");
+    return result;
+  }
+
+  const juce::String message = is_object ? jsonString(answer, "error").trim() : juce::String();
+  if (status == 401) {
+    result.error = "The library refused the API token. Check it on your account's API tokens page";
+    return result;
+  }
+  if (is_object) {
+    const json& errors = jsonObject(answer, "errors");
+    for (const auto& item : errors.items()) {
+      const std::string field = item.key();
+      const json& messages = item.value();
+      juce::StringArray texts;
+      if (messages.is_array()) {
+        for (const auto& text : messages) {
+          if (text.is_string())
+            texts.add(juce::String(text.get_ref<const std::string&>()).trim());
+        }
+      }
+      else if (messages.is_string()) {
+        texts.add(juce::String(messages.get_ref<const std::string&>()).trim());
+      }
+      texts.removeEmptyStrings();
+      if (texts.isEmpty())
+        continue;
+      const juce::String label = fieldLabel(juce::String(field));
+      result.field_errors.add((label.isNotEmpty() ? label + ": " : juce::String()) + texts.joinIntoString(" "));
+    }
+  }
+  if (status == 400) {
+    result.error = message.isNotEmpty() ? message : juce::String("The upload was not accepted.");
+    if (!result.field_errors.isEmpty())
+      result.error = result.error.trimCharactersAtEnd(".") + ". " + result.field_errors.joinIntoString(". ");
+    return result;
+  }
+  if (status == 413) {
+    result.error = "The file is larger than the library accepts";
+    return result;
+  }
+  result.error = "The library " + httpStatusText(status) + (message.isNotEmpty() ? ": " + message : juce::String());
+  return result;
+}
+
+UploadResult upload(const UploadRequest& request, const std::atomic<bool>* cancelled) {
+  UploadResult result;
+  if (request.error.isNotEmpty()) {
+    result.error = request.error;
+    return result;
+  }
+  int status = 0;
+  auto stream = request.url.createInputStream(juce::URL::InputStreamOptions(juce::URL::ParameterHandling::inPostData)
+                                                  .withHttpRequestCmd("POST")
+                                                  .withExtraHeaders(request.headers)
+                                                  .withConnectionTimeoutMs(kUploadTimeoutMs)
+                                                  .withStatusCode(&status)
+                                                  .withNumRedirectsToFollow(0));
+  if (stream == nullptr) {
+    result.status = status;
+    result.error = status != 0 ? "The library " + httpStatusText(status)
+                               : "Could not connect to " + request.url.getDomain();
+    return result;
+  }
+  juce::MemoryOutputStream out;
+  const juce::String error = readAll(*stream, out, nullptr, kMaxPageBytes, cancelled);
+  if (error.isNotEmpty()) {
+    result.status = status;
+    result.error = error;
+    return result;
+  }
+  return parseUploadAnswer(status, std::string(static_cast<const char*>(out.getData()), out.getDataSize()));
+}
+
+UploadResult uploadPreset(const juce::String& library_url, const juce::String& token, const juce::File& preset,
+                          const ShareFields& fields, const std::atomic<bool>* cancelled) {
+  return upload(buildPresetUpload(library_url, preset, fields, token), cancelled);
+}
+
+UploadResult uploadBank(const juce::String& library_url, const juce::String& token, const juce::File& bank,
+                        const ShareFields& fields, const std::atomic<bool>* cancelled) {
+  return upload(buildBankUpload(library_url, bank, fields, token), cancelled);
+}
+
+juce::String storedApiToken() {
+  const json config = LoadSave::getConfigJson();
+  if (!config.is_object())
+    return {};
+  return jsonString(config, kTokenConfigKey).trim();
+}
+
+void storeApiToken(const juce::String& token) {
+  json config = LoadSave::getConfigJson();
+  if (!config.is_object())
+    config = json::object();
+  const juce::String key = token.trim();
+  if (key.isEmpty()) {
+    if (config.count(kTokenConfigKey) == 0)
+      return;
+    config.erase(kTokenConfigKey);
+  }
+  else {
+    config[kTokenConfigKey] = key.toStdString();
+  }
+  LoadSave::saveJsonToConfig(config);
+}
+
+juce::String tokenHint(const juce::String& token) {
+  const juce::String key = token.trim();
+  if (key.isEmpty())
+    return "no token";
+  if (key.length() < 12)
+    return "a token";
+  return "the token ending in " + key.getLastCharacters(4);
+}
+
+bool looksLikeApiToken(const juce::String& token) {
+  const juce::String key = token.trim();
+  return key.startsWith("bpa_") && key.length() > 12 && key.substring(4).containsOnly("0123456789abcdefABCDEF");
 }
 }

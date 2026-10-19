@@ -6660,6 +6660,89 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   save_patch_cancel_.onClick = [this] { hideSavePresetDialog(); };
   addChildComponent(save_patch_cancel_);
 
+  // The Share form (showShareForm).
+  share_prompt_.setColour(Label::textColourId, Colours::white);
+  share_prompt_.setJustificationType(Justification::centredLeft);
+  addChildComponent(share_prompt_);
+  auto configureShareEditor = [this](TextEditor& editor, const String& title, const String& help,
+                                     const String& empty_text) {
+    editor.setTitle(title);
+    editor.setDescription(help);
+    editor.setHelpText(help);
+    editor.setTextToShowWhenEmpty(empty_text, Colours::grey);
+    editor.setSelectAllWhenFocused(true);
+    editor.setWantsKeyboardFocus(true);
+    // Return shares, Escape closes the form, as its buttons do.
+    editor.onReturnKey = [this] {
+      if (share_form_visible_)
+        commitShareForm();
+    };
+    editor.onEscapeKey = [this] {
+      if (share_form_visible_)
+        hideShareForm();
+    };
+    addChildComponent(editor);
+  };
+  configureShareEditor(share_name_, "Share name", "The name the library shows. Empty uses the name in the file.",
+                       "Name");
+  configureShareEditor(share_tags_, "Share tags", "Tags separated by commas, for example dark, 808", "Tags");
+  configureShareEditor(share_description_, "Share description",
+                       "What the sound or bank is. Empty uses the comments in the file.", "Description");
+  configureShareEditor(share_token_, "API token",
+                       "Your personal API token from the API tokens page of your account on " +
+                           atlas::community::libraryHost() + ". It starts with bpa_ and is kept in Atlas's settings",
+                       "API token");
+  // A password box: what is typed is drawn as dots and screen readers are
+  // told it is protected, so the token is never shown or read out.
+  share_token_.setPasswordCharacter(static_cast<juce_wchar>(0x2022));
+  share_token_.setSelectAllWhenFocused(true);
+  share_token_.onTextChange = [this] { updateShareTokenControls(); };
+
+  auto configureShareChoice = [this](AccessibleComboBox& box, const String& title, const String& help) {
+    box.setTitle(title);
+    box.setDescription(help);
+    box.setHelpText(help);
+    box.setWantsKeyboardFocus(true);
+    box.onKeyPressed = [this](const KeyPress& key) {
+      if (key.getKeyCode() == KeyPress::escapeKey && share_form_visible_) {
+        hideShareForm();
+        return true;
+      }
+      return false;
+    };
+    addChildComponent(box);
+  };
+  configureShareChoice(share_folder_, "Folder to share",
+                       "The library folder to export as a bank and share. Up and Down choose, Return or Space opens "
+                       "the list, whose last item chooses another folder");
+  share_folder_.onChange = [this] {
+    const int index = share_folder_.getSelectedItemIndex();
+    if (index == share_folders_.size()) {
+      chooseShareFolder();
+      return;
+    }
+    // A bank is named after its folder unless the user typed a name.
+    if (isPositiveAndBelow(index, share_folders_.size()))
+      share_name_.setText(share_folders_[index].getFileName(), false);
+  };
+  configureShareChoice(share_style_, "Share style", "The patch's style on the library");
+  configureShareChoice(share_genre_, "Share genre", "The bank's genre on the library, which it requires");
+
+  auto configureShareButton = [this](TextButton& button, const String& title, const String& help) {
+    button.setTitle(title);
+    button.setDescription(help);
+    button.setHelpText(help);
+    button.setWantsKeyboardFocus(true);
+    addChildComponent(button);
+  };
+  configureShareButton(share_ok_, "Share", "Upload to the community library");
+  share_ok_.onClick = [this] { commitShareForm(); };
+  configureShareButton(share_forget_token_, "Forget saved token",
+                       "Remove the API token kept in Atlas's settings");
+  share_forget_token_.onClick = [this] { forgetShareToken(); };
+  configureShareButton(share_cancel_, "Cancel sharing", "Close the share form without uploading");
+  share_cancel_.onClick = [this] { hideShareForm(); };
+
   routing_summary_.setTitle("Routing summary");
   routing_summary_.setDescription("Summary of oscillator, sample, filter, and effects routing");
   routing_summary_.setColour(Label::textColourId, Colours::white);
@@ -6832,6 +6915,27 @@ void SynthEditor::resized() {
     auto dialog_actions = bounds.removeFromTop(38);
     save_patch_ok_.setBounds(dialog_actions.removeFromLeft(120).reduced(3));
     save_patch_cancel_.setBounds(dialog_actions.removeFromLeft(120).reduced(3));
+  }
+  if (share_form_visible_) {
+    bounds.removeFromTop(8);
+    share_prompt_.setBounds(bounds.removeFromTop(34));
+    auto first_row = bounds.removeFromTop(38);
+    if (share_bank_)
+      share_folder_.setBounds(first_row.removeFromLeft(first_row.getWidth() / 2).reduced(3));
+    share_name_.setBounds(first_row.removeFromLeft(share_bank_ ? first_row.getWidth()
+                                                                : first_row.getWidth() / 2).reduced(3));
+    if (!share_bank_)
+      share_style_.setBounds(first_row.reduced(3));
+    auto second_row = bounds.removeFromTop(38);
+    if (share_bank_)
+      share_genre_.setBounds(second_row.removeFromLeft(second_row.getWidth() / 3).reduced(3));
+    share_tags_.setBounds(second_row.removeFromLeft(second_row.getWidth() / 2).reduced(3));
+    share_description_.setBounds(second_row.reduced(3));
+    auto third_row = bounds.removeFromTop(38);
+    share_token_.setBounds(third_row.removeFromLeft(jmax(200, third_row.getWidth() - 480)).reduced(3));
+    share_ok_.setBounds(third_row.removeFromLeft(120).reduced(3));
+    share_forget_token_.setBounds(third_row.removeFromLeft(200).reduced(3));
+    share_cancel_.setBounds(third_row.removeFromLeft(120).reduced(3));
   }
   bounds.removeFromTop(10);
   viewport_.setBounds(bounds);
@@ -9807,6 +9911,23 @@ void SynthEditor::rebuildFocusOrder() {
     accessibility_focus_order_.push_back(&save_patch_ok_);
     accessibility_focus_order_.push_back(&save_patch_cancel_);
   }
+  if (share_form_visible_) {
+    std::vector<Component*> share_controls;
+    if (share_bank_)
+      share_controls.push_back(&share_folder_);
+    share_controls.push_back(&share_name_);
+    share_controls.push_back(share_bank_ ? static_cast<Component*>(&share_genre_) : &share_style_);
+    for (Component* control : { static_cast<Component*>(&share_tags_), static_cast<Component*>(&share_description_),
+                                static_cast<Component*>(&share_token_), static_cast<Component*>(&share_ok_) })
+      share_controls.push_back(control);
+    if (share_forget_token_.isVisible())
+      share_controls.push_back(&share_forget_token_);
+    share_controls.push_back(&share_cancel_);
+    for (auto* control : share_controls) {
+      focus_order_.push_back(control);
+      accessibility_focus_order_.push_back(control);
+    }
+  }
   for (auto* component : row_focus_order_)
     focus_order_.push_back(component);
   for (auto* component : top_level_accessibility_order_)
@@ -11469,6 +11590,8 @@ void SynthEditor::showPresetMetadataDialog() {
     return;
   }
 
+  if (share_form_visible_)
+    hideShareForm();
   if (!save_patch_dialog_visible_)
     save_patch_return_focus_ = focusToReturnTo();
   const auto* item = presetItemForFile(file);
@@ -11758,7 +11881,7 @@ void SynthEditor::showPresetMenu() {
   // Patch and library actions only: choosing, loading, favouriting, renaming
   // and sorting presets happen in the browser itself (see its context menu).
   enum Item { kSave = 1, kSaveAs, kSaveDefault, kInitialize, kImportPreset, kImportBank, kExportBank,
-              kExportPreset, kReveal, kRefresh, kScanDownloads };
+              kExportPreset, kReveal, kRefresh, kScanDownloads, kSharePatch, kShareBank, kForgetToken };
   const bool has_selection = selectedPresetFile().existsAsFile();
   PopupMenu menu;
   menu.addItem(kSave, "Save patch (" + atlas::keys::commandName() + " S)");
@@ -11771,6 +11894,11 @@ void SynthEditor::showPresetMenu() {
   menu.addItem(kExportBank, "Export folder as bank...");
   menu.addItem(kExportPreset, "Export patch as preset file...");
   menu.addItem(kReveal, String(kShowInFileBrowserVerb) + " selected preset in " + kFileBrowserName, has_selection);
+  menu.addSeparator();
+  menu.addItem(kSharePatch, "Share patch on the community library...");
+  menu.addItem(kShareBank, "Share bank on the community library...");
+  if (atlas::community::storedApiToken().isNotEmpty())
+    menu.addItem(kForgetToken, "Forget community library API token");
   menu.addSeparator();
   menu.addItem(kRefresh, "Refresh preset list");
   menu.addItem(kScanDownloads, LoadSave::shouldScanDownloads() ? "Turn scan Downloads folder on startup off"
@@ -11789,6 +11917,9 @@ void SynthEditor::showPresetMenu() {
       case kReveal: revealSelectedPreset(); break;
       case kRefresh: refreshPresetList(); break;
       case kScanDownloads: toggleScanDownloads(); break;
+      case kSharePatch: showShareForm(false); break;
+      case kShareBank: showShareForm(true); break;
+      case kForgetToken: forgetShareToken(); break;
       default: break;
     }
   });
@@ -12073,85 +12204,500 @@ void SynthEditor::chooseFolderToExportBank() {
   });
 }
 
+namespace {
+  // What writing a bank archive came to: the files in it, or why there is
+  // none ("No bank content found" is what is said, `error` what is shown).
+  struct BankArchiveResult {
+    int added = 0;
+    String error;
+    String spoken;
+    bool ok() const { return error.isEmpty(); }
+  };
+
+  // Writes the Atlas files under `sourceFolder` into a bank archive at
+  // `destination`, laid out as <bank name>/Presets/..., Wavetables/... and so
+  // on, the bank's name being the archive's. Runs on any thread. The archive
+  // is written beside its target first and replaces it only when complete.
+  BankArchiveResult writeBankArchive(const File& sourceFolder, const File& destination) {
+    BankArchiveResult result;
+    if (!sourceFolder.isDirectory()) {
+      result.error = "The selected source is not a folder.";
+      result.spoken = "Unable to export bank";
+      return result;
+    }
+    Array<File> files;
+    sourceFolder.findChildFiles(files, File::findFiles | File::ignoreHiddenFiles, true,
+                                vital::kPresetExtensionsList + ";*." + vital::kWavetableExtension +
+                                ";*." + vital::kLegacyWavetableExtension + ";" + vital::kSampleExtensionsList +
+                                ";" + vital::kLfoExtensionsList + ";*." + vital::kFxExtension);
+    if (files.isEmpty()) {
+      result.error = "No Atlas presets, tables, samples, LFOs, or FX presets were found.";
+      result.spoken = "No bank content found";
+      return result;
+    }
+
+    String bank_name = destination.getFileNameWithoutExtension().removeCharacters("\\/:*?\"<>|");
+    if (bank_name.isEmpty())
+      bank_name = "Atlas Bank";
+
+    ZipFile::Builder bank_zip;
+    int64 total_bytes = 0;
+    for (const File& file : files) {
+      const String extension = file.getFileExtension().toLowerCase();
+      String folder_name;
+      if (extension == "." + String(vital::kPresetExtension) ||
+          extension == "." + String(vital::kLegacyPresetExtension)) {
+        folder_name = LoadSave::kPresetFolderName;
+      }
+      else if (extension == "." + String(vital::kWavetableExtension) ||
+               extension == "." + String(vital::kLegacyWavetableExtension)) {
+        folder_name = LoadSave::kWavetableFolderName;
+      }
+      else if (extension == "." + String(vital::kLfoExtension) ||
+               extension == "." + String(vital::kLegacyLfoExtension)) {
+        folder_name = LoadSave::kLfoFolderName;
+      }
+      else if (extension == "." + String(vital::kFxExtension)) {
+        folder_name = LoadSave::kFxFolderName;
+      }
+      else if (extension == ".wav" || extension == ".flac" || extension == ".aif" || extension == ".aiff") {
+        folder_name = pathContainsFolderName(file, sourceFolder, LoadSave::kWavetableFolderName) ?
+                      LoadSave::kWavetableFolderName : LoadSave::kSampleFolderName;
+      }
+      else {
+        continue;
+      }
+
+      const String relative_path = bankRelativePathForFile(file, sourceFolder, folder_name);
+      // Presets carrying multi-sample instruments are zips of audio already.
+      const int compression = vital::multisample::container::isContainer(file) ? 0 : 9;
+      bank_zip.addFile(file, compression, bank_name + "/" + folder_name + "/" + relative_path);
+      total_bytes += file.getSize();
+      ++result.added;
+    }
+
+    if (total_bytes > 0xF0000000ll) {
+      result.error = "The bank would be larger than 4 GB, the most a bank can hold.";
+      result.spoken = "Bank too large to export";
+      return result;
+    }
+
+    // FileOutputStream appends to a file that is there already, which made a
+    // broken archive of an export over an older one.
+    TemporaryFile temporary(destination);
+    bool written = false;
+    {
+      FileOutputStream output(temporary.getFile());
+      written = output.openedOk() && bank_zip.writeToStream(output, nullptr);
+      output.flush();
+      written = written && !output.getStatus().failed();
+    }
+    if (!written || !temporary.overwriteTargetFileWithTemporary()) {
+      result.error = "The bank file could not be written.";
+      result.spoken = "Unable to export bank";
+    }
+    return result;
+  }
+}
+
 void SynthEditor::exportFolderAsBank(const File& sourceFolder, const File& destinationFile) {
-  if (!sourceFolder.isDirectory()) {
-    showWarningBox("Unable to export bank",
-                   "The selected source is not a folder.");
-    return;
-  }
-
-  Array<File> files;
-  sourceFolder.findChildFiles(files, File::findFiles | File::ignoreHiddenFiles, true,
-                              vital::kPresetExtensionsList + ";*." + vital::kWavetableExtension +
-                              ";*." + vital::kLegacyWavetableExtension + ";" + vital::kSampleExtensionsList +
-                              ";" + vital::kLfoExtensionsList + ";*." + vital::kFxExtension);
-  if (files.isEmpty()) {
-    showWarningBox("Unable to export bank",
-                   "No Atlas presets, tables, samples, LFOs, or FX presets were found.");
-    postPluginAnnouncement("No bank content found", AccessibilityHandler::AnnouncementPriority::high);
-    return;
-  }
-
   const File destination = destinationFile.withFileExtension(vital::kBankExtension);
-  String bank_name = destination.getFileNameWithoutExtension().removeCharacters("\\/:*?\"<>|");
-  if (bank_name.isEmpty())
-    bank_name = "Atlas Bank";
-
-  ZipFile::Builder bank_zip;
-  int added = 0;
-  int64 total_bytes = 0;
-  for (const File& file : files) {
-    const String extension = file.getFileExtension().toLowerCase();
-    String folder_name;
-    if (extension == "." + String(vital::kPresetExtension) ||
-        extension == "." + String(vital::kLegacyPresetExtension)) {
-      folder_name = LoadSave::kPresetFolderName;
-    }
-    else if (extension == "." + String(vital::kWavetableExtension) ||
-             extension == "." + String(vital::kLegacyWavetableExtension)) {
-      folder_name = LoadSave::kWavetableFolderName;
-    }
-    else if (extension == "." + String(vital::kLfoExtension) ||
-             extension == "." + String(vital::kLegacyLfoExtension)) {
-      folder_name = LoadSave::kLfoFolderName;
-    }
-    else if (extension == "." + String(vital::kFxExtension)) {
-      folder_name = LoadSave::kFxFolderName;
-    }
-    else if (extension == ".wav" || extension == ".flac" || extension == ".aif" || extension == ".aiff") {
-      folder_name = pathContainsFolderName(file, sourceFolder, LoadSave::kWavetableFolderName) ?
-                    LoadSave::kWavetableFolderName : LoadSave::kSampleFolderName;
-    }
-    else {
-      continue;
-    }
-
-    const String relative_path = bankRelativePathForFile(file, sourceFolder, folder_name);
-    // Presets carrying multi-sample instruments are zips of audio already.
-    const int compression = vital::multisample::container::isContainer(file) ? 0 : 9;
-    bank_zip.addFile(file, compression, bank_name + "/" + folder_name + "/" + relative_path);
-    total_bytes += file.getSize();
-    ++added;
-  }
-
-  if (total_bytes > 0xF0000000ll) {
-    showWarningBox("Unable to export bank",
-                   "The bank would be larger than 4 GB, the most a bank can hold.");
-    postPluginAnnouncement("Bank too large to export", AccessibilityHandler::AnnouncementPriority::high);
-    return;
-  }
-
-  FileOutputStream output(destination);
-  if (!output.openedOk() || !bank_zip.writeToStream(output, nullptr)) {
-    showWarningBox("Unable to export bank",
-                   "The bank file could not be written.");
-    postPluginAnnouncement("Unable to export bank", AccessibilityHandler::AnnouncementPriority::high);
+  const BankArchiveResult result = writeBankArchive(sourceFolder, destination);
+  if (!result.ok()) {
+    showWarningBox("Unable to export bank", result.error);
+    postPluginAnnouncement(result.spoken, AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
 
   postPluginAnnouncement("Exported bank " + destination.getFileNameWithoutExtension() +
-                                         " with " + String(added) + " files",
+                                         " with " + String(result.added) + " files",
                                          AccessibilityHandler::AnnouncementPriority::high);
+}
+
+namespace {
+  // The library takes banks of up to this size (BPATLAS_MAX_BANK_MB).
+  constexpr int64 kMaxSharedBankBytes = 512ll * 1024 * 1024;
+
+  // A folder of its own in the temporary folder for one share's file.
+  File shareScratchFolder() {
+    const File folder = File::getSpecialLocation(File::tempDirectory)
+                            .getNonexistentChildFile("Atlas share", "", false);
+    folder.createDirectory();
+    return folder;
+  }
+
+  String shareFileName(const String& name, const String& fallback) {
+    String legal = File::createLegalFileName(name.trim()).trimCharactersAtStart(".").trim();
+    return legal.isNotEmpty() ? legal : fallback;
+  }
+}
+
+void SynthEditor::showShareForm(bool bank) {
+  if (save_patch_dialog_visible_)
+    hideSavePresetDialog();
+  if (!share_form_visible_)
+    share_return_focus_ = focusToReturnTo();
+  share_bank_ = bank;
+  const String host = atlas::community::libraryHost();
+
+  if (bank) {
+    // The bank shown in the browser, when it is a folder of the user library.
+    const File user = LoadSave::getUserPresetDirectory();
+    const File shown = user.getChildFile(last_preset_bank_);
+    populateShareFolders(last_preset_bank_ != kAllBanks && shown.isDirectory() && shown.isAChildOf(user) ? shown : user);
+    loadShareGenres();
+    share_description_.setText({}, false);
+    share_tags_.setText({}, false);
+  }
+  else {
+    share_name_.setText(synth_.getPresetName().isNotEmpty() ? synth_.getPresetName() : String("Untitled"), false);
+    share_style_.clear(dontSendNotification);
+    const String own_style = synth_.getStyle().trim();
+    share_style_.addItem(own_style.isNotEmpty() ? "The patch's own style, " + own_style : String("The patch's own style"), 1);
+    int id = 2;
+    for (const auto& style : atlas::community::styles())
+      share_style_.addItem(style.label, id++);
+    const String style_id = atlas::community::styleIdForText(own_style);
+    int selected = 0;
+    for (size_t i = 0; i < atlas::community::styles().size(); ++i) {
+      if (style_id == atlas::community::styles()[i].id)
+        selected = static_cast<int>(i) + 1;
+    }
+    share_style_.setSelectedItemIndex(selected, dontSendNotification);
+    share_tags_.setText(synth_.getTags(), false);
+    share_description_.setText(synth_.getComments(), false);
+  }
+  share_token_.clear();
+
+  const String what = bank ? "Share bank" : "Share patch";
+  share_prompt_.setText(what + " on " + host + (bank ? ". Choose the folder, its name, genre, tags and description"
+                                                     : ". Check the name, style, tags and description") +
+                            ", then your API token, and press Share",
+                        dontSendNotification);
+  share_prompt_.setTitle(what);
+  share_prompt_.setDescription(share_prompt_.getText());
+  share_ok_.setDescription(bank ? "Export the folder as a bank and upload it to " + host
+                                : "Upload the current patch to " + host);
+
+  share_form_visible_ = true;
+  share_prompt_.setVisible(true);
+  share_folder_.setVisible(bank);
+  share_name_.setVisible(true);
+  share_style_.setVisible(!bank);
+  share_genre_.setVisible(bank);
+  share_tags_.setVisible(true);
+  share_description_.setVisible(true);
+  share_token_.setVisible(true);
+  share_ok_.setVisible(true);
+  share_cancel_.setVisible(true);
+  updateShareTokenControls();
+  rebuildFocusOrder();
+  resized();
+
+  Component::SafePointer<SynthEditor> safe_this(this);
+  Component::SafePointer<Component> first(bank ? static_cast<Component*>(&share_folder_) : &share_name_);
+  MessageManager::callAsync([safe_this, first, what, host] {
+    if (safe_this == nullptr || first == nullptr || !first->isShowing())
+      return;
+    first->grabKeyboardFocus();
+    postPresetActionAnnouncement(what + " on " + host, AccessibilityHandler::AnnouncementPriority::medium);
+  });
+}
+
+bool SynthEditor::shareFormHasFocus() const {
+  if (Component::getCurrentlyFocusedComponent() == this)
+    return true;
+  for (const Component* control : { static_cast<const Component*>(&share_folder_), static_cast<const Component*>(&share_name_),
+                                    static_cast<const Component*>(&share_style_), static_cast<const Component*>(&share_genre_),
+                                    static_cast<const Component*>(&share_tags_), static_cast<const Component*>(&share_description_),
+                                    static_cast<const Component*>(&share_token_), static_cast<const Component*>(&share_ok_),
+                                    static_cast<const Component*>(&share_forget_token_),
+                                    static_cast<const Component*>(&share_cancel_) }) {
+    if (control->hasKeyboardFocus(true))
+      return true;
+  }
+  return false;
+}
+
+void SynthEditor::hideShareForm() {
+  // Back where the form was opened from, as the Save patch form does, when
+  // the focus is still in the form.
+  const FocusReturn focus = std::exchange(share_return_focus_, {});
+  if (shareFormHasFocus() &&
+      !restoreFocusAfterRebuild(focus.parameter_id, focus.component.getComponent(), focus.title, focus.section, true) &&
+      preset_menu_.isShowing())
+    preset_menu_.grabKeyboardFocus();
+  share_form_visible_ = false;
+  // A token typed and not used is not kept, not even in the text box.
+  share_token_.clear();
+  for (Component* control : { static_cast<Component*>(&share_prompt_), static_cast<Component*>(&share_folder_),
+                              static_cast<Component*>(&share_name_), static_cast<Component*>(&share_style_),
+                              static_cast<Component*>(&share_genre_), static_cast<Component*>(&share_tags_),
+                              static_cast<Component*>(&share_description_), static_cast<Component*>(&share_token_),
+                              static_cast<Component*>(&share_ok_), static_cast<Component*>(&share_forget_token_),
+                              static_cast<Component*>(&share_cancel_) })
+    control->setVisible(false);
+  rebuildFocusOrder();
+  resized();
+}
+
+void SynthEditor::updateShareTokenControls() {
+  const String stored = atlas::community::storedApiToken();
+  const String help = stored.isNotEmpty()
+      ? "API token. Leave it empty to use " + atlas::community::tokenHint(stored) +
+            ", saved in Atlas's settings, or type another to replace it"
+      : "Your personal API token from the API tokens page of your account on " + atlas::community::libraryHost() +
+            ". It starts with bpa_. Once it works it is kept in Atlas's settings";
+  share_token_.setDescription(help);
+  share_token_.setHelpText(help);
+  share_token_.setTextToShowWhenEmpty(stored.isNotEmpty() ? "Saved token" : "API token", Colours::grey);
+  const bool show_forget = share_form_visible_ && stored.isNotEmpty();
+  if (share_forget_token_.isVisible() != show_forget) {
+    share_forget_token_.setVisible(show_forget);
+    if (share_form_visible_) {
+      rebuildFocusOrder();
+      resized();
+    }
+  }
+}
+
+void SynthEditor::forgetShareToken() {
+  const bool had = atlas::community::storedApiToken().isNotEmpty();
+  // Off the button before it goes, so the focus stays in the form.
+  if (share_forget_token_.hasKeyboardFocus(false) && share_token_.isShowing())
+    share_token_.grabKeyboardFocus();
+  atlas::community::storeApiToken({});
+  share_token_.clear();
+  updateShareTokenControls();
+  postPresetActionAnnouncement(had ? "Forgot the saved API token" : "No API token is saved",
+                               AccessibilityHandler::AnnouncementPriority::medium);
+}
+
+void SynthEditor::populateShareFolders(const File& select) {
+  const File user = LoadSave::getUserPresetDirectory();
+  share_folders_.clear();
+  share_folders_.add(user);
+  Array<File> banks = user.findChildFiles(File::findDirectories | File::ignoreHiddenFiles, false);
+  banks.sort();
+  share_folders_.addArray(banks);
+  if (select.isDirectory() && !share_folders_.contains(select))
+    share_folders_.add(select);
+
+  share_folder_.clear(dontSendNotification);
+  for (int i = 0; i < share_folders_.size(); ++i) {
+    const File& folder = share_folders_.getReference(i);
+    const String label = folder == user ? "The whole user library"
+                       : folder.isAChildOf(user) ? folder.getFileName()
+                                                 : folder.getFullPathName();
+    share_folder_.addItem(label, i + 1);
+  }
+  share_folder_.addItem("Choose another folder...", share_folders_.size() + 1);
+  const int index = jmax(0, share_folders_.indexOf(select));
+  share_folder_.setSelectedItemIndex(index, dontSendNotification);
+  const File chosen = share_folders_[index];
+  share_name_.setText(chosen == user ? String("My Atlas presets") : chosen.getFileName(), false);
+}
+
+void SynthEditor::chooseShareFolder() {
+  const File previous = share_folders_[0];
+  share_folder_chooser_ = std::make_unique<FileChooser>("Choose a folder to share as an Atlas bank",
+                                                        LoadSave::getUserPresetDirectory());
+  launchFileChooser(*share_folder_chooser_, FileBrowserComponent::openMode | FileBrowserComponent::canSelectDirectories,
+                    [this, previous](const FileChooser& chooser) {
+    const File folder = chooser.getResult();
+    share_folder_chooser_.reset();
+    if (!share_form_visible_)
+      return;
+    populateShareFolders(folder.isDirectory() ? folder : previous);
+    if (folder.isDirectory())
+      postPresetActionAnnouncement("Sharing the folder " + folder.getFileName(),
+                                   AccessibilityHandler::AnnouncementPriority::medium);
+  });
+}
+
+void SynthEditor::loadShareGenres() {
+  auto fill = [this] {
+    const int previous = share_genre_.getSelectedItemIndex();
+    share_genre_.clear(dontSendNotification);
+    if (share_genres_.empty()) {
+      share_genre_.addItem(share_genres_loading_ ? "Genres loading" : "Genres could not be loaded", 1);
+      share_genre_.setSelectedItemIndex(0, dontSendNotification);
+      return;
+    }
+    share_genre_.addItem("Choose a genre", 1);
+    for (size_t i = 0; i < share_genres_.size(); ++i)
+      share_genre_.addItem(share_genres_[i].name, static_cast<int>(i) + 2);
+    share_genre_.setSelectedItemIndex(jlimit(0, static_cast<int>(share_genres_.size()), previous),
+                                      dontSendNotification);
+  };
+  if (!share_genres_.empty() || share_genres_loading_) {
+    fill();
+    return;
+  }
+  share_genres_loading_ = true;
+  fill();
+  Component::SafePointer<SynthEditor> safe_this(this);
+  const String library_url = atlas::community::libraryUrl();
+  runPresetBackgroundTask([safe_this, library_url, fill](const std::shared_ptr<std::atomic<bool>>& cancelled) {
+    std::vector<atlas::community::Genre> genres;
+    const String error = atlas::community::fetchGenres(library_url, genres, cancelled.get());
+    if (cancelled->load())
+      return;
+    MessageManager::callAsync([safe_this, genres = std::move(genres), error, fill]() mutable {
+      if (safe_this == nullptr)
+        return;
+      safe_this->share_genres_loading_ = false;
+      safe_this->share_genres_ = std::move(genres);
+      fill();
+      if (error.isNotEmpty()) {
+        LoadSave::writeErrorLog("Community genres: " + error);
+        if (safe_this->share_form_visible_ && safe_this->share_bank_)
+          postPresetActionAnnouncement("Unable to load the library's genres. " + error,
+                                       AccessibilityHandler::AnnouncementPriority::high);
+      }
+    });
+  });
+}
+
+void SynthEditor::commitShareForm() {
+  if (share_busy_) {
+    postPresetActionAnnouncement("Still sharing", AccessibilityHandler::AnnouncementPriority::medium);
+    return;
+  }
+  const String host = atlas::community::libraryHost();
+  const String typed_token = share_token_.getText().trim();
+  const String token = typed_token.isNotEmpty() ? typed_token : atlas::community::storedApiToken();
+  if (token.isEmpty() || !atlas::community::looksLikeApiToken(token)) {
+    share_token_.grabKeyboardFocus();
+    postPresetActionAnnouncement(token.isEmpty() ? "Type your API token. Make one on the API tokens page of your account on " + host
+                                                 : String("That is not an API token. Tokens start with bpa_"),
+                                 AccessibilityHandler::AnnouncementPriority::high);
+    return;
+  }
+
+  atlas::community::ShareFields fields;
+  fields.name = share_name_.getText().trim();
+  fields.tags = share_tags_.getText().trim();
+  fields.description = share_description_.getText().trim();
+  const String library_url = atlas::community::libraryUrl();
+  Component::SafePointer<SynthEditor> safe_this(this);
+  const int generation = ++share_generation_;
+
+  if (share_bank_) {
+    const int folder_index = share_folder_.getSelectedItemIndex();
+    const File folder = share_folders_[folder_index];
+    if (!folder.isDirectory()) {
+      share_folder_.grabKeyboardFocus();
+      postPresetActionAnnouncement("Choose a folder to share", AccessibilityHandler::AnnouncementPriority::high);
+      return;
+    }
+    const int genre_index = share_genre_.getSelectedItemIndex() - 1;
+    if (!isPositiveAndBelow(genre_index, static_cast<int>(share_genres_.size()))) {
+      share_genre_.grabKeyboardFocus();
+      postPresetActionAnnouncement(share_genres_.empty() ? "The library's genres are not loaded, and a bank needs one"
+                                                         : String("Choose the bank's genre. The library requires one"),
+                                   AccessibilityHandler::AnnouncementPriority::high);
+      return;
+    }
+    fields.genre = share_genres_[static_cast<size_t>(genre_index)].slug;
+    const String name = fields.name.isNotEmpty() ? fields.name : folder.getFileName();
+    share_busy_ = true;
+    postPresetActionAnnouncement("Sharing bank " + name + " on " + host,
+                                 AccessibilityHandler::AnnouncementPriority::medium);
+    runPresetBackgroundTask([safe_this, folder, name, fields, token, typed_token, library_url, generation](
+                                const std::shared_ptr<std::atomic<bool>>& cancelled) {
+      const File scratch = shareScratchFolder();
+      const File archive = scratch.getChildFile(shareFileName(name, "Atlas Bank") + "." + String(vital::kBankExtension));
+      atlas::community::UploadResult result;
+      const auto written = writeBankArchive(folder, archive);
+      if (!written.ok())
+        result.error = written.error.trimCharactersAtEnd(".");
+      else if (archive.getSize() > kMaxSharedBankBytes)
+        result.error = "The bank is " + File::descriptionOfSizeInBytes(archive.getSize()) +
+                       ", more than the 512 MB the library takes";
+      else if (!cancelled->load())
+        result = atlas::community::uploadBank(library_url, token, archive, fields, cancelled.get());
+      scratch.deleteRecursively();
+      if (cancelled->load())
+        return;
+      MessageManager::callAsync([safe_this, result, name, typed_token, generation] {
+        if (safe_this != nullptr)
+          safe_this->finishShare(result, name, typed_token, true, generation);
+      });
+    });
+    return;
+  }
+
+  const int style_index = share_style_.getSelectedItemIndex() - 1;
+  if (isPositiveAndBelow(style_index, static_cast<int>(atlas::community::styles().size())))
+    fields.style = atlas::community::styles()[static_cast<size_t>(style_index)].id;
+  const String name = fields.name.isNotEmpty() ? fields.name
+                    : synth_.getPresetName().isNotEmpty() ? synth_.getPresetName() : String("Untitled");
+  // The patch as it is now, written on this thread as Save does.
+  const File scratch = shareScratchFolder();
+  const File preset = scratch.getChildFile(shareFileName(name, "Untitled") + "." + String(vital::kPresetExtension));
+  if (!synth_.saveCopyToFile(preset)) {
+    scratch.deleteRecursively();
+    postPresetActionAnnouncement("Unable to share " + name + ". The patch could not be written to a file",
+                                 AccessibilityHandler::AnnouncementPriority::high);
+    return;
+  }
+  share_busy_ = true;
+  postPresetActionAnnouncement("Sharing " + name + " on " + host, AccessibilityHandler::AnnouncementPriority::medium);
+  runPresetBackgroundTask([safe_this, scratch, preset, name, fields, token, typed_token, library_url, generation](
+                              const std::shared_ptr<std::atomic<bool>>& cancelled) {
+    const auto result = atlas::community::uploadPreset(library_url, token, preset, fields, cancelled.get());
+    scratch.deleteRecursively();
+    if (cancelled->load())
+      return;
+    MessageManager::callAsync([safe_this, result, name, typed_token, generation] {
+      if (safe_this != nullptr)
+        safe_this->finishShare(result, name, typed_token, false, generation);
+    });
+  });
+}
+
+void SynthEditor::finishShare(const atlas::community::UploadResult& result, const String& name,
+                              const String& typed_token, bool bank, int generation) {
+  if (generation != share_generation_)
+    return;
+  share_busy_ = false;
+  if (!result.shared()) {
+    LoadSave::writeErrorLog("Community share failed (" + String(result.status) + "): " + result.error);
+    String message = "Unable to share " + name + ". " + result.error;
+    if (result.tokenRefused() && typed_token.isEmpty() && atlas::community::storedApiToken().isNotEmpty())
+      message += ". The saved token may have been deleted on the site; Forget saved token removes it";
+    postPresetActionAnnouncement(message, AccessibilityHandler::AnnouncementPriority::high);
+    return;
+  }
+
+  // A token that worked is kept for next time, in Atlas's settings only.
+  if (typed_token.isNotEmpty())
+    atlas::community::storeApiToken(typed_token);
+  // The library's lists now hold the new item: fetched afresh on their next showing.
+  {
+    const ScopedLock lock(presetBrowserCacheLock());
+    (bank ? communityCache().banks_valid : communityCache().valid) = false;
+  }
+  if (bank)
+    community_banks_loaded_ = false;
+  else
+    community_list_loaded_ = false;
+  const String message = "Shared " + (result.name.isNotEmpty() ? result.name : name) + " on " +
+                         atlas::community::libraryHost();
+  {
+    // What the focus move says would cut the news short.
+    const ScopedAnnouncementHold hold;
+    if (share_form_visible_)
+      hideShareForm();
+    postPresetActionAnnouncement(message, AccessibilityHandler::AnnouncementPriority::high);
+  }
+  if ((bank && inCommunityBankCollection()) || (!bank && inCommunityCollection())) {
+    if (bank)
+      startCommunityBankListLoad(false, true);
+    else
+      startCommunityListLoad(false, true);
+  }
 }
 
 void SynthEditor::loadTuningFile() {
@@ -12232,6 +12778,8 @@ void SynthEditor::savePatch() {
 }
 
 void SynthEditor::showSavePresetDialog() {
+  if (share_form_visible_)
+    hideShareForm();
   if (!save_patch_dialog_visible_)
     save_patch_return_focus_ = focusToReturnTo();
   preset_metadata_edit_mode_ = false;
@@ -21454,13 +22002,18 @@ bool SynthEditor::keyPressed(const KeyPress& key) {
     hideSavePresetDialog();
     return true;
   }
+  if (share_form_visible_ && key.getKeyCode() == KeyPress::escapeKey) {
+    hideShareForm();
+    return true;
+  }
   if (const int direction = undoRedoDirection(key); direction != 0) {
     // A text box undoes its own typing; one with nothing left to undo passes
     // the key on, and the patch must not change while the user types.
     if (dynamic_cast<TextEditor*>(Component::getCurrentlyFocusedComponent()) != nullptr)
       return true;
     // A prompt or the save form is waiting on the patch as it is.
-    if (modulation_amount_prompt_visible_ || parameter_value_prompt_visible_ || save_patch_dialog_visible_)
+    if (modulation_amount_prompt_visible_ || parameter_value_prompt_visible_ || save_patch_dialog_visible_ ||
+        share_form_visible_)
       postUndoAnnouncement(direction > 0 ? "Close the prompt to redo" : "Close the prompt to undo");
     else
       undoOrRedo(direction > 0);

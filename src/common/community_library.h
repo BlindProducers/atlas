@@ -145,4 +145,84 @@ juce::String fetchAllBanks(const juce::String& library_url, std::vector<RemoteBa
 // only when it is `expected_size` bytes (when known) hashing to `expected_sha256`.
 juce::String downloadFile(const juce::URL& url, const juce::File& target, const juce::String& expected_sha256,
                           juce::int64 expected_size, const std::atomic<bool>* cancelled = nullptr);
+
+// Sharing. Uploading needs a personal API token ("bpa_..."), made on the
+// account's API tokens page on the site and sent as "Authorization: Bearer".
+// It is a password: kept in Atlas's config file only, never in a preset or
+// the host's project, never logged, and never shown or said in full.
+
+// The patch styles the library knows, as /api/v1/styles/ lists them.
+struct Style {
+  const char* id;
+  const char* label;
+};
+const std::vector<Style>& styles();
+// The library's style id for the free text Atlas saves as a patch's style
+// ("Basses" -> "bass"), as the library itself reads it; empty when none fits.
+juce::String styleIdForText(const juce::String& text);
+
+// A genre a bank is filed under, from /api/v1/genres/.
+struct Genre {
+  juce::String name;                // "Speed Garage"
+  juce::String slug;                // "speed-garage", what an upload sends
+};
+// /api/v1/genres/, or genres.json beside a saved presets page.
+juce::String genresPageUrl(const juce::String& library_url);
+juce::String parseGenresPage(const std::string& text, std::vector<Genre>& genres);
+juce::String fetchGenres(const juce::String& library_url, std::vector<Genre>& genres,
+                         const std::atomic<bool>* cancelled = nullptr);
+
+// What the share form sends besides the file; empty fields are left out and
+// the library falls back to what the file says.
+struct ShareFields {
+  juce::String name;
+  juce::String style;               // a style id; patches only
+  juce::String genre;               // a genre slug; required for banks
+  juce::String tags;                // "dark, 808"
+  juce::String description;
+};
+
+// An upload as it goes out: the endpoint with the fields and the file as
+// multipart form data, and the headers that carry the token.
+struct UploadRequest {
+  juce::URL url;
+  juce::String headers;
+  juce::String error;               // why it cannot be sent at all
+};
+// POST /api/v1/presets/ and /api/v1/banks/.
+juce::String presetsEndpoint(const juce::String& library_url);
+juce::String banksEndpoint(const juce::String& library_url);
+UploadRequest buildPresetUpload(const juce::String& library_url, const juce::File& preset, const ShareFields& fields,
+                                const juce::String& token);
+UploadRequest buildBankUpload(const juce::String& library_url, const juce::File& bank, const ShareFields& fields,
+                              const juce::String& token);
+
+// What the library answered: 201 with the new item, 400 with the fields it
+// refused, 401 for a missing or wrong token, or anything else.
+struct UploadResult {
+  int status = 0;
+  juce::int64 id = 0;
+  juce::String name;                // what the library calls the new item
+  juce::String page_url;            // its page on the site
+  juce::String error;               // empty once shared
+  juce::StringArray field_errors;   // "Genre: This field is required."
+  bool shared() const { return status == 201 && error.isEmpty(); }
+  bool tokenRefused() const { return status == 401; }
+};
+UploadResult parseUploadAnswer(int status, const std::string& body);
+
+// Sends the upload, for a background thread.
+UploadResult upload(const UploadRequest& request, const std::atomic<bool>* cancelled = nullptr);
+UploadResult uploadPreset(const juce::String& library_url, const juce::String& token, const juce::File& preset,
+                          const ShareFields& fields, const std::atomic<bool>* cancelled = nullptr);
+UploadResult uploadBank(const juce::String& library_url, const juce::String& token, const juce::File& bank,
+                        const ShareFields& fields, const std::atomic<bool>* cancelled = nullptr);
+
+// The token kept in Atlas's config file, or empty; storing an empty one forgets it.
+juce::String storedApiToken();
+void storeApiToken(const juce::String& token);
+// A token as it may be said: "the token ending in 3f2a"; never the whole of it.
+juce::String tokenHint(const juce::String& token);
+// Whether `token` looks like one the library issues ("bpa_" and hex).
+bool looksLikeApiToken(const juce::String& token);
 }
