@@ -888,12 +888,19 @@ namespace {
   // sends them.
   void testShareRequestsAndAnswers() {
     using namespace atlas::community;
-    expect(styleIdForText("Basses") == "bass" && styleIdForText("Lead") == "lead" && styleIdForText("drums") == "percussion" &&
-               styleIdForText("pads") == "pad" && styleIdForText("Keys and things") == "keys" && styleIdForText("").isEmpty() &&
+    expect(styleIdForText("Basses") == "bass" && styleIdForText("Lead") == "lead" && styleIdForText("drums") == "drums" &&
+               styleIdForText("perc") == "percussion" && styleIdForText("pads") == "pad" &&
+               styleIdForText("Keys and things") == "keys" && styleIdForText("Electric Piano") == "keys" &&
+               styleIdForText("Piano") == "piano" && styleIdForText("Brass section") == "brass" &&
+               styleIdForText("Choir") == "vocal" && styleIdForText("Arp") == "sequence" &&
+               styleIdForText("Soundscape") == "atmosphere" && styleIdForText("").isEmpty() &&
                styleIdForText("Wobble").isEmpty(),
            "a patch's style reads as the library reads it");
-    expect(styles().size() == 10 && String(styles().front().id) == "bass" && String(styles().back().label) == "Other",
-           "the library's ten styles");
+    expect(styles().size() == 23 && String(styles().front().id) == "atmosphere" &&
+               String(styles()[13].label) == "Piano" && String(styles().back().label) == "Other",
+           "the library's twenty-three styles, Other last");
+    expect(tokensPageUrl("https://atlas.blindproducers.org/") == "https://atlas.blindproducers.org/accounts/tokens/",
+           "the site's API tokens page");
 
     std::vector<Genre> genres;
     expect(parseGenresPage(R"({"results": [{"name": "Acid House", "slug": "acid-house", "presets": 0, "banks": 0},
@@ -1328,11 +1335,15 @@ namespace {
     folder.deleteRecursively();
   }
 
-  // The Preset menu's Share forms, against the test library: the patch form
-  // asks for a token, passes on the library's field errors and keeps the
-  // form open, shares and says so, keeps the token that worked and gives the
-  // focus back; the bank form exports the chosen folder, needs a genre and
-  // uses the saved token; Log out clears it; Escape closes.
+  // The Preset menu's Share patch and Share bank, against the test library.
+  // Logged out, either opens the login dialog first: it says no token was
+  // found, refuses what is not a token, says what the library answers and
+  // keeps the token that works; then the form opens, with no token box or
+  // Log out of its own. The patch form passes on the library's field errors
+  // and stays open, shares with the focus on the upload's progress bar, says
+  // so and gives the focus back; the bank form exports the chosen folder,
+  // needs a genre and shares with the saved token; a token the library
+  // refuses brings the dialog back and Share goes on; Escape closes.
   void testShareFormsUploadAndSpeak() {
     TemporaryUndoLibrary library;
     expect(library.isolated(), "the test's library is its own temporary folder");
@@ -1343,11 +1354,16 @@ namespace {
     expect(server.isListening(), "the test library listens on 127.0.0.1");
     if (!server.isListening())
       return;
+    const String account_answer = R"({"username": "jayladdermusic", "display_name": "Jay Ladder", "presets": 3, "banks": 1})";
+    server.answer("GET", "/api/v1/me/", 401, R"({"error": "A valid API token is required."})");
+    server.answer("GET", "/api/v1/me/", 200, account_answer);
+    server.answer("GET", "/api/v1/me/", 200, account_answer);
     server.answer("GET", "/api/v1/genres/", 200,
                   R"({"results": [{"name": "Ambient", "slug": "ambient"}, {"name": "Speed Garage", "slug": "speed-garage"}]})");
     server.answer("POST", "/api/v1/presets/", 400,
                   R"({"error": "The upload was not accepted.", "errors": {"name": ["Ensure this value has at most 120 characters."]}})");
     server.answer("POST", "/api/v1/presets/", 201, presetAnswer(70, "Shared Patch"));
+    server.answer("POST", "/api/v1/banks/", 401, R"({"error": "A valid API token is required."})");
     server.answer("POST", "/api/v1/banks/", 201, R"({"id": 3, "type": "bank", "name": "My Bank", "url": "https://atlas.blindproducers.org/banks/3/"})");
     atlas::community::setLibraryUrlForTesting(server.url());
     struct RealLibraryAgain { ~RealLibraryAgain() { atlas::community::setLibraryUrlForTesting({}); } } real_library_again;
@@ -1382,68 +1398,130 @@ namespace {
     preset_menu->grabKeyboardFocus();
     pumpEditorEvents();
 
-    // The patch form.
+    // Logged out: the login dialog, not the form.
     spoken.messages.clear();
-    editor.showSharePatchFormForTesting();
+    editor.sharePatchForTesting();
     pumpEditorEvents();
-    auto* name = dynamic_cast<TextEditor*>(titled(editor, "Share name"));
-    auto* style = dynamic_cast<ComboBox*>(titled(editor, "Share style"));
-    auto* tags = dynamic_cast<TextEditor*>(titled(editor, "Share tags"));
-    auto* token = dynamic_cast<TextEditor*>(titled(editor, "API token"));
-    auto* share = dynamic_cast<Button*>(titled(editor, "Share"));
-    auto* forget = dynamic_cast<Button*>(titled(editor, "Log out"));
-    auto* folder = dynamic_cast<ComboBox*>(titled(editor, "Folder to share"));
-    auto* genre = dynamic_cast<ComboBox*>(titled(editor, "Share genre"));
-    const bool form = editor.isShareFormVisible() && name != nullptr && style != nullptr && tags != nullptr &&
-                      token != nullptr && share != nullptr && forget != nullptr && folder != nullptr && genre != nullptr;
-    expect(form, "Share patch opens the share form with its controls");
-    if (!form) {
+    auto* dialog = editor.communityLoginWindowForTesting();
+    auto* content = dialog != nullptr ? dialog->getContentComponent() : nullptr;
+    expect(dialog != nullptr && !editor.isShareFormVisible(), "Share patch while logged out opens the login dialog, not the form");
+    if (content == nullptr) {
       editor.removeFromDesktop();
       return;
     }
-    expect(name->isShowing() && style->isShowing() && !folder->isVisible() && !genre->isVisible() && !forget->isVisible(),
-           "the patch form shows name and style, not the bank's folder and genre, and no Log out with no token saved");
-    expect(name->hasKeyboardFocus(false), "the name box has the focus");
-    expect(said("Share patch on 127.0.0.1"), "the form says what it is for: " + heard());
+    auto* message = dynamic_cast<Label*>(titled(*content, "Login message"));
+    auto* token = dynamic_cast<TextEditor*>(titled(*content, "API token"));
+    auto* website = dynamic_cast<Button*>(titled(*content, "Get your API token on the website"));
+    auto* log_in = dynamic_cast<Button*>(titled(*content, "Log in"));
+    auto* cancel = dynamic_cast<Button*>(titled(*content, "Cancel"));
+    const bool dialog_controls = message != nullptr && token != nullptr && website != nullptr && log_in != nullptr &&
+                                 cancel != nullptr;
+    expect(dialog_controls, "the dialog has its message, token box, website button, Log in and Cancel");
+    if (!dialog_controls) {
+      delete dialog;
+      editor.removeFromDesktop();
+      return;
+    }
+    expect(message->getText().startsWith("No API token found.") && message->hasKeyboardFocus(false),
+           "the dialog says no token was found, and opens on that: " + message->getText().toStdString());
+    expect(website->getDescription().contains("/accounts/tokens/ in your browser"),
+           "the website button opens the site's API tokens page: " + website->getDescription().toStdString());
     expect(token->getPasswordCharacter() != 0 && token->getAccessibilityHandler() != nullptr &&
                token->getAccessibilityHandler()->getTextInterface() != nullptr &&
                token->getAccessibilityHandler()->getTextInterface()->isDisplayingProtectedText(),
            "the token box hides what is typed from the eye and the screen reader");
-    const auto& order = editor.getKeyboardFocusOrder();
-    expect(std::find(order.begin(), order.end(), token) != order.end() &&
-               std::find(order.begin(), order.end(), share) != order.end(),
-           "Tab reaches the token box and the Share button");
-    expect(style->getNumItems() == 11 && style->getItemText(0).startsWith("The patch's own style"),
-           "the style menu offers the patch's own style and the library's ten");
-    name->setText("Shared Patch", true);
-    style->setSelectedItemIndex(2, sendNotificationSync);   // Lead
-    tags->setText("glow, test", true);
 
     spoken.messages.clear();
-    share->onClick();
+    log_in->onClick();
     pumpEditorEvents();
-    expect(said("Type your API token") && token->hasKeyboardFocus(false) && server.requests().empty(),
-           "Share without a token asks for one and sends nothing: " + heard());
+    expect(said("Paste your API token first") && token->hasKeyboardFocus(false) && server.requests().empty(),
+           "Log in without a token asks for one and sends nothing: " + heard());
     token->setText("hello", true);
     spoken.messages.clear();
-    share->onClick();
+    log_in->onClick();
     pumpEditorEvents();
     expect(said("That is not an API token") && server.requests().empty(), "a token that is not one is refused: " + heard());
 
-    // The library refuses a field: said, form open, token not kept.
+    // The library refuses the token: said, dialog open, token not kept.
     token->setText(kTestToken, true);
     spoken.messages.clear();
+    log_in->onClick();
+    pumpUntil([&] { return said("Unable to log in"); }, 10000);
+    expect(said("Unable to log in. The library refused the API token") && atlas::community::storedApiToken().isEmpty() &&
+               editor.communityLoginWindowForTesting() != nullptr && !editor.isShareFormVisible(),
+           "a refused token is said and not kept, and the dialog stays: " + heard());
+    for (const auto& message_said : spoken.messages)
+      expect(!message_said.contains(kTestToken) && !message_said.contains("bpa_"), "the token is never said");
+
+    // Accepted: kept with its account, the dialog closes and the form opens.
+    spoken.messages.clear();
+    log_in->onClick();
+    pumpUntil([&] { return editor.isShareFormVisible(); }, 10000);
+    pumpUntil([&] { return said("Share patch on"); }, 2000);
+    expect(editor.communityLoginWindowForTesting() == nullptr && editor.isShareFormVisible(),
+           "the dialog closes and the share form opens");
+    expect(said("Logged in as Jay Ladder (jayladdermusic). Share patch on 127.0.0.1"),
+           "the login and the form are said together: " + heard());
+    expect(atlas::community::storedApiToken() == kTestToken &&
+               credentials->secretOf("com.example.daw") == kTestToken.toStdString() &&
+               atlas::community::storedAccount().username == "jayladdermusic",
+           "the token that worked is kept in the store, with its account");
+
+    // The patch form: no token box or Log out of its own.
+    auto* name = dynamic_cast<TextEditor*>(titled(editor, "Share name"));
+    auto* style = dynamic_cast<ComboBox*>(titled(editor, "Share style"));
+    auto* tags = dynamic_cast<TextEditor*>(titled(editor, "Share tags"));
+    auto* share = dynamic_cast<Button*>(titled(editor, "Share"));
+    auto* folder = dynamic_cast<ComboBox*>(titled(editor, "Folder to share"));
+    auto* genre = dynamic_cast<ComboBox*>(titled(editor, "Share genre"));
+    auto* progress = titled(editor, "Upload progress");
+    const bool form = name != nullptr && style != nullptr && tags != nullptr && share != nullptr && folder != nullptr &&
+                      genre != nullptr && progress != nullptr;
+    expect(form, "the share form has its controls");
+    if (!form) {
+      editor.removeFromDesktop();
+      return;
+    }
+    expect(titled(editor, "API token") == nullptr && titled(editor, "Log out") == nullptr,
+           "the form has no token box and no Log out: the dialog and Settings have them");
+    expect(name->isShowing() && style->isShowing() && !folder->isVisible() && !genre->isVisible() && !progress->isVisible(),
+           "the patch form shows name and style, not the bank's folder and genre, and no progress bar yet");
+    expect(name->hasKeyboardFocus(false), "the name box has the focus");
+    const auto& order = editor.getKeyboardFocusOrder();
+    expect(std::find(order.begin(), order.end(), share) != order.end() &&
+               std::find(order.begin(), order.end(), progress) == order.end(),
+           "Tab reaches the Share button, and not the hidden progress bar");
+    expect(style->getNumItems() == 24 && style->getItemText(0).startsWith("The patch's own style") &&
+               style->getItemText(1) == "Atmosphere" && style->getItemText(4) == "Brass" &&
+               style->getItemText(14) == "Piano" && style->getItemText(23) == "Other",
+           "the style menu offers the patch's own style and the library's twenty-three, Brass and Piano among them");
+    name->setText("Shared Patch", true);
+    int lead = -1;
+    for (int i = 0; i < style->getNumItems(); ++i) {
+      if (style->getItemText(i) == "Lead")
+        lead = i;
+    }
+    expect(lead > 0, "the style menu has Lead");
+    style->setSelectedItemIndex(lead, sendNotificationSync);
+    tags->setText("glow, test", true);
+
+    // The library refuses a field: the progress bar has the focus while the
+    // patch uploads; the answer is said, the form stays open and Share has
+    // the focus again.
+    spoken.messages.clear();
     share->onClick();
+    const bool uploading = editor.isShareBusy() && progress->isShowing() && progress->hasKeyboardFocus(false) &&
+                           progress->getAccessibilityHandler() != nullptr &&
+                           progress->getAccessibilityHandler()->getTitle().startsWith("Upload progress, ");
+    expect(uploading, "Share moves the focus onto the progress bar, named with its percentage");
     pumpUntil([&] { return !editor.isShareBusy(); }, 15000);
     expect(said("Sharing Shared Patch on 127.0.0.1") &&
                said("Unable to share Shared Patch. The upload was not accepted. Name: Ensure this value has at most 120 characters."),
            "the library's field errors are said: " + heard());
-    expect(editor.isShareFormVisible() && atlas::community::storedApiToken().isEmpty(),
-           "the form stays open and the token is not kept");
-    for (const auto& message : spoken.messages)
-      expect(!message.contains(kTestToken) && !message.contains("bpa_"), "the token is never said");
+    expect(editor.isShareFormVisible() && !progress->isVisible() && share->hasKeyboardFocus(false),
+           "the form stays open, the bar goes and Share has the focus");
 
-    // Shared: said, form closed, focus back, token kept.
+    // Shared: said, form closed, focus back.
     spoken.messages.clear();
     share->onClick();
     pumpUntil([&] { return !editor.isShareBusy() && !editor.isShareFormVisible(); }, 15000);
@@ -1451,30 +1529,29 @@ namespace {
     pumpUntil([&] { return said("Shared Shared Patch"); }, 2000);
     expect(said("Shared Shared Patch on 127.0.0.1") && !editor.isShareFormVisible(),
            "the share is said and the form closes: " + heard());
-    expect(atlas::community::storedApiToken() == kTestToken && credentials->secretOf("com.example.daw") == kTestToken.toStdString() &&
-               token->getText().isEmpty(),
-           "the token that worked is kept in the store, and the box is empty");
     expect(preset_menu->hasKeyboardFocus(false), "the focus is back on the Preset menu");
     auto requests = server.requests();
-    expect(requests.size() == 2, "two uploads reached the library, got " + std::to_string(requests.size()));
-    if (requests.size() == 2) {
-      const String body = requests[1].bodyText();
-      expect(requests[1].path == "/api/v1/presets/" && requests[1].headers["authorization"] == "Bearer " + kTestToken &&
+    const auto uploads = std::count_if(requests.begin(), requests.end(),
+                                       [](const auto& request) { return request.path == "/api/v1/presets/"; });
+    expect(uploads == 2, "two uploads reached the library, got " + std::to_string(uploads));
+    const auto shared_patch = std::find_if(requests.rbegin(), requests.rend(),
+                                           [](const auto& request) { return request.path == "/api/v1/presets/"; });
+    if (shared_patch != requests.rend()) {
+      const String body = shared_patch->bodyText();
+      expect(shared_patch->headers["authorization"] == "Bearer " + kTestToken &&
                  body.contains("filename=\"Shared Patch.atp\"") && body.contains("name=\"style\"\r\n\r\nlead\r\n") &&
                  body.contains("name=\"tags\"\r\n\r\nglow, test\r\n") && body.contains("\"settings\""),
-             "the patch went with its name, style, tags and the token");
+             "the patch went with its name, style, tags and the saved token");
     }
 
-    // The bank form: the folder, a genre, the saved token.
+    // The bank form, logged in: no dialog; the folder, a genre, the saved token.
     spoken.messages.clear();
-    editor.showShareBankFormForTesting();
+    editor.shareBankForTesting();
     pumpUntil([&] { return genre->getNumItems() == 3 && said("Share bank on"); }, 10000);
-    expect(folder->isShowing() && genre->isShowing() && !style->isVisible() && forget->isShowing(),
-           "the bank form shows the folder and genre, and Log out with a token saved");
+    expect(editor.communityLoginWindowForTesting() == nullptr && editor.isShareFormVisible() && folder->isShowing() &&
+               genre->isShowing() && !style->isVisible(),
+           "logged in, Share bank opens the form at once, with the folder and genre");
     expect(folder->hasKeyboardFocus(false) && said("Share bank on 127.0.0.1"), "the folder menu has the focus: " + heard());
-    expect(token->getDescription().contains("use the saved token, kept in the test store") &&
-               !token->getDescription().contains(kTestToken) && forget->getDescription() == "Removes the API token from the test store",
-           "the token box says a token is saved and where, never the token: " + token->getDescription().toStdString());
     int my_bank = -1;
     for (int i = 0; i < folder->getNumItems(); ++i) {
       if (folder->getItemText(i) == "My Bank")
@@ -1490,17 +1567,35 @@ namespace {
     pumpEditorEvents();
     expect(said("Choose the bank's genre") && genre->hasKeyboardFocus(false), "a bank needs a genre: " + heard());
     genre->setSelectedItemIndex(2, sendNotificationSync);   // Speed Garage
+
+    // The library refuses the saved token: the dialog comes back over the
+    // form, and a token it accepts shares the bank without another Share.
     spoken.messages.clear();
     share->onClick();
-    pumpUntil([&] { return !editor.isShareBusy() && !editor.isShareFormVisible(); }, 15000);
-    pumpUntil([&] { return said("Shared My Bank"); }, 2000);
-    expect(said("Sharing bank My Bank on 127.0.0.1") && said("Shared My Bank on 127.0.0.1"),
-           "the bank is shared and it is said: " + heard());
+    pumpUntil([&] { return editor.communityLoginWindowForTesting() != nullptr; }, 15000);
+    dialog = editor.communityLoginWindowForTesting();
+    content = dialog != nullptr ? dialog->getContentComponent() : nullptr;
+    message = content != nullptr ? dynamic_cast<Label*>(titled(*content, "Login message")) : nullptr;
+    token = content != nullptr ? dynamic_cast<TextEditor*>(titled(*content, "API token")) : nullptr;
+    log_in = content != nullptr ? dynamic_cast<Button*>(titled(*content, "Log in")) : nullptr;
+    expect(message != nullptr && token != nullptr && log_in != nullptr && editor.isShareFormVisible() &&
+               message->getText().startsWith("Unable to share My Bank. The library refused the API token"),
+           "a refused token brings the login dialog back, with the form still open: " +
+               (message != nullptr ? message->getText().toStdString() : std::string()));
+    if (token != nullptr && log_in != nullptr) {
+      token->setText(kTestToken, true);
+      spoken.messages.clear();
+      log_in->onClick();
+      pumpUntil([&] { return !editor.isShareFormVisible(); }, 15000);
+      pumpUntil([&] { return said("Shared My Bank"); }, 2000);
+    }
+    expect(said("Sharing bank My Bank on 127.0.0.1") && said("Shared My Bank on 127.0.0.1") && !editor.isShareFormVisible(),
+           "the bank is shared after the login, without another Share, and it is said: " + heard());
     requests = server.requests();
-    const auto bank_request = std::find_if(requests.begin(), requests.end(),
+    const auto bank_request = std::find_if(requests.rbegin(), requests.rend(),
                                            [](const auto& request) { return request.path == "/api/v1/banks/"; });
-    expect(bank_request != requests.end(), "the bank reached the library");
-    if (bank_request != requests.end()) {
+    expect(bank_request != requests.rend(), "the bank reached the library");
+    if (bank_request != requests.rend()) {
       const auto& sent = *bank_request;
       expect(sent.headers["authorization"] == "Bearer " + kTestToken &&
                  sent.bodyContains("name=\"genre\"\r\n\r\nspeed-garage\r\n") &&
@@ -1509,17 +1604,9 @@ namespace {
              "as an archive of the folder, with its genre and the saved token");
     }
 
-    // Log out, then Escape closes the form and the focus goes back.
-    editor.showShareBankFormForTesting();
+    // Escape closes the form and the focus goes back.
+    editor.shareBankForTesting();
     pumpEditorEvents();
-    spoken.messages.clear();
-    forget->onClick();
-    pumpEditorEvents();
-    expect(atlas::community::storedApiToken().isEmpty() && !credentials->holds("com.example.daw") && !forget->isVisible() &&
-               said("Logged out"),
-           "Log out clears the token, from the store too: " + heard());
-    expect(Component::getCurrentlyFocusedComponent() == nullptr || editor.isParentOf(Component::getCurrentlyFocusedComponent()),
-           "the focus stays in the editor");
     name->grabKeyboardFocus();
     Component& name_box = *name;
     name_box.keyPressed(KeyPress(KeyPress::escapeKey));
