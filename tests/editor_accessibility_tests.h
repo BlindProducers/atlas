@@ -1490,6 +1490,94 @@ namespace {
     editor.removeFromDesktop();
   }
 
+  // Return in any box of the save form saves the patch, as the Save button
+  // does, and each box says its name once: no description repeats it.
+  void testSaveFormSavesOnReturn() {
+    // A library of its own in a temporary folder: the saves never reach the
+    // user's presets.
+    struct TemporaryLibrary {
+      File folder = File::getSpecialLocation(File::tempDirectory)
+                        .getNonexistentChildFile("AtlasSaveFormTestLibrary", "", false);
+      TemporaryFile config { ".config" };
+      TemporaryLibrary() {
+        folder.createDirectory();
+        json contents = LoadSave::getConfigJson();
+        if (!contents.is_object())
+          contents = json::object();
+        contents["data_directory"] = folder.getFullPathName().toStdString();
+        config.getFile().replaceWithText(contents.dump());
+        LoadSave::setConfigFileForTesting(config.getFile());
+      }
+      ~TemporaryLibrary() {
+        atlas::speech::setObserverForTesting(nullptr);
+        LoadSave::setConfigFileForTesting({});
+        folder.deleteRecursively();
+      }
+    } library;
+    const bool isolated = LoadSave::getDataDirectory() == library.folder;
+    expect(isolated, "the test's library is its own temporary folder");
+    if (!isolated)
+      return;
+    atlas::speech::setObserverForTesting([](const String&) {});
+
+    SynthPlugin synth;
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    editor.toFront(true);
+    pumpEditorEvents();
+
+    auto press = [&](const KeyPress& key) {
+      if (auto* peer = editor.getPeer())
+        peer->handleKeyPress(key);
+    };
+    auto* name = dynamic_cast<TextEditor*>(titled(editor, "Patch name"));
+    auto* author = dynamic_cast<TextEditor*>(titled(editor, "Patch author"));
+    auto* tags = dynamic_cast<TextEditor*>(titled(editor, "Patch tags"));
+    expect(name != nullptr && author != nullptr && tags != nullptr && !synth.getActiveFile().existsAsFile(),
+           "the editor has the save form's boxes and no preset file loaded");
+    if (name == nullptr || author == nullptr || tags == nullptr || synth.getActiveFile().existsAsFile()) {
+      editor.removeFromDesktop();
+      return;
+    }
+    for (auto* box : { name, author, tags })
+      expect(box->getDescription().isEmpty(), box->getTitle().toStdString() + " has no description repeating its name");
+
+    auto open_form = [&](const KeyPress& key) {
+      if (auto* start = editor.controlForParameter("filter_1_model")) {
+        editor.ensureComponentVisible(start);
+        start->grabKeyboardFocus();
+      }
+      press(key);
+      pumpEditorEvents();
+      return name->isShowing();
+    };
+    auto saved = [&](const String& file_name) {
+      return library.folder.findChildFiles(File::findFiles, true, file_name).size() == 1;
+    };
+
+    expect(open_form(KeyPress('s', ModifierKeys::commandModifier, 0)), "Ctrl S opens the save form");
+    name->setText("Saved With Return", false);
+    author->grabKeyboardFocus();
+    press(KeyPress(KeyPress::returnKey));
+    pumpEditorEvents();
+    expect(!name->isShowing() && saved("Saved With Return.atp") &&
+               synth.getActiveFile().getFileName() == "Saved With Return.atp",
+           "Return in the author box saves the patch and closes the form");
+
+    // With the patch saved, Ctrl S saves over it: Save patch as asks again.
+    expect(open_form(KeyPress('s', ModifierKeys::commandModifier | ModifierKeys::shiftModifier, 0)),
+           "Shift Ctrl S opens the save form");
+    name->setText("Saved From Tags", false);
+    tags->grabKeyboardFocus();
+    press(KeyPress(KeyPress::returnKey));
+    pumpEditorEvents();
+    expect(!name->isShowing() && saved("Saved From Tags.atp"), "Return in the tags box saves the patch too");
+
+    editor.removeFromDesktop();
+  }
+
   // The table list titled `title` (the preset browser's Bank list, say), not a
   // cell or column of another table that carries the same name.
   TableListBox* tableTitled(Component& parent, const String& title) {

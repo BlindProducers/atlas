@@ -6805,14 +6805,19 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   addChildComponent(save_patch_prompt_);
 
   auto configureSaveEditor = [this](TextEditor& editor, const String& title, const String& empty_text) {
+    // No description: a screen reader would say the title twice.
     editor.setTitle(title);
-    editor.setDescription(title);
-    editor.setHelpText("Type " + title.toLowerCase());
+    editor.setHelpText("Type " + title.toLowerCase() + ". Return saves the patch");
     editor.setTextToShowWhenEmpty(empty_text, Colours::grey);
     editor.setSelectAllWhenFocused(true);
     editor.setWantsKeyboardFocus(true);
-    // Escape closes the form, as Cancel does; the text box keeps the key
-    // from reaching SynthEditor::keyPressed and reports it a moment later.
+    // Return saves from any box, as the Save button does, and Escape closes
+    // the form, as Cancel does; the text box keeps both keys from reaching
+    // SynthEditor::keyPressed and reports them a moment later.
+    editor.onReturnKey = [this] {
+      if (save_patch_dialog_visible_)
+        commitSavePresetDialog();
+    };
     editor.onEscapeKey = [this] {
       if (save_patch_dialog_visible_)
         hideSavePresetDialog();

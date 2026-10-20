@@ -1058,6 +1058,7 @@ int main(int argc, char** argv) {
     testSectionKeysStepThroughEffectSlots();
     testShiftMOpensEveryContextMenu();
     testSaveFormClosesWithEscape();
+    testSaveFormSavesOnReturn();
     testOscillatorRowGroups();
     testOscillatorRowsNameTheirOscillatorNumber();
     testArpeggiatorDestinationsAreAGroup();
