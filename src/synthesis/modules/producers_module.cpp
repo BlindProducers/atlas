@@ -413,10 +413,10 @@ namespace vital {
       const unsigned bit = 1u << index;
       if (written & bit)
         utils::zeroBuffer(output(index)->buffer, num_samples);
-      else if (written_outputs_ & bit)
+      else if (*written_outputs_ & bit)
         utils::zeroBuffer(output(index)->buffer, output(index)->buffer_size);
     }
-    written_outputs_ = written;
+    *written_outputs_ = written;
 
     // Whether a Multi-sample instrument holds the voice open.
     poly_float instrument_hold = 0.0f;

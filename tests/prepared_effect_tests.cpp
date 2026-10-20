@@ -1222,6 +1222,70 @@ void idleCpu(const std::string& only) {
 // main chain's first slot at its defaults: it either keeps sounding (noise) or
 // sleeps, and after sleeping a note sounds through it at once. A 4 s Delay
 // with feedback must not sleep between its echoes.
+// Every voice copy writes the same producer and filter output buffers. A note
+// cut off mid-block (a preset load's allSoundsOff) leaves its last block in
+// an output; when the routing then moves, the next voice must clear it even
+// if that voice never wrote the output itself, or every note replays the
+// stale block as a phantom tone of its own.
+void voiceOutputSharing() {
+  constexpr int kBlock = 512;
+  constexpr int kRate = 48000;
+  struct Scenario { const char* name; const char* parameter; float routed; float moved; };
+  const Scenario scenarios[] = {
+    { "oscillator to Effects", "osc_1_destination", vital::constants::kFilter1, vital::constants::kEffects },
+    { "filter to Bus 1", "filter_1_destination", vital::constants::kEffects, vital::constants::kBus1 },
+  };
+  for (const Scenario& scenario : scenarios) {
+    SynthPlugin plugin;
+    plugin.setPlayConfigDetails(0, 2, kRate, kBlock);
+    plugin.prepareToPlay(kRate, kBlock);
+    plugin.valueChanged("filter_1_on", 1.0f);
+    // Every slot renders for a keyboard note, so route them all alike.
+    for (int osc = 1; osc <= vital::kNumOscillators; ++osc)
+      plugin.valueChanged("osc_" + std::to_string(osc) + "_destination", vital::constants::kFilter1);
+    plugin.valueChanged("filter_1_destination", vital::constants::kEffects);
+    plugin.valueChanged(scenario.parameter, scenario.routed);
+    juce::AudioBuffer<float> audio(2, kBlock);
+    juce::MidiBuffer midi;
+    auto run = [&](int blocks) {
+      float peak = 0.0f;
+      for (int block = 0; block < blocks; ++block) {
+        audio.clear();
+        plugin.processBlock(audio, midi);
+        midi.clear();
+        peak = std::max({ peak, audio.getMagnitude(0, 0, kBlock), audio.getMagnitude(1, 0, kBlock) });
+      }
+      return peak;
+    };
+    // Give every voice copy the first routing: notes take free voices in turn.
+    for (int i = 0; i < 2 * vital::kMaxPolyphony; ++i) {
+      midi.addEvent(juce::MidiMessage::noteOn(1, 60, .8f), 0);
+      run(2);
+      midi.addEvent(juce::MidiMessage::noteOff(1, 60), 0);
+      run(1);
+      for (int block = 0; block < 400 && plugin.getEngine()->getNumActiveVoices() > 0; ++block)
+        run(1);
+    }
+    // A chord writes the moved output and is cut off while it sounds.
+    // Two notes, so they fill both lanes of a voice copy and the next note
+    // takes another copy, as after a chord.
+    plugin.valueChanged(scenario.parameter, scenario.moved);
+    midi.addEvent(juce::MidiMessage::noteOn(1, 60, .8f), 0);
+    midi.addEvent(juce::MidiMessage::noteOn(1, 64, .8f), 0);
+    expect(run(20) > 1.0e-2f, std::string(scenario.name) + ": the moved routing sounds");
+    plugin.getEngine()->allSoundsOff();
+    run(20);
+    // Back to the first routing with a silent oscillator: nothing should sound.
+    plugin.valueChanged(scenario.parameter, scenario.routed);
+    plugin.valueChanged("osc_1_on", 0.0f);
+    midi.addEvent(juce::MidiMessage::noteOn(1, 67, .8f), 0);
+    run(10);
+    const float leftover = run(20);
+    std::cout << scenario.name << " leftover peak=" << leftover << std::endl;
+    expect(leftover < 1.0e-6f, std::string(scenario.name) + ": no voice replays another voice's output");
+  }
+}
+
 void effectSleep() {
   using namespace vital;
   constexpr int kBlock = 512;
@@ -1844,6 +1908,10 @@ int main(int argc, char** argv) {
   }
   if (argc > 1 && String(argv[1]) == "--effect-sleep") {
     effectSleep();
+    return failures ? 1 : 0;
+  }
+  if (argc > 1 && String(argv[1]) == "--voice-output-sharing") {
+    voiceOutputSharing();
     return failures ? 1 : 0;
   }
   if (argc > 3 && String(argv[1]) == "--cpu-loop") {

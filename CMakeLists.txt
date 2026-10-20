@@ -672,6 +672,7 @@ if(ATLAS_BUILD_TIMING_TESTS)
   set_tests_properties(atlas_convolution_threading PROPERTIES TIMEOUT 60)
   add_test(NAME atlas_ir_switching COMMAND AtlasPreparedEffectTests --ir-switching)
   add_test(NAME atlas_effect_sleep COMMAND AtlasPreparedEffectTests --effect-sleep)
+  add_test(NAME atlas_voice_output_sharing COMMAND AtlasPreparedEffectTests --voice-output-sharing)
   set_tests_properties(atlas_ir_switching PROPERTIES TIMEOUT 60)
   # Reports plugin and effect chain construction time and memory, and the
   # cost of processing with light effects; `--construction chain` measures one chain.

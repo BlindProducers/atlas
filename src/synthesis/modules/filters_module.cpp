@@ -149,10 +149,10 @@ namespace vital {
       const unsigned bit = 1u << index;
       if (written & bit)
         utils::zeroBuffer(output(index)->buffer, num_samples);
-      else if (written_outputs_ & bit)
+      else if (*written_outputs_ & bit)
         utils::zeroBuffer(output(index)->buffer, output(index)->buffer_size);
     }
-    written_outputs_ = written;
+    *written_outputs_ = written;
 
     auto route = [this, num_samples, main_output, bus1_output, bus2_output, bus3_output, direct_output](
                      const poly_float* source, int destination, bool envelope_before) {
