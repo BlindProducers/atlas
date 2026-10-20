@@ -91,6 +91,9 @@ constexpr int kPageSize = 200;
 juce::String libraryUrl();
 // The library's host name, for what the editor says: "atlas.blindproducers.org".
 juce::String libraryHost();
+// The site's API tokens page, where a personal API token is made:
+// https://atlas.blindproducers.org/accounts/tokens/.
+juce::String tokensPageUrl(const juce::String& library_url);
 // Page `page` of the published patches at `library_url`, kPageSize at a time.
 // A file: URL is a saved page and is returned as it is.
 juce::String presetsPageUrl(const juce::String& library_url, int page);
@@ -157,7 +160,10 @@ juce::String downloadFile(const juce::URL& url, const juce::File& target, const 
 // never in a file, a preset or the host's project, never logged, and never
 // shown or said in full.
 
-// The patch styles the library knows, as /api/v1/styles/ lists them.
+// The patch styles the library knows, as /api/v1/styles/ lists them and in
+// its order: the instrument families and synth sound types a patch is filed
+// under, Other last. The library's own list (library/models.py, Style) is the
+// one to match.
 struct Style {
   const char* id;
   const char* label;
@@ -227,12 +233,18 @@ struct UploadResult {
 };
 UploadResult parseUploadAnswer(int status, const std::string& body);
 
+// How far an upload has got, told to the thread that sends it as the library
+// takes it: the bytes sent of the whole. Returning false stops the upload.
+using UploadProgress = std::function<bool(juce::int64 bytes_sent, juce::int64 bytes_total)>;
 // Sends the upload, for a background thread.
-UploadResult upload(const UploadRequest& request, const std::atomic<bool>* cancelled = nullptr);
+UploadResult upload(const UploadRequest& request, const std::atomic<bool>* cancelled = nullptr,
+                    const UploadProgress& progress = {});
 UploadResult uploadPreset(const juce::String& library_url, const juce::String& token, const juce::File& preset,
-                          const ShareFields& fields, const std::atomic<bool>* cancelled = nullptr);
+                          const ShareFields& fields, const std::atomic<bool>* cancelled = nullptr,
+                          const UploadProgress& progress = {});
 UploadResult uploadBank(const juce::String& library_url, const juce::String& token, const juce::File& bank,
-                        const ShareFields& fields, const std::atomic<bool>* cancelled = nullptr);
+                        const ShareFields& fields, const std::atomic<bool>* cancelled = nullptr,
+                        const UploadProgress& progress = {});
 
 // The API token is a password, kept in the system's credential store and
 // never in a file. On macOS that is the login keychain, where each DAW keeps

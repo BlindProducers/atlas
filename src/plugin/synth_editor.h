@@ -34,6 +34,7 @@
 class AccessibleParameterRow;
 class AccessibleSectionHeader;
 class CpuUsageMeter;
+class ShareProgressBar;
 class LineGenerator;
 class WaveSource;
 class WavetableComponent;
@@ -402,11 +403,14 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     // "2.0.0 beta 2": the version and, for a pre-release, the beta the
     // release workflow builds (ATLAS_PRERELEASE in .github/workflows/release.yml).
     static String versionText();
-    // The Preset menu's Share patch and Share bank forms, for the tests.
-    void showSharePatchFormForTesting() { showShareForm(false); }
-    void showShareBankFormForTesting() { showShareForm(true); }
+    // The Preset menu's Share patch and Share bank, for the tests: the form,
+    // or first the login dialog while this DAW is not logged in.
+    void sharePatchForTesting() { shareOnCommunity(false); }
+    void shareBankForTesting() { shareOnCommunity(true); }
     bool isShareFormVisible() const { return share_form_visible_; }
     bool isShareBusy() const { return share_busy_; }
+    // The login dialog (showCommunityLogin) while it is open, or null.
+    DialogWindow* communityLoginWindowForTesting() const { return login_window_.getComponent(); }
     bool isCommunityBankLibraryBusy() const { return community_banks_loading_; }
     bool isCommunityBankLibraryLoaded() const { return community_banks_loaded_; }
     String communityBankLibraryError() const { return community_banks_error_; }
@@ -713,26 +717,45 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void showSavePresetDialog();
     void hideSavePresetDialog();
     void commitSavePresetDialog();
-    // Share patch / Share bank on the community library: an inline form like
-    // Save patch's. For a patch, its name, style, tags, description and the
-    // API token; for a bank, the library folder to share, its name, genre,
-    // tags, description and the token. The token box hides what is typed; a
-    // token that worked is kept in the system's credential store
-    // (community_library.h, storeApiToken) and the box is left empty to use
-    // it, with Log out to clear it.
-    // Share writes the patch or exports the folder to a temporary file and
-    // posts it on a background thread; the library's answer is said, and the
-    // form stays open on its field errors.
-    void showShareForm(bool bank);
+    // Share patch / Share bank on the community library (the Preset menu):
+    // the Share form, or first the login dialog while this DAW is not logged
+    // in, which opens the form once a token is accepted.
+    void shareOnCommunity(bool bank);
+    // The login dialog (CommunityLoginContent): `message` says why it is
+    // here, with a box for the API token, a button that opens the site's API
+    // tokens page, Log in and Cancel. Log in checks the token with the
+    // library and keeps it (checkCommunityToken); `on_logged_in` then runs,
+    // once the dialog has closed and the focus is back.
+    void showCommunityLogin(const String& message, std::function<void()> on_logged_in);
+    // Asks the library whose `token` is, in the background, and keeps the
+    // token with its account (community_library.h, storeApiToken) when the
+    // library accepts it; `done` then gets the account, or what went wrong,
+    // on the message thread. Settings' Log in and the login dialog share it.
+    void checkCommunityToken(const String& token,
+                             std::function<void(const atlas::community::Account&, const String& error)> done);
+    // The Share form: an inline form like Save patch's. For a patch, its name,
+    // style, tags and description; for a bank, the library folder to share,
+    // its name, genre, tags and description. Share writes the patch or
+    // exports the folder to a temporary file and posts it on a background
+    // thread with the saved API token, with the upload's progress in a bar the
+    // focus moves to (ShareProgressBar); the library's answer is said, and the
+    // form stays open on its field errors. A token the store will not give,
+    // or one the library refuses, brings up the login dialog, and Share goes
+    // on once a new one is accepted. Cancel or Escape while it uploads stops
+    // the upload. `preface` opens what the form says ("Logged in as ...").
+    void showShareForm(bool bank, const String& preface = {});
     void hideShareForm();
     void commitShareForm();
-    void forgetShareToken();
     void populateShareFolders(const File& select);
     void chooseShareFolder();
     void loadShareGenres();
-    void finishShare(const atlas::community::UploadResult& result, const String& name, const String& typed_token,
-                     bool bank, int generation);
-    void updateShareTokenControls();
+    // The upload is under way: the bar shows, focused, and says what is being shared.
+    void startShareUpload(const String& message);
+    // What the upload's thread reports: -1 before the library has taken any of
+    // it; said now and then while the bar has the focus.
+    void setShareProgress(int percent, int generation);
+    void stopShareUpload();
+    void finishShare(const atlas::community::UploadResult& result, const String& name, bool bank, int generation);
     bool shareFormHasFocus() const;
     void savePresetFile(const File& file);
     void showPresetControls();
@@ -1123,10 +1146,9 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     AccessibleComboBox share_genre_;
     AccessibleTextEditor share_tags_;
     AccessibleTextEditor share_description_;
-    AccessibleTextEditor share_token_;
     AccessibleTextButton share_ok_ { "Share" };
-    AccessibleTextButton share_forget_token_ { "Log out" };
     AccessibleTextButton share_cancel_ { "Cancel" };
+    std::unique_ptr<ShareProgressBar> share_progress_;
     Label routing_summary_;
     AccessibleComboBox routing_mode_;
     TextButton routing_default_ { "Default routing" };
@@ -1382,11 +1404,16 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     bool save_patch_dialog_visible_ = false;
     // The Share form (showShareForm): whether it shows and for a bank, the
     // folders its menu offers, the genres the library lists, whether a share
-    // is under way, and where focus goes back to when it closes.
+    // is under way (with the flag that stops its upload, and when and at what
+    // percentage its progress was last said), and where focus goes back to
+    // when it closes.
     bool share_form_visible_ = false;
     bool share_bank_ = false;
     bool share_busy_ = false;
     int share_generation_ = 0;
+    std::shared_ptr<std::atomic<bool>> share_cancelled_;
+    uint32 share_progress_said_ms_ = 0;
+    int share_progress_said_ = -1;
     Array<File> share_folders_;
     std::vector<atlas::community::Genre> share_genres_;
     bool share_genres_loading_ = false;
@@ -1394,6 +1421,8 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     FocusReturn share_return_focus_;
     // The Settings window while it is open; closed with the editor.
     Component::SafePointer<DialogWindow> settings_window_;
+    // The login dialog (showCommunityLogin) while it is open.
+    Component::SafePointer<DialogWindow> login_window_;
     // Where focus was when the save or metadata form opened; it goes back
     // there, or to its replacement after a rebuild, when the form closes.
     FocusReturn save_patch_return_focus_;
@@ -1462,5 +1491,6 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
 
     friend class PresetFacetTableModel;
     friend class AtlasSettingsContent;
+    friend class CommunityLoginContent;
     friend class PresetResultsTableModel;
 };

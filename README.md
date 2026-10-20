@@ -28,8 +28,8 @@ Community banks rows of its Collection list show the patches and banks shared on
 downloads a patch into the Community library and loads it, or downloads a bank and unpacks
 it into the Atlas folder, and P plays the recording its uploader attached, when there is one.
 The Preset menu's Share patch and Share bank items upload the current patch or a folder of
-the user library to the same site, with the API token from your account there.
-Settings logs in to the site or turns the community library off.
+the user library to the same site; the first share asks you to log in with the API token
+from your account there. Settings logs in or out, or turns the community library off.
 
 Atlas's own announcements, such as the cursor position in the LFO, Trance gate and
 wavetable editors, are spoken by the screen reader. On Windows they go straight to

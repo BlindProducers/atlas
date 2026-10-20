@@ -5369,6 +5369,95 @@ class CpuUsageMeter final : public Component {
     uint32 last_refresh_ = 0;
 };
 
+// The Share form's upload progress (SynthEditor::startShareUpload): a bar
+// with the percentage the library has taken, or "preparing" before the first
+// byte (a bank is zipped first). The focus moves onto it when Share is
+// pressed, and a screen reader reads it as a progress indicator whose name
+// carries the percentage, as the CPU meter's does, since VoiceOver can leave
+// a progress indicator's value unread. The editor says the percentage now and
+// then while the bar keeps the focus (SynthEditor::setShareProgress); the bar
+// itself raises no value events, which NVDA would beep at.
+class ShareProgressBar : public Component {
+  public:
+    std::function<bool(const KeyPress&)> onKeyPressed;
+
+    ShareProgressBar() {
+      setTitle("Upload progress");
+      setWantsKeyboardFocus(true);
+    }
+
+    // -1 before the library has taken any of the upload.
+    void setPercent(int percent) {
+      percent = jlimit(-1, 100, percent);
+      if (percent == percent_)
+        return;
+      percent_ = percent;
+      repaint();
+    }
+
+    int percent() const { return percent_; }
+
+    // "preparing" or "42 percent": what a screen reader hears.
+    String spokenPercent() const {
+      return percent_ < 0 ? String("preparing") : String(percent_) + " percent";
+    }
+
+    bool keyPressed(const KeyPress& key) override { return onKeyPressed && onKeyPressed(key); }
+    void focusGained(FocusChangeType) override { repaint(); }
+    void focusLost(FocusChangeType) override { repaint(); }
+
+    void paint(Graphics& g) override {
+      auto bounds = getLocalBounds();
+      if (hasKeyboardFocus(false)) {
+        g.setColour(Colours::white);
+        g.drawRoundedRectangle(bounds.toFloat().reduced(1.0f), 4.0f, 1.0f);
+      }
+      g.setColour(Colours::white);
+      g.drawText(percent_ < 0 ? String("Preparing") : String(percent_) + "%", bounds.removeFromRight(90).reduced(6, 0),
+                 Justification::centredRight);
+      const auto bar = bounds.reduced(8, 10).toFloat();
+      g.setColour(Colour(0xff303840));
+      g.fillRoundedRectangle(bar, 3.0f);
+      g.setColour(Colour(0xff69b5cf));
+      g.fillRoundedRectangle(bar.withWidth(bar.getWidth() * static_cast<float>(jmax(0, percent_)) / 100.0f), 3.0f);
+    }
+
+    std::unique_ptr<AccessibilityHandler> createAccessibilityHandler() override {
+      class Value final : public AccessibilityValueInterface {
+        public:
+          explicit Value(ShareProgressBar& bar) : bar_(bar) { }
+          bool isReadOnly() const override { return true; }
+          double getCurrentValue() const override { return jmax(0, bar_.percent()); }
+          String getCurrentValueAsString() const override {
+            return bar_.percent() < 0 ? String("preparing") : String(bar_.percent()) + "%";
+          }
+          void setValue(double) override { }
+          void setValueAsString(const String&) override { }
+          AccessibleValueRange getRange() const override { return { { 0.0, 100.0 }, 1.0 }; }
+        private:
+          ShareProgressBar& bar_;
+      };
+      class Handler final : public AccessibilityHandler {
+        public:
+          explicit Handler(ShareProgressBar& bar) :
+              AccessibilityHandler(bar, AccessibilityRole::progressBar, {}, Interfaces{ std::make_unique<Value>(bar) }),
+              bar_(bar) { }
+          // The percentage in the spoken name too, read live (see the class).
+          String getTitle() const override { return bar_.getTitle() + ", " + bar_.spokenPercent(); }
+          String getDescription() const override { return {}; }
+          AccessibleState getCurrentState() const override {
+            return AccessibilityHandler::getCurrentState().withAccessibleOffscreen();
+          }
+        private:
+          ShareProgressBar& bar_;
+      };
+      return std::make_unique<Handler>(*this);
+    }
+
+  private:
+    int percent_ = -1;
+};
+
 class AccessibleParameterRow : public Component {
   public:
     explicit AccessibleParameterRow(AudioProcessorParameter& parameter, const String& accessibleName = {},
@@ -6696,16 +6785,17 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   configureShareEditor(share_tags_, "Share tags", "Tags separated by commas, for example dark, 808", "Tags");
   configureShareEditor(share_description_, "Share description",
                        "What the sound or bank is. Empty uses the comments in the file.", "Description");
-  // Where a token is kept is said once the form opens (updateShareTokenControls).
-  configureShareEditor(share_token_, "API token",
-                       "Your personal API token from the API tokens page of your account on " +
-                           atlas::community::libraryHost() + ". It starts with bpa_",
-                       "API token");
-  // A password box: what is typed is drawn as dots and screen readers are
-  // told it is protected, so the token is never shown or read out.
-  share_token_.setPasswordCharacter(static_cast<juce_wchar>(0x2022));
-  share_token_.setSelectAllWhenFocused(true);
-  share_token_.onTextChange = [this] { updateShareTokenControls(); };
+  // The upload's progress while Share is at work (startShareUpload). Escape
+  // on it cancels the upload and closes the form, as on the other controls.
+  share_progress_ = std::make_unique<ShareProgressBar>();
+  share_progress_->onKeyPressed = [this](const KeyPress& key) {
+    if (key.getKeyCode() == KeyPress::escapeKey && share_form_visible_) {
+      hideShareForm();
+      return true;
+    }
+    return false;
+  };
+  addChildComponent(*share_progress_);
 
   auto configureShareChoice = [this](AccessibleComboBox& box, const String& title, const String& help) {
     box.setTitle(title);
@@ -6746,8 +6836,6 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   };
   configureShareButton(share_ok_, "Share", "Upload to the community library");
   share_ok_.onClick = [this] { commitShareForm(); };
-  configureShareButton(share_forget_token_, "Log out", "Removes the saved API token");
-  share_forget_token_.onClick = [this] { forgetShareToken(); };
   configureShareButton(share_cancel_, "Cancel sharing", "Close the share form without uploading");
   share_cancel_.onClick = [this] { hideShareForm(); };
 
@@ -6943,10 +7031,9 @@ void SynthEditor::resized() {
     share_tags_.setBounds(second_row.removeFromLeft(second_row.getWidth() / 2).reduced(3));
     share_description_.setBounds(second_row.reduced(3));
     auto third_row = bounds.removeFromTop(38);
-    share_token_.setBounds(third_row.removeFromLeft(jmax(200, third_row.getWidth() - 480)).reduced(3));
     share_ok_.setBounds(third_row.removeFromLeft(120).reduced(3));
-    share_forget_token_.setBounds(third_row.removeFromLeft(200).reduced(3));
     share_cancel_.setBounds(third_row.removeFromLeft(120).reduced(3));
+    share_progress_->setBounds(third_row.reduced(3));
   }
   bounds.removeFromTop(10);
   viewport_.setBounds(bounds);
@@ -10009,21 +10096,15 @@ class AtlasSettingsContent : public Component, private FocusChangeListener {
       postPresetActionAnnouncement("Checking the API token", AccessibilityHandler::AnnouncementPriority::medium);
       const int generation = ++account_generation_;
       Component::SafePointer<AtlasSettingsContent> safe_this(this);
-      const String library_url = atlas::community::libraryUrl();
-      editor_->runPresetBackgroundTask([safe_this, token, library_url, generation](
-                                           const std::shared_ptr<std::atomic<bool>>& cancelled) {
-        atlas::community::Account account;
-        const String error = atlas::community::fetchAccount(library_url, token, account, cancelled.get());
-        if (cancelled->load())
-          return;
-        MessageManager::callAsync([safe_this, token, account, error, generation] {
-          if (safe_this != nullptr)
-            safe_this->loggedIn(token, account, error, generation);
-        });
+      editor_->checkCommunityToken(token, [safe_this, generation](const atlas::community::Account& account,
+                                                                  const String& error) {
+        if (safe_this != nullptr)
+          safe_this->loggedIn(account, error, generation);
       });
     }
 
-    void loggedIn(const String& token, const atlas::community::Account& account, const String& error, int generation) {
+    // A token that works is already kept, with its account (checkCommunityToken).
+    void loggedIn(const atlas::community::Account& account, const String& error, int generation) {
       if (generation != account_generation_)
         return;
       checking_ = false;
@@ -10032,8 +10113,6 @@ class AtlasSettingsContent : public Component, private FocusChangeListener {
         postPresetActionAnnouncement("Unable to log in. " + error, AccessibilityHandler::AnnouncementPriority::high);
         return;
       }
-      atlas::community::storeApiToken(token);
-      atlas::community::storeAccount(account);
       token_.clear();
       setAccountText(loggedInText(account, true));
       updateCommunityControls();
@@ -10135,6 +10214,147 @@ class AtlasSettingsContent : public Component, private FocusChangeListener {
     AccessibleTextEditor help_text_;
     bool checking_ = false;
     int account_generation_ = 0;
+};
+
+// The login dialog's content (SynthEditor::showCommunityLogin), a window like
+// Settings: why it is here, a box for the API token that hides what is typed,
+// Get your API token on the website, which opens the site's API tokens page
+// in the browser, Log in and Cancel. Log in checks the token with the library
+// and keeps it (SynthEditor::checkCommunityToken); the dialog then closes
+// with kLoggedIn, and whatever asked for the login goes on. Escape closes,
+// from the box too.
+class CommunityLoginContent : public Component {
+  public:
+    static constexpr int kLoggedIn = 1;
+
+    CommunityLoginContent(SynthEditor& editor, const String& message) : editor_(&editor) {
+      const String host = atlas::community::libraryHost();
+      setTitle("Log in to " + host);
+      message_.setTitle("Login message");
+      message_.setText(message, dontSendNotification);
+      message_.setJustificationType(Justification::topLeft);
+      addAndMakeVisible(message_);
+      token_.setTitle("API token");
+      token_.setDescription("Your personal API token from the API tokens page of your account on " + host +
+                            ". It starts with bpa_");
+      token_.setHelpText(token_.getDescription());
+      token_.setTextToShowWhenEmpty("API token", Colours::grey);
+      // A password box: what is typed is drawn as dots and screen readers are
+      // told it is protected, so the token is never shown or read out.
+      token_.setPasswordCharacter(static_cast<juce_wchar>(0x2022));
+      token_.setSelectAllWhenFocused(true);
+      token_.setWantsKeyboardFocus(true);
+      token_.onReturnKey = [this] { logIn(); };
+      token_.onEscapeKey = [this] { close(0); };
+      addAndMakeVisible(token_);
+      status_.setTitle("Login status");
+      addChildComponent(status_);
+      const String tokens_page = atlas::community::tokensPageUrl(atlas::community::libraryUrl());
+      configureButton(website_, "Get your API token on the website", "Opens " + tokens_page + " in your browser");
+      website_.onClick = [tokens_page] { URL(tokens_page).launchInDefaultBrowser(); };
+      configureButton(log_in_, "Log in",
+                      "Checks the API token with " + host + " and keeps it in " + atlas::community::tokenPlace());
+      log_in_.onClick = [this] { logIn(); };
+      configureButton(cancel_, "Cancel", "Closes without logging in");
+      cancel_.onClick = [this] { close(0); };
+      for (auto* button : { &website_, &log_in_, &cancel_ })
+        addAndMakeVisible(*button);
+      layout();
+    }
+
+    // Only the controls are the window's elements, as in Settings.
+    std::unique_ptr<AccessibilityHandler> createAccessibilityHandler() override {
+      return createIgnoredAccessibilityHandler(*this);
+    }
+
+    // What the dialog opens on: why it is here, then Tab to the token box.
+    Component& firstControl() { return message_; }
+    String statusText() const { return status_.getText(); }
+
+  private:
+    static void configureButton(TextButton& button, const String& title, const String& help) {
+      button.setButtonText(title);
+      button.setTitle(title);
+      button.setDescription(help);
+      button.setHelpText(help);
+      button.setWantsKeyboardFocus(true);
+    }
+
+    void close(int result) {
+      if (auto* window = findParentComponentOfClass<DialogWindow>())
+        window->exitModalState(result);
+    }
+
+    void setStatus(const String& text) {
+      status_.setText(text, dontSendNotification);
+      status_.setVisible(text.isNotEmpty());
+      if (auto* handler = status_.getAccessibilityHandler())
+        handler->notifyAccessibilityEvent(AccessibilityEvent::titleChanged);
+      layout();
+    }
+
+    void logIn() {
+      const String token = token_.getText().trim();
+      if (token.isEmpty() || !atlas::community::looksLikeApiToken(token)) {
+        token_.grabKeyboardFocus();
+        postPresetActionAnnouncement(token.isEmpty() ? String("Paste your API token first")
+                                                     : String("That is not an API token. Tokens start with bpa_"),
+                                     AccessibilityHandler::AnnouncementPriority::high);
+        return;
+      }
+      if (editor_ == nullptr || checking_)
+        return;
+      checking_ = true;
+      setStatus("Checking the API token.");
+      postPresetActionAnnouncement("Checking the API token", AccessibilityHandler::AnnouncementPriority::medium);
+      Component::SafePointer<CommunityLoginContent> safe_this(this);
+      editor_->checkCommunityToken(token, [safe_this](const atlas::community::Account& account, const String& error) {
+        if (safe_this != nullptr)
+          safe_this->loggedIn(account, error);
+      });
+    }
+
+    // A token that works is kept, with its account, by checkCommunityToken;
+    // what the login was for says so as it goes on (see showCommunityLogin).
+    void loggedIn(const atlas::community::Account&, const String& error) {
+      checking_ = false;
+      if (error.isNotEmpty()) {
+        setStatus("Not logged in. " + error + ".");
+        token_.grabKeyboardFocus();
+        postPresetActionAnnouncement("Unable to log in. " + error, AccessibilityHandler::AnnouncementPriority::high);
+        return;
+      }
+      token_.clear();
+      close(kLoggedIn);
+    }
+
+    void layout() {
+      constexpr int kMargin = 10;
+      constexpr int kRow = 30;
+      constexpr int kWidth = 560;
+      const int inner = kWidth - 2 * kMargin;
+      int y = kMargin;
+      message_.setBounds(kMargin, y, inner, 3 * kRow);
+      y += 3 * kRow + 4;
+      token_.setBounds(kMargin, y, inner, kRow - 4);
+      y += kRow;
+      if (status_.isVisible()) {
+        status_.setBounds(kMargin, y, inner, kRow - 4);
+        y += kRow;
+      }
+      for (auto* button : { &website_, &log_in_, &cancel_ }) {
+        button->setBounds(kMargin, y, inner, kRow - 4);
+        y += kRow;
+      }
+      setSize(kWidth, y + kMargin);
+    }
+
+    Component::SafePointer<SynthEditor> editor_;
+    SettingsText message_;
+    AccessibleTextEditor token_;
+    SettingsText status_;
+    AccessibleTextButton website_, log_in_, cancel_;
+    bool checking_ = false;
 };
 
 String SynthEditor::versionText() {
@@ -10530,10 +10750,10 @@ void SynthEditor::rebuildFocusOrder() {
     share_controls.push_back(&share_name_);
     share_controls.push_back(share_bank_ ? static_cast<Component*>(&share_genre_) : &share_style_);
     for (Component* control : { static_cast<Component*>(&share_tags_), static_cast<Component*>(&share_description_),
-                                static_cast<Component*>(&share_token_), static_cast<Component*>(&share_ok_) })
+                                static_cast<Component*>(&share_ok_) })
       share_controls.push_back(control);
-    if (share_forget_token_.isVisible())
-      share_controls.push_back(&share_forget_token_);
+    if (share_progress_->isVisible())
+      share_controls.push_back(share_progress_.get());
     share_controls.push_back(&share_cancel_);
     for (auto* control : share_controls) {
       focus_order_.push_back(control);
@@ -12534,8 +12754,8 @@ void SynthEditor::showPresetMenu() {
       case kReveal: revealSelectedPreset(); break;
       case kRefresh: refreshPresetList(); break;
       case kScanDownloads: toggleScanDownloads(); break;
-      case kSharePatch: showShareForm(false); break;
-      case kShareBank: showShareForm(true); break;
+      case kSharePatch: shareOnCommunity(false); break;
+      case kShareBank: shareOnCommunity(true); break;
       default: break;
     }
   });
@@ -12948,7 +13168,7 @@ namespace {
   }
 }
 
-void SynthEditor::showShareForm(bool bank) {
+void SynthEditor::showShareForm(bool bank, const String& preface) {
   if (save_patch_dialog_visible_)
     hideSavePresetDialog();
   if (!share_form_visible_)
@@ -12983,12 +13203,10 @@ void SynthEditor::showShareForm(bool bank) {
     share_tags_.setText(synth_.getTags(), false);
     share_description_.setText(synth_.getComments(), false);
   }
-  share_token_.clear();
-
   const String what = bank ? "Share bank" : "Share patch";
   share_prompt_.setText(what + " on " + host + (bank ? ". Choose the folder, its name, genre, tags and description"
                                                      : ". Check the name, style, tags and description") +
-                            ", then your API token, and press Share",
+                            ", then press Share",
                         dontSendNotification);
   share_prompt_.setTitle(what);
   share_prompt_.setDescription(share_prompt_.getText());
@@ -13003,20 +13221,19 @@ void SynthEditor::showShareForm(bool bank) {
   share_genre_.setVisible(bank);
   share_tags_.setVisible(true);
   share_description_.setVisible(true);
-  share_token_.setVisible(true);
   share_ok_.setVisible(true);
+  share_progress_->setVisible(share_busy_);
   share_cancel_.setVisible(true);
-  updateShareTokenControls();
   rebuildFocusOrder();
   resized();
 
   Component::SafePointer<SynthEditor> safe_this(this);
   Component::SafePointer<Component> first(bank ? static_cast<Component*>(&share_folder_) : &share_name_);
-  MessageManager::callAsync([safe_this, first, what, host] {
+  MessageManager::callAsync([safe_this, first, what, host, preface] {
     if (safe_this == nullptr || first == nullptr || !first->isShowing())
       return;
     first->grabKeyboardFocus();
-    postPresetActionAnnouncement(what + " on " + host, AccessibilityHandler::AnnouncementPriority::medium);
+    postPresetActionAnnouncement(preface + what + " on " + host, AccessibilityHandler::AnnouncementPriority::medium);
   });
 }
 
@@ -13026,8 +13243,7 @@ bool SynthEditor::shareFormHasFocus() const {
   for (const Component* control : { static_cast<const Component*>(&share_folder_), static_cast<const Component*>(&share_name_),
                                     static_cast<const Component*>(&share_style_), static_cast<const Component*>(&share_genre_),
                                     static_cast<const Component*>(&share_tags_), static_cast<const Component*>(&share_description_),
-                                    static_cast<const Component*>(&share_token_), static_cast<const Component*>(&share_ok_),
-                                    static_cast<const Component*>(&share_forget_token_),
+                                    static_cast<const Component*>(&share_ok_), static_cast<const Component*>(share_progress_.get()),
                                     static_cast<const Component*>(&share_cancel_) }) {
     if (control->hasKeyboardFocus(true))
       return true;
@@ -13036,6 +13252,10 @@ bool SynthEditor::shareFormHasFocus() const {
 }
 
 void SynthEditor::hideShareForm() {
+  // What the focus move says would cut short what the form has to say.
+  const ScopedAnnouncementHold hold;
+  if (share_busy_)
+    stopShareUpload();
   // Back where the form was opened from, as the Save patch form does, when
   // the focus is still in the form.
   const FocusReturn focus = std::exchange(share_return_focus_, {});
@@ -13044,57 +13264,154 @@ void SynthEditor::hideShareForm() {
       preset_menu_.isShowing())
     preset_menu_.grabKeyboardFocus();
   share_form_visible_ = false;
-  // A token typed and not used is not kept, not even in the text box.
-  share_token_.clear();
   for (Component* control : { static_cast<Component*>(&share_prompt_), static_cast<Component*>(&share_folder_),
                               static_cast<Component*>(&share_name_), static_cast<Component*>(&share_style_),
                               static_cast<Component*>(&share_genre_), static_cast<Component*>(&share_tags_),
-                              static_cast<Component*>(&share_description_), static_cast<Component*>(&share_token_),
-                              static_cast<Component*>(&share_ok_), static_cast<Component*>(&share_forget_token_),
-                              static_cast<Component*>(&share_cancel_) })
+                              static_cast<Component*>(&share_description_), static_cast<Component*>(&share_ok_),
+                              static_cast<Component*>(share_progress_.get()), static_cast<Component*>(&share_cancel_) })
     control->setVisible(false);
   rebuildFocusOrder();
   resized();
 }
 
-// What the token box and Log out say follows the login, which the config tells
-// without reading the token from its store.
-void SynthEditor::updateShareTokenControls() {
-  const bool stored = atlas::community::hasApiToken();
-  const auto account = atlas::community::storedAccount();
-  const String place = atlas::community::tokenPlace();
-  const String help = stored
-      ? "API token. Leave it empty to " +
-            (account.known() ? "share as " + atlas::community::accountName(account)
-                             : "use the saved token, kept in " + place) +
-            ", or type another to replace it"
-      : "Your personal API token from the API tokens page of your account on " + atlas::community::libraryHost() +
-            ". It starts with bpa_. Once it works it is kept in " + place;
-  share_token_.setDescription(help);
-  share_token_.setHelpText(help);
-  share_token_.setTextToShowWhenEmpty(stored ? "Saved token" : "API token", Colours::grey);
-  share_forget_token_.setDescription("Removes the API token from " + place);
-  share_forget_token_.setHelpText(share_forget_token_.getDescription());
-  const bool show_forget = share_form_visible_ && stored;
-  if (share_forget_token_.isVisible() != show_forget) {
-    share_forget_token_.setVisible(show_forget);
-    if (share_form_visible_) {
-      rebuildFocusOrder();
-      resized();
-    }
+namespace {
+  // What the login dialog says while this DAW has no API token.
+  String noTokenMessage() {
+    return "No API token found. To share, paste your personal API token from your account on " +
+           atlas::community::libraryHost() + ". It starts with bpa_.";
   }
+
+  // "Logged in as Jay Ladder (jayladdermusic). ", to open what follows a
+  // login; with where the token is kept when the store would not keep it (it
+  // is gone once the DAW closes).
+  String loggedInPreface() {
+    const auto account = atlas::community::storedAccount();
+    String preface = account.known() ? "Logged in as " + atlas::community::accountName(account)
+                                     : String("Logged in");
+    if (atlas::community::tokenInMemoryOnly())
+      preface << ". " << atlas::community::tokenStorageText(true).trimCharactersAtEnd(".");
+    return preface + ". ";
+  }
+
+  // How often the upload's percentage is said while its bar has the focus.
+  constexpr uint32 kShareProgressSayMs = 2000;
 }
 
-void SynthEditor::forgetShareToken() {
-  const bool had = atlas::community::hasApiToken();
-  // Off the button before it goes, so the focus stays in the form.
-  if (share_forget_token_.hasKeyboardFocus(false) && share_token_.isShowing())
-    share_token_.grabKeyboardFocus();
-  atlas::community::storeApiToken({});
-  share_token_.clear();
-  updateShareTokenControls();
-  postPresetActionAnnouncement(had ? "Logged out" : "Not logged in",
-                               AccessibilityHandler::AnnouncementPriority::medium);
+void SynthEditor::shareOnCommunity(bool bank) {
+  if (atlas::community::hasApiToken()) {
+    showShareForm(bank);
+    return;
+  }
+  Component::SafePointer<SynthEditor> safe_this(this);
+  showCommunityLogin(noTokenMessage(), [safe_this, bank] {
+    if (safe_this != nullptr)
+      safe_this->showShareForm(bank, loggedInPreface());
+  });
+}
+
+void SynthEditor::showCommunityLogin(const String& message, std::function<void()> on_logged_in) {
+  // One at a time: another request brings the open dialog to the front.
+  if (auto* open = login_window_.getComponent()) {
+    open->toFront(true);
+    return;
+  }
+  auto* content = new CommunityLoginContent(*this, message);
+  Component::SafePointer<Component> first(&content->firstControl());
+  DialogWindow::LaunchOptions options;
+  options.dialogTitle = "Log in to " + atlas::community::libraryHost();
+  options.content.setOwned(content);
+  options.componentToCentreAround = this;
+  options.useNativeTitleBar = true;
+  options.resizable = false;
+  options.escapeKeyTriggersCloseButton = true;
+  login_window_ = launchDialogWindow(options);
+  if (login_window_ == nullptr)
+    return;
+  // Closed with a login: on to what asked for it, once the window has gone
+  // and the focus is back on the control that opened it.
+  Component::SafePointer<SynthEditor> safe_this(this);
+  ModalComponentManager::getInstance()->attachCallback(
+      login_window_.getComponent(), ModalCallbackFunction::create([safe_this, on_logged_in](int result) {
+        if (result != CommunityLoginContent::kLoggedIn || safe_this == nullptr || !on_logged_in)
+          return;
+        MessageManager::callAsync([safe_this, on_logged_in] {
+          if (safe_this != nullptr)
+            on_logged_in();
+        });
+      }));
+  // The message first: why the dialog is here, then Tab to the token box.
+  MessageManager::callAsync([first] {
+    if (first != nullptr && first->isShowing())
+      first->grabKeyboardFocus();
+  });
+}
+
+void SynthEditor::checkCommunityToken(const String& token,
+                                      std::function<void(const atlas::community::Account&, const String&)> done) {
+  Component::SafePointer<SynthEditor> safe_this(this);
+  const String library_url = atlas::community::libraryUrl();
+  runPresetBackgroundTask([safe_this, token, library_url, done](const std::shared_ptr<std::atomic<bool>>& cancelled) {
+    atlas::community::Account account;
+    const String error = atlas::community::fetchAccount(library_url, token, account, cancelled.get());
+    if (cancelled->load())
+      return;
+    MessageManager::callAsync([safe_this, token, account, error, done] {
+      if (safe_this == nullptr)
+        return;
+      // Kept in the system's credential store, never in a file (community_library.h).
+      if (error.isEmpty()) {
+        atlas::community::storeApiToken(token);
+        atlas::community::storeAccount(account);
+      }
+      done(account, error);
+    });
+  });
+}
+
+void SynthEditor::startShareUpload(const String& message) {
+  share_busy_ = true;
+  share_progress_said_ = -1;
+  share_progress_said_ms_ = Time::getMillisecondCounter();
+  share_progress_->setPercent(-1);
+  share_progress_->setVisible(true);
+  rebuildFocusOrder();
+  resized();
+  // Onto the bar, whose name and value the screen reader reads; what is being
+  // shared is said after that rather than cut short by it.
+  const ScopedAnnouncementHold hold;
+  share_progress_->grabKeyboardFocus();
+  postPresetActionAnnouncement(message, AccessibilityHandler::AnnouncementPriority::medium);
+}
+
+void SynthEditor::setShareProgress(int percent, int generation) {
+  if (generation != share_generation_ || !share_busy_)
+    return;
+  share_progress_->setPercent(percent);
+  // Said while the bar has the focus, at most every couple of seconds, so a
+  // quick upload is not read out step by step.
+  if (percent < 0 || percent == share_progress_said_ || !share_progress_->hasKeyboardFocus(false))
+    return;
+  const uint32 now = Time::getMillisecondCounter();
+  if (now - share_progress_said_ms_ < kShareProgressSayMs)
+    return;
+  share_progress_said_ = percent;
+  share_progress_said_ms_ = now;
+  postPresetActionAnnouncement(share_progress_->spokenPercent(), AccessibilityHandler::AnnouncementPriority::medium);
+}
+
+// Cancel or Escape while Share is at work: the upload's thread sees the flag
+// at its next progress step and breaks the connection off, and its answer,
+// if one comes, is ignored.
+void SynthEditor::stopShareUpload() {
+  if (!share_busy_)
+    return;
+  if (share_cancelled_ != nullptr)
+    share_cancelled_->store(true);
+  share_cancelled_.reset();
+  ++share_generation_;
+  share_busy_ = false;
+  share_progress_->setVisible(false);
+  postPresetActionAnnouncement("Sharing cancelled", AccessibilityHandler::AnnouncementPriority::high);
 }
 
 void SynthEditor::populateShareFolders(const File& select) {
@@ -13189,20 +13506,23 @@ void SynthEditor::commitShareForm() {
     return;
   }
   const String host = atlas::community::libraryHost();
-  const String typed_token = share_token_.getText().trim();
-  // The saved token is read from its store only here, to send it.
+  Component::SafePointer<SynthEditor> safe_this(this);
+  // Logged out meanwhile (in Settings), or a saved token the store will not
+  // give: the login dialog, and Share goes on once a token is accepted. The
+  // saved token is read from its store only here, to send it.
+  auto share_again = [safe_this] {
+    if (safe_this != nullptr && safe_this->share_form_visible_)
+      safe_this->commitShareForm();
+  };
+  if (!atlas::community::hasApiToken()) {
+    showCommunityLogin(noTokenMessage(), share_again);
+    return;
+  }
   String problem;
-  const String token = typed_token.isNotEmpty() ? typed_token : atlas::community::storedApiToken(&problem);
-  if (token.isEmpty() || !atlas::community::looksLikeApiToken(token)) {
-    // A token gone from its store has logged this DAW out.
-    updateShareTokenControls();
-    share_token_.grabKeyboardFocus();
-    postPresetActionAnnouncement(problem.isNotEmpty()
-                                     ? "Atlas could not read the saved API token, because " + problem + ". Type it again"
-                                 : token.isEmpty()
-                                     ? "Type your API token. Make one on the API tokens page of your account on " + host
-                                     : String("That is not an API token. Tokens start with bpa_"),
-                                 AccessibilityHandler::AnnouncementPriority::high);
+  const String token = atlas::community::storedApiToken(&problem);
+  if (token.isEmpty()) {
+    showCommunityLogin("Atlas could not read the saved API token, because " + problem + ". Paste it again to log in.",
+                       share_again);
     return;
   }
 
@@ -13211,8 +13531,25 @@ void SynthEditor::commitShareForm() {
   fields.tags = share_tags_.getText().trim();
   fields.description = share_description_.getText().trim();
   const String library_url = atlas::community::libraryUrl();
-  Component::SafePointer<SynthEditor> safe_this(this);
   const int generation = ++share_generation_;
+  // The upload's thread reports how far it has got (setShareProgress) as the
+  // percentage changes, and stops once Cancel has set the flag.
+  auto cancelled_share = std::make_shared<std::atomic<bool>>(false);
+  share_cancelled_ = cancelled_share;
+  auto posted = std::make_shared<std::atomic<int>>(-1);
+  const atlas::community::UploadProgress progress = [safe_this, generation, cancelled_share, posted](int64 sent,
+                                                                                                     int64 total) {
+    if (cancelled_share->load())
+      return false;
+    const int percent = total > 0 ? static_cast<int>(jlimit<int64>(0, 100, sent * 100 / total)) : -1;
+    if (posted->exchange(percent) != percent) {
+      MessageManager::callAsync([safe_this, generation, percent] {
+        if (safe_this != nullptr)
+          safe_this->setShareProgress(percent, generation);
+      });
+    }
+    return true;
+  };
 
   if (share_bank_) {
     const int folder_index = share_folder_.getSelectedItemIndex();
@@ -13232,10 +13569,8 @@ void SynthEditor::commitShareForm() {
     }
     fields.genre = share_genres_[static_cast<size_t>(genre_index)].slug;
     const String name = fields.name.isNotEmpty() ? fields.name : folder.getFileName();
-    share_busy_ = true;
-    postPresetActionAnnouncement("Sharing bank " + name + " on " + host,
-                                 AccessibilityHandler::AnnouncementPriority::medium);
-    runPresetBackgroundTask([safe_this, folder, name, fields, token, typed_token, library_url, generation](
+    startShareUpload("Sharing bank " + name + " on " + host);
+    runPresetBackgroundTask([safe_this, folder, name, fields, token, library_url, generation, cancelled_share, progress](
                                 const std::shared_ptr<std::atomic<bool>>& cancelled) {
       const File scratch = shareScratchFolder();
       const File archive = scratch.getChildFile(shareFileName(name, "Atlas Bank") + "." + String(vital::kBankExtension));
@@ -13246,14 +13581,14 @@ void SynthEditor::commitShareForm() {
       else if (archive.getSize() > kMaxSharedBankBytes)
         result.error = "The bank is " + File::descriptionOfSizeInBytes(archive.getSize()) +
                        ", more than the 512 MB the library takes";
-      else if (!cancelled->load())
-        result = atlas::community::uploadBank(library_url, token, archive, fields, cancelled.get());
+      else if (!cancelled->load() && !cancelled_share->load())
+        result = atlas::community::uploadBank(library_url, token, archive, fields, cancelled.get(), progress);
       scratch.deleteRecursively();
-      if (cancelled->load())
+      if (cancelled->load() || cancelled_share->load())
         return;
-      MessageManager::callAsync([safe_this, result, name, typed_token, generation] {
+      MessageManager::callAsync([safe_this, result, name, generation] {
         if (safe_this != nullptr)
-          safe_this->finishShare(result, name, typed_token, true, generation);
+          safe_this->finishShare(result, name, true, generation);
       });
     });
     return;
@@ -13273,39 +13608,54 @@ void SynthEditor::commitShareForm() {
                                  AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
-  share_busy_ = true;
-  postPresetActionAnnouncement("Sharing " + name + " on " + host, AccessibilityHandler::AnnouncementPriority::medium);
-  runPresetBackgroundTask([safe_this, scratch, preset, name, fields, token, typed_token, library_url, generation](
-                              const std::shared_ptr<std::atomic<bool>>& cancelled) {
-    const auto result = atlas::community::uploadPreset(library_url, token, preset, fields, cancelled.get());
+  startShareUpload("Sharing " + name + " on " + host);
+  runPresetBackgroundTask([safe_this, scratch, preset, name, fields, token, library_url, generation, cancelled_share,
+                           progress](const std::shared_ptr<std::atomic<bool>>& cancelled) {
+    const auto result = atlas::community::uploadPreset(library_url, token, preset, fields, cancelled.get(), progress);
     scratch.deleteRecursively();
-    if (cancelled->load())
+    if (cancelled->load() || cancelled_share->load())
       return;
-    MessageManager::callAsync([safe_this, result, name, typed_token, generation] {
+    MessageManager::callAsync([safe_this, result, name, generation] {
       if (safe_this != nullptr)
-        safe_this->finishShare(result, name, typed_token, false, generation);
+        safe_this->finishShare(result, name, false, generation);
     });
   });
 }
 
-void SynthEditor::finishShare(const atlas::community::UploadResult& result, const String& name,
-                              const String& typed_token, bool bank, int generation) {
+void SynthEditor::finishShare(const atlas::community::UploadResult& result, const String& name, bool bank,
+                              int generation) {
   if (generation != share_generation_)
     return;
   share_busy_ = false;
+  share_cancelled_.reset();
   if (!result.shared()) {
     LoadSave::writeErrorLog("Community share failed (" + String(result.status) + "): " + result.error);
-    String message = "Unable to share " + name + ". " + result.error;
-    if (result.tokenRefused() && typed_token.isEmpty() && atlas::community::hasApiToken())
-      message += ". The saved token may have been deleted on the site; Log out removes it";
+    const String message = "Unable to share " + name + ". " + result.error;
+    // Off the bar before it goes: back on Share, to try again. What the
+    // focus move says would cut the news short.
+    const ScopedAnnouncementHold hold;
+    if (share_form_visible_ && share_progress_->hasKeyboardFocus(false))
+      share_ok_.grabKeyboardFocus();
+    share_progress_->setVisible(false);
+    if (share_form_visible_) {
+      rebuildFocusOrder();
+      resized();
+    }
+    if (result.tokenRefused()) {
+      // The saved token no longer works (deleted on the site, say): a new
+      // one logs in, and Share goes on.
+      Component::SafePointer<SynthEditor> safe_this(this);
+      showCommunityLogin(message + ". The saved API token may have been deleted on the site. Paste a new one to log in.",
+                         [safe_this] {
+        if (safe_this != nullptr && safe_this->share_form_visible_)
+          safe_this->commitShareForm();
+      });
+      return;
+    }
     postPresetActionAnnouncement(message, AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
 
-  // A token that worked is kept for next time, in the system's credential
-  // store (atlas::community::storeApiToken), never in a file.
-  if (typed_token.isNotEmpty())
-    atlas::community::storeApiToken(typed_token);
   if (result.uploader.known() && atlas::community::hasApiToken())
     atlas::community::storeAccount(result.uploader);
   // The library's lists now hold the new item: fetched afresh on their next showing.
@@ -13317,16 +13667,15 @@ void SynthEditor::finishShare(const atlas::community::UploadResult& result, cons
     community_banks_loaded_ = false;
   else
     community_list_loaded_ = false;
-  String message = "Shared " + (result.name.isNotEmpty() ? result.name : name) + " on " +
-                   atlas::community::libraryHost();
-  // Said only when the store would not keep a typed token: it is gone once the DAW closes.
-  if (typed_token.isNotEmpty() && atlas::community::tokenInMemoryOnly())
-    message << ". " << atlas::community::tokenStorageText(true).trimCharactersAtEnd(".");
+  const String message = "Shared " + (result.name.isNotEmpty() ? result.name : name) + " on " +
+                         atlas::community::libraryHost();
   {
     // What the focus move says would cut the news short.
     const ScopedAnnouncementHold hold;
     if (share_form_visible_)
       hideShareForm();
+    else
+      share_progress_->setVisible(false);
     postPresetActionAnnouncement(message, AccessibilityHandler::AnnouncementPriority::high);
   }
   if ((bank && inCommunityBankCollection()) || (!bank && inCommunityCollection())) {

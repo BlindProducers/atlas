@@ -702,15 +702,21 @@ juce::String downloadFile(const juce::URL& url, const juce::File& target, const 
 }
 
 const std::vector<Style>& styles() {
+  // The library's own list (library/models.py, Style), in its order.
   static const std::vector<Style> kStyles = {
-    { "bass", "Bass" }, { "lead", "Lead" }, { "keys", "Keys" }, { "pad", "Pad" }, { "percussion", "Percussion" },
-    { "sequence", "Sequence" }, { "experiment", "Experiment" }, { "sfx", "SFX" }, { "template", "Template" },
-    { "other", "Other" } };
+    { "atmosphere", "Atmosphere" }, { "bass", "Bass" }, { "bell", "Bells" }, { "brass", "Brass" },
+    { "chord", "Chords" }, { "drums", "Drums" }, { "experiment", "Experiment" }, { "guitar", "Guitar" },
+    { "keys", "Keys" }, { "lead", "Lead" }, { "organ", "Organ" }, { "pad", "Pad" },
+    { "percussion", "Percussion" }, { "piano", "Piano" }, { "pluck", "Pluck" }, { "sequence", "Sequence" },
+    { "sfx", "SFX" }, { "strings", "Strings" }, { "template", "Template" }, { "vocal", "Vocal" },
+    { "woodwind", "Woodwind" }, { "world", "World" }, { "other", "Other" } };
   return kStyles;
 }
 
 juce::String styleIdForText(const juce::String& text) {
-  // The library's own reading (library/models.py, style_from_text).
+  // The library's own reading (library/models.py, style_from_text): an id or
+  // label, then the other names a style goes by, then anything that starts
+  // with an id ("Bass drop", "Leads").
   const juce::String value = text.trim().toLowerCase();
   if (value.isEmpty())
     return {};
@@ -719,9 +725,30 @@ juce::String styleIdForText(const juce::String& text) {
       return style.id;
   }
   static const std::pair<const char*, const char*> kAliases[] = {
-    { "experimental", "experiment" }, { "fx", "sfx" }, { "sound effects", "sfx" }, { "drums", "percussion" },
-    { "drum", "percussion" }, { "perc", "percussion" }, { "key", "keys" }, { "pads", "pad" }, { "leads", "lead" },
-    { "basses", "bass" }, { "seq", "sequence" }, { "sequences", "sequence" } };
+    { "atmos", "atmosphere" }, { "soundscape", "atmosphere" }, { "soundscapes", "atmosphere" },
+    { "texture", "atmosphere" }, { "textures", "atmosphere" }, { "drone", "atmosphere" }, { "drones", "atmosphere" },
+    { "ambient", "atmosphere" },
+    { "basses", "bass" }, { "sub", "bass" }, { "sub bass", "bass" },
+    { "mallet", "bell" }, { "mallets", "bell" }, { "chime", "bell" }, { "chimes", "bell" },
+    { "horn", "brass" }, { "horns", "brass" }, { "trumpet", "brass" }, { "trombone", "brass" },
+    { "stab", "chord" }, { "stabs", "chord" },
+    { "drum", "drums" }, { "drum kit", "drums" }, { "drumkit", "drums" }, { "kit", "drums" },
+    { "experimental", "experiment" },
+    { "key", "keys" }, { "keyboard", "keys" }, { "keyboards", "keys" }, { "electric piano", "keys" },
+    { "e-piano", "keys" }, { "epiano", "keys" }, { "rhodes", "keys" }, { "wurlitzer", "keys" }, { "wurli", "keys" },
+    { "leads", "lead" },
+    { "pads", "pad" },
+    { "perc", "percussion" }, { "percussive", "percussion" },
+    { "seq", "sequence" }, { "sequences", "sequence" }, { "arp", "sequence" }, { "arps", "sequence" },
+    { "arpeggio", "sequence" }, { "arpeggios", "sequence" }, { "arpeggiated", "sequence" },
+    { "fx", "sfx" }, { "sound effects", "sfx" }, { "sound effect", "sfx" }, { "effects", "sfx" },
+    { "string", "strings" }, { "violin", "strings" }, { "violins", "strings" }, { "cello", "strings" },
+    { "init", "template" },
+    { "voice", "vocal" }, { "voices", "vocal" }, { "vox", "vocal" }, { "choir", "vocal" }, { "choirs", "vocal" },
+    { "wind", "woodwind" }, { "winds", "woodwind" }, { "flute", "woodwind" }, { "flutes", "woodwind" },
+    { "reed", "woodwind" }, { "reeds", "woodwind" }, { "sax", "woodwind" }, { "saxophone", "woodwind" },
+    { "clarinet", "woodwind" },
+    { "ethnic", "world" } };
   for (const auto& [alias, id] : kAliases) {
     if (value == alias)
       return id;
@@ -731,6 +758,10 @@ juce::String styleIdForText(const juce::String& text) {
       return style.id;
   }
   return {};
+}
+
+juce::String tokensPageUrl(const juce::String& library_url) {
+  return library_url.trimCharactersAtEnd("/") + "/accounts/tokens/";
 }
 
 juce::String genresPageUrl(const juce::String& library_url) {
@@ -902,19 +933,27 @@ UploadResult parseUploadAnswer(int status, const std::string& body) {
   return result;
 }
 
-UploadResult upload(const UploadRequest& request, const std::atomic<bool>* cancelled) {
+UploadResult upload(const UploadRequest& request, const std::atomic<bool>* cancelled, const UploadProgress& progress) {
   UploadResult result;
   if (request.error.isNotEmpty()) {
     result.error = request.error;
     return result;
   }
   int status = 0;
+  // JUCE tells how much of the body has gone out as it goes (on macOS about
+  // every millisecond, on Windows after each chunk); answering false breaks
+  // the connection off, which is how a cancelled share stops.
   auto stream = request.url.createInputStream(juce::URL::InputStreamOptions(juce::URL::ParameterHandling::inPostData)
                                                   .withHttpRequestCmd("POST")
                                                   .withExtraHeaders(request.headers)
                                                   .withConnectionTimeoutMs(kUploadTimeoutMs)
                                                   .withStatusCode(&status)
-                                                  .withNumRedirectsToFollow(0));
+                                                  .withNumRedirectsToFollow(0)
+                                                  .withProgressCallback([cancelled, progress](int sent, int total) {
+                                                    if (cancelled != nullptr && cancelled->load())
+                                                      return false;
+                                                    return !progress || progress(sent, total);
+                                                  }));
   if (stream == nullptr) {
     result.status = status;
     result.error = status != 0 ? "The library " + httpStatusText(status)
@@ -932,13 +971,13 @@ UploadResult upload(const UploadRequest& request, const std::atomic<bool>* cance
 }
 
 UploadResult uploadPreset(const juce::String& library_url, const juce::String& token, const juce::File& preset,
-                          const ShareFields& fields, const std::atomic<bool>* cancelled) {
-  return upload(buildPresetUpload(library_url, preset, fields, token), cancelled);
+                          const ShareFields& fields, const std::atomic<bool>* cancelled, const UploadProgress& progress) {
+  return upload(buildPresetUpload(library_url, preset, fields, token), cancelled, progress);
 }
 
 UploadResult uploadBank(const juce::String& library_url, const juce::String& token, const juce::File& bank,
-                        const ShareFields& fields, const std::atomic<bool>* cancelled) {
-  return upload(buildBankUpload(library_url, bank, fields, token), cancelled);
+                        const ShareFields& fields, const std::atomic<bool>* cancelled, const UploadProgress& progress) {
+  return upload(buildBankUpload(library_url, bank, fields, token), cancelled, progress);
 }
 
 namespace {
