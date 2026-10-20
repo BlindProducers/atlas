@@ -796,6 +796,7 @@ namespace {
 #include "community_library_tests.h"
 #include "window_repaint_tests.h"
 #include "text_field_reading_tests.h"
+#include "modulation_amount_slider_tests.h"
 
 int main(int argc, char** argv) {
   ScopedJuceInitialiser_GUI juce;
@@ -957,6 +958,8 @@ int main(int argc, char** argv) {
     return runWindowRepaintTests();
   if (argc > 1 && String(argv[1]) == "--text-field-reading")
     return runTextFieldReadingTests();
+  if (argc > 1 && String(argv[1]) == "--modulation-amount-slider")
+    return runModulationAmountSliderTests();
   if (argc > 1 && String(argv[1]) == "--first-window-timing") {
     // Timing only: the cost of the process's first window, before Atlas draws.
     firstWindowTiming();

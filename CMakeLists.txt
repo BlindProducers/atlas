@@ -776,6 +776,10 @@ if(ATLAS_BUILD_TIMING_TESTS)
   # NVDA reads the character Backspace deletes in a text field, through UI
   # Automation (third_party/patches/juce8-uia-text-reading.patch).
   add_test(NAME atlas_text_field_reading COMMAND AtlasMacroTests --text-field-reading)
+  # Settings > Modulation amount slider: the amount prompt's slider steps and
+  # reads as the destination's own control and plays each amount at once;
+  # Return keeps it, anything else puts back the amount the route had.
+  add_test(NAME atlas_modulation_amount_slider COMMAND AtlasMacroTests --modulation-amount-slider)
 
   juce_add_console_app(AtlasDefuseTests PRODUCT_NAME "Atlas Defuse Tests")
   juce_generate_juce_header(AtlasDefuseTests)

@@ -221,6 +221,25 @@ class AccessibleTextEditor : public TextEditor {
     std::unique_ptr<AccessibilityHandler> createAccessibilityHandler() override;
 };
 
+// The modulation amount prompt's slider (Settings > Modulation amount slider).
+// It moves through the values the modulation can take its destination to, and
+// steps and reads them as the destination's own slider does; the route plays
+// each amount at once. Return keeps the amount, as OK does.
+class ModulationAmountSlider : public ParameterSlider {
+  public:
+    std::function<void()> onReturnKey;
+
+    bool keyPressed(const KeyPress& key) override {
+      if (key.getKeyCode() == KeyPress::returnKey && onReturnKey) {
+        onReturnKey();
+        return true;
+      }
+      return ParameterSlider::keyPressed(key);
+    }
+
+    std::unique_ptr<AccessibilityHandler> createAccessibilityHandler() override;
+};
+
 class ModulationRemapKeyboardComponent : public Component {
   public:
     std::function<bool(const KeyPress&)> onKeyPressed;
@@ -372,6 +391,15 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
       applyInlineTextPrompt();
       return modulationAmountSummary(sourceId, destinationId, amount);
     }
+    // Tests: Assign modulation's amount prompt left open, with its text box
+    // and its slider (shown only with Settings > Modulation amount slider on).
+    void openModulationAmountPromptForTesting(const String& sourceId, const String& destinationId,
+                                              Component* target = nullptr) {
+      connectModulationAndPromptForAmount(sourceId, destinationId, target != nullptr ? *target : *this);
+    }
+    bool isModulationAmountPromptOpen() const { return modulation_amount_prompt_visible_; }
+    TextEditor& modulationAmountEditorForTesting() { return modulation_amount_editor_; }
+    ParameterSlider& modulationAmountSliderForTesting() { return modulation_amount_slider_; }
     // The focusable control of the row showing `parameterId`, and the focused row's parameter.
     Component* controlForParameter(const String& parameterId) const;
     String focusedRowParameterId() const { return focusedParameterId(); }
@@ -1090,6 +1118,17 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     bool moveEffectInSection(const String& sectionName, const String& effectId, int direction,
                              const String& focusedTitle);
     float modulationAmountFromPeakText(const String& destinationId, const String& text) const;
+    // The amount that takes the destination from where it is now to
+    // `targetValue`, a value of its own (0 to 1, as its host parameter).
+    float modulationAmountForTarget(const ValueBridge& destination, double targetValue) const;
+    // Shows the amount prompt's slider for `destination`, at `peakValue`, when
+    // the setting is on, and hides it otherwise.
+    void setUpModulationAmountSlider(ValueBridge* destination, double peakValue);
+    // The slider moved: the route plays its new amount at once, so it can be
+    // heard while the prompt is open. OK keeps it; anything else puts back
+    // the amount the route had when the prompt opened (revertModulationAudition).
+    void auditionModulationAmount();
+    void revertModulationAudition();
     String modulationAmountSummary(const String& sourceId, const String& destinationId, float amount) const;
     bool isMacroBipolar(int macroIndex) const;
     void setMacroBipolar(int macroIndex, bool bipolar);
@@ -1156,6 +1195,14 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     TextButton routing_serial_backward_ { "Serial filters 2 into 1" };
     Label modulation_amount_prompt_;
     TextEditor modulation_amount_editor_;
+    ModulationAmountSlider modulation_amount_slider_;
+    // What the slider last wrote into the text box: while the box still says
+    // it, OK sets the slider's own value, which the text may round.
+    String modulation_slider_text_;
+    // The route's amount when the prompt opened, and whether the slider has
+    // changed it since (auditionModulationAmount).
+    float modulation_amount_at_open_ = 0.0f;
+    bool modulation_amount_auditioned_ = false;
     TextButton modulation_amount_ok_ { "OK" };
     TextButton modulation_amount_cancel_ { "Cancel" };
     Viewport viewport_;

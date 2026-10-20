@@ -2223,6 +2223,12 @@ void LoadSave::saveDisplayHzFrequency(bool hz_frequency) {
   saveJsonToConfig(data);
 }
 
+void LoadSave::saveModulationAmountSlider(bool shown) {
+  json data = getConfigJson();
+  data["modulation_amount_slider"] = shown;
+  saveJsonToConfig(data);
+}
+
 void LoadSave::saveAuthenticated(bool authenticated) {
   json data = getConfigJson();
   data["authenticated"] = authenticated;
@@ -2524,6 +2530,12 @@ bool LoadSave::displayHzFrequency() {
   std::lock_guard<std::mutex> lock(cache.mutex);
   const json& data = currentConfig(cache);
   const auto found = data.is_object() ? data.find("hz_frequency") : data.end();
+  return found != data.end() && found->is_boolean() && found->get<bool>();
+}
+
+bool LoadSave::modulationAmountSlider() {
+  json data = getConfigJson();
+  const auto found = data.is_object() ? data.find("modulation_amount_slider") : data.end();
   return found != data.end() && found->is_boolean() && found->get<bool>();
 }
 

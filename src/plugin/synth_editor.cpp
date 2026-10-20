@@ -440,6 +440,15 @@ namespace {
     return static_cast<double>(bridge.getValueForText(text));
   }
 
+  // Where a modulation of `amount` (-1 to 1 of the range) takes `destination`
+  // from where it is now, as a value of its own (0 to 1, as its host parameter).
+  double modulationTargetValue(const ValueBridge& destination, float amount) {
+    const auto& details = destination.getDetails();
+    const float current = destination.convertToEngineValue(destination.getValue());
+    return destination.convertToPluginValue(jlimit(details.min, details.max,
+                                                   current + amount * (details.max - details.min)));
+  }
+
   bool shouldPostPluginAnnouncement(const String& message) {
     const auto& settings = accessibilitySpeechSettings();
     if (!settings.speech_feedback)
@@ -5005,6 +5014,247 @@ namespace {
         return std::make_unique<OffscreenButtonAccessibilityHandler>(*this, AccessibilityRole::toggleButton);
       }
   };
+
+  // The range of a parameter's slider and how its keys step through it, in the
+  // units it reads in: Hz, milliseconds, decibels, percent and so on. A row's
+  // slider and the modulation amount slider, which moves through the values a
+  // modulation can take its destination to, step alike.
+  void setParameterSliderSteps(ParameterSlider& slider, const AudioProcessorParameter& parameter,
+                               double minNormalizedValue, double maxNormalizedValue) {
+    // The modulation amount slider serves one destination after another.
+    slider.toAdjustmentValue = nullptr;
+    slider.fromAdjustmentValue = nullptr;
+    slider.adjustmentStep = nullptr;
+    const auto* bridge = dynamic_cast<const ValueBridge*>(&parameter);
+    const String parameter_id = bridge != nullptr ? bridge->getParameterId() : String();
+    const int steps = parameter.getNumSteps();
+    const bool amplitude_seed = parameter_id.startsWith("osc_") && parameter_id.endsWith("_spectral_morph_seed");
+    double interval = steps > 1 && (steps < 10000 || amplitude_seed) ? 1.0 / (steps - 1) : 0.0;
+    slider.setRange(minNormalizedValue, maxNormalizedValue, interval);
+    // The effects whose sliders step in display units of their own, all
+    // continuous: alone ("tape_drive") or in an effect slot ("fx_slot_2_tape_drive").
+    const bool continuous = bridge != nullptr && interval == 0.0;
+    const bool spectral_lock_control = continuous && (parameter_id.startsWith("spectral_lock_") ||
+                                                      parameter_id.contains("_spectral_lock_"));
+    const bool tape_control = continuous && (parameter_id.startsWith("tape_") || parameter_id.contains("_tape_"));
+    const bool suppressor_control = continuous && (parameter_id.startsWith("suppressor_") ||
+                                                   parameter_id.contains("_suppressor_"));
+    const bool defuse_control = continuous && (parameter_id.startsWith("defuse_") || parameter_id.contains("_defuse_"));
+    const bool trance_control = continuous && (parameter_id.startsWith("trance_gate_") ||
+                                               parameter_id.contains("_trance_gate_"));
+    const bool tremolo_control = continuous && (parameter_id.startsWith("tremolo_pan_") ||
+                                                parameter_id.contains("_tremolo_pan_"));
+    const bool resonator_control = continuous && (parameter_id.startsWith("resonator_") ||
+                                                  parameter_id.contains("_resonator_"));
+    const bool glitch_delay_control = continuous && (parameter_id.startsWith("glitch_delay_") ||
+                                                     parameter_id.contains("_glitch_delay_"));
+    // Analogue Chorus, Flanger and Echo share one prefix family.
+    const bool analogue_control = continuous && (parameter_id.startsWith("analogue") ||
+                                                 parameter_id.contains("_analogue"));
+    const bool maim_control = continuous && (parameter_id.startsWith("maim_") || parameter_id.contains("_maim_"));
+    if (parameter_id == "release_velocity_glide_time") {
+      slider.toAdjustmentValue = [](double value) { return value * 10.0; };
+      slider.fromAdjustmentValue = [](double seconds) { return seconds / 10.0; };
+      slider.adjustmentStep = [] { return 0.01; };
+    }
+    if (parameter_id == "release_velocity_glide_curve") {
+      slider.toAdjustmentValue = [](double value) { return value * 16.0 - 8.0; };
+      slider.fromAdjustmentValue = [](double curve) { return (curve + 8.0) / 16.0; };
+      slider.adjustmentStep = [] { return 0.1; };
+    }
+    if (bridge != nullptr && interval == 0.0 && ValueBridge::usesRangePercentDisplay(bridge->getDetails())) {
+      // Levels and amounts shown in percent: keys move one percent, also across -100% to 100%.
+      const double minimum = bridge->getDetails().min, span = bridge->getDetails().max - minimum;
+      slider.toAdjustmentValue = [minimum, span](double v) { return (minimum + span * v) * 100.0; };
+      slider.fromAdjustmentValue = [minimum, span](double percent) { return (percent / 100.0 - minimum) / span; };
+      slider.adjustmentStep = [] { return 1.0; };
+    }
+    if (bridge != nullptr && isSemitoneFrequencyParameter(parameter_id, bridge->getDetails())) {
+      // Keep host automation in its original normalized/semitone space;
+      // keys and VoiceOver operate in Hz when the display uses Hz.
+      const double minimum = bridge->getDetails().min;
+      const double span = bridge->getDetails().max - minimum;
+      slider.toAdjustmentValue = [minimum, span](double value) {
+        return displayAccessibleFrequencyValuesInHz()
+            ? 440.0 * std::exp2((minimum + span * value - 69.0) / 12.0) : value;
+      };
+      slider.fromAdjustmentValue = [minimum, span](double value) {
+        return displayAccessibleFrequencyValuesInHz()
+            ? (69.0 + 12.0 * std::log2(jmax(0.001, value) / 440.0) - minimum) / span : value;
+      };
+      slider.adjustmentStep = [&slider] {
+        return displayAccessibleFrequencyValuesInHz() ? 10.0
+            : (slider.getMaximum() - slider.getMinimum()) / 100.0;
+      };
+    }
+    if (bridge != nullptr && vital::scream::parameterIs(bridge->getDetails().name, "cutoff")) {
+      slider.toAdjustmentValue = [](double value) { return vital::scream::cutoffToHz(value); };
+      slider.fromAdjustmentValue = [](double hz) {
+        return hz >= 20000.0 ? 1.0 : static_cast<double>(vital::scream::cutoffFromHz(hz));
+      };
+      slider.adjustmentStep = [] { return 10.0; };
+    }
+    if (bridge != nullptr && spectral_lock_control && interval == 0.0) {
+      const auto& details = bridge->getDetails();
+      const double minimum = details.min, span = details.max - minimum, scale = details.display_multiply;
+      slider.toAdjustmentValue = [minimum, span, scale](double v) { return (minimum + span * v) * scale; };
+      slider.fromAdjustmentValue = [minimum, span, scale](double v) { return (v / scale - minimum) / span; };
+      const double step = parameter_id.endsWith("_range_low") || parameter_id.endsWith("_range_high") ? 10.0
+                        : parameter_id.endsWith("_bend") || parameter_id.endsWith("_tilt") ? 0.02 : 1.0;
+      slider.adjustmentStep = [step] { return step; };
+    }
+    if (bridge != nullptr && tremolo_control && interval == 0.0) {
+      const auto& details = bridge->getDetails();
+      const double minimum = details.min;
+      const double span = details.max - minimum;
+      const bool smoothing = parameter_id.endsWith("_smoothing");
+      const double scale = smoothing ? 1.0 : details.display_multiply;
+      slider.toAdjustmentValue = [minimum, span, scale](double value) { return (minimum + span * value) * scale; };
+      slider.fromAdjustmentValue = [minimum, span, scale](double value) { return (value / scale - minimum) / span; };
+      const double step = smoothing || parameter_id.endsWith("_frequency") ? 0.1 : 1.0;
+      slider.adjustmentStep = [step] { return step; };
+    }
+    if (bridge != nullptr && suppressor_control && interval == 0.0) {
+      const auto& details = bridge->getDetails();
+      const double minimum = details.min, span = details.max - minimum;
+      if (vital::suppressor::isFrequency(details.name)) {
+        slider.toAdjustmentValue = [bridge, minimum, span](double v) {
+          return vital::suppressor::positionHz(minimum + span * v, bridge->getSuppressorSampleRate());
+        };
+        slider.fromAdjustmentValue = [bridge, minimum, span](double hz) {
+          return (vital::suppressor::hzPosition(hz, bridge->getSuppressorSampleRate()) - minimum) / span;
+        };
+        slider.adjustmentStep = [] { return 10.0; };
+      }
+      else {
+        slider.toAdjustmentValue = [minimum, span](double v) { return minimum + span * v; };
+        slider.fromAdjustmentValue = [minimum, span](double v) { return (v - minimum) / span; };
+        const double step = parameter_id.endsWith("_release") ? 0.05 : parameter_id.endsWith("_width") ? 10.0 : 1.0;
+        slider.adjustmentStep = [step] { return step; };
+      }
+    }
+    if (bridge != nullptr && defuse_control && interval == 0.0) {
+      const auto& details = bridge->getDetails();
+      const double minimum = details.min, span = details.max - minimum, scale = details.display_multiply;
+      slider.toAdjustmentValue = [minimum, span, scale](double v) { return (minimum + span * v) * scale; };
+      slider.fromAdjustmentValue = [minimum, span, scale](double v) { return (v / scale - minimum) / span; };
+      const double step = parameter_id.endsWith("_frequency") ? 10.0
+                        : parameter_id.endsWith("_resonance") ? 0.01
+                        : parameter_id.endsWith("_spread") ? 0.1 : 1.0;
+      slider.adjustmentStep = [step] { return step; };
+    }
+    if (bridge != nullptr && maim_control && interval == 0.0 &&
+        bridge->getDetails().value_scale != vital::ValueDetails::kExponential &&
+        bridge->getDetails().value_scale != vital::ValueDetails::kIndexed) {
+      // Keys move in display units: one percent, half a decibel, or 50 ms
+      // of the loss period, which is stored as the cube root of its seconds.
+      const auto& details = bridge->getDetails();
+      const double minimum = details.min, span = details.max - minimum, scale = details.display_multiply;
+      const bool cubic = details.value_scale == vital::ValueDetails::kCubic;
+      slider.toAdjustmentValue = [minimum, span, scale, cubic](double v) {
+        const double stored = minimum + span * v;
+        return (cubic ? stored * stored * stored : stored) * scale;
+      };
+      slider.fromAdjustmentValue = [minimum, span, scale, cubic](double display) {
+        const double value = display / scale;
+        return ((cubic ? std::cbrt(jmax(0.0, value)) : value) - minimum) / span;
+      };
+      const double step = cubic ? 0.05 : String(details.display_units).trim() == "dB" ? 0.5 : 1.0;
+      slider.adjustmentStep = [step] { return step; };
+    }
+    if (bridge != nullptr && analogue_control && interval == 0.0 &&
+        bridge->getDetails().value_scale != vital::ValueDetails::kExponential) {
+      // Keys move in display units: one percent, degree or millisecond.
+      const auto& details = bridge->getDetails();
+      const double minimum = details.min, span = details.max - minimum, scale = details.display_multiply;
+      slider.toAdjustmentValue = [minimum, span, scale](double v) { return (minimum + span * v) * scale; };
+      slider.fromAdjustmentValue = [minimum, span, scale](double v) { return (v / scale - minimum) / span; };
+      slider.adjustmentStep = [] { return 1.0; };
+    }
+    if (bridge != nullptr && trance_control && interval == 0.0) {
+      const auto& details = bridge->getDetails();
+      const double minimum = details.min, span = details.max - minimum, scale = details.display_multiply;
+      slider.toAdjustmentValue = [minimum, span, scale](double v) { return (minimum + span * v) * scale; };
+      slider.fromAdjustmentValue = [minimum, span, scale](double v) { return (v / scale - minimum) / span; };
+      slider.adjustmentStep = [] { return 1.0; };
+    }
+    if (bridge != nullptr && resonator_control && interval == 0.0) {
+      const auto& details = bridge->getDetails();
+      const double minimum = details.min, span = details.max - minimum;
+      if (parameter_id.endsWith("_tune")) {
+        // Tune is stored as log2 Hz; keys move it by semitones on the MIDI note scale.
+        const double a4 = std::log2(440.0);
+        slider.toAdjustmentValue = [minimum, span, a4](double v) { return 69.0 + 12.0 * (minimum + span * v - a4); };
+        slider.fromAdjustmentValue = [minimum, span, a4](double note) { return ((note - 69.0) / 12.0 + a4 - minimum) / span; };
+        slider.adjustmentStep = [] { return 1.0; };
+      }
+      else if (details.value_scale != vital::ValueDetails::kExponential) {
+        // Glide is stored in milliseconds; the rest step in their display units.
+        const double scale = parameter_id.endsWith("_glide") ? 1.0 : details.display_multiply;
+        slider.toAdjustmentValue = [minimum, span, scale](double v) { return (minimum + span * v) * scale; };
+        slider.fromAdjustmentValue = [minimum, span, scale](double v) { return (v / scale - minimum) / span; };
+        const bool tenth = parameter_id.endsWith("_lfo_amount") || parameter_id.endsWith("_filter_bandwidth") ||
+                           String(details.display_units).trim() == "dB";
+        const double step = parameter_id.endsWith("_ratio") ? 0.01 : tenth ? 0.1 : 1.0;
+        slider.adjustmentStep = [step] { return step; };
+      }
+    }
+    if (bridge != nullptr && tape_control && interval == 0.0) {
+      const auto& details = bridge->getDetails();
+      const double minimum = details.min, span = details.max - minimum, scale = details.display_multiply;
+      slider.toAdjustmentValue = [minimum, span, scale](double v) { return (minimum + span * v) * scale; };
+      slider.fromAdjustmentValue = [minimum, span, scale](double v) { return (v / scale - minimum) / span; };
+      for (const auto& control : vital::tape::controls) {
+        if (parameter_id.endsWith(String("tape_") + control.suffix)) {
+          const double step = control.step;
+          slider.adjustmentStep = [step] { return step; };
+          break;
+        }
+      }
+    }
+    if (bridge != nullptr && glitch_delay_control && interval == 0.0) {
+      // Keys move in display units: milliseconds, Hz, semitones, dB or
+      // percent, whichever curve the value is stored on.
+      const auto& details = bridge->getDetails();
+      const double minimum = details.min, span = details.max - minimum;
+      const auto scale = details.value_scale;
+      const double factor = String(details.display_units).trim() == "secs" ? 1.0 : details.display_multiply;
+      slider.toAdjustmentValue = [minimum, span, scale, factor](double v) {
+        const double stored = minimum + span * v;
+        switch (scale) {
+          case vital::ValueDetails::kQuadratic: return stored * stored * factor;
+          case vital::ValueDetails::kCubic: return stored * stored * stored * factor;
+          case vital::ValueDetails::kExponential: return std::exp2(stored) * factor;
+          default: return stored * factor;
+        }
+      };
+      slider.fromAdjustmentValue = [minimum, span, scale, factor](double display) {
+        const double value = display / factor;
+        double stored = value;
+        switch (scale) {
+          case vital::ValueDetails::kQuadratic: stored = std::sqrt(jmax(0.0, value)); break;
+          case vital::ValueDetails::kCubic: stored = std::cbrt(value); break;
+          case vital::ValueDetails::kExponential: stored = std::log2(jmax(1.0e-6, value)); break;
+          default: break;
+        }
+        return (stored - minimum) / span;
+      };
+      const String suffix = parameter_id.fromFirstOccurrenceOf("glitch_delay_", false, false);
+      const auto ends = [&suffix](const char* end) { return suffix.endsWith(end); };
+      const double step = ends("_time") || suffix == "glide" || ends("stop_time") || ends("start_time") ? 10.0
+                        : suffix == "buffer_size" || suffix == "smear_size" ? 5.0
+                        : ends("high_cut") ? 100.0
+                        : ends("low_cut") || ends("ring_min") || ends("ring_max") ? 10.0
+                        : ends("fm_ratio_min") || ends("fm_ratio_max") ? 0.05
+                        : ends("fm_index_min") || ends("fm_index_max") || ends("crush_rate_min") ||
+                          ends("crush_rate_max") || ends("speed_min") || ends("speed_max") ||
+                          ends("lpc_min") || ends("lpc_max") || ends("ceps_min") || ends("ceps_max") ||
+                          suffix == "output_gain" ? 0.1
+                        : ends("_volume") ? 0.5
+                        : 1.0;
+      slider.adjustmentStep = [step] { return step; };
+    }
+  }
 }
 
 void SpokenToggleButton::clicked() {
@@ -5087,6 +5337,11 @@ std::unique_ptr<AccessibilityHandler> AccessibleComboBox::createAccessibilityHan
   };
 
   return std::make_unique<Handler>(*this);
+}
+
+// Read as a row's slider is: its name, then the value in the destination's units.
+std::unique_ptr<AccessibilityHandler> ModulationAmountSlider::createAccessibilityHandler() {
+  return std::make_unique<OffscreenSliderAccessibilityHandler>(*this);
 }
 
 std::unique_ptr<AccessibilityHandler> AccessibleTextEditor::createAccessibilityHandler() {
@@ -5537,12 +5792,9 @@ class AccessibleParameterRow : public Component {
                             (forceToggleControl || (parameter_.isBoolean() && !forceSliderControl && !named_binary_choice && !tape_control && !defuse_control && !parameter_id.endsWith("trance_gate_trigger")));
       const auto name = parameter_.getName(128);
       const bool random_rate = parameter_id.startsWith("random_") && parameter_id.endsWith("_frequency");
-      const bool trance_control = parameter_id.startsWith("trance_gate_") || parameter_id.contains("_trance_gate_");
       const bool tremolo_control = parameter_id.startsWith("tremolo_pan_") || parameter_id.contains("_tremolo_pan_");
       const bool resonator_control = parameter_id.startsWith("resonator_") || parameter_id.contains("_resonator_");
       const bool glitch_delay_control = parameter_id.startsWith("glitch_delay_") || parameter_id.contains("_glitch_delay_");
-      // Analogue Chorus, Flanger and Echo share one prefix family.
-      const bool analogue_control = parameter_id.startsWith("analogue") || parameter_id.contains("_analogue");
       const bool maim_control = parameter_id.startsWith("maim_") || parameter_id.contains("_maim_");
       const auto accessible_name = accessibleName.isNotEmpty() ? accessibleName : (random_rate ? String("Rate") : name);
       const String parameter_description = accessibleDescription.isNotEmpty()
@@ -5610,212 +5862,7 @@ class AccessibleParameterRow : public Component {
       else {
         slider_.setSliderStyle(Slider::LinearHorizontal);
         slider_.setTextBoxStyle(Slider::TextBoxRight, false, 150, 28);
-        const int steps = parameter_.getNumSteps();
-        const bool amplitude_seed = parameter_id.startsWith("osc_") && parameter_id.endsWith("_spectral_morph_seed");
-        double interval = steps > 1 && (steps < 10000 || amplitude_seed) ? 1.0 / (steps - 1) : 0.0;
-        slider_.setRange(min_normalized_value_, max_normalized_value_, interval);
-        if (parameter_id == "release_velocity_glide_time") {
-          slider_.toAdjustmentValue = [](double value) { return value * 10.0; };
-          slider_.fromAdjustmentValue = [](double seconds) { return seconds / 10.0; };
-          slider_.adjustmentStep = [] { return 0.01; };
-        }
-        if (parameter_id == "release_velocity_glide_curve") {
-          slider_.toAdjustmentValue = [](double value) { return value * 16.0 - 8.0; };
-          slider_.fromAdjustmentValue = [](double curve) { return (curve + 8.0) / 16.0; };
-          slider_.adjustmentStep = [] { return 0.1; };
-        }
-        if (bridge != nullptr && interval == 0.0 && ValueBridge::usesRangePercentDisplay(bridge->getDetails())) {
-          // Levels and amounts shown in percent: keys move one percent, also across -100% to 100%.
-          const double minimum = bridge->getDetails().min, span = bridge->getDetails().max - minimum;
-          slider_.toAdjustmentValue = [minimum, span](double v) { return (minimum + span * v) * 100.0; };
-          slider_.fromAdjustmentValue = [minimum, span](double percent) { return (percent / 100.0 - minimum) / span; };
-          slider_.adjustmentStep = [] { return 1.0; };
-        }
-        if (bridge != nullptr && isSemitoneFrequencyParameter(parameter_id, bridge->getDetails())) {
-          // Keep host automation in its original normalized/semitone space;
-          // keys and VoiceOver operate in Hz when the display uses Hz.
-          const double minimum = bridge->getDetails().min;
-          const double span = bridge->getDetails().max - minimum;
-          slider_.toAdjustmentValue = [minimum, span](double value) {
-            return displayAccessibleFrequencyValuesInHz()
-                ? 440.0 * std::exp2((minimum + span * value - 69.0) / 12.0) : value;
-          };
-          slider_.fromAdjustmentValue = [minimum, span](double value) {
-            return displayAccessibleFrequencyValuesInHz()
-                ? (69.0 + 12.0 * std::log2(jmax(0.001, value) / 440.0) - minimum) / span : value;
-          };
-          slider_.adjustmentStep = [this] {
-            return displayAccessibleFrequencyValuesInHz() ? 10.0
-                : (slider_.getMaximum() - slider_.getMinimum()) / 100.0;
-          };
-        }
-        if (bridge != nullptr && vital::scream::parameterIs(bridge->getDetails().name, "cutoff")) {
-          slider_.toAdjustmentValue = [](double value) { return vital::scream::cutoffToHz(value); };
-          slider_.fromAdjustmentValue = [](double hz) {
-            return hz >= 20000.0 ? 1.0 : static_cast<double>(vital::scream::cutoffFromHz(hz));
-          };
-          slider_.adjustmentStep = [] { return 10.0; };
-        }
-        if (bridge != nullptr && spectral_lock_control && interval == 0.0) {
-          const auto& details = bridge->getDetails();
-          const double minimum = details.min, span = details.max - minimum, scale = details.display_multiply;
-          slider_.toAdjustmentValue = [minimum, span, scale](double v) { return (minimum + span * v) * scale; };
-          slider_.fromAdjustmentValue = [minimum, span, scale](double v) { return (v / scale - minimum) / span; };
-          const double step = parameter_id.endsWith("_range_low") || parameter_id.endsWith("_range_high") ? 10.0
-                            : parameter_id.endsWith("_bend") || parameter_id.endsWith("_tilt") ? 0.02 : 1.0;
-          slider_.adjustmentStep = [step] { return step; };
-        }
-        if (bridge != nullptr && tremolo_control && interval == 0.0) {
-          const auto& details = bridge->getDetails();
-          const double minimum = details.min;
-          const double span = details.max - minimum;
-          const bool smoothing = parameter_id.endsWith("_smoothing");
-          const double scale = smoothing ? 1.0 : details.display_multiply;
-          slider_.toAdjustmentValue = [minimum, span, scale](double value) { return (minimum + span * value) * scale; };
-          slider_.fromAdjustmentValue = [minimum, span, scale](double value) { return (value / scale - minimum) / span; };
-          const double step = smoothing || parameter_id.endsWith("_frequency") ? 0.1 : 1.0;
-          slider_.adjustmentStep = [step] { return step; };
-        }
-        if (bridge != nullptr && suppressor_control && interval == 0.0) {
-          const auto& details = bridge->getDetails();
-          const double minimum = details.min, span = details.max - minimum;
-          if (vital::suppressor::isFrequency(details.name)) {
-            slider_.toAdjustmentValue = [bridge, minimum, span](double v) {
-              return vital::suppressor::positionHz(minimum + span * v, bridge->getSuppressorSampleRate());
-            };
-            slider_.fromAdjustmentValue = [bridge, minimum, span](double hz) {
-              return (vital::suppressor::hzPosition(hz, bridge->getSuppressorSampleRate()) - minimum) / span;
-            };
-            slider_.adjustmentStep = [] { return 10.0; };
-          }
-          else {
-            slider_.toAdjustmentValue = [minimum, span](double v) { return minimum + span * v; };
-            slider_.fromAdjustmentValue = [minimum, span](double v) { return (v - minimum) / span; };
-            const double step = parameter_id.endsWith("_release") ? 0.05 : parameter_id.endsWith("_width") ? 10.0 : 1.0;
-            slider_.adjustmentStep = [step] { return step; };
-          }
-        }
-        if (bridge != nullptr && defuse_control && interval == 0.0) {
-          const auto& details = bridge->getDetails();
-          const double minimum = details.min, span = details.max - minimum, scale = details.display_multiply;
-          slider_.toAdjustmentValue = [minimum, span, scale](double v) { return (minimum + span * v) * scale; };
-          slider_.fromAdjustmentValue = [minimum, span, scale](double v) { return (v / scale - minimum) / span; };
-          const double step = parameter_id.endsWith("_frequency") ? 10.0
-                            : parameter_id.endsWith("_resonance") ? 0.01
-                            : parameter_id.endsWith("_spread") ? 0.1 : 1.0;
-          slider_.adjustmentStep = [step] { return step; };
-        }
-        if (bridge != nullptr && maim_control && interval == 0.0 &&
-            bridge->getDetails().value_scale != vital::ValueDetails::kExponential &&
-            bridge->getDetails().value_scale != vital::ValueDetails::kIndexed) {
-          // Keys move in display units: one percent, half a decibel, or 50 ms
-          // of the loss period, which is stored as the cube root of its seconds.
-          const auto& details = bridge->getDetails();
-          const double minimum = details.min, span = details.max - minimum, scale = details.display_multiply;
-          const bool cubic = details.value_scale == vital::ValueDetails::kCubic;
-          slider_.toAdjustmentValue = [minimum, span, scale, cubic](double v) {
-            const double stored = minimum + span * v;
-            return (cubic ? stored * stored * stored : stored) * scale;
-          };
-          slider_.fromAdjustmentValue = [minimum, span, scale, cubic](double display) {
-            const double value = display / scale;
-            return ((cubic ? std::cbrt(jmax(0.0, value)) : value) - minimum) / span;
-          };
-          const double step = cubic ? 0.05 : String(details.display_units).trim() == "dB" ? 0.5 : 1.0;
-          slider_.adjustmentStep = [step] { return step; };
-        }
-        if (bridge != nullptr && analogue_control && interval == 0.0 &&
-            bridge->getDetails().value_scale != vital::ValueDetails::kExponential) {
-          // Keys move in display units: one percent, degree or millisecond.
-          const auto& details = bridge->getDetails();
-          const double minimum = details.min, span = details.max - minimum, scale = details.display_multiply;
-          slider_.toAdjustmentValue = [minimum, span, scale](double v) { return (minimum + span * v) * scale; };
-          slider_.fromAdjustmentValue = [minimum, span, scale](double v) { return (v / scale - minimum) / span; };
-          slider_.adjustmentStep = [] { return 1.0; };
-        }
-        if (bridge != nullptr && trance_control && interval == 0.0) {
-          const auto& details = bridge->getDetails();
-          const double minimum = details.min, span = details.max - minimum, scale = details.display_multiply;
-          slider_.toAdjustmentValue = [minimum, span, scale](double v) { return (minimum + span * v) * scale; };
-          slider_.fromAdjustmentValue = [minimum, span, scale](double v) { return (v / scale - minimum) / span; };
-          slider_.adjustmentStep = [] { return 1.0; };
-        }
-        if (bridge != nullptr && resonator_control && interval == 0.0) {
-          const auto& details = bridge->getDetails();
-          const double minimum = details.min, span = details.max - minimum;
-          if (parameter_id.endsWith("_tune")) {
-            // Tune is stored as log2 Hz; keys move it by semitones on the MIDI note scale.
-            const double a4 = std::log2(440.0);
-            slider_.toAdjustmentValue = [minimum, span, a4](double v) { return 69.0 + 12.0 * (minimum + span * v - a4); };
-            slider_.fromAdjustmentValue = [minimum, span, a4](double note) { return ((note - 69.0) / 12.0 + a4 - minimum) / span; };
-            slider_.adjustmentStep = [] { return 1.0; };
-          }
-          else if (details.value_scale != vital::ValueDetails::kExponential) {
-            // Glide is stored in milliseconds; the rest step in their display units.
-            const double scale = parameter_id.endsWith("_glide") ? 1.0 : details.display_multiply;
-            slider_.toAdjustmentValue = [minimum, span, scale](double v) { return (minimum + span * v) * scale; };
-            slider_.fromAdjustmentValue = [minimum, span, scale](double v) { return (v / scale - minimum) / span; };
-            const bool tenth = parameter_id.endsWith("_lfo_amount") || parameter_id.endsWith("_filter_bandwidth") ||
-                               String(details.display_units).trim() == "dB";
-            const double step = parameter_id.endsWith("_ratio") ? 0.01 : tenth ? 0.1 : 1.0;
-            slider_.adjustmentStep = [step] { return step; };
-          }
-        }
-        if (bridge != nullptr && tape_control && interval == 0.0) {
-          const auto& details = bridge->getDetails();
-          const double minimum = details.min, span = details.max - minimum, scale = details.display_multiply;
-          slider_.toAdjustmentValue = [minimum, span, scale](double v) { return (minimum + span * v) * scale; };
-          slider_.fromAdjustmentValue = [minimum, span, scale](double v) { return (v / scale - minimum) / span; };
-          for (const auto& control : vital::tape::controls) {
-            if (parameter_id.endsWith(String("tape_") + control.suffix)) {
-              const double step = control.step;
-              slider_.adjustmentStep = [step] { return step; };
-              break;
-            }
-          }
-        }
-        if (bridge != nullptr && glitch_delay_control && interval == 0.0) {
-          // Keys move in display units: milliseconds, Hz, semitones, dB or
-          // percent, whichever curve the value is stored on.
-          const auto& details = bridge->getDetails();
-          const double minimum = details.min, span = details.max - minimum;
-          const auto scale = details.value_scale;
-          const double factor = String(details.display_units).trim() == "secs" ? 1.0 : details.display_multiply;
-          slider_.toAdjustmentValue = [minimum, span, scale, factor](double v) {
-            const double stored = minimum + span * v;
-            switch (scale) {
-              case vital::ValueDetails::kQuadratic: return stored * stored * factor;
-              case vital::ValueDetails::kCubic: return stored * stored * stored * factor;
-              case vital::ValueDetails::kExponential: return std::exp2(stored) * factor;
-              default: return stored * factor;
-            }
-          };
-          slider_.fromAdjustmentValue = [minimum, span, scale, factor](double display) {
-            const double value = display / factor;
-            double stored = value;
-            switch (scale) {
-              case vital::ValueDetails::kQuadratic: stored = std::sqrt(jmax(0.0, value)); break;
-              case vital::ValueDetails::kCubic: stored = std::cbrt(value); break;
-              case vital::ValueDetails::kExponential: stored = std::log2(jmax(1.0e-6, value)); break;
-              default: break;
-            }
-            return (stored - minimum) / span;
-          };
-          const String suffix = parameter_id.fromFirstOccurrenceOf("glitch_delay_", false, false);
-          const auto ends = [&suffix](const char* end) { return suffix.endsWith(end); };
-          const double step = ends("_time") || suffix == "glide" || ends("stop_time") || ends("start_time") ? 10.0
-                            : suffix == "buffer_size" || suffix == "smear_size" ? 5.0
-                            : ends("high_cut") ? 100.0
-                            : ends("low_cut") || ends("ring_min") || ends("ring_max") ? 10.0
-                            : ends("fm_ratio_min") || ends("fm_ratio_max") ? 0.05
-                            : ends("fm_index_min") || ends("fm_index_max") || ends("crush_rate_min") ||
-                              ends("crush_rate_max") || ends("speed_min") || ends("speed_max") ||
-                              ends("lpc_min") || ends("lpc_max") || ends("ceps_min") || ends("ceps_max") ||
-                              suffix == "output_gain" ? 0.1
-                            : ends("_volume") ? 0.5
-                            : 1.0;
-          slider_.adjustmentStep = [step] { return step; };
-        }
+        setParameterSliderSteps(slider_, parameter_, min_normalized_value_, max_normalized_value_);
         slider_.setTitle(accessible_name);
         slider_.setDescription(parameter_description);
         slider_.setTooltip(parameter_description);
@@ -6943,7 +6990,33 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
     if (modulation_amount_prompt_visible_ || parameter_value_prompt_visible_)
       cancelInlineTextPrompt();
   };
+  // A value typed for a modulation moves the slider beside the box there,
+  // quietly, so the slider starts from it.
+  modulation_amount_editor_.onTextChange = [this] {
+    if (!modulation_amount_prompt_visible_ || !modulation_amount_slider_.isVisible())
+      return;
+    if (auto* bridge = parameterBridge(pending_modulation_destination_)) {
+      const float amount = modulationAmountFromPeakText(pending_modulation_destination_,
+                                                        modulation_amount_editor_.getText());
+      modulation_amount_slider_.setValue(modulationTargetValue(*bridge, amount), dontSendNotification);
+    }
+  };
   addChildComponent(modulation_amount_editor_);
+
+  // Settings > Modulation amount slider: after the box while an amount is
+  // typed for a modulation (setUpModulationAmountSlider). The box says what
+  // the slider is set to, so OK and Return set the amount either way.
+  modulation_amount_slider_.setSliderStyle(Slider::LinearHorizontal);
+  modulation_amount_slider_.setTextBoxStyle(Slider::NoTextBox, true, 0, 0);
+  modulation_amount_slider_.setTitle("Modulation amount");
+  modulation_amount_slider_.setWantsKeyboardFocus(true);
+  modulation_amount_slider_.onReturnKey = [this] { applyInlineTextPrompt(); };
+  modulation_amount_slider_.onValueChange = [this] {
+    modulation_slider_text_ = modulation_amount_slider_.getTextFromValue(modulation_amount_slider_.getValue());
+    modulation_amount_editor_.setText(modulation_slider_text_, dontSendNotification);
+    auditionModulationAmount();
+  };
+  addChildComponent(modulation_amount_slider_);
 
   modulation_amount_ok_.setTitle("Set modulation amount");
   modulation_amount_ok_.setDescription("Apply the typed initial modulation amount");
@@ -6991,6 +7064,9 @@ SynthEditor::~SynthEditor() {
   // The Settings window reaches into this editor.
   if (auto* settings = settings_window_.getComponent())
     delete settings;
+  // An amount prompt closed with the window was never confirmed: the route
+  // keeps the amount it had, not the one its slider was playing.
+  revertModulationAudition();
   // Key releases can no longer reach this editor; don't leave notes held.
   allQwertyNotesOff();
   detachQwertyKeyInterceptor();
@@ -7025,6 +7101,14 @@ void SynthEditor::resized() {
     if (confirmation_prompt_visible_) {
       // A question has no text box; its first button says what it does.
       modulation_amount_ok_.setBounds(amount_row.removeFromLeft(240).reduced(3));
+      modulation_amount_cancel_.setBounds(amount_row.removeFromLeft(120).reduced(3));
+    }
+    else if (modulation_amount_slider_.isVisible()) {
+      // The slider follows the box it extends.
+      const int field_width = jmax(180, amount_row.getWidth() - 220);
+      modulation_amount_editor_.setBounds(amount_row.removeFromLeft(jmax(160, field_width / 2)).reduced(3));
+      modulation_amount_slider_.setBounds(amount_row.removeFromLeft(jmax(120, amount_row.getWidth() - 220)).reduced(3));
+      modulation_amount_ok_.setBounds(amount_row.removeFromLeft(100).reduced(3));
       modulation_amount_cancel_.setBounds(amount_row.removeFromLeft(120).reduced(3));
     }
     else {
@@ -9697,6 +9781,18 @@ class AtlasSettingsContent : public Component, private FocusChangeListener {
       remove_all_mappings_.onClick = [this] { removeAllMappings(); };
       midi_.addChildComponent(remove_all_mappings_);
 
+      // Modulation: a slider beside the amount typed for a new modulation.
+      inner_.addAndMakeVisible(modulation_);
+      modulation_slider_.setTitle("Modulation amount slider");
+      modulation_slider_.setDescription("Adds a slider after the modulation amount text box. It moves through the "
+                                        "destination's own values, in its units and steps, and plays each amount as "
+                                        "it moves");
+      modulation_slider_.setToggleState(LoadSave::modulationAmountSlider(), dontSendNotification);
+      modulation_slider_.onClick = [this] {
+        LoadSave::saveModulationAmountSlider(modulation_slider_.getToggleState());
+      };
+      modulation_.addAndMakeVisible(modulation_slider_);
+
       // Accessibility: the speech categories.
       inner_.addAndMakeVisible(accessibility_);
       // Use speech feedback switches every announcement category with it, and
@@ -10205,6 +10301,7 @@ class AtlasSettingsContent : public Component, private FocusChangeListener {
         midi_rows.push_back(button.get());
       midi_rows.push_back(&remove_all_mappings_);
       placeGroup(midi_, midi_rows);
+      placeGroup(modulation_, { &modulation_slider_ });
       std::vector<Component*> speech;
       for (auto& toggle : speech_toggles_)
         speech.push_back(toggle.get());
@@ -10227,6 +10324,7 @@ class AtlasSettingsContent : public Component, private FocusChangeListener {
     SettingsGroup history_ { "Undo and redo" };
     SettingsGroup tuning_ { "Tuning" };
     SettingsGroup midi_ { "MIDI learn mappings" };
+    SettingsGroup modulation_ { "Modulation" };
     SettingsGroup accessibility_ { "Accessibility" };
     SettingsGroup community_ { "Online community browser" };
     SettingsGroup keyboard_help_ { "Keyboard help" };
@@ -10240,6 +10338,7 @@ class AtlasSettingsContent : public Component, private FocusChangeListener {
     std::vector<std::pair<int, std::string>> mappings_;
     std::vector<std::unique_ptr<AccessibleTextButton>> mapping_buttons_;
     AccessibleTextButton remove_all_mappings_;
+    SettingsToggle modulation_slider_ { "Modulation amount slider" };
     std::vector<std::unique_ptr<ToggleButton>> speech_toggles_;
     SettingsToggle show_community_ { "Show the community library in the preset browser" };
     SettingsText account_;
@@ -10525,6 +10624,9 @@ String SynthEditor::keyboardHelpText() {
       "  Shift+L - MIDI learn: the next MIDI control moved is mapped; Shift+L again cancels\n"
       "  Shift+C - Clear MIDI learn (Settings lists every mapping under MIDI learn mappings and removes them)\n"
       "  Levels and modulation amounts read and accept percentages: 0% to 100%, or -100% to 100%\n"
+      "  Adding modulation: type the value it moves to; with Settings > Modulation amount slider on, Tab to the "
+      "slider after the box, which steps like the control it modulates and plays each amount as it moves. Enter "
+      "keeps the amount; Escape puts back the one it had\n"
       "\n"
       "Choosing from a menu (Type, Model, Style and other choices that change which controls are shown)\n"
       "  Down / Right - Next choice; Up / Left - Previous choice\n"
@@ -10754,6 +10856,10 @@ void SynthEditor::rebuildFocusOrder() {
     if (!confirmation_prompt_visible_) {
       focus_order_.push_back(&modulation_amount_editor_);
       accessibility_focus_order_.push_back(&modulation_amount_editor_);
+    }
+    if (modulation_amount_prompt_visible_ && modulation_amount_slider_.isVisible()) {
+      focus_order_.push_back(&modulation_amount_slider_);
+      accessibility_focus_order_.push_back(&modulation_amount_slider_);
     }
     focus_order_.push_back(&modulation_amount_ok_);
     focus_order_.push_back(&modulation_amount_cancel_);
@@ -17650,6 +17756,8 @@ void SynthEditor::connectModulationAndPromptForAmount(const String& sourceId, co
     return;
   }
 
+  // A prompt still open gives back the amount its slider was playing first.
+  revertModulationAudition();
   // The route and the amount typed into the prompt after it are one step.
   const bool existed = synth_.getConnectionIndex(sourceId.toStdString(), destinationId.toStdString()) >= 0;
   synth_.undoHistory().describeNextStep(modulationUndoDescription(sourceId, destinationId, !existed),
@@ -17687,6 +17795,7 @@ void SynthEditor::connectModulationAndPromptForAmount(const String& sourceId, co
 
 void SynthEditor::promptForInitialModulationAmount(const String& sourceId, const String& destinationId,
                                                    bool created, Component& target) {
+  revertModulationAudition();
   endConfirmationPrompt();
   parameter_value_prompt_visible_ = false;
   pending_parameter_value_id_.clear();
@@ -17715,32 +17824,91 @@ void SynthEditor::promptForInitialModulationAmount(const String& sourceId, const
   modulation_amount_cancel_.setDescription("Leave the modulation connected without changing the amount");
   modulation_amount_prompt_.setVisible(true);
   modulation_amount_editor_.setVisible(true);
+  modulation_amount_slider_.setVisible(false);
   modulation_amount_ok_.setVisible(true);
   modulation_amount_cancel_.setVisible(true);
   String peak_value = "1.0";
-  if (auto* bridge = parameterBridge(destinationId)) {
-    peak_value = accessibleParameterText(*bridge, bridge->getValue());
+  double peak = 0.0;
+  auto* bridge = parameterBridge(destinationId);
+  if (bridge != nullptr) {
+    float amount = 0.0f;
     const int connection = synth_.getConnectionIndex(sourceId.toStdString(), destinationId.toStdString());
-    if (connection >= 0) {
-      if (auto* amount_bridge = parameterBridge("modulation_" + String(connection + 1) + "_amount")) {
-        const auto& details = bridge->getDetails();
-        const float current_engine = bridge->convertToEngineValue(bridge->getValue());
-        const float amount = amount_bridge->convertToEngineValue(amount_bridge->getValue());
-        const float peak_engine = jlimit(details.min, details.max,
-                                         current_engine + amount * (details.max - details.min));
-        peak_value = accessibleParameterText(*bridge, bridge->convertToPluginValue(peak_engine));
-      }
-    }
+    if (connection >= 0)
+      if (auto* amount_bridge = parameterBridge("modulation_" + String(connection + 1) + "_amount"))
+        amount = amount_bridge->convertToEngineValue(amount_bridge->getValue());
+    peak = modulationTargetValue(*bridge, amount);
+    peak_value = accessibleParameterText(*bridge, peak);
+    modulation_amount_at_open_ = amount;
   }
   modulation_amount_editor_.setText(peak_value, dontSendNotification);
+  setUpModulationAmountSlider(bridge, peak);
   rebuildFocusOrder();
   resized();
   modulation_amount_editor_.grabKeyboardFocus();
   modulation_amount_editor_.selectAll();
   if (auto* handler = modulation_amount_editor_.getAccessibilityHandler())
     handler->grabFocus();
-  postPluginAnnouncement("Type the value the modulation moves to",
-                                         AccessibilityHandler::AnnouncementPriority::high);
+  postPluginAnnouncement(modulation_amount_slider_.isVisible()
+                             ? "Type the value the modulation moves to, or Tab to its slider"
+                             : "Type the value the modulation moves to",
+                         AccessibilityHandler::AnnouncementPriority::high);
+}
+
+void SynthEditor::setUpModulationAmountSlider(ValueBridge* destination, double peakValue) {
+  const bool shown = destination != nullptr && LoadSave::modulationAmountSlider();
+  modulation_amount_slider_.setVisible(shown);
+  modulation_slider_text_.clear();
+  if (!shown)
+    return;
+
+  // The values the modulation can take the destination to are the
+  // destination's own, so the slider covers its range in its own steps and
+  // reads each value as its control does.
+  setParameterSliderSteps(modulation_amount_slider_, *destination, 0.0, 1.0);
+  modulation_amount_slider_.textFromValueFunction = [destination](double value) {
+    return accessibleParameterText(*destination, value);
+  };
+  modulation_amount_slider_.valueFromTextFunction = [destination](const String& text) {
+    return accessibleParameterValueForText(*destination, text);
+  };
+  modulation_amount_slider_.setValue(peakValue, dontSendNotification);
+  // Backspace (or a double click) goes back to where the destination is now.
+  modulation_amount_slider_.setDoubleClickReturnValue(true, modulationTargetValue(*destination, 0.0f));
+  // A stepped slider rounds a fractional amount: the box keeps the exact one.
+  modulation_slider_text_ = modulation_amount_slider_.getTextFromValue(modulation_amount_slider_.getValue());
+}
+
+void SynthEditor::auditionModulationAmount() {
+  if (!modulation_amount_prompt_visible_ || !modulation_amount_slider_.isVisible())
+    return;
+  auto* destination = parameterBridge(pending_modulation_destination_);
+  const int connection = synth_.getConnectionIndex(pending_modulation_source_.toStdString(),
+                                                   pending_modulation_destination_.toStdString());
+  if (destination == nullptr || connection < 0)
+    return;
+  // Each move joins the step that made the route (or opened its amount), so
+  // undo takes back the whole prompt at once, as the amount typed into it.
+  synth_.undoHistory().describeNextStep(
+      modulationUndoDescription(pending_modulation_source_, pending_modulation_destination_, pending_modulation_created_),
+      "modulation " + pending_modulation_source_ + " " + pending_modulation_destination_);
+  setParameterEngineValue("modulation_" + String(connection + 1) + "_amount",
+                          modulationAmountForTarget(*destination, modulation_amount_slider_.getValue()));
+  modulation_amount_auditioned_ = true;
+}
+
+void SynthEditor::revertModulationAudition() {
+  if (!std::exchange(modulation_amount_auditioned_, false))
+    return;
+  const int connection = synth_.getConnectionIndex(pending_modulation_source_.toStdString(),
+                                                   pending_modulation_destination_.toStdString());
+  if (connection < 0)
+    return;
+  synth_.undoHistory().describeNextStep(
+      modulationUndoDescription(pending_modulation_source_, pending_modulation_destination_, pending_modulation_created_),
+      "modulation " + pending_modulation_source_ + " " + pending_modulation_destination_);
+  setParameterEngineValue("modulation_" + String(connection + 1) + "_amount", modulation_amount_at_open_);
+  // Its own step now, never part of what closed the prompt (a new route).
+  synth_.undoHistory().commitPendingEdits();
 }
 
 void SynthEditor::promptForParameterValue(const String& parameterId, Component& target) {
@@ -17748,6 +17916,7 @@ void SynthEditor::promptForParameterValue(const String& parameterId, Component& 
   if (bridge == nullptr)
     return;
 
+  revertModulationAudition();
   endConfirmationPrompt();
   modulation_amount_prompt_visible_ = false;
   pending_modulation_source_.clear();
@@ -17781,6 +17950,7 @@ void SynthEditor::promptForParameterValue(const String& parameterId, Component& 
 
   modulation_amount_prompt_.setVisible(true);
   modulation_amount_editor_.setVisible(true);
+  modulation_amount_slider_.setVisible(false);
   modulation_amount_ok_.setVisible(true);
   modulation_amount_cancel_.setVisible(true);
   modulation_amount_editor_.setText(value, dontSendNotification);
@@ -17820,6 +17990,7 @@ void SynthEditor::promptForCustomValue(const String& title, const String& value,
   if (!apply)
     return;
 
+  revertModulationAudition();
   endConfirmationPrompt();
   modulation_amount_prompt_visible_ = false;
   pending_modulation_source_.clear();
@@ -17844,6 +18015,7 @@ void SynthEditor::promptForCustomValue(const String& title, const String& value,
 
   modulation_amount_prompt_.setVisible(true);
   modulation_amount_editor_.setVisible(true);
+  modulation_amount_slider_.setVisible(false);
   modulation_amount_ok_.setVisible(true);
   modulation_amount_cancel_.setVisible(true);
   modulation_amount_editor_.setText(value, dontSendNotification);
@@ -17872,6 +18044,7 @@ void SynthEditor::promptForConfirmation(const String& question, const String& co
   if (!confirm)
     return;
 
+  revertModulationAudition();
   modulation_amount_prompt_visible_ = false;
   pending_modulation_source_.clear();
   pending_modulation_destination_.clear();
@@ -17897,6 +18070,7 @@ void SynthEditor::promptForConfirmation(const String& question, const String& co
 
   modulation_amount_prompt_.setVisible(true);
   modulation_amount_editor_.setVisible(false);
+  modulation_amount_slider_.setVisible(false);
   modulation_amount_ok_.setVisible(true);
   modulation_amount_cancel_.setVisible(true);
   rebuildFocusOrder();
@@ -17999,6 +18173,7 @@ void SynthEditor::hideInlineTextPromptNow() {
     return;
   modulation_amount_prompt_.setVisible(false);
   modulation_amount_editor_.setVisible(false);
+  modulation_amount_slider_.setVisible(false);
   modulation_amount_ok_.setVisible(false);
   modulation_amount_cancel_.setVisible(false);
   rebuildFocusOrder();
@@ -18016,7 +18191,14 @@ void SynthEditor::applyInitialModulationAmount() {
   const String source_id = pending_modulation_source_;
   const String destination_id = pending_modulation_destination_;
   const bool rebuild_modulation_slots = pending_modulation_created_;
-  const float amount = modulationAmountFromPeakText(destination_id, modulation_amount_editor_.getText());
+  float amount = modulationAmountFromPeakText(destination_id, modulation_amount_editor_.getText());
+  // The box still says what the slider was set to: the slider's own value is
+  // the one meant, which its text may round.
+  if (modulation_amount_slider_.isVisible() && modulation_amount_editor_.getText() == modulation_slider_text_)
+    if (auto* bridge = parameterBridge(destination_id))
+      amount = modulationAmountForTarget(*bridge, modulation_amount_slider_.getValue());
+  // What the slider played is kept, or replaced by the amount typed.
+  modulation_amount_auditioned_ = false;
   const int connection = synth_.getConnectionIndex(source_id.toStdString(), destination_id.toStdString());
   if (connection >= 0) {
     // Joins the step that made the route.
@@ -18085,17 +18267,20 @@ float SynthEditor::modulationAmountFromPeakText(const String& destinationId, con
   if (bridge == nullptr)
     return jlimit(-1.0f, 1.0f, static_cast<float>(trimmed.getDoubleValue()));
 
-  const auto& details = bridge->getDetails();
-  const float range = details.max - details.min;
-  if (range <= 0.0f)
-    return 0.0f;
   // Modulation is continuous even on stepped controls: Transpose moves by
   // fractions of a semitone. Converting through the control's own value
   // would round 0.5 semitones to a whole step (or to nothing).
-  const float target_normalized = static_cast<float>(accessibleParameterValueForText(*bridge, trimmed));
-  const float target_engine = jlimit(details.min, details.max, details.min + target_normalized * range);
-  const float current_engine = bridge->convertToEngineValue(bridge->getValue());
+  return modulationAmountForTarget(*bridge, accessibleParameterValueForText(*bridge, trimmed));
+}
 
+float SynthEditor::modulationAmountForTarget(const ValueBridge& destination, double targetValue) const {
+  const auto& details = destination.getDetails();
+  const float range = details.max - details.min;
+  if (range <= 0.0f)
+    return 0.0f;
+  const float target_engine = jlimit(details.min, details.max,
+                                     details.min + static_cast<float>(targetValue) * range);
+  const float current_engine = destination.convertToEngineValue(destination.getValue());
   return jlimit(-1.0f, 1.0f, (target_engine - current_engine) / range);
 }
 
@@ -18339,6 +18524,8 @@ void SynthEditor::cancelInlineTextPrompt() {
 }
 
 void SynthEditor::cancelInitialModulationAmount() {
+  // The amount the slider played goes back to what the route had.
+  revertModulationAudition();
   const String source_id = pending_modulation_source_;
   const String destination_id = pending_modulation_destination_;
   const bool created = pending_modulation_created_;

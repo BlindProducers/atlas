@@ -1816,6 +1816,7 @@ namespace {
       { "Undo and redo", nullptr },
       { "Tuning", "Load tuning file..." },
       { "MIDI learn mappings", nullptr },
+      { "Modulation", "Modulation amount slider" },
       { "Accessibility", "Other announcements" },
       { "Online community browser", "Show the community library in the preset browser" },
       { "Keyboard help", "Keyboard shortcuts" } };
