@@ -12,12 +12,33 @@ Fetched by default, needed to build Atlas:
   CMake applies the patches in `patches/juce8-*.patch` to the submodule's
   working tree when it configures (`.gitmodules` ignores the changes they
   leave there):
+  - `juce8-colour-id-cache.patch`: a component's colours are properties
+    named `jcclr_<id>`, and every `setColour`, `findColour` and
+    `isColourSpecified` made that name into an `Identifier`, which searches
+    the process's whole string pool under its lock. Building a slider or a
+    combo box asks for dozens, so once the editor's own string work was
+    trimmed this was the largest single cost of building Atlas's editor
+    (about 5,000 components). Each colour's `Identifier` is now made once
+    and kept, which took building the editor on Windows from 75 to 60 ms.
   - `juce8-mac-idle-vblank.patch`: on macOS JUCE 8 wakes the message thread
     on every display refresh (60 or 120 times a second) for as long as a
     window is open, even when nothing needs drawing. The patch skips that
     wake-up while the window has no pending repaint and no `VBlankListener`;
     a repaint or a new listener starts it again. With Atlas's editor open
     and idle this saved about two points of one core.
+  - `juce8-windows-idle-vblank.patch`: the same on Windows, where a thread
+    per monitor waits for each vblank and posts it to the message thread
+    (a plugin's message thread is the host's own) for as long as a window
+    is open. Each window now tells the vblank dispatcher when it starts and
+    stops waiting for one (a Direct2D paint scheduled for the next vblank,
+    software repaints not yet flushed, or a `VBlankListener`), and the
+    threads sleep on an event while none waits. It builds on the
+    `vBlankListenerAdded` hook the macOS patch adds to `ComponentPeer`, so
+    it is applied after it. On a 200 Hz display it took the message
+    thread's share of a core with Atlas's editor open and idle from about
+    1.2 to 1.0 percent, and focused from 1.5 to 1.2.
+    `AtlasMacroTests --window-repaint` checks that an idle window still
+    paints every repaint at once.
 - `nlohmann_json/`: nlohmann json 3.1.2 (MIT), from the release-tracking
   repository https://github.com/ArthurSonzogni/nlohmann_json_cmake_fetchcontent,
   which carries only the released header (`include/nlohmann/json.hpp`, the

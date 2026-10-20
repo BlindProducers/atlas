@@ -767,6 +767,9 @@ if(ATLAS_BUILD_TIMING_TESTS)
   # Voice allocation with arpeggiator tails, MIDI learn, state restore and
   # what the host is told (the 2026-10-14 audit).
   add_test(NAME atlas_release_hardening COMMAND AtlasMacroTests --release-hardening)
+  # A window gone idle still paints every repaint at once: JUCE's vblanks stop
+  # while nothing waits to be drawn (third_party/patches/juce8-*-idle-vblank.patch).
+  add_test(NAME atlas_window_repaint COMMAND AtlasMacroTests --window-repaint)
 
   juce_add_console_app(AtlasDefuseTests PRODUCT_NAME "Atlas Defuse Tests")
   juce_generate_juce_header(AtlasDefuseTests)

@@ -259,13 +259,28 @@ namespace {
     return {};
   }
 
+#if JUCE_WINDOWS
+  // Whether Windows keeps `name` for a device (CON, NUL, COM1 and the like),
+  // as it does whatever extension follows: no file or folder can have it.
+  bool isWindowsDeviceName(const juce::String& name) {
+    const juce::String stem = name.upToFirstOccurrenceOf(".", false, false).trimEnd().toUpperCase();
+    if (stem == "CON" || stem == "PRN" || stem == "AUX" || stem == "NUL" || stem == "CONIN$" || stem == "CONOUT$")
+      return true;
+    if (stem.length() != 4 || !(stem.startsWith("COM") || stem.startsWith("LPT")))
+      return false;
+    // COM0 to COM9 and LPT0 to LPT9, with superscript 1, 2 and 3 too.
+    const juce_wchar digit = stem[3];
+    return (digit >= '0' && digit <= '9') || digit == 0xb9 || digit == 0xb2 || digit == 0xb3;
+  }
+#endif
+
   // One part of a path: a file or folder name that stays inside its parent.
   juce::String pathPart(juce::String text, const juce::String& fallback) {
     text = juce::File::createLegalFileName(text.trim());
     while (text.contains(".."))
       text = text.replace("..", ".");
     // Not hidden: the library scan skips folders and files that start with a dot.
-    text = text.trimCharactersAtStart(".").trim();
+    text = systemFileName(text.trimCharactersAtStart(".").trim());
     if (text.isEmpty())
       text = fallback;
     return text;
@@ -584,6 +599,22 @@ juce::File localPreviewFile(const RemoteBank& bank, const juce::File& data_direc
       .getChildFile("Banks")
       .getChildFile(pathPart(uploader, "Unknown uploader"))
       .getChildFile(pathPart(previewFileName(bank.preview, bank.name), "Preview.mp3"));
+}
+
+juce::String systemFileName(const juce::String& name) {
+#if JUCE_WINDOWS
+  juce::String printable;
+  for (const juce_wchar character : name)
+    printable += (character < 0x20 ? juce_wchar(' ') : character);
+  juce::String text = printable.trimCharactersAtEnd(". ").trim();
+  if (isWindowsDeviceName(text)) {
+    const int dot = text.indexOfChar('.');
+    text = dot < 0 ? text + "_" : text.substring(0, dot) + "_" + text.substring(dot);
+  }
+  return text;
+#else
+  return name;
+#endif
 }
 
 juce::String durationText(double seconds) {

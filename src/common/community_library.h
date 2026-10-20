@@ -132,6 +132,11 @@ juce::File localFile(const RemoteBank& bank, const juce::File& data_directory);
 juce::File previewDirectory(const juce::File& data_directory);
 juce::File localPreviewFile(const RemotePreset& preset, const juce::File& data_directory);
 juce::File localPreviewFile(const RemoteBank& bank, const juce::File& data_directory);
+// `name` as Windows takes a file or folder name: control characters become
+// spaces, trailing dots and spaces go (Windows drops them), and a device name
+// (CON, AUX, NUL, COM1 and the like, with any extension) gets an underscore
+// after it: "aux_", "Nul_.atp". The name as it is elsewhere.
+juce::String systemFileName(const juce::String& name);
 // A length as it is said: "12 seconds", "1 minute 5 seconds"; empty for none.
 juce::String durationText(double seconds);
 

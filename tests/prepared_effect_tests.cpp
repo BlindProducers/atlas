@@ -504,10 +504,15 @@ void realtimeTransitions() {
   plugin.processBlock(audio, midi);
 }
 
+// The CPU seconds a process has used: in all, in its own code and in the system's.
+struct ProcessCpuTimes {
+  double total = 0.0, user = 0.0, system = 0.0;
+};
 #if JUCE_WINDOWS
 // Defined at the end of this file, after <windows.h>, so its macros reach nothing else.
 double windowsPrivateWorkingSetMiB();
 double windowsCommitMiB();
+ProcessCpuTimes windowsProcessCpuTimes();
 #endif
 // Memory the process actually touched, as Activity Monitor reports it (on
 // Windows, the private working set Task Manager shows).
@@ -1152,12 +1157,19 @@ void idleCpu(const std::string& only) {
       while (juce::Time::getMillisecondCounter() < end)
         juce::MessageManager::getInstance()->runDispatchLoopUntil(10);
     };
-    // User and system CPU seconds of the whole process.
+    // CPU seconds of the whole process.
     auto cpu_times = [] {
+#if JUCE_WINDOWS
+      return windowsProcessCpuTimes();
+#else
       rusage usage {};
       getrusage(RUSAGE_SELF, &usage);
-      return std::make_pair(usage.ru_utime.tv_sec + 1.0e-6 * usage.ru_utime.tv_usec,
-                            usage.ru_stime.tv_sec + 1.0e-6 * usage.ru_stime.tv_usec);
+      ProcessCpuTimes times;
+      times.user = usage.ru_utime.tv_sec + 1.0e-6 * usage.ru_utime.tv_usec;
+      times.system = usage.ru_stime.tv_sec + 1.0e-6 * usage.ru_stime.tv_usec;
+      times.total = times.user + times.system;
+      return times;
+#endif
     };
     auto plugin = std::make_unique<SynthPlugin>();
     prepare(*plugin, 1.0f, chain);
@@ -1190,9 +1202,9 @@ void idleCpu(const std::string& only) {
       const auto end = cpu_times();
       const double seconds = ms / 1000.0;
       const double block_us = render_blocks > 0 ? 1.0e-3 * render_ns / render_blocks : 0.0;
-      std::cout << name << " cpu_percent=" << 100.0 * (end.first - start.first + end.second - start.second) / seconds
-                << " user_percent=" << 100.0 * (end.first - start.first) / seconds
-                << " system_percent=" << 100.0 * (end.second - start.second) / seconds
+      std::cout << name << " cpu_percent=" << 100.0 * (end.total - start.total) / seconds
+                << " user_percent=" << 100.0 * (end.user - start.user) / seconds
+                << " system_percent=" << 100.0 * (end.system - start.system) / seconds
                 << " audio_us_per_block=" << block_us << std::endl;
     };
     pump(1000);
@@ -1973,6 +1985,7 @@ int main(int argc, char** argv) {
 #endif
 #include <windows.h>
 #include <psapi.h>
+#include <intrin.h>
 #pragma comment(lib, "psapi.lib")
 namespace {
 // PROCESS_MEMORY_COUNTERS_EX2 (Windows 10 1809 and later), declared here
@@ -1995,6 +2008,39 @@ double windowsPrivateWorkingSetMiB() {
 double windowsCommitMiB() {
   MemoryCounters counters;
   return readMemoryCounters(counters) ? counters.base.PrivateUsage / 1048576.0 : 0;
+}
+// The process's CPU seconds. GetProcessTimes charges a whole 15.6 ms clock
+// tick to whichever thread it lands on, which misses the short bursts an idle
+// editor and an audio thread run in, so the total comes from the cycles the
+// process's threads ran (QueryProcessCycleTime, in time stamp counter ticks).
+// The user and system split is GetProcessTimes's, coarse as it is.
+ProcessCpuTimes windowsProcessCpuTimes() {
+  // The time stamp counter's rate, measured once against the performance counter.
+  static const double cycles_per_second = [] {
+    LARGE_INTEGER frequency {}, start {}, end {};
+    QueryPerformanceFrequency(&frequency);
+    QueryPerformanceCounter(&start);
+    const unsigned long long start_cycles = __rdtsc();
+    Sleep(100);
+    QueryPerformanceCounter(&end);
+    const unsigned long long end_cycles = __rdtsc();
+    const double seconds = double(end.QuadPart - start.QuadPart) / double(frequency.QuadPart);
+    return double(end_cycles - start_cycles) / seconds;
+  }();
+  ProcessCpuTimes times;
+  ULONG64 cycles = 0;
+  if (QueryProcessCycleTime(GetCurrentProcess(), &cycles))
+    times.total = double(cycles) / cycles_per_second;
+  FILETIME created {}, exited {}, kernel {}, user {};
+  if (GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user)) {
+    // FILETIME counts 100 ns intervals.
+    auto seconds = [](const FILETIME& time) {
+      return double((static_cast<ULONGLONG>(time.dwHighDateTime) << 32) | time.dwLowDateTime) * 1.0e-7;
+    };
+    times.user = seconds(user);
+    times.system = seconds(kernel);
+  }
+  return times;
 }
 }
 #endif

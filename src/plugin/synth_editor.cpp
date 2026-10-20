@@ -376,6 +376,17 @@ namespace {
     return isPositiveAndBelow(slot, vital::kNumOscillators) && id.startsWith("osc_" + number + "_") ? slot : -1;
   }
 
+  // Calls `visit` with each control whose id starts with `prefix`, in the map's
+  // order. The map is sorted, so this reads only those controls rather than
+  // turning every one of its tens of thousands of names into a String.
+  template <typename Visit>
+  void forEachControlWithPrefix(const vital::control_map& controls, const std::string& prefix, Visit&& visit) {
+    for (auto control = controls.lower_bound(prefix);
+         control != controls.end() && control->first.compare(0, prefix.size(), prefix) == 0; ++control) {
+      visit(*control);
+    }
+  }
+
   // Type-group parameters keep their legacy spelling for labels, ranks and help:
   // "osc_5_sample_start" reads as "sample_start". Other ids are returned unchanged.
   String legacySourceId(const String& id) {
@@ -2173,7 +2184,7 @@ namespace {
 
   int parameterRank(const String& id) {
     String rank_id = id;
-    for (int bus = 1; bus <= vital::kNumBuses; ++bus) {
+    for (int bus = 1; id.startsWith("bus_") && bus <= vital::kNumBuses; ++bus) {
       const String prefix = "bus_" + String(bus) + "_";
       if (rank_id.startsWith(prefix)) {
         rank_id = rank_id.fromFirstOccurrenceOf(prefix, false, false);
@@ -2210,9 +2221,17 @@ namespace {
                                       "sample_input", "filter_input" });
       }
     }
-    for (int effect = 0; effect < vital::constants::kNumEffects; ++effect) {
-      const String effect_id(strings::kEffectOrder[effect]);
-      const String prefix = effect_id + "_";
+    // Each effect's id and its parameters' prefix, made once rather than on
+    // every call for each of the editor's thousands of parameters.
+    static const std::vector<std::pair<String, String>> kEffectPrefixes = [] {
+      std::vector<std::pair<String, String>> prefixes;
+      for (int effect = 0; effect < vital::constants::kNumEffects; ++effect) {
+        const String effect_id(strings::kEffectOrder[effect]);
+        prefixes.emplace_back(effect_id, effect_id + "_");
+      }
+      return prefixes;
+    }();
+    for (const auto& [effect_id, prefix] : kEffectPrefixes) {
       if (rank_id.startsWith(prefix)) {
         const String suffix = rank_id.substring(prefix.length());
         return suffix == "on" ? 0 : 1 + effectSlotParameterRank(effect_id, suffix);
@@ -2300,7 +2319,7 @@ namespace {
       return 500;
     };
 
-    for (int osc = 1; osc <= vital::kNumOscillators; ++osc) {
+    for (int osc = 1; id.startsWith("osc_") && osc <= vital::kNumOscillators; ++osc) {
       const String prefix = "osc_" + String(osc) + "_";
       if (id.startsWith(prefix)) {
         // A type's own parameters follow the shared oscillator controls in their legacy order.
@@ -2796,6 +2815,8 @@ namespace {
   }
 
   String busEffectSectionForParameter(const String& id) {
+    if (!id.startsWith("bus_"))
+      return {};
     for (int bus = 1; bus <= vital::kNumBuses; ++bus) {
       const String prefix = "bus_" + String(bus) + "_";
       if (!id.startsWith(prefix))
@@ -2838,6 +2859,8 @@ namespace {
   }
 
   String accessibleSectionTitle(const String& section) {
+    if (!section.startsWith("Bus "))
+      return section;
     for (int bus = 1; bus <= vital::kNumBuses; ++bus) {
       const String prefix = "Bus " + String(bus) + " - ";
       if (section.startsWith(prefix))
@@ -2857,10 +2880,20 @@ namespace {
   }
 
   String effectIdForSection(const String& section) {
+    // Each effect's section title, worked out once. Matching every title on
+    // each call built a thousand strings, for every parameter of every editor
+    // rebuild, which made it the costliest part of opening the editor.
+    static const std::vector<std::pair<String, String>> kEffectSections = [] {
+      std::vector<std::pair<String, String>> titles;
+      for (int i = 0; i < vital::constants::kNumEffects; ++i) {
+        const String effect_id = strings::kEffectOrder[i];
+        titles.emplace_back(effectSectionForPrefixedId(effect_id + "_on", {}), effect_id);
+      }
+      return titles;
+    }();
     const String effect_section = accessibleSectionTitle(section);
-    for (int i = 0; i < vital::constants::kNumEffects; ++i) {
-      const String effect_id = strings::kEffectOrder[i];
-      if (effectSectionForPrefixedId(effect_id + "_on", {}) == effect_section)
+    for (const auto& [title, effect_id] : kEffectSections) {
+      if (title == effect_section)
         return effect_id;
     }
     return {};
@@ -2902,7 +2935,8 @@ namespace {
     const String bus_section = busEffectSectionForParameter(id);
     if (bus_section.isNotEmpty())
       return bus_section;
-    for (int osc = 1; osc <= vital::kNumOscillators; ++osc) {
+    const bool oscillator_id = id.startsWith("osc_");
+    for (int osc = 1; oscillator_id && osc <= vital::kNumOscillators; ++osc) {
       const String prefix = "osc_" + String(osc) + "_";
       if (id.startsWith(prefix) &&
           (id.endsWith("_key_zone_start") || id.endsWith("_key_zone_end") ||
@@ -2915,7 +2949,7 @@ namespace {
               id.endsWith("effect_chain_order") || id.endsWith("post_effect_order") ||
               id.contains("_effect_chain_slot_")) ?
              kEffectsChainSection : kSignalRoutingSection;
-    for (int osc = 1; osc <= vital::kNumOscillators; ++osc) {
+    for (int osc = 1; oscillator_id && osc <= vital::kNumOscillators; ++osc) {
       if (id.startsWith("osc_" + String(osc)))
         return "Oscillator " + String(osc);
     }
@@ -7115,13 +7149,11 @@ void SynthEditor::buildSections() {
       const String slot_prefix = effectSlotPrefix(section, slot);
       const String effect_prefix = slot_prefix + strings::kEffectOrder[type - 1] + "_";
       addInternalFxBridge(slot_prefix + "enabled", section);
-      for (const auto& control : synth_.getControls()) {
+      forEachControlWithPrefix(synth_.getControls(), effect_prefix.toStdString(), [&](const auto& control) {
         const String id(control.first);
-        if (id.startsWith(effect_prefix) &&
-            shouldExposeEffectSlotParameter(strings::kEffectOrder[type - 1],
-                                            id.substring(effect_prefix.length())))
+        if (shouldExposeEffectSlotParameter(strings::kEffectOrder[type - 1], id.substring(effect_prefix.length())))
           addInternalFxBridge(id, section);
-      }
+      });
     }
   };
 
@@ -7132,13 +7164,13 @@ void SynthEditor::buildSections() {
 
   // Oscillator slot parameters the host doesn't see individually (they are
   // automated through the oscillator automation proxies) still need rows.
-  for (const auto& control : synth_.getControls()) {
+  forEachControlWithPrefix(synth_.getControls(), "osc_", [&](const auto& control) {
     const String id(control.first);
     const int slot = sourceSlotForId(id);
     if (slot < 0 || parameters_by_id_.count(id))
-      continue;
+      return;
     addInternalFxBridge(id, "Oscillator " + String(slot + 1));
-  }
+  });
 
   // Rank each parameter once: computing ranks inside the comparison made the
   // sort the costliest part of every preset load.
@@ -7192,15 +7224,18 @@ void SynthEditor::buildSections() {
       return 280 + sectionRank(kEffectsChainSection) + 1 + position;
     return sectionRank(kEffectsChainSection) + 1 + position;
   };
-  std::stable_sort(names.begin(), names.end(), [&](const String& a, const String& b) {
-    const int rank_a = dynamic_section_rank(a);
-    const int rank_b = dynamic_section_rank(b);
-    if (rank_a != rank_b)
-      return rank_a < rank_b;
-    return a < b;
-  });
+  // Ranked once each, not on every comparison of the sort.
+  std::vector<std::pair<int, String>> ranked_names;
+  ranked_names.reserve(names.size());
   for (const auto& name : names)
-    section_names_.add(name);
+    ranked_names.emplace_back(dynamic_section_rank(name), name);
+  std::stable_sort(ranked_names.begin(), ranked_names.end(), [](const auto& a, const auto& b) {
+    if (a.first != b.first)
+      return a.first < b.first;
+    return a.second < b.second;
+  });
+  for (const auto& name : ranked_names)
+    section_names_.add(name.second);
   buildGroups();
 }
 
@@ -13163,7 +13198,8 @@ namespace {
   }
 
   String shareFileName(const String& name, const String& fallback) {
-    String legal = File::createLegalFileName(name.trim()).trimCharactersAtStart(".").trim();
+    String legal = atlas::community::systemFileName(
+        File::createLegalFileName(name.trim()).trimCharactersAtStart(".").trim());
     return legal.isNotEmpty() ? legal : fallback;
   }
 }

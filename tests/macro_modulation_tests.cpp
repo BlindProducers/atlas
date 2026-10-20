@@ -794,6 +794,7 @@ namespace {
 #include "release_hardening_tests.h"
 #include "undo_tests.h"
 #include "community_library_tests.h"
+#include "window_repaint_tests.h"
 
 int main(int argc, char** argv) {
   ScopedJuceInitialiser_GUI juce;
@@ -951,6 +952,13 @@ int main(int argc, char** argv) {
   }
   if (argc > 1 && String(argv[1]) == "--release-hardening")
     return runReleaseHardeningTests();
+  if (argc > 1 && String(argv[1]) == "--window-repaint")
+    return runWindowRepaintTests();
+  if (argc > 1 && String(argv[1]) == "--first-window-timing") {
+    // Timing only: the cost of the process's first window, before Atlas draws.
+    firstWindowTiming();
+    return 0;
+  }
   if (argc > 1 && String(argv[1]) == "--community-probe") {
     // By hand, not a test: fetches the live library's list (or ATLAS_COMMUNITY_URL's) and prints it.
     std::vector<atlas::community::RemotePreset> presets;

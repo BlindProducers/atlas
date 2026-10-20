@@ -148,6 +148,32 @@ namespace {
     expect(atlas::community::presetsPageUrl("https://atlas.blindproducers.org/", 2) ==
                "https://atlas.blindproducers.org/api/v1/presets/?kind=patch&page_size=200&page=2",
            "a page of patches is asked for in full pages");
+
+#if JUCE_WINDOWS
+    // Windows has no file or folder called CON, AUX, NUL, COM1 and so on, with
+    // any extension, and drops a name's trailing dots and spaces.
+    atlas::community::RemotePreset device = presets[0];
+    device.uploader = "aux";
+    device.style_label = "Lead.";
+    device.file_name = "nul.atp";
+    const File device_file = atlas::community::localFile(device, data);
+    expect(device_file == community.getChildFile("aux_").getChildFile("Lead").getChildFile("nul_.atp"),
+           "device names get an underscore and a trailing dot goes: " + device_file.getFullPathName().toStdString());
+    device.uploader = "COM1 sounds";
+    device.style_label = "Lead";
+    device.file_name = "Lpt9.Bass.atp";
+    expect(atlas::community::localFile(device, data) ==
+               community.getChildFile("COM1 sounds").getChildFile("Lead").getChildFile("Lpt9_.Bass.atp"),
+           "only a name that is a device name changes: " +
+               atlas::community::localFile(device, data).getFullPathName().toStdString());
+    device.file_name = String("Two") + String::charToString('\t') + "Lines.atp";
+    expect(atlas::community::localFile(device, data).getFileName() == "Two Lines.atp",
+           "control characters become spaces: " + atlas::community::localFile(device, data).getFileName().toStdString());
+    // The Share form names its temporary file the same way.
+    expect(atlas::community::systemFileName("Aux") == "Aux_" && atlas::community::systemFileName("Aux Bass") == "Aux Bass" &&
+               atlas::community::systemFileName("Bass. ") == "Bass",
+           "a patch named Aux is shared from Aux_");
+#endif
   }
 
   // One shared preset as the library's page would list it, pointing at a saved file.
@@ -1888,6 +1914,59 @@ namespace {
     }
     expect(other != nullptr && atlas::speech::settings().other != other_was, "a toggle changes its setting");
     atlas::speech::settings().other = other_was;
+    if (other != nullptr)
+      other->setToggleState(other_was, dontSendNotification);
+
+    // Use speech feedback switches every announcement category with it, and a
+    // category switched on switches it back on. Frequency values in Hz, how
+    // values are read, is on for a new user and stays as it is.
+    {
+      auto& speech = atlas::speech::settings();
+      const auto speech_before = speech;
+      auto* master = dynamic_cast<Button*>(titledIn(*content, "Use speech feedback"));
+      auto* navigation = dynamic_cast<Button*>(titledIn(*content, "Navigation announcements"));
+      auto* hz = dynamic_cast<Button*>(titledIn(*content, "Frequency values in Hz"));
+      expect(master != nullptr && navigation != nullptr && other != nullptr && hz != nullptr && hz->getToggleState() &&
+                 speech.frequency_values_in_hz,
+             "Settings has the speech switches, with Frequency values in Hz on for a new user");
+      if (master != nullptr && navigation != nullptr && other != nullptr && hz != nullptr) {
+        master->triggerClick();
+        pumpEditorEvents();
+        expect(!master->getToggleState() && !navigation->getToggleState() && !other->getToggleState() &&
+                   !speech.speech_feedback && !speech.navigation && !speech.modulation && !speech.lfo_editor &&
+                   hz->getToggleState() && speech.frequency_values_in_hz,
+               "Use speech feedback off turns every category off, and leaves Frequency values in Hz on");
+        navigation->triggerClick();
+        pumpEditorEvents();
+        expect(master->getToggleState() && navigation->getToggleState() && !other->getToggleState() &&
+                   speech.speech_feedback && speech.navigation && !speech.other,
+               "Navigation announcements on switches speech feedback back on, and only that category");
+        master->triggerClick();
+        pumpEditorEvents();
+        master->triggerClick();
+        pumpEditorEvents();
+        expect(master->getToggleState() && navigation->getToggleState() && other->getToggleState() &&
+                   speech.other && speech.parameters,
+               "Use speech feedback on turns every category on");
+      }
+      // Back as they were, the switches with them.
+      speech = speech_before;
+      using Settings = atlas::speech::Settings;
+      const std::pair<const char*, bool Settings::*> switches[] = {
+        { "Use speech feedback", &Settings::speech_feedback },
+        { "Navigation announcements", &Settings::navigation },
+        { "Preset announcements", &Settings::presets },
+        { "LFO and Trance gate editor announcements", &Settings::lfo_editor },
+        { "Wavetable editor announcements", &Settings::wavetable_editor },
+        { "Sample and granular announcements", &Settings::sample_browser },
+        { "Modulation announcements", &Settings::modulation },
+        { "Parameter value announcements", &Settings::parameters },
+        { "Other announcements", &Settings::other },
+        { "Frequency values in Hz", &Settings::frequency_values_in_hz } };
+      for (const auto& [title, field] : switches)
+        if (auto* toggle = dynamic_cast<Button*>(titledIn(*content, title)))
+          toggle->setToggleState(speech.*field, dontSendNotification);
+    }
 
     // Online community browser.
     auto* show = dynamic_cast<Button*>(titledIn(*content, "Show the community library in the preset browser"));
