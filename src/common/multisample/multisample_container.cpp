@@ -254,23 +254,12 @@ namespace container {
       cacheFolder(hash).getChildFile(kCompleteMarker).setLastModificationTime(juce::Time::getCurrentTime());
   }
 
-  bool extractToCache(const juce::File& container, const std::string& hash, const std::vector<FileInfo>& files,
-                      const std::function<bool(float)>& progress, std::string& error) {
-    if (!isValidHash(hash)) {
-      error = "The preset's instrument reference is not valid.";
-      return false;
-    }
-    std::lock_guard<std::mutex> lock(cacheWriteMutex());
-    if (isCached(hash)) {
-      touch(hash);
-      return true;
-    }
-
+  bool extractTo(const juce::File& container, const std::string& hash, const std::vector<FileInfo>& files,
+                 const juce::File& folder, const std::function<bool(float)>& progress, std::string& error) {
     juce::ZipFile zip(container);
-    const juce::File partial = cacheRoot().getChildFile(juce::String(hash) + ".partial");
-    partial.deleteRecursively();
-    if (!partial.createDirectory().wasOk()) {
-      error = "Cannot create " + partial.getFullPathName().toStdString();
+    folder.deleteRecursively();
+    if (!folder.createDirectory().wasOk()) {
+      error = "Cannot create " + folder.getFullPathName().toStdString();
       return false;
     }
 
@@ -282,27 +271,27 @@ namespace container {
     for (const FileInfo& info : files) {
       if (!safeRelative(info.relative)) {
         error = "The preset names an unsafe path: " + info.relative;
-        partial.deleteRecursively();
+        folder.deleteRecursively();
         return false;
       }
       const int index = zip.getIndexOfFileName(juce::String(entryName(hash, info.relative)));
       std::unique_ptr<juce::InputStream> input(index >= 0 ? zip.createStreamForEntry(index) : nullptr);
       if (input == nullptr) {
         error = "The preset is missing " + info.relative;
-        partial.deleteRecursively();
+        folder.deleteRecursively();
         return false;
       }
-      const juce::File target = partial.getChildFile(juce::String(info.relative));
-      if (!target.isAChildOf(partial)) {
+      const juce::File target = folder.getChildFile(juce::String(info.relative));
+      if (!target.isAChildOf(folder)) {
         error = "The preset names an unsafe path: " + info.relative;
-        partial.deleteRecursively();
+        folder.deleteRecursively();
         return false;
       }
       target.getParentDirectory().createDirectory();
       juce::FileOutputStream output(target);
       if (!output.openedOk()) {
         error = "Cannot write " + target.getFullPathName().toStdString();
-        partial.deleteRecursively();
+        folder.deleteRecursively();
         return false;
       }
       uint32_t crc = 0;
@@ -317,23 +306,40 @@ namespace container {
         done += read;
         if (progress && !progress(static_cast<float>(done) / std::max<int64_t>(1, total))) {
           output.flush();
-          partial.deleteRecursively();
+          folder.deleteRecursively();
           return false;
         }
       }
       output.flush();
       if (output.getStatus().failed()) {
         error = "Cannot write " + target.getFullPathName().toStdString() + ": the disk may be full.";
-        partial.deleteRecursively();
+        folder.deleteRecursively();
         return false;
       }
       if (size != info.size || crc != info.crc) {
         error = "The preset is damaged: " + info.relative + " does not match its checksum.";
-        partial.deleteRecursively();
+        folder.deleteRecursively();
         return false;
       }
     }
+    return true;
+  }
 
+  bool extractToCache(const juce::File& container, const std::string& hash, const std::vector<FileInfo>& files,
+                      const std::function<bool(float)>& progress, std::string& error) {
+    if (!isValidHash(hash)) {
+      error = "The preset's instrument reference is not valid.";
+      return false;
+    }
+    std::lock_guard<std::mutex> lock(cacheWriteMutex());
+    if (isCached(hash)) {
+      touch(hash);
+      return true;
+    }
+
+    const juce::File partial = cacheRoot().getChildFile(juce::String(hash) + ".partial");
+    if (!extractTo(container, hash, files, partial, progress, error))
+      return false;
     if (!finishCacheFolder(partial, hash)) {
       error = "Cannot finish the instrument cache in " + cacheRoot().getFullPathName().toStdString();
       partial.deleteRecursively();
@@ -369,6 +375,51 @@ namespace container {
     return !output.getStatus().failed() && input.isExhausted();
   }
 
+  bool placeFiles(const std::vector<FileInfo>& files, const juce::File& folder, int64_t max_copy_bytes,
+                  const std::function<bool()>& cancelled, std::string& error) {
+    if (!folder.createDirectory().wasOk()) {
+      error = "Cannot create " + folder.getFullPathName().toStdString();
+      return false;
+    }
+    std::vector<const FileInfo*> to_copy;
+    int64_t copy_bytes = 0;
+    for (const FileInfo& info : files) {
+      if (!safeRelative(info.relative)) {
+        error = "The instrument names an unsafe path: " + info.relative;
+        return false;
+      }
+      if (!info.file.existsAsFile()) {
+        error = "The instrument file " + info.file.getFullPathName().toStdString() + " is missing.";
+        return false;
+      }
+      const juce::File target = folder.getChildFile(juce::String(info.relative));
+      target.getParentDirectory().createDirectory();
+      target.deleteFile();
+      std::error_code code;
+      // u8path: a plain std::string path is read in the ANSI code page on Windows,
+      // which breaks (or throws on) any path with characters outside it.
+      std::filesystem::create_hard_link(std::filesystem::u8path(info.file.getFullPathName().toStdString()),
+                                        std::filesystem::u8path(target.getFullPathName().toStdString()), code);
+      if (code) {
+        to_copy.push_back(&info);
+        copy_bytes += info.size;
+      }
+    }
+    if (max_copy_bytes >= 0 && copy_bytes > max_copy_bytes) {
+      error = "The instrument's " + juce::File::descriptionOfSizeInBytes(copy_bytes).toStdString() +
+              " would have to be copied, more than the " +
+              juce::File::descriptionOfSizeInBytes(max_copy_bytes).toStdString() + " allowed.";
+      return false;
+    }
+    for (const FileInfo* info : to_copy) {
+      if (!copyFileCancellable(info->file, folder.getChildFile(juce::String(info->relative)), cancelled)) {
+        error = "Copying " + info->file.getFileName().toStdString() + " failed.";
+        return false;
+      }
+    }
+    return true;
+  }
+
   bool populateCache(const std::string& hash, const std::vector<FileInfo>& files, int64_t max_copy_bytes,
                      const std::function<bool()>& cancelled) {
     std::lock_guard<std::mutex> lock(cacheWriteMutex());
@@ -381,39 +432,8 @@ namespace container {
 
     const juce::File partial = cacheRoot().getChildFile(juce::String(hash) + ".partial");
     partial.deleteRecursively();
-    if (!partial.createDirectory().wasOk())
-      return false;
-
-    std::vector<const FileInfo*> to_copy;
-    int64_t copy_bytes = 0;
-    for (const FileInfo& info : files) {
-      if (!safeRelative(info.relative) || !info.file.existsAsFile()) {
-        partial.deleteRecursively();
-        return false;
-      }
-      const juce::File target = partial.getChildFile(juce::String(info.relative));
-      target.getParentDirectory().createDirectory();
-      std::error_code code;
-      // u8path: a plain std::string path is read in the ANSI code page on Windows,
-      // which breaks (or throws on) any path with characters outside it.
-      std::filesystem::create_hard_link(std::filesystem::u8path(info.file.getFullPathName().toStdString()),
-                                        std::filesystem::u8path(target.getFullPathName().toStdString()), code);
-      if (code) {
-        to_copy.push_back(&info);
-        copy_bytes += info.size;
-      }
-    }
-    if (copy_bytes > max_copy_bytes) {
-      partial.deleteRecursively();
-      return false;
-    }
-    for (const FileInfo* info : to_copy) {
-      if (!copyFileCancellable(info->file, partial.getChildFile(juce::String(info->relative)), cancelled)) {
-        partial.deleteRecursively();
-        return false;
-      }
-    }
-    if (!finishCacheFolder(partial, hash)) {
+    std::string error;
+    if (!placeFiles(files, partial, max_copy_bytes, cancelled, error) || !finishCacheFolder(partial, hash)) {
       partial.deleteRecursively();
       return false;
     }

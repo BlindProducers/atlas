@@ -757,6 +757,10 @@ if(ATLAS_BUILD_TIMING_TESTS)
   # The Community collection: the library's pages parse, downloads are checked
   # against its checksums, and the browser lists and fetches from a saved copy.
   add_test(NAME atlas_community_library COMMAND AtlasMacroTests --community-library)
+  # The library layout (library, bank, kind, category): paths, the banks a
+  # library lists, the one-time migration from the older layout, stray banks
+  # adopted into Third Party, and bank archives written and imported.
+  add_test(NAME atlas_library_layout COMMAND AtlasMacroTests --library-layout)
   # The system's credential store (keychain, Credential Manager): a secret
   # saved, read, replaced and removed under a service of the tests' own, with
   # keychain dialogs off. Skipped where there is no store or it is locked.
@@ -826,7 +830,7 @@ if(ATLAS_BUILD_TIMING_TESTS)
     Atlas juce::juce_audio_utils juce::juce_dsp juce::juce_gui_extra juce::juce_recommended_config_flags)
   foreach(multisample_test sfz-parser sf2-parser decentsampler-parser decentsampler-load decentsampler-controls
           pingpong-loop dynamic-envelope decode pitch select envelope-mode release-trigger choke cc-trigger container
-          host-state sf2-preset-switch sf2-encoding editor)
+          host-state bank sf2-preset-switch sf2-encoding editor)
     add_test(NAME atlas_multisample_${multisample_test} COMMAND AtlasMultiSampleTests --${multisample_test})
   endforeach()
 

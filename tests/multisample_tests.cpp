@@ -15,6 +15,7 @@
 #include "multisample_container.h"
 #include "multisample_manager.h"
 #include "load_save.h"
+#include "library_layout.h"
 #include "decentsampler_parser.h"
 #include "sf2_parser.h"
 #include "sfz_parser.h"
@@ -2137,6 +2138,206 @@ namespace {
     return finish("container");
   }
 
+  // Instruments in the library (library_layout.h): a preset saved into a
+  // bank keeps its instrument in its library's Multisamples folder once and
+  // refers to it there; another bank of the library shares it and another
+  // library gets its own; the reference survives a bank's rename, host state
+  // finds the instrument by hash, a container preset dropped into a bank is
+  // unpacked into the library, and an exported bank brings its instrument.
+  int bankTest() {
+    namespace lib = atlas::library;
+    TempFolder temp;
+    container::setCacheRootForTesting(temp.folder.getChildFile("cache"));
+    const juce::File data = temp.folder.getChildFile("Atlas");
+    data.createDirectory();
+    juce::TemporaryFile config(".config");
+    {
+      nlohmann::json contents = nlohmann::json::object();
+      contents["data_directory"] = data.getFullPathName().toStdString();
+      contents["library_layout"] = lib::kLayoutVersion;
+      config.getFile().replaceWithText(juce::String(contents.dump()));
+    }
+    LoadSave::setConfigFileForTesting(config.getFile());
+    const bool isolated = LoadSave::getDataDirectory() == data;
+    expect(isolated, "the test's Atlas folder is its own");
+    if (!isolated) {
+      LoadSave::setConfigFileForTesting({});
+      container::setCacheRootForTesting({});
+      return finish("bank");
+    }
+    const juce::File library = temp.folder.getChildFile("Library");
+    const juce::File outside = temp.folder.getChildFile("Elsewhere");
+    const juce::File main = writeLibrary(library, outside);
+    const juce::File user = lib::libraryDirectory(lib::Library::kUser, data);
+    const juce::File bank = lib::bankDirectory(lib::Library::kUser, "Alpha", data);
+    const juce::File preset = bank.getChildFile("Piano.atp");
+    const juce::File instrument = user.getChildFile("Multisamples/main");
+
+    std::vector<float> reference;
+    std::string hash;
+    juce::MemoryBlock state;
+    {
+      SynthPlugin plugin;
+      preparePlayback(plugin);
+      manager(plugin).loadFromUser(0, main);
+      settle(plugin);
+      const auto status = manager(plugin).status(0);
+      expect(status.state == vital::multisample::SlotStatus::kLoaded, "user load succeeds: " + status.error);
+      auto result = manager(plugin).result(0);
+      hash = result ? result->hash : "";
+      reference = renderPhrase(plugin);
+      expect(rms(reference, 0, kRate / 4) > 0.01, "the instrument plays");
+
+      expect(plugin.saveToFile(preset), "the preset saves into the bank");
+      expect(!container::isContainer(preset), "a preset in a bank is plain JSON");
+      expect(instrument.getChildFile("Programs/main.sfz").existsAsFile() &&
+             instrument.getChildFile("Programs/parts/high.sfz").existsAsFile() &&
+             instrument.getChildFile("Samples/low.flac").existsAsFile() &&
+             instrument.getChildFile("_external/0/far away.wav").existsAsFile(),
+             "the instrument's files are in the library's Multisamples folder in their layout");
+      const auto manifest = lib::readInstrumentManifest(instrument);
+      expect(manifest.valid && manifest.hash == juce::String(hash) && manifest.entry == "Programs/main.sfz" &&
+             manifest.files.size() == 5 && manifest.path_overrides.size() == 1 && manifest.format == "sfz",
+             "the manifest records the hash, the entry, the files and the outside sample");
+      const juce::String text = preset.loadFileAsString();
+      expect(text.contains("\"library_instrument\":\"main/Programs/main.sfz\"") && !text.contains("\"files\":"),
+             "the preset refers to the library's instrument and stores no files");
+      const juce::File entry = instrument.getChildFile("Programs/main.sfz");
+      expect(lib::findInstrumentByHash(hash, user) == entry && lib::findInstrumentAnywhere(hash, data) == entry,
+             "the instrument is found by its hash");
+      expect(plugin.saveToFile(preset) && !user.getChildFile("Multisamples/main 2").exists(),
+             "saving again places nothing twice");
+
+      // Another bank of the library shares it; another library gets its own.
+      expect(plugin.saveToFile(lib::bankDirectory(lib::Library::kUser, "Beta", data).getChildFile("Copy.atp")) &&
+             !user.getChildFile("Multisamples/main 2").exists(),
+             "a save into another User bank shares the instrument");
+      const juce::File third_party = lib::libraryDirectory(lib::Library::kThirdParty, data);
+      expect(plugin.saveToFile(lib::bankDirectory(lib::Library::kThirdParty, "Beta", data).getChildFile("Copy.atp")) &&
+             lib::findInstrumentByHash(hash, third_party) == third_party.getChildFile("Multisamples/main/Programs/main.sfz"),
+             "a save into another library places it in that library");
+      plugin.getStateInformation(state);
+    }
+
+    // The original library and the cache go away: the preset plays from its library.
+    library.deleteRecursively();
+    outside.deleteRecursively();
+    lib::libraryDirectory(lib::Library::kThirdParty, data).deleteRecursively();
+    container::setCacheRootForTesting(temp.folder.getChildFile("cache2"));
+    {
+      SynthPlugin plugin;
+      preparePlayback(plugin);
+      std::string error;
+      expect(plugin.loadFromFile(preset, error), "the bank preset loads: " + error);
+      settle(plugin);
+      const auto status = manager(plugin).status(0);
+      expect(status.state == vital::multisample::SlotStatus::kLoaded, "the instrument loads from the library: " + status.error);
+      plugin.checkOversampling();
+      expect(same(renderPhrase(plugin), reference), "it plays exactly like the original");
+      expect(manager(plugin).editableFile(0).isAChildOf(instrument), "the library's own SFZ is the one to edit");
+      expect(!container::isCached(hash), "a library's instrument is not copied into the cache");
+    }
+
+    // The bank is renamed: the reference, into the library's Multisamples,
+    // still holds. Host state, which names the original path, finds the
+    // instrument by its hash.
+    const juce::File gamma = lib::bankDirectory(lib::Library::kUser, "Gamma", data);
+    expect(bank.moveFileTo(gamma), "the bank is renamed");
+    lib::bankDirectory(lib::Library::kUser, "Beta", data).deleteRecursively();
+    const juce::File moved_preset = gamma.getChildFile("Piano.atp");
+    {
+      SynthPlugin plugin;
+      preparePlayback(plugin);
+      std::string error;
+      expect(plugin.loadFromFile(moved_preset, error), "the preset loads from the renamed bank: " + error);
+      settle(plugin);
+      expect(manager(plugin).status(0).state == vital::multisample::SlotStatus::kLoaded,
+             "the reference holds across the rename: " + manager(plugin).status(0).error);
+      plugin.checkOversampling();
+      expect(same(renderPhrase(plugin), reference), "and plays the same");
+    }
+    {
+      SynthPlugin plugin;
+      preparePlayback(plugin);
+      plugin.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+      settle(plugin);
+      expect(manager(plugin).status(0).state == vital::multisample::SlotStatus::kLoaded,
+             "host state finds the instrument in the library by its hash: " + manager(plugin).status(0).error);
+      plugin.checkOversampling();
+      expect(same(renderPhrase(plugin), reference), "and plays the same");
+    }
+
+    // A preset saved outside the library is self-contained; dropped into a
+    // bank of another library, it is unpacked into that library.
+    const juce::File elsewhere = temp.folder.getChildFile("Exported/Piano.atp");
+    {
+      SynthPlugin plugin;
+      preparePlayback(plugin);
+      std::string error;
+      plugin.loadFromFile(moved_preset, error);
+      settle(plugin);
+      expect(plugin.saveToFile(elsewhere) && container::isContainer(elsewhere),
+             "a preset saved outside the library carries its instrument");
+    }
+    const juce::File community = lib::libraryDirectory(lib::Library::kCommunity, data);
+    const juce::File dropped = lib::bankDirectory(lib::Library::kCommunity, "Delta", data).getChildFile("Dropped.atp");
+    expect(dropped.getParentDirectory().createDirectory().wasOk() && elsewhere.copyFileTo(dropped),
+           "the container is dropped into a Community bank");
+    juce::String adopt_error;
+    expect(lib::adoptContainerPreset(dropped, data, adopt_error) && !container::isContainer(dropped),
+           "the container is unpacked: " + adopt_error.toStdString());
+    expect(community.getChildFile("Multisamples/main/Programs/main.sfz").existsAsFile() &&
+           lib::readInstrumentManifest(community.getChildFile("Multisamples/main")).hash == juce::String(hash),
+           "into the Community library's Multisamples, once");
+    expect(!lib::adoptContainerPreset(dropped, data, adopt_error) && adopt_error.isEmpty(),
+           "a plain preset is left alone");
+    {
+      SynthPlugin plugin;
+      preparePlayback(plugin);
+      std::string error;
+      expect(plugin.loadFromFile(dropped, error), "the unpacked preset loads: " + error);
+      settle(plugin);
+      expect(manager(plugin).status(0).state == vital::multisample::SlotStatus::kLoaded,
+             "from the library's copy: " + manager(plugin).status(0).error);
+      plugin.checkOversampling();
+      expect(same(renderPhrase(plugin), reference), "and plays the same");
+    }
+
+    // An exported bank brings its instrument into a library that lacks it.
+    const juce::File archive = temp.folder.getChildFile("Gamma.atb");
+    expect(lib::writeBankArchive(gamma, archive).ok(), "the bank exports");
+    {
+      juce::ZipFile zip(archive);
+      expect(zip.getIndexOfFileName("Gamma/Presets/Piano.atp") >= 0 &&
+             zip.getIndexOfFileName("Gamma/Multisamples/main/Samples/low.flac") >= 0 &&
+             zip.getIndexOfFileName("Gamma/Multisamples/main/atlas-multisample.json") >= 0,
+             "the archive holds the preset and the instrument it plays");
+    }
+    const auto imported = lib::importBankArchive(archive, lib::Library::kFactory, data, "Gamma");
+    const juce::File imported_preset = lib::bankDirectory(lib::Library::kFactory, "Gamma", data).getChildFile("Piano.atp");
+    expect(imported.ok() && imported_preset.existsAsFile() &&
+           data.getChildFile("Factory/Multisamples/main/Samples/low.flac").existsAsFile(),
+           "the archive imports with the instrument: " + imported.error.toStdString());
+    gamma.deleteRecursively();
+    user.getChildFile("Multisamples").deleteRecursively();
+    community.getChildFile("Multisamples").deleteRecursively();
+    {
+      SynthPlugin plugin;
+      preparePlayback(plugin);
+      std::string error;
+      expect(plugin.loadFromFile(imported_preset, error), "the imported preset loads: " + error);
+      settle(plugin);
+      expect(manager(plugin).status(0).state == vital::multisample::SlotStatus::kLoaded,
+             "from the importing library's copy: " + manager(plugin).status(0).error);
+      plugin.checkOversampling();
+      expect(same(renderPhrase(plugin), reference), "and plays the same");
+    }
+
+    LoadSave::setConfigFileForTesting({});
+    container::setCacheRootForTesting({});
+    return finish("bank");
+  }
+
   int hostState() {
     TempFolder temp;
     container::setCacheRootForTesting(temp.folder.getChildFile("cache"));
@@ -2918,6 +3119,8 @@ int main(int argc, char** argv) {
     return containerTest();
   if (flag == "--host-state")
     return hostState();
+  if (flag == "--bank")
+    return bankTest();
   if (flag == "--sf2-preset-switch")
     return sf2PresetSwitch();
   if (flag == "--sf2-encoding")

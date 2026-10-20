@@ -85,7 +85,6 @@ namespace {
   constexpr const char* kAllLibraries = "All libraries";
   constexpr const char* kFactoryLibrary = "Factory";
   constexpr const char* kUserLibrary = "User";
-  constexpr const char* kOtherLibrary = "Other";
   constexpr const char* kCommunityLibrary = "Community";   // downloads from the community library
   constexpr const char* kAllPresetsCollection = "All presets";
   constexpr const char* kFavouritesCollection = "Favourites";
@@ -1032,15 +1031,9 @@ namespace {
     Array<File> files;
   };
 
-  String browserRootName(const File& root, const String& folder_name) {
-    const File data_folder = LoadSave::getDataDirectory().getChildFile(folder_name);
-    if (root == data_folder)
-      return "Factory";
-
-    const File user_folder = LoadSave::getUserDirectory().getChildFile(folder_name);
-    if (root == user_folder)
-      return "User";
-
+  // A folder outside the Atlas folder (the config's additional folders), as
+  // a Browse menu names it.
+  String browserRootName(const File& root) {
     return root.getFileName().isNotEmpty() ? root.getFileName() : root.getFullPathName();
   }
 
@@ -1138,11 +1131,17 @@ namespace {
     return browser_files[static_cast<size_t>((index + shift % size + size) % size)];
   }
 
-  PopupMenu createFileBrowserMenu(const std::vector<File>& roots, const String& folder_name,
+  // A Browse menu: the library, then its packs and folders, then the file.
+  // Each root is a library's folder of the kind; folders outside the Atlas
+  // folder follow the libraries under their own names.
+  PopupMenu createFileBrowserMenu(const std::vector<File>& roots, const String&,
                                   const std::vector<File>& browser_files,
                                   const std::shared_ptr<std::vector<File>>& choices) {
     PopupMenu menu;
     int item_id = 1;
+    const File data_directory = LoadSave::getDataDirectory();
+    std::map<atlas::library::Library, PopupMenu> library_menus;
+    std::vector<std::pair<String, PopupMenu>> other_menus;
 
     for (const auto& root : roots) {
       if (!root.isDirectory())
@@ -1156,9 +1155,21 @@ namespace {
       sortBrowserNode(root_node);
 
       PopupMenu root_menu;
-      if (addBrowserNodeToMenu(root_menu, root_node, choices, item_id))
-        menu.addSubMenu(browserRootName(root, folder_name), root_menu, true);
+      if (!addBrowserNodeToMenu(root_menu, root_node, choices, item_id))
+        continue;
+      const auto location = atlas::library::locate(root, data_directory);
+      if (location.in_kind && location.pack.isEmpty() && location.bank.isEmpty())
+        library_menus[location.library] = root_menu;
+      else
+        other_menus.emplace_back(browserRootName(root), root_menu);
     }
+    for (atlas::library::Library library : atlas::library::libraries()) {
+      const auto found = library_menus.find(library);
+      if (found != library_menus.end())
+        menu.addSubMenu(atlas::library::libraryName(library), found->second, true);
+    }
+    for (const auto& other : other_menus)
+      menu.addSubMenu(other.first, other.second, true);
 
     if (choices->empty())
       menu.addItem(1, "No files found", false);
@@ -1201,62 +1212,26 @@ namespace {
   }
 
   File userPresetBankDirectory(const String& bank) {
-    File base = LoadSave::getUserPresetDirectory();
-    if (bank.isEmpty() || bank == kUserLibrary)
-      return base;
-    return base.getChildFile(sanitizePresetPathPart(bank, "User"));
+    return atlas::library::bankDirectory(atlas::library::Library::kUser, bank,
+                                         LoadSave::getDataDirectory());
   }
 
-  // The top-level folders whose presets the browser files by folder: the
-  // folder under Presets is the bank, the ones below it the category.
-  bool isNamedLibrary(const String& folder) {
-    return folder == kFactoryLibrary || folder == kUserLibrary || folder == kCommunityLibrary;
-  }
-
+  // Where a preset sits (library_layout.h): its library, its bank and the
+  // folders below Presets, which are its category.
   String presetLibraryName(const File& preset) {
-    const auto parts = presetPathParts(preset);
-    if (parts.size() > 0) {
-      if (parts[0] == kFactoryLibrary)
-        return kFactoryLibrary;
-      if (parts[0] == kUserLibrary)
-        return kUserLibrary;
-      if (parts[0] == kCommunityLibrary)
-        return kCommunityLibrary;
-    }
-    return kOtherLibrary;
+    const auto location = atlas::library::locate(preset, LoadSave::getDataDirectory());
+    return location.in_library ? atlas::library::libraryName(location.library) : String("Other");
   }
 
   String presetBankName(const File& preset) {
-    const auto parts = presetPathParts(preset);
-    const int preset_folder = indexOfPathPart(parts, LoadSave::kPresetFolderName);
-    if (preset_folder >= 0 && preset_folder + 1 < parts.size() - 1 &&
-        preset_folder == 1 && isNamedLibrary(parts[0])) {
-      return parts[preset_folder + 1];
-    }
-    if (preset_folder == 0 && preset_folder + 1 < parts.size() - 1)
-      return parts[preset_folder + 1];
-    if (preset_folder > 0)
-      return parts[preset_folder - 1];
+    const auto location = atlas::library::locate(preset, LoadSave::getDataDirectory());
+    if (location.in_library && location.bank.isNotEmpty())
+      return location.bank;
     return preset.getParentDirectory().getFileName();
   }
 
   String presetPathCategoryName(const File& preset) {
-    const auto parts = presetPathParts(preset);
-    const int preset_folder = indexOfPathPart(parts, LoadSave::kPresetFolderName);
-    int category_start = preset_folder + 1;
-    if (preset_folder >= 0 && preset_folder == 1 && isNamedLibrary(parts[0]))
-      category_start = preset_folder + 2;
-    else if (preset_folder == 0)
-      category_start = preset_folder + 2;
-
-    if (preset_folder >= 0 && category_start < parts.size() - 1) {
-      StringArray category_parts;
-      for (int i = category_start; i < parts.size() - 1; ++i)
-        category_parts.add(parts[i]);
-      return category_parts.joinIntoString(" / ");
-    }
-
-    return {};
+    return atlas::library::locate(preset, LoadSave::getDataDirectory()).category();
   }
 
   String presetCategoryName(const File& preset) {
@@ -1398,8 +1373,9 @@ namespace {
     item.file_size = preset.file_size;
     item.modified_time = preset.updated_ms;
     item.library = kCommunityLibrary;
-    item.bank = item.file.getParentDirectory().getParentDirectory().getFileName();
-    item.category = item.file.getParentDirectory().getFileName();
+    const auto location = atlas::library::locate(item.file, data_directory);
+    item.bank = location.bank;
+    item.category = location.category();
     item.style = preset.style_label;
     item.tags = preset.tags;
     item.author = preset.author;
@@ -1457,23 +1433,6 @@ namespace {
                        item.tags.joinIntoString(" ") + " " + bank.uploader + " " + bank.uploader_name + " " +
                        item.comments).toLowerCase();
     return item;
-  }
-
-  // Unpacks a bank archive into `data_directory`, as Import preset bank does.
-  // Returns what went wrong, or an empty string; `files` counts the entries.
-  String unzipBankArchive(const File& archive, const File& data_directory, int* files) {
-    FileInputStream input(archive);
-    if (!input.openedOk())
-      return "The bank file could not be opened";
-    ZipFile zip(input);
-    if (zip.getNumEntries() == 0)
-      return "The bank file holds no files";
-    const Result result = zip.uncompressTo(data_directory);
-    if (!result.wasOk())
-      return result.getErrorMessage();
-    if (files != nullptr)
-      *files = zip.getNumEntries();
-    return {};
   }
 
   // How far ahead of the audio thread a community preview is read.
@@ -2868,25 +2827,6 @@ namespace {
 
   String effectPresetDisplayName(const String& effect_id) {
     return effectSectionForPrefixedId(effect_id + "_on", {});
-  }
-
-  String bankRelativePathForFile(const File& file, const File& source_folder, const String& folder_name) {
-    StringArray parts;
-    parts.addTokens(file.getRelativePathFrom(source_folder), File::getSeparatorString(), "");
-    const int folder_index = indexOfPathPart(parts, folder_name);
-    if (folder_index >= 0 && folder_index + 1 < parts.size()) {
-      StringArray stripped;
-      for (int i = folder_index + 1; i < parts.size(); ++i)
-        stripped.add(parts[i]);
-      return stripped.joinIntoString("/");
-    }
-    return parts.joinIntoString("/");
-  }
-
-  bool pathContainsFolderName(const File& file, const File& source_folder, const String& folder_name) {
-    StringArray parts;
-    parts.addTokens(file.getRelativePathFrom(source_folder), File::getSeparatorString(), "");
-    return indexOfPathPart(parts, folder_name) >= 0;
   }
 
   // The arpeggiator (1-based) an "arp_N_" control belongs to, or 0.
@@ -6740,7 +6680,32 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   };
   configureSaveEditor(save_patch_name_, "Patch name", "Name");
   configureSaveEditor(save_patch_author_, "Patch author", "Author");
-  configureSaveEditor(save_patch_bank_, "Patch bank", "Bank");
+  auto configureSaveChoice = [this](AccessibleComboBox& box, const String& title, const String& help) {
+    box.setTitle(title);
+    box.setDescription(help);
+    box.setHelpText(help);
+    box.setWantsKeyboardFocus(true);
+    box.onKeyPressed = [this](const KeyPress& key) {
+      if (key.getKeyCode() == KeyPress::escapeKey && save_patch_dialog_visible_) {
+        hideSavePresetDialog();
+        return true;
+      }
+      return false;
+    };
+    addChildComponent(box);
+  };
+  configureSaveChoice(save_patch_bank_, "Patch bank",
+                      "The bank of your User library to save into. Up and Down choose, Return or Space opens the "
+                      "list, whose last item makes a new bank");
+  save_patch_bank_.onChange = [this] {
+    const bool new_bank = save_patch_dialog_visible_ && newSaveBankChosen();
+    save_patch_new_bank_.setVisible(new_bank);
+    rebuildFocusOrder();
+    resized();
+    if (new_bank)
+      save_patch_new_bank_.grabKeyboardFocus();
+  };
+  configureSaveEditor(save_patch_new_bank_, "New bank name", "New bank name");
   configureSaveEditor(save_patch_category_, "Patch category", "Category");
   configureSaveEditor(save_patch_tags_, "Patch tags", "Tags separated by commas");
   configureSaveEditor(save_patch_comments_, "Patch comments", "Comments");
@@ -6949,6 +6914,20 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   startTimerHz(20);
 }
 
+void SynthEditor::announceLibraryMigration(const atlas::library::MigrationReport& migration) {
+  if (!migration.ran || (migration.moves == 0 && migration.problems.isEmpty()))
+    return;
+  const String notice = "Atlas reorganised its library into Factory, User, Third Party and Community: " +
+                        String(migration.moves) + (migration.moves == 1 ? " move" : " moves") +
+                        (migration.problems.isEmpty() ? String()
+                                                      : ", " + String(migration.problems.size()) + " problems") +
+                        ". Migration.txt in the Atlas folder lists them";
+  MessageManager::callAsync([safe_this = Component::SafePointer<SynthEditor>(this), notice] {
+    if (safe_this != nullptr)
+      postPluginAnnouncement(notice, AccessibilityHandler::AnnouncementPriority::high);
+  });
+}
+
 SynthEditor::~SynthEditor() {
   stopTimer();
   // The preview plays through the plugin, which must not read it once this
@@ -7008,6 +6987,8 @@ void SynthEditor::resized() {
     auto second_row = bounds.removeFromTop(38);
     save_patch_bank_.setBounds(second_row.removeFromLeft(second_row.getWidth() / 2).reduced(3));
     save_patch_category_.setBounds(second_row.reduced(3));
+    if (save_patch_new_bank_.isVisible())
+      save_patch_new_bank_.setBounds(bounds.removeFromTop(38).reduced(3));
     auto third_row = bounds.removeFromTop(38);
     save_patch_tags_.setBounds(third_row.removeFromLeft(third_row.getWidth() / 2).reduced(3));
     save_patch_comments_.setBounds(third_row.reduced(3));
@@ -9244,10 +9225,19 @@ void SynthEditor::showAllSections(bool announce) {
       else if (section_name.startsWith("LFO ")) {
         const int lfo = section_name.fromFirstOccurrenceOf("LFO ", false, false).getIntValue() - 1;
         if (isPositiveAndBelow(lfo, vital::kNumLfos)) {
-          addActionButton("Import LFO preset", "Load an LFO shape into " + section_name,
-                          [this, lfo] { chooseLfoPresetFile(lfo); });
-          addActionButton("Save LFO preset", "Save the current shape from " + section_name,
-                          [this, lfo] { saveLfoPresetFile(lfo); });
+          addButtonGroup("LFO presets", section_name + " presets", *section_ptr, flatten_section ? 16 : 10, section_y,
+                         jmax(620, width - (flatten_section ? 32 : 34)), focus_order, groupRank(section_name), {
+            { "Browse LFO presets", "Choose an LFO preset from the LFO Presets folders for " + section_name,
+              [this, lfo](Component& button) { showLfoPresetBrowserMenu(lfo, button); } },
+            { "Previous LFO preset", "Load the previous LFO preset into " + section_name,
+              [this, lfo](Component&) { loadShiftedLfoPreset(lfo, -1); } },
+            { "Next LFO preset", "Load the next LFO preset into " + section_name,
+              [this, lfo](Component&) { loadShiftedLfoPreset(lfo, 1); } },
+            { "Import LFO preset", "Load an LFO preset file into " + section_name,
+              [this, lfo](Component&) { chooseLfoPresetFile(lfo); } },
+            { "Save LFO preset", "Save the current shape from " + section_name,
+              [this, lfo](Component&) { saveLfoPresetFile(lfo); } },
+          });
 
           auto shape = std::make_unique<OffscreenComboBox>();
           auto* shape_ptr = shape.get();
@@ -10589,7 +10579,9 @@ String SynthEditor::keyboardHelpText() {
 }
 
 File SynthEditor::defaultPatchFile() const {
-  return LoadSave::getUserPresetDirectory().getChildFile("Default").withFileExtension(vital::kPresetExtension);
+  // At the User library's level, outside every bank, so no scan lists it.
+  return atlas::library::libraryDirectory(atlas::library::Library::kUser, LoadSave::getDataDirectory())
+      .getChildFile("Default").withFileExtension(vital::kPresetExtension);
 }
 
 void SynthEditor::initializePatch() {
@@ -10713,6 +10705,8 @@ void SynthEditor::rebuildFocusOrder() {
     focus_order_.push_back(&save_patch_name_);
     focus_order_.push_back(&save_patch_author_);
     focus_order_.push_back(&save_patch_bank_);
+    if (save_patch_new_bank_.isVisible())
+      focus_order_.push_back(&save_patch_new_bank_);
     focus_order_.push_back(&save_patch_category_);
     focus_order_.push_back(&save_patch_tags_);
     focus_order_.push_back(&save_patch_comments_);
@@ -10721,6 +10715,8 @@ void SynthEditor::rebuildFocusOrder() {
     accessibility_focus_order_.push_back(&save_patch_name_);
     accessibility_focus_order_.push_back(&save_patch_author_);
     accessibility_focus_order_.push_back(&save_patch_bank_);
+    if (save_patch_new_bank_.isVisible())
+      accessibility_focus_order_.push_back(&save_patch_new_bank_);
     accessibility_focus_order_.push_back(&save_patch_category_);
     accessibility_focus_order_.push_back(&save_patch_tags_);
     accessibility_focus_order_.push_back(&save_patch_comments_);
@@ -11038,6 +11034,14 @@ void SynthEditor::startPresetListLoad(bool announce, bool forceRefresh) {
   }
   updatePresetSummary();
 
+  // A bank folder dropped at the top of the Atlas folder by hand goes into
+  // Third Party before the scan reads it; here, on the message thread, so
+  // the favourites it rewrites are never written from two threads. Only in a
+  // host: a test never reorganises the library its config names.
+  const bool reorganise = synth_.loadedByHost();
+  if (reorganise)
+    atlas::library::adoptStrayBanks(LoadSave::getDataDirectory());
+
   Component::SafePointer<SynthEditor> safe_this(this);
   // The scan is joined when the editor closes: a thread that posts to the
   // message queue after the editor (or the whole plugin) is gone crashes.
@@ -11053,7 +11057,8 @@ void SynthEditor::startPresetListLoad(bool announce, bool forceRefresh) {
   auto finished = std::make_shared<std::atomic<bool>>(false);
   PresetScan scan;
   scan.finished = finished;
-  scan.thread = std::thread([safe_this, generation, announce, forceRefresh, keep_current_list, cancelled, finished] {
+  scan.thread = std::thread([safe_this, generation, announce, forceRefresh, keep_current_list, cancelled, finished,
+                             reorganise] {
     struct Finish { std::shared_ptr<std::atomic<bool>> flag; ~Finish() { flag->store(true); } } finish { finished };
     auto post = [&cancelled](std::function<void()> message) {
       if (!cancelled->load())
@@ -11104,6 +11109,21 @@ void SynthEditor::startPresetListLoad(bool announce, bool forceRefresh) {
     for (const auto& preset : presets) {
       if (cancelled->load())
         return;
+      // A preset carrying its instruments inside (a zip): they go into the
+      // preset's bank once and the preset becomes plain JSON referring to
+      // them, which the index then reads.
+      if (reorganise && vital::multisample::container::isContainer(preset)) {
+        const String unpacking = "Unpacking the instruments of " + preset.getFileNameWithoutExtension() + " into its bank";
+        post([safe_this, generation, unpacking] {
+          if (safe_this != nullptr && generation == safe_this->preset_list_generation_) {
+            safe_this->preset_index_progress_ = unpacking;
+            safe_this->updatePresetSummary();
+          }
+        });
+        String conversion_error;
+        if (!atlas::library::adoptContainerPreset(preset, data_directory, conversion_error) && conversion_error.isNotEmpty())
+          LoadSave::writeErrorLog("Could not unpack the instruments of " + preset.getFullPathName() + ": " + conversion_error);
+      }
       const String key = presetPathKey(preset);
       auto found = persisted_items.find(key.toStdString());
       if (found != persisted_items.end() && presetFileStampMatches(found->second, preset)) {
@@ -11424,8 +11444,12 @@ void SynthEditor::downloadCommunityBank(const PresetBrowserItem& item) {
       error = atlas::community::downloadFile(URL(url), file, sha256, size, cancelled.get());
     if (cancelled->load())
       return;
-    if (error.isEmpty())
-      error = unzipBankArchive(file, data_directory, &files);
+    if (error.isEmpty()) {
+      const auto imported = atlas::library::importBankArchive(file, atlas::library::Library::kCommunity, data_directory,
+                                                              name);
+      error = imported.error;
+      files = imported.files;
+    }
     if (cancelled->load())
       return;
     MessageManager::callAsync([safe_this, file, name, error, files] {
@@ -11577,6 +11601,14 @@ void SynthEditor::downloadCommunityPreset(const PresetBrowserItem& item, bool lo
     const String error = atlas::community::downloadFile(URL(url), file, sha256, size, cancelled.get());
     if (cancelled->load())
       return;
+    // A download carrying its instruments inside: they go into the
+    // uploader's bank once and the preset refers to them.
+    if (error.isEmpty()) {
+      String conversion_error;
+      if (!atlas::library::adoptContainerPreset(file, LoadSave::getDataDirectory(), conversion_error) &&
+          conversion_error.isNotEmpty())
+        LoadSave::writeErrorLog("Could not unpack the instruments of " + file.getFullPathName() + ": " + conversion_error);
+    }
     MessageManager::callAsync([safe_this, file, name, error, loadAfter] {
       if (safe_this != nullptr)
         safe_this->finishCommunityDownload(file, name, error, loadAfter);
@@ -11784,6 +11816,11 @@ void SynthEditor::populatePresetFilters() {
   for (const auto& item : activePresetIndex()) {
     if (item.library.isNotEmpty())
       libraries.insert(item.library);
+  }
+  for (atlas::library::Library library : atlas::library::libraries()) {
+    const String name = atlas::library::libraryName(library);
+    if (libraries.erase(name) > 0)
+      preset_libraries_.add(name);
   }
   for (const auto& library : libraries) {
     if (library != kAllLibraries)
@@ -12168,7 +12205,11 @@ bool SynthEditor::isPresetFavorite(const File& file) const {
 }
 
 bool SynthEditor::isPresetEditable(const File& file) const {
-  return file.existsAsFile() && file.isAChildOf(LoadSave::getUserPresetDirectory()) && file.hasWriteAccess();
+  // The user's own: anything in the User library. Factory, Third Party and
+  // Community presets are saved as copies.
+  return file.existsAsFile() &&
+         file.isAChildOf(atlas::library::libraryDirectory(atlas::library::Library::kUser, LoadSave::getDataDirectory())) &&
+         file.hasWriteAccess();
 }
 
 void SynthEditor::presetSelectionChanged(int row, bool allowAutoload) {
@@ -12420,7 +12461,7 @@ void SynthEditor::showPresetMetadataDialog() {
   preset_metadata_file_ = file;
   save_patch_name_.setText(file.getFileNameWithoutExtension(), false);
   save_patch_author_.setText(item != nullptr ? item->author : LoadSave::getAuthorFromFile(file), false);
-  save_patch_bank_.setText(item != nullptr ? item->bank : presetBankName(file), false);
+  populateSaveBanks(item != nullptr ? item->bank : presetBankName(file));
   // The folder, else the stored style, is the category. The browser's
   // "Uncategorized" placeholder is not one: saved back it would move the file
   // into a folder of that name and write it as the style.
@@ -12440,6 +12481,7 @@ void SynthEditor::showPresetMetadataDialog() {
   save_patch_name_.setVisible(true);
   save_patch_author_.setVisible(true);
   save_patch_bank_.setVisible(true);
+  save_patch_new_bank_.setVisible(newSaveBankChosen());
   save_patch_category_.setVisible(true);
   save_patch_tags_.setVisible(true);
   save_patch_comments_.setVisible(true);
@@ -12711,8 +12753,8 @@ void SynthEditor::showPresetMenu() {
   menu.addItem(kInitialize, "Initialize patch");
   menu.addSeparator();
   menu.addItem(kImportPreset, "Import preset file...");
-  menu.addItem(kImportBank, "Import preset bank...");
-  menu.addItem(kExportBank, "Export folder as bank...");
+  menu.addItem(kImportBank, "Import bank...");
+  menu.addItem(kExportBank, "Export bank...");
   menu.addItem(kExportPreset, "Export patch as preset file...");
   menu.addItem(kReveal, String(kShowInFileBrowserVerb) + " selected preset in " + kFileBrowserName, has_selection);
   menu.addSeparator();
@@ -12733,7 +12775,7 @@ void SynthEditor::showPresetMenu() {
       case kInitialize: initializePatch(); break;
       case kImportPreset: choosePresetFile(); break;
       case kImportBank: chooseBankFile(); break;
-      case kExportBank: chooseFolderToExportBank(); break;
+      case kExportBank: chooseBankToExport(); break;
       case kExportPreset: exportPreset(); break;
       case kReveal: revealSelectedPreset(); break;
       case kRefresh: refreshPresetList(); break;
@@ -12982,147 +13024,98 @@ void SynthEditor::importBankFile(const File& file) {
   if (!LoadSave::hasDataDirectory())
     LoadSave::saveDataDirectory(data_directory);
 
-  const String error = unzipBankArchive(file, data_directory, nullptr);
-  if (error.isEmpty()) {
+  const auto imported = atlas::library::importBankArchive(file, atlas::library::Library::kThirdParty, data_directory,
+                                                          file.getFileNameWithoutExtension());
+  if (imported.ok()) {
     LoadSave::markPackInstalled(file.getFileNameWithoutExtension().toStdString());
     refreshPresetList();
-    postPluginAnnouncement("Imported bank " + file.getFileNameWithoutExtension() +
-                                             ". Preset list refreshed.",
-                                           AccessibilityHandler::AnnouncementPriority::high);
+    // "Imported Hamo into Third Party: its presets as a bank, and Wavetables
+    // and Samples packs of its name, 64 files".
+    StringArray parts;
+    if (imported.bank != File())
+      parts.add("its presets as a bank");
+    if (!imported.packs.isEmpty()) {
+      StringArray packs = imported.packs;
+      const String last = packs.strings.getLast();
+      packs.remove(packs.size() - 1);
+      parts.add((packs.isEmpty() ? last : packs.joinIntoString(", ") + " and " + last) +
+                (imported.packs.size() == 1 ? " pack" : " packs") + " of its name");
+    }
+    postPluginAnnouncement("Imported " + imported.name + " into Third Party" +
+                               (parts.isEmpty() ? String() : ": " + parts.joinIntoString(", and ")) + ", " +
+                               String(imported.files) + (imported.files == 1 ? " file" : " files") +
+                               (imported.replaced > 0 ? ", " + String(imported.replaced) + " replaced" : String()) +
+                               ". Preset list refreshed.",
+                           AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
 
+  const String error = imported.error;
   LoadSave::writeErrorLog("Unzipping bank failed: " + error);
   showWarningBox("Unable to import bank", error + ".");
   postPluginAnnouncement("Unable to import bank", AccessibilityHandler::AnnouncementPriority::high);
 }
 
-void SynthEditor::chooseFolderToExportBank() {
-  preset_chooser_ = std::make_unique<FileChooser>("Choose folder to export as an Atlas bank",
-                                                  LoadSave::getUserPresetDirectory());
+void SynthEditor::chooseBankToExport() {
+  const File data_directory = LoadSave::getDataDirectory();
+  auto banks = std::make_shared<std::vector<File>>();
+  PopupMenu menu;
+  int id = 1;
+  for (atlas::library::Library library : atlas::library::libraries()) {
+    PopupMenu library_menu;
+    for (const auto& bank : atlas::library::bankFolders(library, data_directory)) {
+      banks->push_back(bank);
+      library_menu.addItem(id++, bank.getFileName());
+    }
+    if (library_menu.getNumItems() > 0)
+      menu.addSubMenu(atlas::library::libraryName(library), library_menu, true);
+  }
+  if (!banks->empty())
+    menu.addSeparator();
+  const int other_folder = id;
+  menu.addItem(other_folder, "Other folder...");
+  showAccessibleMenuAsync(menu, PopupMenu::Options().withTargetComponent(preset_menu_),
+                          [this, banks, other_folder](int result) {
+    if (result == other_folder) {
+      chooseFolderToExport();
+      return;
+    }
+    if (isPositiveAndBelow(result - 1, static_cast<int>(banks->size())))
+      chooseBankExportDestination((*banks)[static_cast<size_t>(result - 1)]);
+  });
+}
+
+void SynthEditor::chooseFolderToExport() {
+  preset_chooser_ = std::make_unique<FileChooser>("Choose a folder to export as an Atlas bank",
+                                                  LoadSave::getDataDirectory());
   launchFileChooser(*preset_chooser_, FileBrowserComponent::openMode | FileBrowserComponent::canSelectDirectories,
                                       [this](const FileChooser& chooser) {
     const File source_folder = chooser.getResult();
     preset_chooser_.reset();
-    if (!source_folder.isDirectory())
-      return;
-
-    String bank_name = source_folder.getFileName().removeCharacters("\\/:*?\"<>|");
-    if (bank_name.isEmpty())
-      bank_name = "Atlas Bank";
-    const File default_file = source_folder.getSiblingFile(bank_name).withFileExtension(vital::kBankExtension);
-    bank_chooser_ = std::make_unique<FileChooser>("Export Atlas bank", default_file,
-                                                  String("*.") + vital::kBankExtension);
-    launchFileChooser(*bank_chooser_, FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles |
-                                          FileBrowserComponent::warnAboutOverwriting,
-                                      [this, source_folder](const FileChooser& save_chooser) {
-      const File destination = save_chooser.getResult();
-      if (destination != File())
-        exportFolderAsBank(source_folder, destination);
-      bank_chooser_.reset();
-    });
+    if (source_folder.isDirectory())
+      chooseBankExportDestination(source_folder);
   });
 }
 
-namespace {
-  // What writing a bank archive came to: the files in it, or why there is
-  // none ("No bank content found" is what is said, `error` what is shown).
-  struct BankArchiveResult {
-    int added = 0;
-    String error;
-    String spoken;
-    bool ok() const { return error.isEmpty(); }
-  };
-
-  // Writes the Atlas files under `sourceFolder` into a bank archive at
-  // `destination`, laid out as <bank name>/Presets/..., Wavetables/... and so
-  // on, the bank's name being the archive's. Runs on any thread. The archive
-  // is written beside its target first and replaces it only when complete.
-  BankArchiveResult writeBankArchive(const File& sourceFolder, const File& destination) {
-    BankArchiveResult result;
-    if (!sourceFolder.isDirectory()) {
-      result.error = "The selected source is not a folder.";
-      result.spoken = "Unable to export bank";
-      return result;
-    }
-    Array<File> files;
-    sourceFolder.findChildFiles(files, File::findFiles | File::ignoreHiddenFiles, true,
-                                vital::kPresetExtensionsList + ";*." + vital::kWavetableExtension +
-                                ";*." + vital::kLegacyWavetableExtension + ";" + vital::kSampleExtensionsList +
-                                ";" + vital::kLfoExtensionsList + ";*." + vital::kFxExtension);
-    if (files.isEmpty()) {
-      result.error = "No Atlas presets, tables, samples, LFOs, or FX presets were found.";
-      result.spoken = "No bank content found";
-      return result;
-    }
-
-    String bank_name = destination.getFileNameWithoutExtension().removeCharacters("\\/:*?\"<>|");
-    if (bank_name.isEmpty())
-      bank_name = "Atlas Bank";
-
-    ZipFile::Builder bank_zip;
-    int64 total_bytes = 0;
-    for (const File& file : files) {
-      const String extension = file.getFileExtension().toLowerCase();
-      String folder_name;
-      if (extension == "." + String(vital::kPresetExtension) ||
-          extension == "." + String(vital::kLegacyPresetExtension)) {
-        folder_name = LoadSave::kPresetFolderName;
-      }
-      else if (extension == "." + String(vital::kWavetableExtension) ||
-               extension == "." + String(vital::kLegacyWavetableExtension)) {
-        folder_name = LoadSave::kWavetableFolderName;
-      }
-      else if (extension == "." + String(vital::kLfoExtension) ||
-               extension == "." + String(vital::kLegacyLfoExtension)) {
-        folder_name = LoadSave::kLfoFolderName;
-      }
-      else if (extension == "." + String(vital::kFxExtension)) {
-        folder_name = LoadSave::kFxFolderName;
-      }
-      else if (extension == ".wav" || extension == ".flac" || extension == ".aif" || extension == ".aiff") {
-        folder_name = pathContainsFolderName(file, sourceFolder, LoadSave::kWavetableFolderName) ?
-                      LoadSave::kWavetableFolderName : LoadSave::kSampleFolderName;
-      }
-      else {
-        continue;
-      }
-
-      const String relative_path = bankRelativePathForFile(file, sourceFolder, folder_name);
-      // Presets carrying multi-sample instruments are zips of audio already.
-      const int compression = vital::multisample::container::isContainer(file) ? 0 : 9;
-      bank_zip.addFile(file, compression, bank_name + "/" + folder_name + "/" + relative_path);
-      total_bytes += file.getSize();
-      ++result.added;
-    }
-
-    if (total_bytes > 0xF0000000ll) {
-      result.error = "The bank would be larger than 4 GB, the most a bank can hold.";
-      result.spoken = "Bank too large to export";
-      return result;
-    }
-
-    // FileOutputStream appends to a file that is there already, which made a
-    // broken archive of an export over an older one.
-    TemporaryFile temporary(destination);
-    bool written = false;
-    {
-      FileOutputStream output(temporary.getFile());
-      written = output.openedOk() && bank_zip.writeToStream(output, nullptr);
-      output.flush();
-      written = written && !output.getStatus().failed();
-    }
-    if (!written || !temporary.overwriteTargetFileWithTemporary()) {
-      result.error = "The bank file could not be written.";
-      result.spoken = "Unable to export bank";
-    }
-    return result;
-  }
+void SynthEditor::chooseBankExportDestination(const File& sourceFolder) {
+  const String bank_name = atlas::library::legalName(sourceFolder.getFileName(), "Atlas Bank");
+  const File default_file = File::getSpecialLocation(File::userDesktopDirectory).getChildFile(bank_name)
+                                .withFileExtension(vital::kBankExtension);
+  bank_chooser_ = std::make_unique<FileChooser>("Export Atlas bank", default_file,
+                                                String("*.") + vital::kBankExtension);
+  launchFileChooser(*bank_chooser_, FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles |
+                                        FileBrowserComponent::warnAboutOverwriting,
+                                    [this, sourceFolder](const FileChooser& save_chooser) {
+    const File destination = save_chooser.getResult();
+    if (destination != File())
+      exportFolderAsBank(sourceFolder, destination);
+    bank_chooser_.reset();
+  });
 }
 
 void SynthEditor::exportFolderAsBank(const File& sourceFolder, const File& destinationFile) {
   const File destination = destinationFile.withFileExtension(vital::kBankExtension);
-  const BankArchiveResult result = writeBankArchive(sourceFolder, destination);
+  const atlas::library::ArchiveResult result = atlas::library::writeBankArchive(sourceFolder, destination);
   if (!result.ok()) {
     showWarningBox("Unable to export bank", result.error);
     postPluginAnnouncement(result.spoken, AccessibilityHandler::AnnouncementPriority::high);
@@ -13161,10 +13154,19 @@ void SynthEditor::showShareForm(bool bank, const String& preface) {
   const String host = atlas::community::libraryHost();
 
   if (bank) {
-    // The bank shown in the browser, when it is a folder of the user library.
-    const File user = LoadSave::getUserPresetDirectory();
-    const File shown = user.getChildFile(last_preset_bank_);
-    populateShareFolders(last_preset_bank_ != kAllBanks && shown.isDirectory() && shown.isAChildOf(user) ? shown : user);
+    // The bank shown in the browser, when it is one.
+    File shown;
+    if (last_preset_bank_ != kAllBanks) {
+      for (atlas::library::Library library : atlas::library::libraries()) {
+        const File candidate = atlas::library::bankDirectory(library, last_preset_bank_, LoadSave::getDataDirectory());
+        if (candidate.isDirectory() &&
+            (last_preset_library_ == kAllLibraries || last_preset_library_ == atlas::library::libraryName(library))) {
+          shown = candidate;
+          break;
+        }
+      }
+    }
+    populateShareFolders(shown);
     loadShareGenres();
     share_description_.setText({}, false);
     share_tags_.setText({}, false);
@@ -13399,34 +13401,35 @@ void SynthEditor::stopShareUpload() {
 }
 
 void SynthEditor::populateShareFolders(const File& select) {
-  const File user = LoadSave::getUserPresetDirectory();
+  // Every bank of every library, named with its library, then any other folder.
+  const File data_directory = LoadSave::getDataDirectory();
   share_folders_.clear();
-  share_folders_.add(user);
-  Array<File> banks = user.findChildFiles(File::findDirectories | File::ignoreHiddenFiles, false);
-  banks.sort();
-  share_folders_.addArray(banks);
-  if (select.isDirectory() && !share_folders_.contains(select))
+  StringArray labels;
+  for (atlas::library::Library library : atlas::library::libraries()) {
+    for (const auto& bank : atlas::library::bankFolders(library, data_directory)) {
+      share_folders_.add(bank);
+      labels.add(bank.getFileName() + " (" + atlas::library::libraryName(library) + ")");
+    }
+  }
+  if (select.isDirectory() && !share_folders_.contains(select)) {
     share_folders_.add(select);
+    labels.add(select.getFullPathName());
+  }
 
   share_folder_.clear(dontSendNotification);
-  for (int i = 0; i < share_folders_.size(); ++i) {
-    const File& folder = share_folders_.getReference(i);
-    const String label = folder == user ? "The whole user library"
-                       : folder.isAChildOf(user) ? folder.getFileName()
-                                                 : folder.getFullPathName();
-    share_folder_.addItem(label, i + 1);
-  }
+  for (int i = 0; i < share_folders_.size(); ++i)
+    share_folder_.addItem(labels[i], i + 1);
   share_folder_.addItem("Choose another folder...", share_folders_.size() + 1);
   const int index = jmax(0, share_folders_.indexOf(select));
   share_folder_.setSelectedItemIndex(index, dontSendNotification);
   const File chosen = share_folders_[index];
-  share_name_.setText(chosen == user ? String("My Atlas presets") : chosen.getFileName(), false);
+  share_name_.setText(chosen.isDirectory() ? chosen.getFileName() : String("My Atlas presets"), false);
 }
 
 void SynthEditor::chooseShareFolder() {
-  const File previous = share_folders_[0];
+  const File previous = share_folders_[jmax(0, share_folder_.getSelectedItemIndex())];
   share_folder_chooser_ = std::make_unique<FileChooser>("Choose a folder to share as an Atlas bank",
-                                                        LoadSave::getUserPresetDirectory());
+                                                        LoadSave::getDataDirectory());
   launchFileChooser(*share_folder_chooser_, FileBrowserComponent::openMode | FileBrowserComponent::canSelectDirectories,
                     [this, previous](const FileChooser& chooser) {
     const File folder = chooser.getResult();
@@ -13559,7 +13562,7 @@ void SynthEditor::commitShareForm() {
       const File scratch = shareScratchFolder();
       const File archive = scratch.getChildFile(shareFileName(name, "Atlas Bank") + "." + String(vital::kBankExtension));
       atlas::community::UploadResult result;
-      const auto written = writeBankArchive(folder, archive);
+      const auto written = atlas::library::writeBankArchive(folder, archive);
       if (!written.ok())
         result.error = written.error.trimCharactersAtEnd(".");
       else if (archive.getSize() > kMaxSharedBankBytes)
@@ -13747,7 +13750,11 @@ void SynthEditor::showSavePresetDialog() {
   String preset_name = synth_.getPresetName().isEmpty() ? "Untitled" : synth_.getPresetName();
   save_patch_name_.setText(preset_name, false);
   save_patch_author_.setText(synth_.getAuthor().isNotEmpty() ? synth_.getAuthor() : String(LoadSave::getAuthor()), false);
-  save_patch_bank_.setText(last_preset_bank_ != kAllBanks ? last_preset_bank_ : "User", false);
+  // The loaded preset's bank when it is one of the user's own, else the bank
+  // last saved into. What the browser shows has no say.
+  const auto active = atlas::library::locate(synth_.getActiveFile(), LoadSave::getDataDirectory());
+  populateSaveBanks(active.in_library && active.library == atlas::library::Library::kUser && active.bank.isNotEmpty()
+                        ? active.bank : atlas::library::defaultBankName());
   save_patch_category_.setText(synth_.getStyle().isNotEmpty() ? synth_.getStyle() :
                                (last_preset_category_ != kAllCategories ? last_preset_category_ : ""), false);
   save_patch_tags_.setText(synth_.getTags(), false);
@@ -13763,6 +13770,7 @@ void SynthEditor::showSavePresetDialog() {
   save_patch_name_.setVisible(true);
   save_patch_author_.setVisible(true);
   save_patch_bank_.setVisible(true);
+  save_patch_new_bank_.setVisible(newSaveBankChosen());
   save_patch_category_.setVisible(true);
   save_patch_tags_.setVisible(true);
   save_patch_comments_.setVisible(true);
@@ -13785,7 +13793,8 @@ void SynthEditor::hideSavePresetDialog() {
   const FocusReturn focus = std::exchange(save_patch_return_focus_, {});
   const bool in_form = Component::getCurrentlyFocusedComponent() == this ||
                        save_patch_name_.hasKeyboardFocus(true) || save_patch_author_.hasKeyboardFocus(true) ||
-                       save_patch_bank_.hasKeyboardFocus(true) || save_patch_category_.hasKeyboardFocus(true) ||
+                       save_patch_bank_.hasKeyboardFocus(true) || save_patch_new_bank_.hasKeyboardFocus(true) ||
+                       save_patch_category_.hasKeyboardFocus(true) ||
                        save_patch_tags_.hasKeyboardFocus(true) || save_patch_comments_.hasKeyboardFocus(true) ||
                        save_patch_ok_.hasKeyboardFocus(false) || save_patch_cancel_.hasKeyboardFocus(false);
   if (in_form &&
@@ -13797,6 +13806,7 @@ void SynthEditor::hideSavePresetDialog() {
   save_patch_name_.setVisible(false);
   save_patch_author_.setVisible(false);
   save_patch_bank_.setVisible(false);
+  save_patch_new_bank_.setVisible(false);
   save_patch_category_.setVisible(false);
   save_patch_tags_.setVisible(false);
   save_patch_comments_.setVisible(false);
@@ -13808,7 +13818,15 @@ void SynthEditor::hideSavePresetDialog() {
 
 void SynthEditor::commitSavePresetDialog() {
   String preset_name = sanitizePresetPathPart(save_patch_name_.getText(), "Untitled");
-  String bank = sanitizePresetPathPart(save_patch_bank_.getText(), "User");
+  const String bank = chosenSaveBank();
+  if (bank.isEmpty()) {
+    save_patch_new_bank_.setVisible(true);
+    rebuildFocusOrder();
+    resized();
+    save_patch_new_bank_.grabKeyboardFocus();
+    postPresetActionAnnouncement("Type a name for the new bank", AccessibilityHandler::AnnouncementPriority::high);
+    return;
+  }
   String category = save_patch_category_.getText().trim().removeCharacters("\"");
   while (category.contains(".."))
     category = category.replace("..", ".");
@@ -13903,6 +13921,9 @@ void SynthEditor::commitSavePresetDialog() {
 
   File destination = presetCategoryDirectory(userPresetBankDirectory(bank), category);
   destination = destination.getChildFile(preset_name);
+  // The bank saved into is where the next save, Scan Downloads and the LFO
+  // and FX Save dialogs go.
+  atlas::library::setDefaultBankName(bank);
 
   hideSavePresetDialog();
   // Save as must not replace another preset without asking: the dialog does
@@ -13944,6 +13965,33 @@ void SynthEditor::commitSavePresetDialog() {
     return;
   }
   savePresetFile(destination);
+}
+
+void SynthEditor::populateSaveBanks(const String& select) {
+  save_patch_banks_ = atlas::library::bankNames(atlas::library::Library::kUser, LoadSave::getDataDirectory());
+  save_patch_bank_.clear(dontSendNotification);
+  for (int i = 0; i < save_patch_banks_.size(); ++i)
+    save_patch_bank_.addItem(save_patch_banks_[i], i + 1);
+  save_patch_bank_.addItem("New bank...", save_patch_banks_.size() + 1);
+  const int index = save_patch_banks_.indexOf(select, true);
+  if (index >= 0) {
+    save_patch_bank_.setSelectedItemIndex(index, dontSendNotification);
+    save_patch_new_bank_.setText({}, false);
+  }
+  else {
+    save_patch_bank_.setSelectedItemIndex(save_patch_banks_.size(), dontSendNotification);
+    save_patch_new_bank_.setText(select, false);
+  }
+}
+
+bool SynthEditor::newSaveBankChosen() const {
+  return save_patch_bank_.getSelectedItemIndex() >= save_patch_banks_.size();
+}
+
+String SynthEditor::chosenSaveBank() const {
+  if (!newSaveBankChosen())
+    return save_patch_banks_[save_patch_bank_.getSelectedItemIndex()];
+  return atlas::library::legalName(save_patch_new_bank_.getText(), {});
 }
 
 void SynthEditor::savePresetFile(const File& file) {
@@ -16790,6 +16838,9 @@ void SynthEditor::addFxBusControlsGroup(const String& sectionName, Component& pa
     postPluginAnnouncement(fxBusNameForSection(sectionName) + " cleared",
                            AccessibilityHandler::AnnouncementPriority::high);
   });
+  add_button("Browse bus FX presets", "Choose an FX bus preset from the FX Presets folders", {});
+  if (auto* browse = dynamic_cast<Button*>(section_headers_.back().get()))
+    browse->onClick = [this, sectionName, browse] { showFxBusPresetBrowserMenu(sectionName, *browse); };
   add_button("Load bus FX preset", "Replace this bus's effects with an Atlas FX bus preset",
               [this, sectionName] { chooseFxBusPresetFile(sectionName, false); });
   add_button("Save bus FX preset", "Save this bus's effect order, settings, and impulses as an atfx file",
@@ -17080,6 +17131,24 @@ void SynthEditor::addEffectSlotGroups(const String& sectionName, Component& pare
     // Every inserted effect begins with its one functional bypass control.
     if (enabled_parameter != nullptr)
       add_parameter_row(*enabled_parameter, *slot_ptr, *slot_ptr, slot_y, width);
+
+    // Presets for this slot's effect, as the IR group offers impulse responses.
+    {
+      const String effect_name = effectName(type - 1);
+      addButtonGroup("FX presets", sectionName + " slot " + String(slot + 1) + " presets", *slot_ptr, 10, slot_y,
+                     jmax(600, width - 20), focusOrder, groupRank(sectionName), {
+        { "Browse FX presets", "Choose a " + effect_name + " preset from the FX Presets folders",
+          [this, sectionName, slot](Component& button) { showEffectPresetBrowserMenu(sectionName, slot, button); } },
+        { "Previous FX preset", "Load the previous " + effect_name + " preset",
+          [this, sectionName, slot](Component&) { loadShiftedEffectPreset(sectionName, slot, -1); } },
+        { "Next FX preset", "Load the next " + effect_name + " preset",
+          [this, sectionName, slot](Component&) { loadShiftedEffectPreset(sectionName, slot, 1); } },
+        { "Import FX preset", "Load a " + effect_name + " preset file",
+          [this, sectionName, slot](Component&) { chooseEffectPresetFileForSlot(sectionName, slot); } },
+        { "Save FX preset", "Save this " + effect_name + "'s settings as an FX preset",
+          [this, sectionName, slot](Component&) { saveEffectPresetFromSlot(sectionName, slot); } },
+      });
+    }
 
     if (type - 1 == vital::constants::kConvolutionReverb) {
       const String chain_prefix = effectChainPrefixForSection(sectionName);
@@ -21403,6 +21472,11 @@ void SynthEditor::addMultiSampleControlsGroup(int oscillator, Component& parent,
 
   add_button("Load instrument", "Choose an SFZ, DecentSampler or SF2 file for " + section_name,
              [this, oscillator] { chooseInstrumentFile(oscillator); });
+  {
+    auto* browse = add_button("Browse instruments", "Choose an instrument from the Multisamples folders for " + section_name,
+                              {});
+    browse->onClick = [this, oscillator, browse] { showInstrumentBrowserMenu(oscillator, *browse); };
+  }
 
   // The status reads what is loaded; Enter speaks the details.
   const String status_title = instrumentStatusTitle(oscillator);
@@ -21805,19 +21879,39 @@ void SynthEditor::chooseInstrumentFile(int oscillator) {
                                           [this, oscillator](const FileChooser& chooser) {
     const File file = chooser.getResult();
     instrument_chooser_.reset();
-    if (!file.existsAsFile())
-      return;
-    auto* manager = synth_.getMultiSampleManager();
-    if (manager == nullptr)
-      return;
-    last_instrument_folder_ = file.getParentDirectory();
-    setParameterEngineValue(vital::source_types::slotPrefix(oscillator) + "on", 1.0f);
-    manager->loadFromUser(oscillator, file);
-    synth_.markStateChanged();
-    postPluginAnnouncement("Loading instrument " + file.getFileNameWithoutExtension() + " into Oscillator " +
-                               String(oscillator + 1),
-                           AccessibilityHandler::AnnouncementPriority::high);
+    loadInstrumentFile(oscillator, file);
   });
+}
+
+void SynthEditor::loadInstrumentFile(int oscillator, const File& file) {
+  if (!isPositiveAndBelow(oscillator, vital::kNumOscillators) || !file.existsAsFile())
+    return;
+  auto* manager = synth_.getMultiSampleManager();
+  if (manager == nullptr)
+    return;
+  last_instrument_folder_ = file.getParentDirectory();
+  setParameterEngineValue(vital::source_types::slotPrefix(oscillator) + "on", 1.0f);
+  manager->loadFromUser(oscillator, file);
+  synth_.markStateChanged();
+  postPluginAnnouncement("Loading instrument " + file.getFileNameWithoutExtension() + " into Oscillator " +
+                             String(oscillator + 1),
+                         AccessibilityHandler::AnnouncementPriority::high);
+}
+
+void SynthEditor::showInstrumentBrowserMenu(int oscillator, Component& target) {
+  Component::SafePointer<SynthEditor> safe_this(this);
+  Component::SafePointer<Component> target_pointer(&target);
+  showPresetFileMenu(PresetFileList::kInstruments, presetFiles(PresetFileList::kInstruments),
+                     "No instruments found. Put SFZ, DecentSampler or SF2 instruments in a Multisamples folder",
+                     target,
+                     [safe_this, oscillator](const File& file) {
+                       if (safe_this != nullptr)
+                         safe_this->loadInstrumentFile(oscillator, file);
+                     },
+                     [safe_this, oscillator, target_pointer] {
+                       if (safe_this != nullptr && target_pointer != nullptr)
+                         safe_this->showInstrumentBrowserMenu(oscillator, *target_pointer);
+                     });
 }
 
 void SynthEditor::openInstrumentInTextEditor(int oscillator) {
@@ -22357,6 +22451,9 @@ void SynthEditor::saveLfoPresetFile(int lfoIndex) {
       if (auto* generator = lfoGeneratorForIndex(lfoIndex)) {
         const File destination = file.withFileExtension(vital::kLfoExtension);
         const bool saved = destination.replaceWithText(String(generator->stateToJson().dump(2)));
+        preset_file_caches_[static_cast<size_t>(PresetFileList::kLfoPresets)].valid = false;
+        if (saved)
+          generator->setLastBrowsedFile(destination.getFullPathName().toStdString());
         if (saved)
           postPluginAnnouncement("Saved LFO preset " + destination.getFileNameWithoutExtension(),
                                                  AccessibilityHandler::AnnouncementPriority::high);
@@ -22383,24 +22480,25 @@ void SynthEditor::chooseFxBusPresetFile(const String& sectionName, bool save) {
   Component::SafePointer<SynthEditor> safe_this(this);
   const int flags = FileBrowserComponent::canSelectFiles | (save ? FileBrowserComponent::saveMode |
       FileBrowserComponent::warnAboutOverwriting : FileBrowserComponent::openMode);
-  launchFileChooser(*fx_bus_chooser_, flags, [safe_this, sectionName, bus, bus_name, preset, save](const FileChooser& chooser) {
+  launchFileChooser(*fx_bus_chooser_, flags, [safe_this, sectionName, bus_name, preset, save](const FileChooser& chooser) {
     if (safe_this == nullptr)
       return;
     const File file = chooser.getResult();
     if (file != File()) {
       String error;
       bool success = false;
-      if (save) {
+      if (!save) {
+        safe_this->loadFxBusPresetFile(sectionName, file);
+        safe_this->fx_bus_chooser_.reset();
+        return;
+      }
+      {
         const auto destination = file.withFileExtension(vital::kFxBusExtension);
         success = destination.replaceWithText(String(preset.dump(2)));
         if (!success)
           error = "The FX bus preset could not be written.";
-      }
-      else {
-        const json data = json::parse(file.loadFileAsString().toStdString(), nullptr, false);
-        success = safe_this->synth_.loadFxBusPreset(bus, data, error);
-        if (success)
-          safe_this->scheduleEffectChainRebuild(sectionName, "Load bus FX preset");
+        else
+          safe_this->preset_file_caches_[static_cast<size_t>(PresetFileList::kFxBusPresets)].valid = false;
       }
       if (success)
         postPluginAnnouncement((save ? "Saved " : "Loaded ") + bus_name + " preset " +
@@ -22478,6 +22576,360 @@ void SynthEditor::loadEffectPresetFile(const String& sectionName, const File& fi
   postPluginAnnouncement("Loaded " + accessibleSectionTitle(sectionName) + " FX preset " +
                                          file.getFileNameWithoutExtension(),
                                          AccessibilityHandler::AnnouncementPriority::high);
+}
+
+namespace {
+  // An FX preset's effect, from its "effect" field; empty when it names none
+  // or cannot be read.
+  String effectOfPresetFile(const File& file) {
+    if (file.getSize() > (4 << 20))
+      return {};
+    const json data = json::parse(file.loadFileAsString().toStdString(), nullptr, false);
+    if (data.is_object() && data.count("effect") && data["effect"].is_string())
+      return String(data["effect"].get<std::string>());
+    return {};
+  }
+
+  constexpr const char* kInstrumentWildcard = "*.sfz;*.dspreset;*.sf2;*.SFZ;*.DSPRESET;*.SF2";
+}
+
+const std::vector<File>& SynthEditor::presetFiles(PresetFileList list) {
+  auto& cache = preset_file_caches_[static_cast<size_t>(list)];
+  if (!cache.valid) {
+    String wildcard;
+    switch (list) {
+      case PresetFileList::kLfoPresets:
+        cache.roots = LoadSave::getLfoDirectories();
+        wildcard = vital::kLfoExtensionsList;
+        break;
+      case PresetFileList::kFxPresets:
+        cache.roots = LoadSave::getFxDirectories();
+        wildcard = String("*.") + vital::kFxExtension;
+        break;
+      case PresetFileList::kFxBusPresets:
+        cache.roots = LoadSave::getFxDirectories();
+        wildcard = String("*.") + vital::kFxBusExtension;
+        break;
+      case PresetFileList::kInstruments:
+        cache.roots = LoadSave::getDirectories(LoadSave::kMultisampleFolderName);
+        wildcard = kInstrumentWildcard;
+        break;
+    }
+    refreshBrowserFileCache(cache.files, cache.roots, wildcard);
+    cache.effects.clear();
+    if (list == PresetFileList::kFxPresets) {
+      for (const auto& file : cache.files)
+        cache.effects.push_back(effectOfPresetFile(file));
+    }
+    cache.valid = true;
+  }
+  return cache.files;
+}
+
+std::vector<File> SynthEditor::effectPresetFiles(const String& effectId) {
+  const auto& files = presetFiles(PresetFileList::kFxPresets);
+  const auto& effects = preset_file_caches_[static_cast<size_t>(PresetFileList::kFxPresets)].effects;
+  std::vector<File> matching;
+  for (size_t i = 0; i < files.size() && i < effects.size(); ++i) {
+    if (effects[i] == effectId)
+      matching.push_back(files[i]);
+  }
+  return matching;
+}
+
+void SynthEditor::showPresetFileMenu(PresetFileList list, const std::vector<File>& files, const String& emptyText,
+                                     Component& target, std::function<void(const File&)> choose,
+                                     std::function<void()> reopen) {
+  presetFiles(list);
+  const auto& roots = preset_file_caches_[static_cast<size_t>(list)].roots;
+  auto choices = std::make_shared<std::vector<File>>();
+  PopupMenu menu = createFileBrowserMenu(roots, {}, files, choices);
+  if (choices->empty()) {
+    menu = PopupMenu();
+    menu.addItem(1, emptyText, false);
+  }
+  menu.addSeparator();
+  menu.addItem(kBrowserRescanMenuId, "Rescan");
+  Component::SafePointer<SynthEditor> safe_this(this);
+  showAccessibleMenuAsync(menu, PopupMenu::Options().withTargetComponent(&target),
+                          [safe_this, choices, list, choose = std::move(choose), reopen = std::move(reopen)](int result) {
+    if (safe_this == nullptr)
+      return;
+    if (result == kBrowserRescanMenuId) {
+      safe_this->preset_file_caches_[static_cast<size_t>(list)].valid = false;
+      if (reopen)
+        reopen();
+      return;
+    }
+    if (isPositiveAndBelow(result - 1, static_cast<int>(choices->size())) && choose)
+      choose((*choices)[static_cast<size_t>(result - 1)]);
+  });
+}
+
+AccessibleSectionHeader* SynthEditor::addButtonGroup(const String& title, const String& key, AccessibleSectionHeader& parent,
+                                                     int x, int& y, int width, int& focusOrder, int rank,
+                                                     const std::vector<GroupButton>& buttons) {
+  auto group = makeSectionHeader(title, rank, false, key);
+  auto* group_ptr = group.get();
+  group_ptr->setExplicitFocusOrder(focusOrder++);
+  group_ptr->setBounds(x, y, width, group_ptr->headerHeight());
+  parent.addAndMakeVisible(group_ptr);
+  parent.addAccessibleChild(group_ptr);
+  row_focus_order_.push_back(group_ptr);
+  section_headers_.push_back(std::move(group));
+
+  int group_y = group_ptr->headerHeight() + 8;
+  for (const auto& entry : buttons) {
+    auto button = std::make_unique<OffscreenTextButton>(entry.title);
+    auto* button_ptr = button.get();
+    button_ptr->setTitle(entry.title);
+    button_ptr->setDescription(entry.description);
+    button_ptr->setHelpText("Press Enter to " + entry.description.toLowerCase());
+    button_ptr->setWantsKeyboardFocus(true);
+    button_ptr->setExplicitFocusOrder(focusOrder++);
+    auto action = entry.action;
+    button_ptr->onClick = [action, button_ptr] {
+      if (action)
+        action(*button_ptr);
+    };
+    button_ptr->setBounds(10, group_y, jmax(200, width - 20), 38);
+    group_ptr->addAndMakeVisible(button_ptr);
+    group_ptr->addAccessibleChild(button_ptr);
+    row_focus_order_.push_back(button_ptr);
+    section_headers_.push_back(std::move(button));
+    group_y += 44;
+  }
+  group_ptr->setBounds(x, y, width, group_y + 2);
+  y += group_y + 10;
+  return group_ptr;
+}
+
+void SynthEditor::showLfoPresetBrowserMenu(int lfoIndex, Component& target) {
+  Component::SafePointer<SynthEditor> safe_this(this);
+  Component::SafePointer<Component> target_pointer(&target);
+  showPresetFileMenu(PresetFileList::kLfoPresets, presetFiles(PresetFileList::kLfoPresets),
+                     "No LFO presets found. Save one, or put LFO presets in an LFO Presets folder", target,
+                     [safe_this, lfoIndex](const File& file) {
+                       if (safe_this != nullptr)
+                         safe_this->loadLfoPresetFile(lfoIndex, file);
+                     },
+                     [safe_this, lfoIndex, target_pointer] {
+                       if (safe_this != nullptr && target_pointer != nullptr)
+                         safe_this->showLfoPresetBrowserMenu(lfoIndex, *target_pointer);
+                     });
+}
+
+void SynthEditor::loadShiftedLfoPreset(int lfoIndex, int direction) {
+  auto* generator = lfoGeneratorForIndex(lfoIndex);
+  if (generator == nullptr)
+    return;
+  const std::string last = generator->getLastBrowsedFile();
+  const File current = last.empty() ? File() : File(String(last));
+  const File next = shiftedBrowserFile(presetFiles(PresetFileList::kLfoPresets), current, direction);
+  if (next == File()) {
+    postPluginAnnouncement("No LFO presets found. Save one, or put LFO presets in an LFO Presets folder",
+                           AccessibilityHandler::AnnouncementPriority::high);
+    return;
+  }
+  loadLfoPresetFile(lfoIndex, next);
+}
+
+void SynthEditor::showEffectPresetBrowserMenu(const String& sectionName, int slot, Component& target) {
+  const int type = effectSlotType(sectionName, slot);
+  if (type <= 0)
+    return;
+  const String effect_id = strings::kEffectOrder[type - 1];
+  Component::SafePointer<SynthEditor> safe_this(this);
+  Component::SafePointer<Component> target_pointer(&target);
+  showPresetFileMenu(PresetFileList::kFxPresets, effectPresetFiles(effect_id),
+                     "No " + effectName(type - 1) + " presets found. Save one with Save FX preset", target,
+                     [safe_this, sectionName, slot](const File& file) {
+                       if (safe_this != nullptr)
+                         safe_this->loadEffectPresetIntoSlot(sectionName, slot, file);
+                     },
+                     [safe_this, sectionName, slot, target_pointer] {
+                       if (safe_this != nullptr && target_pointer != nullptr)
+                         safe_this->showEffectPresetBrowserMenu(sectionName, slot, *target_pointer);
+                     });
+}
+
+bool SynthEditor::loadEffectPresetIntoSlot(const String& sectionName, int slot, const File& file) {
+  const int type = effectSlotType(sectionName, slot);
+  if (type <= 0 || !file.existsAsFile())
+    return false;
+  const String effect_id = strings::kEffectOrder[type - 1];
+  const String effect_name = effectName(type - 1);
+  const json data = json::parse(file.loadFileAsString().toStdString(), nullptr, false);
+  if (data.is_discarded() || !data.is_object() || !data.count("parameters") || !data["parameters"].is_object()) {
+    showWarningBox("Unable to import FX preset", "The selected file is not a valid Atlas FX preset.");
+    postPluginAnnouncement("Unable to import FX preset", AccessibilityHandler::AnnouncementPriority::high);
+    return false;
+  }
+  if (data.count("effect") && data["effect"].is_string() && String(data["effect"].get<std::string>()) != effect_id) {
+    const String other = effectPresetDisplayName(String(data["effect"].get<std::string>()));
+    showWarningBox("Wrong FX preset type", "This preset was saved for " + other + ", not " + effect_name + ".");
+    postPluginAnnouncement("This preset is for " + other + ", not " + effect_name,
+                           AccessibilityHandler::AnnouncementPriority::high);
+    return false;
+  }
+
+  const String slot_prefix = effectSlotPrefix(sectionName, slot);
+  const auto& controls = synth_.getControls();
+  synth_.undoHistory().describeNextStep("load FX preset " + file.getFileNameWithoutExtension());
+  int changed = 0;
+  bool switches_rows = false;
+  for (auto it = data["parameters"].begin(); it != data["parameters"].end(); ++it) {
+    if (!it.value().is_number())
+      continue;
+    const String suffix(it.key());
+    if (!suffix.startsWith(effect_id + "_"))
+      continue;
+    const String target_id = slot_prefix + suffix;
+    const auto control = controls.find(target_id.toStdString());
+    if (parameterBridge(target_id) == nullptr && (control == controls.end() || control->second == nullptr))
+      continue;
+    const float value = it.value().get<float>();
+    // A mode that decides which rows show (an analogue effect's model).
+    if (isRowSwitchingChoice(target_id) && control != controls.end() && control->second != nullptr &&
+        control->second->value() != value)
+      switches_rows = true;
+    setParameterEngineValue(target_id, value);
+    ++changed;
+  }
+  if (changed == 0) {
+    postPluginAnnouncement("No matching FX parameters found", AccessibilityHandler::AnnouncementPriority::high);
+    return false;
+  }
+
+  last_effect_preset_files_[slot_prefix] = file;
+  timerCallback();
+  if (switches_rows)
+    scheduleEffectChainRebuild(sectionName, effectSlotTitle(sectionName, slot));
+  postPluginAnnouncement("Loaded " + effect_name + " preset " + file.getFileNameWithoutExtension() + " into slot " +
+                             String(slot + 1),
+                         AccessibilityHandler::AnnouncementPriority::high);
+  return true;
+}
+
+void SynthEditor::loadShiftedEffectPreset(const String& sectionName, int slot, int direction) {
+  const int type = effectSlotType(sectionName, slot);
+  if (type <= 0)
+    return;
+  const String effect_id = strings::kEffectOrder[type - 1];
+  const auto files = effectPresetFiles(effect_id);
+  const auto found = last_effect_preset_files_.find(effectSlotPrefix(sectionName, slot));
+  const File current = found != last_effect_preset_files_.end() ? found->second : File();
+  const File next = shiftedBrowserFile(files, current, direction);
+  if (next == File()) {
+    postPluginAnnouncement("No " + effectName(type - 1) + " presets found. Save one with Save FX preset",
+                           AccessibilityHandler::AnnouncementPriority::high);
+    return;
+  }
+  loadEffectPresetIntoSlot(sectionName, slot, next);
+}
+
+void SynthEditor::chooseEffectPresetFileForSlot(const String& sectionName, int slot) {
+  if (effectSlotType(sectionName, slot) <= 0 || fx_chooser_ != nullptr)
+    return;
+  fx_chooser_ = std::make_unique<FileChooser>("Import Atlas FX preset", LoadSave::getUserFxDirectory(),
+                                              String("*.") + vital::kFxExtension);
+  Component::SafePointer<SynthEditor> safe_this(this);
+  launchFileChooser(*fx_chooser_, FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
+                    [safe_this, sectionName, slot](const FileChooser& chooser) {
+    if (safe_this == nullptr)
+      return;
+    const File file = chooser.getResult();
+    safe_this->fx_chooser_.reset();
+    if (file.existsAsFile())
+      safe_this->loadEffectPresetIntoSlot(sectionName, slot, file);
+  });
+}
+
+void SynthEditor::saveEffectPresetFromSlot(const String& sectionName, int slot) {
+  const int type = effectSlotType(sectionName, slot);
+  if (type <= 0 || fx_chooser_ != nullptr)
+    return;
+  const String effect_id = strings::kEffectOrder[type - 1];
+  const String effect_name = effectName(type - 1);
+  const String slot_prefix = effectSlotPrefix(sectionName, slot);
+  const String effect_prefix = slot_prefix + effect_id + "_";
+  json parameters = json::object();
+  for (const auto& control : synth_.getControls()) {
+    const String id(control.first);
+    if (control.second == nullptr || !id.startsWith(effect_prefix) || !vital::Parameters::isParameter(control.first))
+      continue;
+    parameters[id.substring(slot_prefix.length()).toStdString()] = control.second->value();
+  }
+  if (parameters.empty()) {
+    postPluginAnnouncement("No FX parameters found", AccessibilityHandler::AnnouncementPriority::high);
+    return;
+  }
+
+  const auto last = last_effect_preset_files_.find(slot_prefix);
+  const File start = last != last_effect_preset_files_.end() && last->second.isAChildOf(LoadSave::getUserFxDirectory())
+                         ? last->second
+                         : LoadSave::getUserFxDirectory().getChildFile(atlas::library::legalName(effect_name, "FX Preset"))
+                               .withFileExtension(vital::kFxExtension);
+  fx_chooser_ = std::make_unique<FileChooser>("Save Atlas FX preset", start, String("*.") + vital::kFxExtension);
+  Component::SafePointer<SynthEditor> safe_this(this);
+  launchFileChooser(*fx_chooser_, FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles |
+                                      FileBrowserComponent::warnAboutOverwriting,
+                    [safe_this, effect_id, effect_name, slot_prefix, parameters](const FileChooser& chooser) {
+    if (safe_this == nullptr)
+      return;
+    const File file = chooser.getResult();
+    safe_this->fx_chooser_.reset();
+    if (file == File())
+      return;
+    json data;
+    data["type"] = "Atlas FX Preset";
+    data["version"] = 1;
+    data["effect"] = effect_id.toStdString();
+    data["name"] = file.getFileNameWithoutExtension().toStdString();
+    data["parameters"] = parameters;
+    const File destination = file.withFileExtension(vital::kFxExtension);
+    if (!destination.getParentDirectory().createDirectory() || !destination.replaceWithText(String(data.dump(2)))) {
+      safe_this->showWarningBox("Unable to save FX preset", "The FX preset could not be written.");
+      postPluginAnnouncement("Unable to save FX preset", AccessibilityHandler::AnnouncementPriority::high);
+      return;
+    }
+    safe_this->preset_file_caches_[static_cast<size_t>(PresetFileList::kFxPresets)].valid = false;
+    safe_this->last_effect_preset_files_[slot_prefix] = destination;
+    postPluginAnnouncement("Saved " + effect_name + " preset " + destination.getFileNameWithoutExtension(),
+                           AccessibilityHandler::AnnouncementPriority::high);
+  });
+}
+
+void SynthEditor::loadFxBusPresetFile(const String& sectionName, const File& file, const String& focusTitle) {
+  if (!isEffectChainSection(sectionName) || !file.existsAsFile())
+    return;
+  const int bus = fxBusForSection(sectionName);
+  const String bus_name = fxBusNameForSection(sectionName);
+  String error;
+  const json data = json::parse(file.loadFileAsString().toStdString(), nullptr, false);
+  if (synth_.loadFxBusPreset(bus, data, error)) {
+    scheduleEffectChainRebuild(sectionName, focusTitle);
+    postPluginAnnouncement("Loaded " + bus_name + " preset " + file.getFileNameWithoutExtension(),
+                           AccessibilityHandler::AnnouncementPriority::high);
+    return;
+  }
+  showWarningBox("Unable to load FX bus preset", error);
+  postPluginAnnouncement("Unable to load FX bus preset", AccessibilityHandler::AnnouncementPriority::high);
+}
+
+void SynthEditor::showFxBusPresetBrowserMenu(const String& sectionName, Component& target) {
+  Component::SafePointer<SynthEditor> safe_this(this);
+  Component::SafePointer<Component> target_pointer(&target);
+  showPresetFileMenu(PresetFileList::kFxBusPresets, presetFiles(PresetFileList::kFxBusPresets),
+                     "No FX bus presets found. Save one with Save bus FX preset", target,
+                     [safe_this, sectionName](const File& file) {
+                       if (safe_this != nullptr)
+                         safe_this->loadFxBusPresetFile(sectionName, file, "Browse bus FX presets");
+                     },
+                     [safe_this, sectionName, target_pointer] {
+                       if (safe_this != nullptr && target_pointer != nullptr)
+                         safe_this->showFxBusPresetBrowserMenu(sectionName, *target_pointer);
+                     });
 }
 
 void SynthEditor::saveEffectPresetFile(const String& sectionName) {

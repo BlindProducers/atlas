@@ -18,6 +18,7 @@
 #include "source_types.h"
 #include "legacy_source_aliases.h"
 #include "synth_editor.h"
+#include "library_layout.h"
 #include "sound_engine.h"
 #include "prepared_effect_module.h"
 #include "load_save.h"
@@ -576,7 +577,14 @@ bool SynthPlugin::hasEditor() const {
 }
 
 AudioProcessorEditor* SynthPlugin::createEditor() {
-  return new SynthEditor(*this);
+  // The move to the current library layout runs here, on the host's way to
+  // the editor; never when a test builds the plugin or an editor of its own,
+  // against whatever Atlas folder the config names.
+  const atlas::library::MigrationReport migration =
+      loadedByHost() ? atlas::library::migrateIfNeeded() : atlas::library::MigrationReport();
+  auto* editor = new SynthEditor(*this);
+  editor->announceLibraryMigration(migration);
+  return editor;
 }
 
 void SynthPlugin::parameterChanged(const std::string& name, vital::mono_float value) {

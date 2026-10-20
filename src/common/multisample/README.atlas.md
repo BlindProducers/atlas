@@ -119,7 +119,8 @@ same way, from the preset's folder, ignoring case when the exact path is missing
 
 ## Presets, host state and the cache
 
-- **Preset files:** a preset whose Multi-sample oscillators have instruments is written as a zip:
+- **Presets in a bank:** a preset saved into a bank of the Atlas folder (`library_layout.h`: `<Library>/Banks/<bank>/...`) does not carry its instruments. They live in the library's `Multisamples` folder: an instrument already there is referred to where it is; one Atlas placed before is found by hash; otherwise it goes into `Multisamples/<name>/` once, in the layout the cache uses (the files at their `relative` paths, the entry file at `entry`), by hard link where the volume allows and by copy otherwise, beside `atlas-multisample.json`: the hash, the entry, the format, every file with its size and CRC, and the `path_overrides`. The preset stays plain JSON and names the entry file's path in Multisamples in `library_instrument`, beside the path and hash. Loading looks in the preset's own library first (`Manager::applySpec` gets it from `SynthBase::multiSampleLibrary`), then at the path, then in every library's Multisamples by hash (`findInstrumentAnywhere`), then in the cache. A library's instrument is loaded in place, never copied into the cache, and its SFZ is the one `editableFile` hands out. A container preset found in a bank, by a preset scan in a host or after a community download, is unpacked into the library the same way (`adoptContainerPreset`) and rewritten as plain JSON. Exporting a bank adds the instruments its presets play.
+- **Preset files outside a bank** (Export patch as preset file, Share patch, a save anywhere else): a preset whose Multi-sample oscillators have instruments is written as a zip:
   - `preset.json` comes first.
   - Then each instrument's files go under `multisample/<hash>/` in their original layout. Audio and SF2 files are stored uncompressed, exactly as they were; SFZ and DecentSampler text is compressed. Every sample file the instrument names and that exists is stored, including DecentSampler samples in groups and tags that are disabled at the time; only missing files are left out.
   - SFZ and DecentSampler text is never rewritten. Samples outside the library's folder go under `_external/` and are mapped back through `path_overrides`.
@@ -148,6 +149,7 @@ same way, from the preset's folder, ignoring case when the exact path is missing
 - Ping-pong loops in the player: `--pingpong-loop`.
 - SFZ curves, spaces around `=` and `ampeg_dynamic` with the sustain pedal: `--dynamic-envelope`.
 - Saving and restoring: `--container`, `--host-state`, `--sf2-preset-switch`.
+- Instruments in the library (placed on save, shared by a library's banks, found by reference and by hash, a container unpacked into a library, an exported bank imported with its instrument): `--bank`.
 - Accessibility of the Instrument group: `--editor`.
 
 Five flags are for checking real libraries by hand and are not in ctest:

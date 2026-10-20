@@ -32,6 +32,7 @@
 #include "synth_gui_interface.cpp"
 #include "synth_parameters.cpp"
 #include "load_save.cpp"
+#include "library_layout.cpp"
 #include "community_library.cpp"
 #include "synth_types.cpp"
 #include "synth_base.cpp"

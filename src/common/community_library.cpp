@@ -531,7 +531,7 @@ juce::String bankContentsText(const RemoteBank& bank) {
 }
 
 juce::File communityDirectory(const juce::File& data_directory) {
-  return data_directory.getChildFile("Community").getChildFile("Presets");
+  return data_directory.getChildFile("Community");
 }
 
 juce::File localFile(const RemotePreset& preset, const juce::File& data_directory) {
@@ -544,13 +544,14 @@ juce::File localFile(const RemotePreset& preset, const juce::File& data_director
   const juce::String uploader = preset.uploader.isNotEmpty() ? preset.uploader : preset.uploader_name;
   const juce::String style = preset.style_label.isNotEmpty() ? preset.style_label : juce::String("Other");
   return communityDirectory(data_directory)
+      .getChildFile("Banks")
       .getChildFile(pathPart(uploader, "Unknown uploader"))
       .getChildFile(pathPart(style, "Other"))
       .getChildFile(pathPart(name, "Preset." + extension));
 }
 
 juce::File banksDirectory(const juce::File& data_directory) {
-  return data_directory.getChildFile("Community").getChildFile("Banks");
+  return data_directory.getChildFile("Community").getChildFile("Archives");
 }
 
 juce::File localFile(const RemoteBank& bank, const juce::File& data_directory) {
