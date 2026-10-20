@@ -116,15 +116,16 @@ juce::String parseBanksPage(const std::string& text, std::vector<RemoteBank>& ba
 // and 2 samples", or "no Atlas files".
 juce::String bankContentsText(const RemoteBank& bank);
 
-// Where downloads live: <data>/Community/Presets, which the preset browser
-// indexes like the Factory and User folders.
+// The Community library: <data>/Community, a library like the others
+// (library_layout.h), which the preset browser indexes like them.
 juce::File communityDirectory(const juce::File& data_directory);
-// Where `preset` lands: <data>/Community/Presets/<uploader>/<style>/<file name>,
+// Where `preset` lands: <data>/Community/Banks/<uploader>/<style>/<file name>,
 // so the browser shows the uploader as its bank and the style as its category.
 juce::File localFile(const RemotePreset& preset, const juce::File& data_directory);
-// Where downloaded bank archives are kept: <data>/Community/Banks/<uploader>/
-// <file name>. The archive itself unpacks into the Atlas folder, as Import
-// preset bank does, and stays here as the record of the import.
+// Where downloaded bank archives are kept: <data>/Community/Archives/<uploader>/
+// <file name>. The archive itself is filed into the Community library (its
+// presets a bank of its own name, the rest packs of that name) and stays
+// here as the record of the import.
 juce::File banksDirectory(const juce::File& data_directory);
 juce::File localFile(const RemoteBank& bank, const juce::File& data_directory);
 // Where fetched previews are kept: <data>/Community/Previews. A preset's lands

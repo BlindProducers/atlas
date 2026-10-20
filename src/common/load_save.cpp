@@ -15,6 +15,7 @@
  */
 
 #include "load_save.h"
+#include "library_layout.h"
 #include "multisample_container.h"
 #include "multisample_manager.h"
 #include "speech_manager.h"
@@ -314,6 +315,7 @@ const std::string LoadSave::kSampleFolderName = "Samples";
 const std::string LoadSave::kLfoFolderName = "LFOs";
 const std::string LoadSave::kFxFolderName = "FX";
 const std::string LoadSave::kIrFolderName = "Impulse Responses";
+const std::string LoadSave::kMultisampleFolderName = "Multisamples";
 
 const std::string LoadSave::kAdditionalWavetableFoldersName = "wavetable_folders";
 const std::string LoadSave::kAdditionalSampleFoldersName = "sample_folders";
@@ -593,7 +595,7 @@ void LoadSave::loadSlotInstruments(SynthBase* synth, const json& settings) {
                                   static_cast<int>(type->get<float>() + 0.5f) == vital::source_types::kMultiSample;
     if (multisample_type && data.is_object() && !data.empty())
       spec = vital::multisample::InstrumentSpec::fromJson(data);
-    multisample->applySpec(slot, spec, synth->multiSampleContainer());
+    multisample->applySpec(slot, spec, synth->multiSampleContainer(), synth->multiSampleLibrary());
   }
 }
 
@@ -1976,6 +1978,17 @@ void LoadSave::setConfigFileForTesting(const File& file) {
   configFileOverride() = file;
 }
 
+namespace {
+  File& favoritesFileOverride() {
+    static File file;
+    return file;
+  }
+}
+
+void LoadSave::setFavoritesFileForTesting(const File& file) {
+  favoritesFileOverride() = file;
+}
+
 File LoadSave::getConfigFile() {
   if (configFileOverride() != File())
     return configFileOverride();
@@ -2021,6 +2034,8 @@ void LoadSave::writeErrorLog(String error_log) {
 }
 
 File LoadSave::getFavoritesFile() {
+  if (favoritesFileOverride() != File())
+    return favoritesFileOverride();
 #if defined(JUCE_DATA_STRUCTURES_H_INCLUDED)
   PropertiesFile::Options config_options;
   config_options.applicationName = "Atlas";
@@ -2754,22 +2769,11 @@ File LoadSave::getDefaultDataDirectory() {
 }
 
 std::vector<File> LoadSave::getDirectories(const String& folder_name) {
-  File data_dir = getDataDirectory();
-  std::vector<File> directories;
-
-  if (!data_dir.exists() || !data_dir.isDirectory())
-    return directories;
-
-  Array<File> sub_folders;
-  sub_folders.add(data_dir);
-  data_dir.findChildFiles(sub_folders, File::findDirectories | File::ignoreHiddenFiles, false);
-  for (const File& sub_folder : sub_folders) {
-    File directory = sub_folder.getChildFile(folder_name);
-    if (directory.exists() && directory.isDirectory())
-      directories.push_back(directory);
-  }
-
-  return directories;
+  // Every bank's folder of this kind, library by library (library_layout.h).
+  atlas::library::Kind kind;
+  if (!atlas::library::kindFromFolderName(folder_name, kind))
+    return {};
+  return atlas::library::kindFolders(kind, getDataDirectory());
 }
 
 std::vector<File> LoadSave::getPresetDirectories() {
@@ -2807,53 +2811,41 @@ File LoadSave::getUserDirectory() {
   return directory;
 }
 
+namespace {
+  // Where the user's own files of a kind are saved, created if need be: the
+  // User library's kind folder, and for presets the default bank.
+  File defaultBankKindDirectory(atlas::library::Kind kind) {
+    return atlas::library::userKindDirectory(kind, LoadSave::getDataDirectory());
+  }
+}
+
 File LoadSave::getUserPresetDirectory() {
-  File directory = getUserDirectory().getChildFile(kPresetFolderName);
-  if (!directory.exists())
-    directory.createDirectory();
-  return directory;
+  return defaultBankKindDirectory(atlas::library::Kind::kPresets);
 }
 
 File LoadSave::getUserWavetableDirectory() {
-  File directory = getUserDirectory().getChildFile(kWavetableFolderName);
-  if (!directory.exists())
-    directory.createDirectory();
-  return directory;
+  return defaultBankKindDirectory(atlas::library::Kind::kWavetables);
 }
 
 File LoadSave::getUserSkinDirectory() {
-  File directory = getUserDirectory().getChildFile(kSkinFolderName);
-  if (!directory.exists())
-    directory.createDirectory();
-  return directory;
+  // Vital's skins; Atlas has no graphical interface and never makes the folder.
+  return getUserDirectory().getChildFile(kSkinFolderName);
 }
 
 File LoadSave::getUserSampleDirectory() {
-  File directory = getUserDirectory().getChildFile(kSampleFolderName);
-  if (!directory.exists())
-    directory.createDirectory();
-  return directory;
+  return defaultBankKindDirectory(atlas::library::Kind::kSamples);
 }
 
 File LoadSave::getUserLfoDirectory() {
-  File directory = getUserDirectory().getChildFile(kLfoFolderName);
-  if (!directory.exists())
-    directory.createDirectory();
-  return directory;
+  return defaultBankKindDirectory(atlas::library::Kind::kLfos);
 }
 
 File LoadSave::getUserFxDirectory() {
-  File directory = getUserDirectory().getChildFile(kFxFolderName);
-  if (!directory.exists())
-    directory.createDirectory();
-  return directory;
+  return defaultBankKindDirectory(atlas::library::Kind::kFx);
 }
 
 File LoadSave::getUserIrDirectory() {
-  File directory = getUserDirectory().getChildFile(kIrFolderName);
-  if (!directory.exists())
-    directory.createDirectory();
-  return directory;
+  return defaultBankKindDirectory(atlas::library::Kind::kImpulseResponses);
 }
 
 File LoadSave::getDownloadsDirectory() {
@@ -2861,6 +2853,10 @@ File LoadSave::getDownloadsDirectory() {
 }
 
 int LoadSave::scanDownloadsForPresets() {
+  // Not before the library has moved to its current layout: the default bank
+  // the downloads go to is named by the migration.
+  if (atlas::library::needsMigration())
+    return 0;
   File downloads = getDownloadsDirectory();
   if (!downloads.exists() || !downloads.isDirectory())
     return 0;
@@ -2917,44 +2913,31 @@ void LoadSave::getAllFx(Array<File>& fx) {
   getAllFilesOfTypeInDirectories(fx, String("*.") + vital::kFxExtension, getFxDirectories());
 }
 
+namespace {
+  void getAllUserFilesOfKind(Array<File>& files, const String& extensions, atlas::library::Kind kind) {
+    LoadSave::getAllFilesOfTypeInDirectories(
+        files, extensions, atlas::library::kindFolders(kind, atlas::library::Library::kUser, LoadSave::getDataDirectory()));
+  }
+}
+
 void LoadSave::getAllUserPresets(Array<File>& presets) {
-  std::vector<File> directories = {
-    getDataDirectory().getChildFile(kPresetFolderName),
-    getUserPresetDirectory()
-  };
-  getAllFilesOfTypeInDirectories(presets, vital::kPresetExtensionsList, directories);
+  getAllUserFilesOfKind(presets, vital::kPresetExtensionsList, atlas::library::Kind::kPresets);
 }
 
 void LoadSave::getAllUserWavetables(Array<File>& wavetables) {
-  std::vector<File> directories = {
-    getDataDirectory().getChildFile(kWavetableFolderName),
-    getUserWavetableDirectory()
-  };
-  getAllFilesOfTypeInDirectories(wavetables, vital::kWavetableExtensionsList, directories);
+  getAllUserFilesOfKind(wavetables, vital::kWavetableExtensionsList, atlas::library::Kind::kWavetables);
 }
 
 void LoadSave::getAllUserLfos(Array<File>& lfos) {
-  std::vector<File> directories = {
-    getDataDirectory().getChildFile(kLfoFolderName),
-    getUserLfoDirectory()
-  };
-  getAllFilesOfTypeInDirectories(lfos, vital::kLfoExtensionsList, directories);
+  getAllUserFilesOfKind(lfos, vital::kLfoExtensionsList, atlas::library::Kind::kLfos);
 }
 
 void LoadSave::getAllUserSamples(Array<File>& samples) {
-  std::vector<File> directories = {
-    getDataDirectory().getChildFile(kSampleFolderName),
-    getUserSampleDirectory()
-  };
-  getAllFilesOfTypeInDirectories(samples, vital::kSampleExtensionsList, directories);
+  getAllUserFilesOfKind(samples, vital::kSampleExtensionsList, atlas::library::Kind::kSamples);
 }
 
 void LoadSave::getAllUserFx(Array<File>& fx) {
-  std::vector<File> directories = {
-    getDataDirectory().getChildFile(kFxFolderName),
-    getUserFxDirectory()
-  };
-  getAllFilesOfTypeInDirectories(fx, String("*.") + vital::kFxExtension, directories);
+  getAllUserFilesOfKind(fx, String("*.") + vital::kFxExtension, atlas::library::Kind::kFx);
 }
 
 void LoadSave::getAllIrs(Array<File>& irs) {
@@ -2962,11 +2945,7 @@ void LoadSave::getAllIrs(Array<File>& irs) {
 }
 
 void LoadSave::getAllUserIrs(Array<File>& irs) {
-  std::vector<File> directories = {
-    getDataDirectory().getChildFile(kIrFolderName),
-    getUserIrDirectory()
-  };
-  getAllFilesOfTypeInDirectories(irs, vital::kIrExtensionsList, directories);
+  getAllUserFilesOfKind(irs, vital::kIrExtensionsList, atlas::library::Kind::kImpulseResponses);
 }
 
 int LoadSave::compareFeatureVersionStrings(String a, String b) {

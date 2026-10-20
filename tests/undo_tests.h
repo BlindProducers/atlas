@@ -282,8 +282,8 @@ namespace {
     SpokenMessages spoken;
     SynthPlugin synth;
     UndoTestEditor screen(synth);
-    const File default_file =
-        LoadSave::getUserPresetDirectory().getChildFile("Default").withFileExtension(vital::kPresetExtension);
+    const File default_file = atlas::library::libraryDirectory(atlas::library::Library::kUser, LoadSave::getDataDirectory())
+                                  .getChildFile("Default").withFileExtension(vital::kPresetExtension);
     expect(!default_file.exists(), "the temporary library starts without a default patch");
 
     screen.editor.savePatchAsDefaultForTesting();

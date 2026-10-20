@@ -78,6 +78,11 @@ class SynthPlugin : public SynthBase, public AudioProcessor, public ValueBridge:
     void setAuditionSource(AudioSource* source);
 
     AudioProcessorEditor* createEditor() override;
+    // Whether a host loaded this plugin (VST3 or AU) rather than a test
+    // building it directly. Only then does Atlas reorganise the user's
+    // library: the migration when the editor opens, and the stray banks and
+    // container presets a preset scan files (library_layout.h).
+    bool loadedByHost() const { return wrapperType != AudioProcessor::wrapperType_Undefined; }
     bool hasEditor() const override;
 
     const String getName() const override;

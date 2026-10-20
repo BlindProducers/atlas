@@ -112,6 +112,10 @@ class SynthBase : public MidiManager::Listener {
     // The container preset being read, while its state is applied (its
     // instruments' files are inside it).
     const File& multiSampleContainer() const { return multisample_container_; }
+    // The library of the preset being loaded when it is in a bank, whose
+    // Multisamples folder its instruments are looked for in first
+    // (library_layout.h); none for a preset outside a bank or host state.
+    const File& multiSampleLibrary() const { return multisample_library_; }
     // Renders each Speech oscillator slot's text with espeak-ng.
     vital::speech::Manager* getSpeechManager() { return speech_manager_.get(); }
     // Builds the engine for each oscillator slot's selected type and drops
@@ -286,6 +290,7 @@ class SynthBase : public MidiManager::Listener {
     // Declared after the engine so it is destroyed first.
     std::unique_ptr<vital::multisample::Manager> multisample_manager_;
     File multisample_container_;
+    File multisample_library_;
     std::unique_ptr<vital::speech::Manager> speech_manager_;
     std::unique_ptr<MidiManager> midi_manager_;
     std::unique_ptr<MidiKeyboardState> keyboard_state_;

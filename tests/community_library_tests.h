@@ -9,6 +9,7 @@
 
 #include "community_library.h"
 #include "credential_store.h"
+#include "library_layout.h"
 
 namespace {
   // Two patches as /api/v1/presets/ describes them: one complete, one with
@@ -108,16 +109,18 @@ namespace {
       return;
     const File data = File::getSpecialLocation(File::tempDirectory).getChildFile("AtlasCommunityData");
     const File community = atlas::community::communityDirectory(data);
-    expect(community == data.getChildFile("Community").getChildFile("Presets"),
-           "downloads live in Community/Presets under the data folder");
+    expect(community == data.getChildFile("Community"),
+           "downloads live in the Community library under the data folder");
     const File glow = atlas::community::localFile(presets[0], data);
-    expect(glow == community.getChildFile("jay").getChildFile("Lead").getChildFile("Glow Lead.atp"),
-           "a preset lands under its uploader and style: " + glow.getFullPathName().toStdString());
+    expect(glow == community.getChildFile("Banks").getChildFile("jay").getChildFile("Lead").getChildFile("Glow Lead.atp"),
+           "a preset lands in Banks under its uploader, the bank, and its style: " + glow.getFullPathName().toStdString());
     const File sneaky = atlas::community::localFile(presets[1], data);
-    expect(sneaky.isAChildOf(community) && sneaky.getParentDirectory().getParentDirectory().getParentDirectory() == community,
+    expect(sneaky.isAChildOf(community) &&
+               sneaky.getParentDirectory().getParentDirectory().getParentDirectory().getParentDirectory() == community,
            "dots and slashes in the names stay inside the folder: " + sneaky.getFullPathName().toStdString());
     expect(sneaky.getParentDirectory().getFileName() == "Other" &&
-               sneaky.getParentDirectory().getParentDirectory().getFileName() == "root",
+               sneaky.getParentDirectory().getParentDirectory().getFileName() == "root" &&
+               sneaky.getParentDirectory().getParentDirectory().getParentDirectory().getFileName() == "Banks",
            "no style files under Other, and the uploader's folder is not hidden: " +
                sneaky.getFullPathName().toStdString());
     expect(sneaky.hasFileExtension("atp") && sneaky.getFileName() == "Sneaky Bass.atp",
@@ -346,7 +349,7 @@ namespace {
       finish();
       return;
     }
-    const File expected = library.folder.getChildFile("Community").getChildFile("Presets").getChildFile("tester")
+    const File expected = library.folder.getChildFile("Community").getChildFile("Banks").getChildFile("tester")
                               .getChildFile("Lead").getChildFile("Shared Lead.atp");
     // Sorted by name: Broken Bass, then Shared Lead.
     expect(editor.presetFileAtRow(1) == expected,
@@ -402,7 +405,7 @@ namespace {
     expect(results->keyPressed(KeyPress(KeyPress::returnKey)), "Return on the row is handled");
     pumpUntil([&] { return !editor.isCommunityDownloadBusy() && synth.getActiveFile() == expected; }, 10000);
     expect(expected.existsAsFile() && sha256OfFile(expected) == sha256OfFile(shared),
-           "the preset is downloaded into Community/Presets/tester/Lead");
+           "the preset is downloaded into Community/Banks/tester/Lead");
     expect(synth.getActiveFile() == expected, "and loaded: " + synth.getActiveFile().getFullPathName().toStdString());
     // "Loaded preset" belongs to the optional Presets announcements, off by default.
     expect(said("Downloading Shared Lead") && said("Downloaded Shared Lead"),
@@ -416,7 +419,7 @@ namespace {
     spoken.messages.clear();
     expect(results->keyPressed(KeyPress(KeyPress::returnKey)), "Return on the broken row is handled");
     pumpUntil([&] { return !editor.isCommunityDownloadBusy() && said("Unable to download"); }, 10000);
-    const File refused = library.folder.getChildFile("Community").getChildFile("Presets").getChildFile("tester")
+    const File refused = library.folder.getChildFile("Community").getChildFile("Banks").getChildFile("tester")
                              .getChildFile("Bass").getChildFile("Broken Bass.atp");
     expect(!refused.existsAsFile() && said("Unable to download Broken Bass") && said("checksum"),
            "the download is refused and the reason said: " + spoken.messages.joinIntoString(" | ").toStdString());
@@ -499,8 +502,8 @@ namespace {
     expect(atlas::community::bankContentsText(atlas::community::RemoteBank()) == "no Atlas files", "an empty bank says so");
 
     const File data = File::getSpecialLocation(File::tempDirectory).getChildFile("AtlasCommunityData");
-    expect(atlas::community::banksDirectory(data) == data.getChildFile("Community").getChildFile("Banks"),
-           "bank archives live in Community/Banks under the data folder");
+    expect(atlas::community::banksDirectory(data) == data.getChildFile("Community").getChildFile("Archives"),
+           "bank archives live in Community/Archives under the data folder");
     expect(atlas::community::localFile(hamo, data) ==
                atlas::community::banksDirectory(data).getChildFile("jayladdermusic").getChildFile("Hamo Speed Garage Bank.atb"),
            "an archive lands under its uploader: " + atlas::community::localFile(hamo, data).getFullPathName().toStdString());
@@ -693,12 +696,12 @@ namespace {
     spoken.messages.clear();
     expect(results->keyPressed(KeyPress(KeyPress::returnKey)), "Return on the bank row is handled");
     pumpUntil([&] { return !editor.isCommunityDownloadBusy() && said("Imported bank Test Bank"); }, 15000);
-    const File unpacked = library.folder.getChildFile("Test Bank").getChildFile("Presets");
+    const File unpacked = library.folder.getChildFile("Community").getChildFile("Banks").getChildFile("Test Bank");
     expect(unpacked.getChildFile("Lead").getChildFile("Shared One.atp").existsAsFile() &&
                unpacked.getChildFile("Shared Two.atp").existsAsFile(),
-           "the bank unpacks into the Atlas folder as Import preset bank does");
+           "the bank's presets are filed into the Community library's Banks under its own name");
     expect(archive.existsAsFile() && sha256OfFile(archive) == sha256OfFile(good),
-           "the archive is kept in Community/Banks/tester");
+           "the archive is kept in Community/Archives/tester");
     expect(said("Downloading bank Test Bank from a saved copy of the library") && said("Imported bank Test Bank, 2 files"),
            "the download and the import are said: " + heard());
     expect(cell(1, kImported) == "Imported" && details->getText().contains("Test Bank. Imported, Return imports it again"),
@@ -1405,7 +1408,8 @@ namespace {
 
     SynthPlugin synth;
     // A bank folder in the user library to share.
-    const File bank_folder = LoadSave::getUserPresetDirectory().getChildFile("My Bank");
+    const File bank_folder = atlas::library::bankDirectory(atlas::library::Library::kUser, "My Bank",
+                                                           LoadSave::getDataDirectory());
     expect(synth.saveCopyToFile(bank_folder.getChildFile("Bank Patch.atp")), "a preset is saved in the user library's My Bank");
     SynthEditor editor(synth);
     editor.updateFullGui();
@@ -1580,12 +1584,11 @@ namespace {
     expect(folder->hasKeyboardFocus(false) && said("Share bank on 127.0.0.1"), "the folder menu has the focus: " + heard());
     int my_bank = -1;
     for (int i = 0; i < folder->getNumItems(); ++i) {
-      if (folder->getItemText(i) == "My Bank")
+      if (folder->getItemText(i) == "My Bank (User)")
         my_bank = i;
     }
-    expect(folder->getItemText(0) == "The whole user library" && my_bank > 0 &&
-               folder->getItemText(folder->getNumItems() - 1) == "Choose another folder...",
-           "the folder menu offers the user library, its banks and another folder");
+    expect(my_bank >= 0 && folder->getItemText(folder->getNumItems() - 1) == "Choose another folder...",
+           "the folder menu offers every library's banks, named with their library, and another folder");
     folder->setSelectedItemIndex(my_bank, sendNotificationSync);
     expect(name->getText() == "My Bank", "choosing a folder names the bank after it");
     spoken.messages.clear();

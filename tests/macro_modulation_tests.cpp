@@ -798,6 +798,7 @@ namespace {
 #include "text_field_reading_tests.h"
 #include "modulation_amount_slider_tests.h"
 #include "focus_events_tests.h"
+#include "library_layout_tests.h"
 
 int main(int argc, char** argv) {
   ScopedJuceInitialiser_GUI juce;
@@ -997,6 +998,48 @@ int main(int argc, char** argv) {
                 << bank.file_size << " bytes, sha256 " << bank.sha256 << (bank.preview.exists() ? ", preview" : "") << '\n';
     }
     return 0;
+  }
+  // By hand, not in ctest: migrates a copy of an Atlas folder as if its
+  // config said `layout` and `default_bank`, and prints the log.
+  //   AtlasMacroTests --library-migration <folder> <layout> [default bank]
+  if (argc > 3 && String(argv[1]) == "--library-migration") {
+    const File folder { String(argv[2]) };
+    TemporaryFile config { ".config" };
+    TemporaryFile favourites { ".favorites" };
+    json contents = json::object();
+    contents["data_directory"] = folder.getFullPathName().toStdString();
+    contents["library_layout"] = String(argv[3]).getIntValue();
+    if (argc > 4)
+      contents["default_bank"] = String(argv[4]).toStdString();
+    config.getFile().replaceWithText(contents.dump());
+    LoadSave::setConfigFileForTesting(config.getFile());
+    LoadSave::setFavoritesFileForTesting(favourites.getFile());
+    if (LoadSave::getDataDirectory() != folder) {
+      std::cerr << "not a folder: " << folder.getFullPathName() << "\n";
+      return 2;
+    }
+    const auto report = atlas::library::migrate(folder);
+    std::cout << report.moves << " moves, " << report.problems.size() << " problems, default bank "
+              << report.default_bank << "\n";
+    for (const auto& line : report.lines)
+      std::cout << "  " << line << "\n";
+    for (const auto& problem : report.problems)
+      std::cout << "  Problem: " << problem << "\n";
+    LoadSave::setConfigFileForTesting({});
+    LoadSave::setFavoritesFileForTesting({});
+    return report.problems.isEmpty() ? 0 : 1;
+  }
+  if (argc > 1 && String(argv[1]) == "--library-layout") {
+    testLocateFindsLibraryBankKindAndCategory();
+    testBanksAndKindFoldersAreListed();
+    testMigrationFromTheFirstLayout();
+    testMigrationFromTheSecondLayout();
+    testStrayBankIsAdopted();
+    testBankArchivesRoundTrip();
+    testPresetBrowsersFilterAndLoad();
+    if (failures == 0)
+      std::cout << "Atlas library layout tests passed\n";
+    return failures == 0 ? 0 : 1;
   }
   if (argc > 1 && String(argv[1]) == "--community-library") {
     // What is said must not depend on the user's own speech settings.

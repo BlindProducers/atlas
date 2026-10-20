@@ -50,7 +50,15 @@ TapeNoiseLibrary::~TapeNoiseLibrary() {
   signalThreadShouldExit(); notify(); stopThread(-1);
 }
 juce::File TapeNoiseLibrary::factoryDirectory() {
-  return LoadSave::getDataDirectory().getChildFile("Factory").getChildFile("Samples").getChildFile("Tape");
+  // The Factory library's Samples/Tape pack (library_layout.h), or where a
+  // library not migrated yet keeps it (Factory/Atlas/Samples/Tape, the
+  // layout of the 2.0.0 beta 3 development builds).
+  const juce::File factory = LoadSave::getDataDirectory().getChildFile("Factory");
+  const juce::File current = factory.getChildFile("Samples").getChildFile("Tape");
+  const juce::File interim = factory.getChildFile("Atlas").getChildFile("Samples").getChildFile("Tape");
+  if (!current.isDirectory() && interim.isDirectory())
+    return interim;
+  return current;
 }
 const TapeNoiseLibrary::Clip* TapeNoiseLibrary::request(int index) noexcept {
   index = std::clamp(index, 0, kNumClips - 1);

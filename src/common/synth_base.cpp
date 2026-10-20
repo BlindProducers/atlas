@@ -27,6 +27,7 @@
 #include "sound_engine.h"
 #include "value_switch.h"
 #include "load_save.h"
+#include "library_layout.h"
 #include "memory.h"
 #include "modulation_connection_processor.h"
 #include "startup.h"
@@ -1061,10 +1062,16 @@ bool SynthBase::loadFromFile(File preset, std::string& error) {
   }
   // A container preset carries its instruments' files; the state names them.
   multisample_container_ = vital::multisample::container::isContainer(preset) ? preset : File();
+  // A preset in a bank plays instruments kept in its library's Multisamples.
+  const atlas::library::Location location = atlas::library::locate(preset, LoadSave::getDataDirectory());
+  multisample_library_ = location.in_kind && location.kind == atlas::library::Kind::kPresets && location.bank.isNotEmpty()
+                             ? atlas::library::libraryDirectory(location.library, LoadSave::getDataDirectory())
+                             : File();
   try {
     json parsed_json_state = json::parse(text, nullptr);
     if (!loadFromJson(std::move(parsed_json_state))) {
       multisample_container_ = File();
+      multisample_library_ = File();
       error = "Preset was created with a newer version.";
       return false;
     }
@@ -1073,10 +1080,12 @@ bool SynthBase::loadFromFile(File preset, std::string& error) {
   }
   catch (const json::exception& e) {
     multisample_container_ = File();
+    multisample_library_ = File();
     error = "Preset file is corrupted.";
     return false;
   }
   multisample_container_ = File();
+  multisample_library_ = File();
   
   setPresetName(preset.getFileNameWithoutExtension());
   markStateChanged();
@@ -1283,6 +1292,13 @@ bool SynthBase::writePresetFile(const File& preset, std::string* error) {
   json data = saveToJson();
   std::vector<multisample::container::Instrument> instruments;
   json& settings = data["settings"];
+  // Into a bank, an instrument goes to its library's Multisamples once and
+  // the preset refers to it; anywhere else the preset carries its
+  // instruments inside, as a zip, so it is complete on its own.
+  const File data_directory = LoadSave::getDataDirectory();
+  const atlas::library::Location location = atlas::library::locate(preset, data_directory);
+  const bool into_bank = location.in_kind && location.kind == atlas::library::Kind::kPresets && location.bank.isNotEmpty();
+  const File library = into_bank ? atlas::library::libraryDirectory(location.library, data_directory) : File();
   for (int slot = 0; slot < vital::kNumOscillators; ++slot) {
     const std::string key = vital::source_types::slotPrefix(slot) + "multisample";
     if (!settings.count(key))
@@ -1291,11 +1307,29 @@ bool SynthBase::writePresetFile(const File& preset, std::string* error) {
     multisample::InstrumentSpec spec = multisample_manager_->spec(slot);
     if (result == nullptr || result->hash != spec.hash)
       continue;
-    spec.files = result->files;
+    std::map<std::string, std::string> path_overrides;
     for (const multisample::FileInfo& file : result->files) {
       if (file.relative.rfind("_external/", 0) == 0 && !file.written.empty())
-        spec.path_overrides[file.written] = file.relative;
+        path_overrides[file.written] = file.relative;
     }
+    if (into_bank) {
+      String place_error;
+      const File entry = atlas::library::placeInstrument(library, String(spec.name), result->hash, result->entry,
+                                                         spec.format, result->files, path_overrides, {}, place_error);
+      if (entry != File()) {
+        spec.library_instrument = atlas::library::libraryInstrumentPath(entry, library).toStdString();
+        spec.path = entry.getFullPathName().toStdString();
+        spec.files.clear();
+        spec.path_overrides.clear();
+        settings[key] = spec.toJson(false);
+        continue;
+      }
+      LoadSave::writeErrorLog("Could not keep the instrument " + String(spec.name) + " in " +
+                              atlas::library::instrumentsDirectory(library).getFullPathName() + ": " + place_error +
+                              ". The preset carries it instead.");
+    }
+    spec.files = result->files;
+    spec.path_overrides = path_overrides;
     settings[key] = spec.toJson(true);
     instruments.push_back({ result->hash, result->files });
   }

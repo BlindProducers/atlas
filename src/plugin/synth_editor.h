@@ -23,7 +23,9 @@
 #include "trance_gate_editor.h"
 #include "synth_gui_interface.h"
 #include "community_library.h"
+#include "library_layout.h"
 
+#include <array>
 #include <map>
 #include <memory>
 #include <set>
@@ -360,6 +362,23 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void paint(Graphics&) override;
     void resized() override;
     void updateFullGui() override;
+    // The Browse menus' lists of LFO presets, FX presets, FX bus presets and
+    // multisample instruments: every library's folder of the kind, scanned on
+    // first use, again after Rescan and after a save of that kind.
+    enum class PresetFileList { kLfoPresets, kFxPresets, kFxBusPresets, kInstruments };
+    const std::vector<File>& presetFiles(PresetFileList list);
+    // The FX presets saved for `effectId`, in the Browse menu's order.
+    std::vector<File> effectPresetFiles(const String& effectId);
+    // Loads an FX preset into the effect in a chain's slot; false when it is
+    // for another effect or sets nothing.
+    bool loadEffectPresetIntoSlot(const String& sectionName, int slot, const File& file);
+    // Previous and Next: the preset before or after the one last loaded,
+    // through every library, wrapping at either end.
+    void loadShiftedEffectPreset(const String& sectionName, int slot, int direction);
+    void loadShiftedLfoPreset(int lfoIndex, int direction);
+    // Says what the library migration did (SynthPlugin::createEditor runs it
+    // before the editor is made), once the editor is up.
+    void announceLibraryMigration(const atlas::library::MigrationReport& migration);
     // The SF2 preset menu: flat for a few presets, otherwise grouped by bank and
     // into runs of 16 programs so every submenu fits on screen (a screen reader
     // reaches only the menu items that are visible). Item ids are list positions + 1.
@@ -632,7 +651,7 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     // downloads it into the Community library folder, checks it against the
     // library's checksum and loads it. Its Community banks row lists the
     // shared banks the same way; Return on one downloads the archive into
-    // Community/Banks, checks it and unpacks it as Import preset bank does.
+    // Community/Banks, checks it and unpacks it into the Community library.
     PresetCollection presetCollection() const;
     void setPresetCollection(PresetCollection collection);
     String presetCollectionName() const;
@@ -733,7 +752,11 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void loadPresetFile(File file, bool preview = false, bool updateBrowserFilters = false);
     void chooseBankFile();
     void importBankFile(const File& file);
-    void chooseFolderToExportBank();
+    // Export bank: a menu of every bank in every library, then Other folder,
+    // then where to write the archive.
+    void chooseBankToExport();
+    void chooseFolderToExport();
+    void chooseBankExportDestination(const File& sourceFolder);
     void exportFolderAsBank(const File& sourceFolder, const File& destinationFile);
     // Loads a tuning chosen in Settings and says so.
     void loadTuningFile(const File& file);
@@ -745,6 +768,14 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void showSavePresetDialog();
     void hideSavePresetDialog();
     void commitSavePresetDialog();
+    // The Save form's Bank list: the User banks, then New bank, which shows
+    // the name box; `select` is chosen, or typed as the new bank's name when
+    // it is no bank yet.
+    void populateSaveBanks(const String& select);
+    bool newSaveBankChosen() const;
+    // The bank the form names: the chosen one, or the new name made legal;
+    // empty when New bank is chosen and no name is typed.
+    String chosenSaveBank() const;
     // Share patch / Share bank on the community library (the Preset menu):
     // the Share form, or first the login dialog while this DAW is not logged
     // in, which opens the form once a token is accepted.
@@ -890,6 +921,8 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
                                      int& focus_order, const String& section_name,
                                      const GroupRowAppender& appendRows = {});
     void chooseInstrumentFile(int oscillator);
+    void loadInstrumentFile(int oscillator, const File& file);
+    void showInstrumentBrowserMenu(int oscillator, Component& target);
     // Moves an SF2 slot to the previous (-1) or next (1) preset, wrapping.
     void stepInstrumentPreset(int oscillator, int direction);
     void openInstrumentInTextEditor(int oscillator);
@@ -936,6 +969,12 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void loadShiftedSample(int direction, int sample_target = 0);
     void chooseLfoPresetFile(int lfoIndex);
     void loadLfoPresetFile(int lfoIndex, const File& file);
+    void showLfoPresetBrowserMenu(int lfoIndex, Component& target);
+    // A Browse menu of `files`: library, then packs and folders, then file,
+    // and Rescan, which scans `list` again and opens the menu again.
+    void showPresetFileMenu(PresetFileList list, const std::vector<File>& files, const String& emptyText,
+                            Component& target, std::function<void(const File&)> choose,
+                            std::function<void()> reopen);
     void saveLfoPresetFile(int lfoIndex);
     vital::ConvolutionReverbModule* convolutionModuleForPrefix(const String& modulePrefix);
     void chooseConvolutionIrFile(const String& modulePrefix);
@@ -948,7 +987,26 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void chooseEffectPresetFile(const String& sectionName);
     void loadEffectPresetFile(const String& sectionName, const File& file);
     void saveEffectPresetFile(const String& sectionName);
+    // The FX presets group of an effect slot in a chain: Browse, Previous,
+    // Next, Import and Save, acting on that slot's effect.
+    void showEffectPresetBrowserMenu(const String& sectionName, int slot, Component& target);
+    void chooseEffectPresetFileForSlot(const String& sectionName, int slot);
+    void saveEffectPresetFromSlot(const String& sectionName, int slot);
     void chooseFxBusPresetFile(const String& sectionName, bool save);
+    void loadFxBusPresetFile(const String& sectionName, const File& file,
+                             const String& focusTitle = "Load bus FX preset");
+    // A group a screen reader enters, holding a column of buttons, placed in
+    // `parent` at `y`, which moves past it. Each button's action gets the
+    // button, for a menu to open from.
+    struct GroupButton {
+      String title;
+      String description;
+      std::function<void(Component&)> action;
+    };
+    AccessibleSectionHeader* addButtonGroup(const String& title, const String& key, AccessibleSectionHeader& parent,
+                                            int x, int& y, int width, int& focusOrder, int rank,
+                                            const std::vector<GroupButton>& buttons);
+    void showFxBusPresetBrowserMenu(const String& sectionName, Component& target);
     void addFxBusControlsGroup(const String& sectionName, Component& parent, int& y, int x,
                                int width, int& focusOrder);
     int effectSlotType(const String& sectionName, int slot) const;
@@ -1172,7 +1230,10 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     Label save_patch_prompt_;
     TextEditor save_patch_name_;
     TextEditor save_patch_author_;
-    TextEditor save_patch_bank_;
+    // The User banks to save into, and a name box for a new one.
+    AccessibleComboBox save_patch_bank_;
+    TextEditor save_patch_new_bank_;
+    StringArray save_patch_banks_;
     TextEditor save_patch_category_;
     TextEditor save_patch_tags_;
     TextEditor save_patch_comments_;
@@ -1480,6 +1541,15 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     bool preset_to_wavetable_rendering_ = false;
     bool sample_browser_cache_valid_ = false;
     bool ir_browser_cache_valid_ = false;
+    struct PresetFileCache {
+      bool valid = false;
+      std::vector<File> roots;
+      std::vector<File> files;
+      std::vector<String> effects;   // FX presets: each file's effect id, empty when it names none
+    };
+    std::array<PresetFileCache, 4> preset_file_caches_;
+    // The FX preset last loaded into each effect slot, by its slot prefix.
+    std::map<String, File> last_effect_preset_files_;
     int active_modulation_remap_connection_ = -1;
     int modulation_remap_point_index_ = 0;
     bool lfo_multi_selection_mode_ = false;

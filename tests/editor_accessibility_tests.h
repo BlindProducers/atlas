@@ -1,6 +1,7 @@
 #pragma once
 
 #include "screen_reader_speech.h"
+#include "library_layout.h"
 
 #if JUCE_MAC
 void focusNativeAccessibilityElement(juce::AccessibilityHandler& handler);
@@ -196,8 +197,9 @@ namespace {
              "Bus controls is a VoiceOver group");
       if (handler) {
         const auto children = handler->getChildren();
-        const StringArray titles { "Bus enabled", "Clear bus", "Load bus FX preset", "Save bus FX preset" };
-        expect(children.size() == static_cast<size_t>(titles.size()), "Bus controls exposes four actions to VoiceOver");
+        const StringArray titles { "Bus enabled", "Clear bus", "Browse bus FX presets", "Load bus FX preset",
+                                   "Save bus FX preset" };
+        expect(children.size() == static_cast<size_t>(titles.size()), "Bus controls exposes five actions to VoiceOver");
         for (int index = 0; index < jmin(titles.size(), static_cast<int>(children.size())); ++index)
           expect(children[index]->getTitle() == titles[index], "Bus actions follow the announced order");
         expect(!children.empty() && children[0]->getRole() == AccessibilityRole::toggleButton &&
@@ -1632,7 +1634,8 @@ namespace {
     };
 
     const String bank_name = "Atlas focus test bank";
-    const File bank = LoadSave::getUserPresetDirectory().getChildFile(bank_name);
+    const File bank = atlas::library::bankDirectory(atlas::library::Library::kUser, bank_name,
+                                                    LoadSave::getDataDirectory());
     // Deletes the test's own presets rather than filling the Recycle Bin, and
     // nothing outside its bank.
     SynthEditor::trashFileForTesting() = [bank](const File& file) { return file.isAChildOf(bank) && file.deleteFile(); };
@@ -1643,7 +1646,8 @@ namespace {
     for (const auto& name : names)
       made = made && synth.saveCopyToFile(bank.getChildFile(name + extension));
     // Another bank, so the library is not empty once the test bank is.
-    const File other_bank = LoadSave::getUserPresetDirectory().getChildFile("Atlas focus other bank");
+    const File other_bank = atlas::library::bankDirectory(atlas::library::Library::kUser, "Atlas focus other bank",
+                                                          LoadSave::getDataDirectory());
     made = made && other_bank.createDirectory().wasOk() && synth.saveCopyToFile(other_bank.getChildFile("Other" + extension));
 
     SynthEditor editor(synth);

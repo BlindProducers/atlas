@@ -69,6 +69,7 @@ class LoadSave {
     static const std::string kLfoFolderName;
     static const std::string kFxFolderName;
     static const std::string kIrFolderName;
+    static const std::string kMultisampleFolderName;
     static const std::string kAdditionalWavetableFoldersName;
     static const std::string kAdditionalSampleFoldersName;
 
@@ -111,6 +112,7 @@ class LoadSave {
     static File defaultConfigFile();
     // Tests point the config somewhere else, leaving the user's file alone.
     static void setConfigFileForTesting(const File& file);
+    static void setFavoritesFileForTesting(const File& file);
     static void writeCrashLog(String crash_log);
     static void writeErrorLog(String error_log);
     static json getConfigJson();
