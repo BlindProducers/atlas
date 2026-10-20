@@ -52,6 +52,14 @@ Fetched by default, needed to build Atlas:
     expands to the selection instead, and NVDA says the highlighted letter, or
     the whole value, that Backspace deletes. `AtlasMacroTests
     --text-field-reading` replays NVDA's reading against a JUCE text field.
+  - `juce8-uia-focus-loss.patch`: UI Automation's focus event tells a
+    screen reader the focus is now on the element that sends it. JUCE also
+    sent one from the element losing the focus, at the moment no element
+    has it, so NVDA found the window instead and said "Atlas Settings
+    dialog" again before each control Tab moved to in the Settings window.
+    As JUCE does on iOS, only the element that has the focus sends it now.
+    `AtlasMacroTests --focus-events` checks that a Tab raises one focus
+    event, the new control's.
 - `nlohmann_json/`: nlohmann json 3.1.2 (MIT), from the release-tracking
   repository https://github.com/ArthurSonzogni/nlohmann_json_cmake_fetchcontent,
   which carries only the released header (`include/nlohmann/json.hpp`, the

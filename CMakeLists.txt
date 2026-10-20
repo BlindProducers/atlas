@@ -737,8 +737,9 @@ if(ATLAS_BUILD_TIMING_TESTS)
   if(APPLE)
     target_sources(AtlasMacroTests PRIVATE tests/cpu_meter_accessibility_mac.mm)
   elseif(WIN32)
-    # Reads a text field through UI Automation as NVDA does (--text-field-reading).
-    target_sources(AtlasMacroTests PRIVATE tests/uia_text_reading_windows.cpp)
+    # Reads a text field through UI Automation as NVDA does (--text-field-reading),
+    # and listens for its focus events as NVDA does (--focus-events).
+    target_sources(AtlasMacroTests PRIVATE tests/uia_text_reading_windows.cpp tests/uia_focus_events_windows.cpp)
   endif()
   target_include_directories(AtlasMacroTests PRIVATE
     src/common src/common/wavetable src/interface/look_and_feel src/plugin
@@ -776,6 +777,9 @@ if(ATLAS_BUILD_TIMING_TESTS)
   # NVDA reads the character Backspace deletes in a text field, through UI
   # Automation (third_party/patches/juce8-uia-text-reading.patch).
   add_test(NAME atlas_text_field_reading COMMAND AtlasMacroTests --text-field-reading)
+  # Each Tab raises one UI Automation focus event, the new control's
+  # (third_party/patches/juce8-uia-focus-loss.patch).
+  add_test(NAME atlas_focus_events COMMAND AtlasMacroTests --focus-events)
   # Settings > Modulation amount slider: the amount prompt's slider steps and
   # reads as the destination's own control and plays each amount at once;
   # Return keeps it, anything else puts back the amount the route had.
