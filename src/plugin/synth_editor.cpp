@@ -9577,6 +9577,9 @@ class AtlasSettingsContent : public Component, private FocusChangeListener {
 
       // Accessibility: the speech categories.
       inner_.addAndMakeVisible(accessibility_);
+      // Use speech feedback switches every announcement category with it, and
+      // a category switched on switches it back on. Frequency values in Hz is
+      // how values are read, not an announcement, so it stays as it is.
       struct Entry {
         const char* label;
         bool AccessibilitySpeechSettings::* field;
@@ -9600,8 +9603,21 @@ class AtlasSettingsContent : public Component, private FocusChangeListener {
         toggle->setToggleState(settings.*(entry.field), dontSendNotification);
         auto* raw = toggle.get();
         const auto field = entry.field;
-        toggle->onClick = [raw, field] {
-          accessibilitySpeechSettings().*field = raw->getToggleState();
+        toggle->onClick = [this, raw, field] {
+          auto& current = accessibilitySpeechSettings();
+          const bool on = raw->getToggleState();
+          current.*field = on;
+          const auto master = &AccessibilitySpeechSettings::speech_feedback;
+          const auto hz = &AccessibilitySpeechSettings::frequency_values_in_hz;
+          for (size_t i = 0; i < speech_toggles_.size(); ++i) {
+            const auto other = kEntries[i].field;
+            const bool follows = field == master ? other != master && other != hz
+                                                 : on && other == master && field != hz;
+            if (follows) {
+              current.*other = on;
+              speech_toggles_[i]->setToggleState(on, dontSendNotification);
+            }
+          }
           saveAccessibilitySpeechSettings();
         };
         accessibility_.addAndMakeVisible(*toggle);
