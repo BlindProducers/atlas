@@ -736,6 +736,9 @@ if(ATLAS_BUILD_TIMING_TESTS)
   target_sources(AtlasMacroTests PRIVATE tests/macro_modulation_tests.cpp)
   if(APPLE)
     target_sources(AtlasMacroTests PRIVATE tests/cpu_meter_accessibility_mac.mm)
+  elseif(WIN32)
+    # Reads a text field through UI Automation as NVDA does (--text-field-reading).
+    target_sources(AtlasMacroTests PRIVATE tests/uia_text_reading_windows.cpp)
   endif()
   target_include_directories(AtlasMacroTests PRIVATE
     src/common src/common/wavetable src/interface/look_and_feel src/plugin
@@ -770,6 +773,9 @@ if(ATLAS_BUILD_TIMING_TESTS)
   # A window gone idle still paints every repaint at once: JUCE's vblanks stop
   # while nothing waits to be drawn (third_party/patches/juce8-*-idle-vblank.patch).
   add_test(NAME atlas_window_repaint COMMAND AtlasMacroTests --window-repaint)
+  # NVDA reads the character Backspace deletes in a text field, through UI
+  # Automation (third_party/patches/juce8-uia-text-reading.patch).
+  add_test(NAME atlas_text_field_reading COMMAND AtlasMacroTests --text-field-reading)
 
   juce_add_console_app(AtlasDefuseTests PRODUCT_NAME "Atlas Defuse Tests")
   juce_generate_juce_header(AtlasDefuseTests)

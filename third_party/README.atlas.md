@@ -39,6 +39,19 @@ Fetched by default, needed to build Atlas:
     1.2 to 1.0 percent, and focused from 1.5 to 1.2.
     `AtlasMacroTests --window-repaint` checks that an idle window still
     paints every repaint at once.
+  - `juce8-uia-text-reading.patch`: Windows screen readers read a text field
+    through UI Automation text ranges. JUCE's `Move` worked out where a range
+    should go but left it where it was, and gave a backward move a positive
+    count, so NVDA, which works out what Backspace deletes by moving a copy
+    of its caret back one character, read the character after the caret (the
+    same letter for every Backspace) or "blank" at the end of the text. `Move`
+    now moves as UI Automation defines it, and counts backwards as negative,
+    as `MoveEndpointByUnit` does too. NVDA also takes a selection's start as
+    its caret, so with text selected it would read the letter before the
+    selection; while that selection is there, the copy NVDA moves back from it
+    expands to the selection instead, and NVDA says the highlighted letter, or
+    the whole value, that Backspace deletes. `AtlasMacroTests
+    --text-field-reading` replays NVDA's reading against a JUCE text field.
 - `nlohmann_json/`: nlohmann json 3.1.2 (MIT), from the release-tracking
   repository https://github.com/ArthurSonzogni/nlohmann_json_cmake_fetchcontent,
   which carries only the released header (`include/nlohmann/json.hpp`, the

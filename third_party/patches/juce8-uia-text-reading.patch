@@ -1,0 +1,187 @@
+diff --git a/modules/juce_gui_basics/native/accessibility/juce_UIATextProvider_windows.h b/modules/juce_gui_basics/native/accessibility/juce_UIATextProvider_windows.h
+index e2e6c14..4c355b7 100644
+--- a/modules/juce_gui_basics/native/accessibility/juce_UIATextProvider_windows.h
++++ b/modules/juce_gui_basics/native/accessibility/juce_UIATextProvider_windows.h
+@@ -93,7 +93,8 @@ public:
+ 
+             ComSmartPtr rangeProvider { new UIATextRangeProvider (*this,
+                                                                   { hasSelection ? selection.getStart() : cursorPos,
+-                                                                  hasSelection ? selection.getEnd()   : cursorPos }),
++                                                                  hasSelection ? selection.getEnd()   : cursorPos },
++                                                                  hasSelection ? selection : Range<int>()),
+                                         IncrementRef::no };
+ 
+             if (LONG pos = 0; FAILED (SafeArrayPutElement (result.get(), &pos, static_cast<IUnknown*> (rangeProvider))))
+@@ -186,10 +187,11 @@ private:
+                                   public ComBaseClassHelper<ITextRangeProvider>
+     {
+     public:
+-        UIATextRangeProvider (UIATextProvider& textProvider, Range<int> range)
++        UIATextRangeProvider (UIATextProvider& textProvider, Range<int> range, Range<int> madeFromSelection = {})
+             : UIAProviderBase (textProvider.getHandler().getNativeImplementation()),
+               owner (&textProvider, IncrementRef::yes),
+-              selectionRange (range)
++              selectionRange (range),
++              selectionWhenMade (madeFromSelection)
+         {
+         }
+ 
+@@ -206,7 +208,9 @@ private:
+         {
+             return withCheckedComArgs (pRetVal, *this, [&]
+             {
+-                *pRetVal = new UIATextRangeProvider (*owner, selectionRange);
++                auto* copy = new UIATextRangeProvider (*owner, selectionRange, selectionWhenMade);
++                copy->spansSelectionOnExpand = spansSelectionOnExpand;
++                *pRetVal = copy;
+                 return S_OK;
+             });
+         }
+@@ -251,6 +255,19 @@ private:
+             {
+                 using ATH = AccessibilityTextHelpers;
+ 
++                // Atlas: what NVDA says Backspace deletes (see Move): while the
++                // selection is still there, the text it selects.
++                const auto spansSelection = std::exchange (spansSelectionOnExpand, false)
++                                         && unit == TextUnit_Character
++                                         && textInterface->getSelection() == selectionWhenMade;
++                const auto madeFrom = std::exchange (selectionWhenMade, {});
++
++                if (spansSelection)
++                {
++                    selectionRange = madeFrom;
++                    return S_OK;
++                }
++
+                 const auto boundaryType = getBoundaryType (unit);
+                 const auto start = ATH::findTextBoundary (*textInterface,
+                                                           selectionRange.getStart(),
+@@ -423,16 +440,51 @@ private:
+             {
+                 using ATH = AccessibilityTextHelpers;
+ 
++                // Atlas: Move as UI Automation defines it. An empty range (an
++                // insertion point, as a screen reader takes the caret) moves by
++                // `count` units and stays empty; any other range moves from the
++                // start of its first unit and then spans one unit, and cannot
++                // move past the last one. The count moved is negative backwards.
++                // JUCE worked the new position out but left the range where it
++                // was and returned the count as positive, so NVDA read the
++                // character after the caret, or nothing at the end of the text,
++                // as the one Backspace deleted.
++                // Atlas: NVDA works out what Backspace deletes before passing
++                // the key on: it takes the start of the selection as the caret,
++                // moves a copy back one character and expands it to that
++                // character. With text selected, Backspace deletes the selection
++                // instead, so that copy moves back to the selection's start and
++                // its expansion spans the selection: NVDA says the highlighted
++                // letter (or the whole value) it deletes, not the one before it.
++                const auto nvdaReadsSelectionDeleted = unit == TextUnit_Character
++                                                    && count == -1
++                                                    && ! selectionWhenMade.isEmpty()
++                                                    && selectionRange == Range<int>::emptyRange (selectionWhenMade.getStart())
++                                                    && textInterface.getSelection() == selectionWhenMade;
++                spansSelectionOnExpand = nvdaReadsSelectionDeleted;
++
++                if (nvdaReadsSelectionDeleted)
++                {
++                    *pRetVal = -1;
++                    return S_OK;
++                }
++
++                selectionWhenMade = {};
++
+                 const auto boundaryType = getBoundaryType (unit);
+-                const auto previousUnitBoundary = ATH::findTextBoundary (textInterface,
+-                                                                         selectionRange.getStart(),
+-                                                                         boundaryType,
+-                                                                         ATH::Direction::backwards,
+-                                                                         ATH::IncludeThisBoundary::yes,
+-                                                                         ATH::IncludeWhitespaceAfterWords::no);
++                const auto isInsertionPoint = selectionRange.isEmpty();
++                const auto numCharacters = textInterface.getTotalNumCharacters();
++                const auto startingPoint = isInsertionPoint
++                                         ? jlimit (0, numCharacters, selectionRange.getStart())
++                                         : ATH::findTextBoundary (textInterface,
++                                                                  selectionRange.getStart(),
++                                                                  boundaryType,
++                                                                  ATH::Direction::backwards,
++                                                                  ATH::IncludeThisBoundary::yes,
++                                                                  ATH::IncludeWhitespaceAfterWords::no);
+ 
+                 auto numMoved = 0;
+-                auto movedEndpoint = previousUnitBoundary;
++                auto movedEndpoint = startingPoint;
+ 
+                 for (; numMoved < std::abs (count); ++numMoved)
+                 {
+@@ -443,15 +495,18 @@ private:
+                                                                      ATH::IncludeThisBoundary::no,
+                                                                      count > 0 ? ATH::IncludeWhitespaceAfterWords::yes : ATH::IncludeWhitespaceAfterWords::no);
+ 
+-                    if (nextEndpoint == movedEndpoint)
++                    if (nextEndpoint == movedEndpoint || (! isInsertionPoint && count > 0 && nextEndpoint >= numCharacters))
+                         break;
+ 
+                     movedEndpoint = nextEndpoint;
+                 }
+ 
+-                *pRetVal = numMoved;
++                *pRetVal = count < 0 ? -numMoved : numMoved;
++                selectionRange = Range<int>::emptyRange (movedEndpoint);
++
++                if (! isInsertionPoint)
++                    ExpandToEnclosingUnit (unit);
+ 
+-                ExpandToEnclosingUnit (unit);
+                 return S_OK;
+             });
+         }
+@@ -473,6 +528,13 @@ private:
+                                                                                      : otherRange.getEnd());
+ 
+                 setEndpointChecked (endpoint, targetPoint);
++
++                // Atlas: a selection's range collapsed to its start is NVDA's
++                // caret (see Move); any other change forgets the selection.
++                spansSelectionOnExpand = false;
++                if (selectionRange != Range<int>::emptyRange (selectionWhenMade.getStart()))
++                    selectionWhenMade = {};
++
+                 return S_OK;
+             }
+ 
+@@ -486,6 +548,9 @@ private:
+         {
+             return owner->withTextInterface (pRetVal, [&] (const AccessibilityTextInterface& textInterface)
+             {
++                selectionWhenMade = {};
++                spansSelectionOnExpand = false;
++
+                 if (count == 0 || textInterface.getTotalNumCharacters() == 0)
+                     return S_OK;
+ 
+@@ -517,7 +582,8 @@ private:
+                     movedEndpoint = nextEndpoint;
+                 }
+ 
+-                *pRetVal = numMoved;
++                // Atlas: negative backwards, as for Move.
++                *pRetVal = count < 0 ? -numMoved : numMoved;
+ 
+                 setEndpointChecked (endpoint, movedEndpoint);
+ 
+@@ -609,6 +675,12 @@ private:
+         ComSmartPtr<UIATextProvider> owner;
+         Range<int> selectionRange;
+ 
++        // Atlas: the selection a GetSelection range was made for, while it is
++        // that range or NVDA's caret collapsed from it, and whether its next
++        // expansion by a character spans that selection (see Move).
++        Range<int> selectionWhenMade;
++        bool spansSelectionOnExpand = false;
++
+         //==============================================================================
+         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (UIATextRangeProvider)
+     };
