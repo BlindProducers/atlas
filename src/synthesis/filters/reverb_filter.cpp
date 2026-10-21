@@ -11,7 +11,8 @@ ReverbFilter::ReverbFilter() : Processor(kNumInputs, 1), shared_(std::make_share
   shared_->filters.push_back(this);
   prepare(kDefaultSampleRate);
 }
-ReverbFilter::ReverbFilter(const ReverbFilter& other) : Processor(other), shared_(other.shared_) {
+ReverbFilter::ReverbFilter(const ReverbFilter& other) :
+    Processor(other), shared_(other.shared_), fx_mode_(other.fx_mode_) {
   std::lock_guard<std::mutex> lock(shared_->mutex);
   shared_->filters.push_back(this);
   prepare(other.prepared_rate_);
@@ -27,7 +28,7 @@ void ReverbFilter::prepare(int sample_rate) {
 }
 void ReverbFilter::reserveLanes() {
   try {
-    for (auto& lane : lanes_) lane.reserve(double(prepared_rate_) * kMaxOversample);
+    core_.reserve(double(prepared_rate_) * kMaxOversample);
     has_memory_ = true;
   }
   catch (const std::bad_alloc&) {
@@ -36,7 +37,7 @@ void ReverbFilter::reserveLanes() {
   }
 }
 void ReverbFilter::releaseLanes() {
-  for (auto& lane : lanes_) lane.release();
+  core_.release();
   has_memory_ = false;
 }
 void ReverbFilter::reserveMemory() {
@@ -56,7 +57,7 @@ void ReverbFilter::setSampleRate(int sample_rate) {
 }
 void ReverbFilter::reset(poly_mask mask) {
   for (int lane = 0; lane < poly_float::kSize; ++lane)
-    if (mask[lane]) { lanes_[lane].reset(); bass_[lane].reset(); }
+    if (mask[lane]) { core_.resetLane(lane); bass_.resetLane(lane); }
 }
 void ReverbFilter::process(int num_samples) {
   if (num_samples <= 0) return;
@@ -74,34 +75,49 @@ void ReverbFilter::process(int num_samples) {
   const poly_mask reset_mask = getResetMask(kReset) & resets->trigger_mask;
   const poly_float resonance = input(kResonance)->at(0), damp = input(kDamp)->at(0);
   const poly_float bass_amount = input(kBassPreserve)->at(0);
+  const int pairs = fx_mode_ ? 1 : poly_float::kSize / 2;
+  core_.setSampleRate(getSampleRate(), getOversampleAmount());
+  core_.setPairs(pairs);
+  bass_.setSampleRate(getSampleRate(), getOversampleAmount());
+  int reset_offsets[poly_float::kSize];
   for (int lane = 0; lane < poly_float::kSize; ++lane) {
-    auto& core = lanes_[lane];
-    auto& bass = bass_[lane];
-    core.setSampleRate(getSampleRate(), getOversampleAmount());
-    bass.setSampleRate(getSampleRate(), getOversampleAmount());
-    core.beginBlock(resonance[lane], damp[lane], num_samples);
-    bass.beginBlock(bass_amount[lane], num_samples);
-    // The cutoff only changes when it is modulated or glides. (No NaN marks
-    // the first sample: this unit is built with fast math, which assumes no
-    // NaNs and may compare them wrongly.)
-    bool have_cutoff = false;
-    double last_pitch = 0, cutoff = 0;
-    for (int i = 0; i < num_samples; ++i) {
-      if (reset_mask[lane] && i == resets->trigger_offset[lane]) {
-        core.reset();
-        core.beginBlock(resonance[lane], damp[lane], num_samples - i);
-        bass.reset();
-        bass.beginBlock(bass_amount[lane], num_samples - i);
+    core_.beginBlock(lane, resonance[lane], damp[lane], num_samples);
+    bass_.beginBlock(lane, bass_amount[lane], num_samples);
+    reset_offsets[lane] = reset_mask[lane] ? resets->trigger_offset[lane] : -1;
+  }
+  // The cutoff only changes when it is modulated or glides. (No NaN marks
+  // the first sample: this unit is built with fast math, which assumes no
+  // NaNs and may compare them wrongly.)
+  bool have_cutoff = false;
+  double last_pitch[poly_float::kSize] {};
+  alignas(16) double cutoff[poly_float::kSize] {}, dry[poly_float::kSize], wet[poly_float::kSize];
+  alignas(16) double mixed[poly_float::kSize];
+  const poly_float* audio = input(kAudio)->source->buffer;
+  const poly_float* cutoff_log = input(kCutoffLog)->source->buffer;
+  const poly_float* keytrack = input(kKeytrack)->source->buffer;
+  poly_float* out = output()->buffer;
+  for (int i = 0; i < num_samples; ++i) {
+    for (int lane = 0; lane < poly_float::kSize; ++lane) {
+      if (i == reset_offsets[lane]) {
+        core_.resetLane(lane);
+        core_.beginBlock(lane, resonance[lane], damp[lane], num_samples - i);
+        bass_.resetLane(lane);
+        bass_.beginBlock(lane, bass_amount[lane], num_samples - i);
       }
-      const double pitch = input(kCutoffLog)->at(i)[lane] + input(kKeytrack)->at(i)[lane] / 12.0;
-      if (!have_cutoff || pitch != last_pitch) {
-        have_cutoff = true;
-        last_pitch = pitch;
-        cutoff = std::exp2(std::clamp(pitch, 3.0, 14.28771237954945));
+      const double pitch = cutoff_log[i][lane] + keytrack[i][lane] / 12.0;
+      if (!have_cutoff || pitch != last_pitch[lane]) {
+        last_pitch[lane] = pitch;
+        cutoff[lane] = std::exp2(std::clamp(pitch, 3.0, 14.28771237954945));
       }
-      const double dry = input(kAudio)->at(i)[lane];
-      output()->buffer[i].set(lane, static_cast<float>(bass.tick(dry, core.tick(dry, cutoff))));
     }
+    have_cutoff = true;
+    double_pair low, high;
+    double_pair::fromFloats(audio[i], low, high);
+    low.store(dry);
+    high.store(dry + 2);
+    core_.tick(dry, cutoff, wet);
+    bass_.tick(dry, wet, mixed, pairs);
+    out[i] = double_pair::toFloats(double_pair::load(mixed), double_pair::load(mixed + 2));
   }
 }
 }
