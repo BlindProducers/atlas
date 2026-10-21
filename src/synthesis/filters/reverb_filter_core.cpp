@@ -12,6 +12,20 @@ int reverbSize(double rate, double ratio, int oversampling) {
   return (static_cast<int>(std::ceil(rate / oversampling * ratio / 8.0)) + 4) * oversampling;
 }
 double reverbClean(double x) { return std::abs(x) < 1.0e-20 ? 0.0 : x; }
+// Eight running sums instead of one, so the multiply-adds don't wait on each
+// other and the compiler can use SIMD (SSE2 on Windows, NEON on macOS alike:
+// four registers of two doubles).
+double dot(const double* a, const double* b, int count) {
+  double sums[8] {};
+  int i = 0;
+  for (; i + 8 <= count; i += 8) {
+    for (int j = 0; j < 8; ++j)
+      sums[j] += a[i + j] * b[i + j];
+  }
+  for (; i < count; ++i)
+    sums[0] += a[i] * b[i];
+  return ((sums[0] + sums[1]) + (sums[2] + sums[3])) + ((sums[4] + sums[5]) + (sums[6] + sums[7]));
+}
 }
 void ReverbFilterCore::reserve(double maximum_rate) {
   const int required = 16 * reverbSize(maximum_rate, 1.36, kMaximumOversampling) +
@@ -53,7 +67,7 @@ void ReverbFilterCore::setSampleRate(double rate, int oversampling) {
   reset();
 }
 void ReverbFilterCore::reset() {
-  valid_ = fdn_pos_ = ap_pos_ = low_pos_ = fir_pos_ = 0;
+  valid_ = fdn_pos_ = ap_pos_ = low_pos_ = fir_phase_ = fir_newest_ = 0;
   for (auto& phase : damping_) phase.fill(0);
   damp_ = boost_ = 1;
   fresh_ = true;
@@ -122,7 +136,7 @@ void ReverbFilterCore::updateCutoffTerms(double cutoff_hz) {
     terms.fir_amount = cutoff_hz < 400 ? reverbUnit(log_cut, std::log(300.0), std::log(400.0)) : 1;
     terms.fir_taps = sizes[a];
     for (int i = 0; i < sizes[a]; ++i)
-      fir_coefficients_[i] = kernels[a][i] * (1 - t) + (i < sizes[b] ? kernels[b][i] * t : 0);
+      fir_coefficients_[kFirTaps - 1 - i] = kernels[a][i] * (1 - t) + (i < sizes[b] ? kernels[b][i] * t : 0);
   }
   terms.low_amount = 1 - reverbUnit(log_cut, std::log(8.0), std::log(50.0));
   if (terms.low_amount > 0) {
@@ -146,7 +160,7 @@ double ReverbFilterCore::tick(double input, double cutoff_hz) {
   diffused = allpass(diffused, 1, terms.allpass_offsets[1], .82);
   diffused = allpass(diffused, 2, terms.allpass_offsets[2], .82);
   double sum = 0, wet = 0;
-  auto& damping = damping_[fir_pos_ % oversampling_];
+  auto& damping = damping_[fir_phase_];
   for (int i = 0; i < 16; ++i) {
     const double value = read(i * main_size_, fdn_pos_, main_size_, terms.network_offsets[i]);
     damping[i] += damp_ * (value - damping[i]);
@@ -163,16 +177,20 @@ double ReverbFilterCore::tick(double input, double cutoff_hz) {
   wet = allpass(wet, 4, terms.allpass_offsets[4], .5);
   wet = allpass(wet, 5, terms.allpass_offsets[5], .5);
 
-  history_[fir_pos_] = input;
+  // Tap i reads the input i host samples back: the same sub-sample phase,
+  // `newest - i` in that phase's ring. The window is at most two contiguous
+  // runs (before and after the ring wraps), each a forward dot product with
+  // the reversed kernel.
+  const int newest = fir_newest_;
+  double* history = history_.get() + fir_phase_ * kFirTaps;
+  history[newest] = input;
   if (terms.fir_taps > 0) {
-    const double* coefficients = fir_coefficients_.get();
-    double correction = 0;
+    const double* reversed = fir_coefficients_.get();
     const int count = std::min(terms.fir_taps, valid_ / oversampling_ + 1);
-    for (int i = 0; i < count; ++i) {
-      int index = fir_pos_ - i * oversampling_;
-      if (index < 0) index += fir_size_;
-      correction += coefficients[i] * history_[index];
-    }
+    const int unwrapped = std::min(count, newest + 1);
+    double correction = dot(reversed + kFirTaps - unwrapped, history + newest - unwrapped + 1, unwrapped);
+    if (count > unwrapped)
+      correction += dot(reversed + kFirTaps - count, history + newest - count + 1 + kFirTaps, count - unwrapped);
     wet += terms.fir_amount * correction;
   }
   memory_[low_base_ + low_pos_] = static_cast<float>(input);
@@ -185,7 +203,10 @@ double ReverbFilterCore::tick(double input, double cutoff_hz) {
   if (++fdn_pos_ == main_size_) fdn_pos_ = 0;
   if (++ap_pos_ == ap_size_) ap_pos_ = 0;
   if (++low_pos_ == low_size_) low_pos_ = 0;
-  if (++fir_pos_ == fir_size_) fir_pos_ = 0;
+  if (++fir_phase_ == oversampling_) {
+    fir_phase_ = 0;
+    if (++fir_newest_ == kFirTaps) fir_newest_ = 0;
+  }
   valid_ = std::min(valid_ + 1, std::max(fir_size_, main_size_));
   return wet * terms.gain * boost_;
 }
