@@ -577,6 +577,18 @@ else()
       "$<TARGET_FILE_DIR:Atlas_VST3>/../Resources/espeak-ng-data" VERBATIM)
 endif()
 
+# AtlasBench hosts Atlas builds as VST3s and times them against each other
+# (bench/README.md). It does not link Atlas, so it can time any build.
+option(ATLAS_BUILD_BENCH "Build AtlasBench, which compares the CPU load of Atlas builds" OFF)
+if(ATLAS_BUILD_BENCH)
+  juce_add_console_app(AtlasBench PRODUCT_NAME "AtlasBench")
+  target_sources(AtlasBench PRIVATE bench/atlas_bench.cpp)
+  target_compile_definitions(AtlasBench PRIVATE
+    JUCE_PLUGINHOST_VST3=1 JUCE_MODAL_LOOPS_PERMITTED=1 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+  target_link_libraries(AtlasBench PRIVATE
+    juce::juce_audio_processors juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
+endif()
+
 option(ATLAS_BUILD_TIMING_TESTS "Build the Atlas test suite (run with ctest)" OFF)
 if(ATLAS_BUILD_TIMING_TESTS)
   enable_testing()
