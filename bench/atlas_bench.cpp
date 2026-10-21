@@ -160,6 +160,10 @@ namespace {
                                                                 { "filter_1_scream_autogain", 0.0 } } });
     scenarios.push_back({ "filter-fx-scream", "Filter FX with the scream model, 4-note chords", 4,
                           effectChain({ kFilterFx }) + Settings { { "fx_slot_1_filter_fx_model", kScreamFilter } } });
+    // Reverb on single notes (half of each voice pair is empty) and as a Filter FX.
+    scenarios.push_back({ "filter-reverb-single", "reverb filter, single notes", 1, filter(1, kReverbFilter) });
+    scenarios.push_back({ "filter-fx-reverb", "Filter FX with the reverb model, 4-note chords", 4,
+                          effectChain({ kFilterFx }) + Settings { { "fx_slot_1_filter_fx_model", kReverbFilter } } });
     return scenarios;
   }
 
