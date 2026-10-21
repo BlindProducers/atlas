@@ -292,8 +292,9 @@ namespace vital {
     if (limit <= from || position_ < 1.0)
       return 0;
     // Frames up to index + 2 are read, so positions stay below frames - 2;
-    // a loop wraps (and looks ahead) from loop_end - 2; a one-shot ends at end_.
-    const double safe_end = looping_ ? static_cast<double>(std::min(loop_end_, frames)) - 2.0
+    // a loop wraps (and looks ahead) from loop_end - 2; the sample ends at end_,
+    // which render() checks while looping too (an SF2 loop can end past it).
+    const double safe_end = looping_ ? static_cast<double>(std::min({ loop_end_ - 2, frames - 2, end_ }))
                                      : static_cast<double>(std::min(end_, frames - 2));
     // The rate moves linearly, so its largest value is at one end; a frame of
     // margin covers the rounding of the running position.

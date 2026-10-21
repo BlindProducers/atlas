@@ -862,7 +862,7 @@ if(ATLAS_BUILD_TIMING_TESTS)
   target_link_libraries(AtlasMultiSampleTests PRIVATE
     Atlas juce::juce_audio_utils juce::juce_dsp juce::juce_gui_extra juce::juce_recommended_config_flags)
   foreach(multisample_test sfz-parser sf2-parser decentsampler-parser decentsampler-load decentsampler-controls
-          pingpong-loop dynamic-envelope decode pitch select envelope-mode release-trigger choke cc-trigger container
+          pingpong-loop loop-past-end dynamic-envelope decode pitch select envelope-mode release-trigger choke cc-trigger container
           host-state bank sf2-preset-switch sf2-encoding editor)
     add_test(NAME atlas_multisample_${multisample_test} COMMAND AtlasMultiSampleTests --${multisample_test})
   endforeach()

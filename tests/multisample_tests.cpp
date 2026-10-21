@@ -1131,6 +1131,47 @@ namespace {
   }
 
 
+  // A loop that ends past the region's end (an SF2 zone's loop offsets can put
+  // it there) is never reached: the note stops at the region's end, also where
+  // the player renders a stretch without its per-sample checks.
+  int loopPastEnd() {
+    std::vector<int16_t> ramp(1000);
+    for (size_t i = 0; i < ramp.size(); ++i)
+      ramp[i] = static_cast<int16_t>(10 * i);
+    Region region;
+    region.left = ramp.data();
+    region.data_frames = static_cast<int64_t>(ramp.size());
+    region.end = 300;
+    region.loop_mode = LoopMode::kContinuous;
+    region.loop_start = 100;
+    region.loop_end = 600;
+    region.buildVelocityCurve();
+
+    vital::MultiSampleSlot slot;
+    vital::MultiSamplePlayer player;
+    vital::MultiSamplePlayer::Start start;
+    start.region = &region;
+    start.velocity = 127;
+    start.sample_rate = static_cast<float>(kRate);
+    player.start(start, slot);
+    constexpr int kFrames = 1000;
+    std::vector<float> left(kFrames, 0.0f);
+    std::vector<float> right(kFrames, 0.0f);
+    player.render(left.data(), right.data(), kFrames, 1.0, 1.0, 1.0f, 1.0f, 1.0f);
+
+    // At rate 1 sample i plays frame i, and frame 0 is silent.
+    int last = -1;
+    for (int i = 0; i < kFrames; ++i) {
+      if (left[static_cast<size_t>(i)] != 0.0f)
+        last = i;
+    }
+    expect(last == 299, "the note plays up to the region's end and no further (last sound at " +
+                        std::to_string(last) + ")");
+    expect(!player.active(), "the note stops at the region's end");
+    return finish("loop past end");
+  }
+
+
   // SFZ curves and ampeg_dynamic, as The Experience NY S&S Model B uses them:
   // the release follows the sustain pedal through a curve, while the note plays.
   int dynamicEnvelope() {
@@ -3176,6 +3217,8 @@ int main(int argc, char** argv) {
     return dynamicEnvelope();
   if (flag == "--pingpong-loop")
     return pingpongLoop();
+  if (flag == "--loop-past-end")
+    return loopPastEnd();
   if (flag == "--decentsampler-controls")
     return decentSamplerControls();
   if (flag == "--decentsampler-load")
