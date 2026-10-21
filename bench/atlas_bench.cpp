@@ -152,6 +152,14 @@ namespace {
     // The Reverb model's FIR only runs above 300 Hz; its default cutoff is 100 Hz.
     scenarios.push_back({ "filter-reverb-bright", "reverb filter at 2 kHz, 4-note chords", 4,
                           filter(1, kReverbFilter) + Settings { { "filter_1_reverb_cutoff", std::log2(2000.0) } } });
+    // Scream at full resonance and drive, without autogain, and as a Filter FX
+    // (one stereo pair, gated by silence between chords).
+    scenarios.push_back({ "filter-scream-driven", "scream filter at full resonance, scream and drive, 4-note chords", 4,
+                          filter(1, kScreamFilter) + Settings { { "filter_1_resonance", 1.0 }, { "filter_1_scream_amount", 1.0 },
+                                                                { "filter_1_scream_input_gain", 24.0 },
+                                                                { "filter_1_scream_autogain", 0.0 } } });
+    scenarios.push_back({ "filter-fx-scream", "Filter FX with the scream model, 4-note chords", 4,
+                          effectChain({ kFilterFx }) + Settings { { "fx_slot_1_filter_fx_model", kScreamFilter } } });
     return scenarios;
   }
 
