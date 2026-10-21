@@ -8,7 +8,7 @@ Atlas is a GPLv3 software synth (VST3 on macOS/Windows, plus AU on macOS) forked
 
 ## Build and test
 
-Dependencies are git submodules in `third_party/`. CMake refuses to configure without them, so run `git submodule update --init` first. JUCE is `third_party/JUCE8` (8.0.14). CMake applies `third_party/patches/juce8-*.patch` to it at configure time; change JUCE through a patch there, never by committing in the submodule. macOS builds arm64 only.
+Dependencies are git submodules in `third_party/`. CMake refuses to configure without them, so run `git submodule update --init` first. JUCE is `third_party/JUCE8` (8.0.14). CMake applies `third_party/patches/juce8-*.patch` to it at configure time; change JUCE through a patch there, never by committing in the submodule. Every FFT runs on PFFFT (`third_party/pffft`) on both platforms: `vital::FourierTransform` directly, and every `juce::dsp::FFT` and `juce::dsp::Convolution` through `juce8-pffft-fft-engine.patch` (the Atlas target defines `JUCE_DSP_USE_PFFFT` publicly). Use `juce::dsp::FFT` with 16-byte-aligned buffers of 2N floats (a `std::vector` is), which run in place without locking; share one per size with `atlas::sharedFft`. macOS builds arm64 only.
 
 ```sh
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
