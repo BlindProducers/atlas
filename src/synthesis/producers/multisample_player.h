@@ -74,6 +74,13 @@ namespace vital {
 
       void enterRelease(float seconds);
       void advanceEnvelope();
+      // How many samples from `from` on render() can play without its checks,
+      // and playing them; see render().
+      int plainStretch(int from, int to, double rate, double rate_step, int64_t frames) const;
+      template<bool kStereo, bool kWidth>
+      int renderStretch(float* left, float* right, int from, int to, const int16_t* data_left,
+                        const int16_t* data_right, float width, float gain_step, float left_step, float right_step,
+                        double rate_step, float& current_gain, float& current_left, float& current_right, double& rate);
 
       const multisample::Region* region_ = nullptr;
       bool active_ = false;

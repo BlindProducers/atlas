@@ -153,26 +153,20 @@ set(ATLAS_MAIM_SOURCES
   src/synthesis/effects/maim/resampler.cpp
   src/synthesis/modules/maim_module.cpp)
 
-# PFFFT replaces JUCE's scalar FFT fallback for the oscillators
-# (src/common/fourier_transform.h, third_party/pffft). On by default where JUCE
-# has no fast FFT engine; turning it on for macOS puts both on the same FFT.
-if(WIN32)
-  set(ATLAS_USE_PFFFT_DEFAULT ON)
-else()
-  set(ATLAS_USE_PFFFT_DEFAULT OFF)
-endif()
-option(ATLAS_USE_PFFFT "Use PFFFT for the oscillators' FFT" ${ATLAS_USE_PFFFT_DEFAULT})
+# PFFFT (third_party/pffft) is every FFT in Atlas on every platform: the
+# oscillators' (src/common/fourier_transform.h) and, through
+# third_party/patches/juce8-pffft-fft-engine.patch, every juce::dsp::FFT and
+# juce::dsp::Convolution. Windows and macOS then transform alike, and Windows
+# no longer runs JUCE's scalar fallback. The definitions are public so every
+# target built against Atlas compiles JUCE's FFT and fourier_transform.h the
+# same way (they must all agree).
+option(ATLAS_USE_PFFFT "Use PFFFT for every FFT" ON)
 if(ATLAS_USE_PFFFT)
   target_sources(Atlas PRIVATE third_party/pffft/pffft.c)
-endif()
-# fourier_transform.h chooses the platform default itself; only a different
-# choice needs the definition, on Atlas and every target built against it.
-if((ATLAS_USE_PFFFT AND NOT WIN32) OR (NOT ATLAS_USE_PFFFT AND WIN32))
-  if(ATLAS_USE_PFFFT)
-    target_compile_definitions(Atlas PUBLIC ATLAS_USE_PFFFT=1)
-  else()
-    target_compile_definitions(Atlas PUBLIC ATLAS_USE_PFFFT=0)
-  endif()
+  target_include_directories(Atlas PUBLIC third_party/pffft)
+  target_compile_definitions(Atlas PUBLIC ATLAS_USE_PFFFT=1 JUCE_DSP_USE_PFFFT=1)
+else()
+  target_compile_definitions(Atlas PUBLIC ATLAS_USE_PFFFT=0)
 endif()
 
 target_sources(Atlas PRIVATE
@@ -187,6 +181,7 @@ target_sources(Atlas PRIVATE
   src/synthesis/modules/defuse_module.cpp
   src/synthesis/modules/scream_module.cpp
   src/synthesis/filters/scream_filter.cpp
+  src/synthesis/filters/scream_tanh.cpp
   src/synthesis/modules/spectral_compressor_module.cpp
   src/synthesis/modules/spectral_lock_module.cpp
   src/synthesis/effects/spectral_lock/spectral_lock_engine.cpp
@@ -256,16 +251,24 @@ target_sources(Atlas PRIVATE
 
 # Rust's all-pass recurrences use separate multiply/add operations. Do not
 # contract these into FMA or apply Atlas's unity fast-math transformations.
+# On MSVC /fp:precise does both (it stopped contracting in VS 2022 17.0) and
+# matches clang's -ffp-contract=off -fno-fast-math. /fp:strict would add
+# floating-point environment access, which none of this code uses and which
+# costs OpenWurli and OpenB3 about 4 % for the same output.
 set_source_files_properties(src/synthesis/modules/defuse_module.cpp PROPERTIES
-  COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:strict>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffp-contract=off;-fno-fast-math>")
+  COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:precise>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffp-contract=off;-fno-fast-math>")
 set_source_files_properties(${ATLAS_OPENWURLI_SOURCES} src/synthesis/producers/openwurli_source.cpp
   src/synthesis/modules/openwurli_module.cpp src/synthesis/modules/openwurli_amp_module.cpp PROPERTIES
-  COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:strict>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffp-contract=off;-fno-fast-math>")
+  COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:precise>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffp-contract=off;-fno-fast-math>")
 set_source_files_properties(${ATLAS_OPENB3_SOURCES} src/synthesis/producers/openb3_source.cpp
   src/synthesis/modules/openb3_module.cpp src/synthesis/modules/scanner_vibrato_module.cpp PROPERTIES
-  COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:strict>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffp-contract=off;-fno-fast-math>")
+  COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:precise>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffp-contract=off;-fno-fast-math>")
 set_source_files_properties(${ATLAS_ZL_COMPRESSOR_SOURCES} ${ATLAS_MAIM_SOURCES} PROPERTIES
-  COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:strict>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffp-contract=off;-fno-fast-math>")
+  COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:precise>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffp-contract=off;-fno-fast-math>")
+# The Scream filter's feedback loop amplifies any rounding difference, so its
+# SVFs and waveshaper round alike on arm64 and x64.
+set_source_files_properties(src/synthesis/filters/scream_filter.cpp src/synthesis/filters/scream_tanh.cpp PROPERTIES
+  COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:precise>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffp-contract=off;-fno-fast-math>")
 
 # Braids is written for the firmware's two's-complement integer arithmetic.
 # TEST is stmlib's host-build switch (no ARM RAM sections).
@@ -548,6 +551,18 @@ else()
     COMMAND ${CMAKE_COMMAND} -E rm -rf "$<TARGET_FILE_DIR:Atlas_VST3>/../Resources/espeak-ng-data"
     COMMAND ${CMAKE_COMMAND} -E copy_directory "${ATLAS_ESPEAK_DATA_ROOT}/espeak-ng-data"
       "$<TARGET_FILE_DIR:Atlas_VST3>/../Resources/espeak-ng-data" VERBATIM)
+endif()
+
+# AtlasBench hosts Atlas builds as VST3s and times them against each other
+# (bench/README.md). It does not link Atlas, so it can time any build.
+option(ATLAS_BUILD_BENCH "Build AtlasBench, which compares the CPU load of Atlas builds" OFF)
+if(ATLAS_BUILD_BENCH)
+  juce_add_console_app(AtlasBench PRODUCT_NAME "AtlasBench")
+  target_sources(AtlasBench PRIVATE bench/atlas_bench.cpp)
+  target_compile_definitions(AtlasBench PRIVATE
+    JUCE_PLUGINHOST_VST3=1 JUCE_MODAL_LOOPS_PERMITTED=1 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0)
+  target_link_libraries(AtlasBench PRIVATE
+    juce::juce_audio_processors juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
 endif()
 
 option(ATLAS_BUILD_TIMING_TESTS "Build the Atlas test suite (run with ctest)" OFF)

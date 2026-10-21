@@ -393,6 +393,7 @@ namespace vital {
   void FilterModule::setMono(bool mono) {
     mono_ = mono;
     scream_filter_->setFxMode(mono);
+    reverb_filter_->setFxMode(mono);
     formant_filter_->setMono(mono);
     table_filter_->setMono(mono);
   }

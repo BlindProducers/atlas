@@ -3,9 +3,76 @@
 #include "filter_module.h"
 #include "scream_filter.h"
 #include "scream_module.h"
+#include "scream_tanh.h"
 #include "../third_party/scream/Source/DSP/FastMath.h"
+#include "../third_party/scream/Source/DSP/TanhADAA2.h"
 
 namespace scream_filter_tests {
+// The four-lane waveshaper against BP Scream's TanhADAA2, which it replaces.
+void testWaveshaper() {
+  using vital::scream::TanhAdaa2;
+  double ad1_error = 0, ad2_error = 0, tanh_error = 0;
+  for (int step = -64000; step <= 64000; ++step) {
+    const double x = step * (32.0 / 64000.0) + (step % 7) * 1.0e-7;
+    ad1_error = std::max(ad1_error, std::abs(TanhAdaa2::ad1(x) - TanhADAA2::AD1(x)));
+    ad2_error = std::max(ad2_error, std::abs(TanhAdaa2::ad2(x) - TanhADAA2::AD2(x)) / (1.0 + x * x));
+    tanh_error = std::max(tanh_error, std::abs(TanhAdaa2::tanh(x) - std::tanh(x)));
+  }
+  std::cout << "Scream waveshaper vs BP Scream: AD1 " << ad1_error << ", AD2 " << ad2_error
+            << " (relative to 1 + x^2), tanh " << tanh_error << '\n';
+  expect(ad1_error < 1e-14 && ad2_error < 1e-15 && tanh_error < 1e-15,
+         "Scream's antiderivatives match BP Scream's to double precision");
+
+  // Signals for each lane: tones from gentle to driven hard into the clamp,
+  // a slow ramp and a held value (the ill-conditioned branches), and noise.
+  auto signal = [](int kind, int n) {
+    switch (kind) {
+      case 0: return 0.7 * std::sin(n * 0.031);
+      case 1: return 6.0 * std::sin(n * 0.0007) + 0.2 * std::sin(n * 0.9);
+      case 2: return 31.0 * std::sin(n * 0.013);
+      case 3: return n < 3000 ? n * 2.0e-6 : (n < 6000 ? 0.25 : 0.25 + (n - 6000) * 3.0e-6 * ((n / 50) % 2 ? 1 : -1));
+      case 4: return (n / 9) % 3 == 0 ? 0.0 : 2.0 * std::sin(n * 1.7) * std::sin(n * 0.37);
+      default: return 0.0;
+    }
+  };
+  // ADAA2 divides a difference of AD2 values by x[n] - x[n-1] and again by
+  // x[n] - x[n-2], so one rounding of AD2 (about eps (1 + x^2)) reaches the
+  // output divided by those steps, in the original as here: up to about 1e-5
+  // where they are just above the 1e-5 tolerance. Measure the difference in
+  // units of that rounding noise.
+  constexpr double kEpsilon = 2.220446049250313e-16;
+  double worst = 0, worst_noise = 0;
+  bool independent = true;
+  for (int arrangement = 0; arrangement < 5; ++arrangement) {
+    TanhAdaa2 lanes, alone;
+    TanhADAA2 reference[4];
+    double previous[4][3] {};
+    for (int n = 0; n < 12000; ++n) {
+      alignas(16) double in[4], out[4], solo_in[4] {}, solo_out[4];
+      for (int lane = 0; lane < 4; ++lane) in[lane] = signal((arrangement + lane) % 5, n);
+      lanes.process(in, out, 2);
+      solo_in[0] = in[0];
+      alone.process(solo_in, solo_out, 2);
+      independent = independent && solo_out[0] == out[0];
+      for (int lane = 0; lane < 4; ++lane) {
+        const double difference = std::abs(out[lane] - reference[lane].process(in[lane]));
+        const double* p = previous[lane];
+        const double x = in[lane];
+        auto step = [](double a, double b) { return std::max(std::abs(a - b), TanhAdaa2::kTolerance); };
+        const double size = 1.0 + std::max({ x * x, p[0] * p[0], p[1] * p[1], p[2] * p[2] });
+        const double noise = kEpsilon * size * (1.0 / step(x, p[0]) + 1.0 / step(p[0], p[1])) / step(x, p[1]);
+        worst = std::max(worst, difference);
+        worst_noise = std::max(worst_noise, difference / noise);
+        previous[lane][2] = p[1]; previous[lane][1] = p[0]; previous[lane][0] = x;
+      }
+    }
+  }
+  std::cout << "Scream waveshaper output vs BP Scream: worst difference " << worst
+            << ", at most " << worst_noise << " times ADAA2's rounding noise\n";
+  expect(worst_noise < 16, "Scream's four-lane waveshaper matches BP Scream's TanhADAA2 within its rounding noise");
+  expect(independent, "A Scream lane's waveshaper output does not depend on the other lanes");
+}
+
 void testReferenceTone() {
   vital::FilterModule filter("filter_1");
   vital::ScreamModule reference;
@@ -58,7 +125,8 @@ void testRatesAndState() {
       for (int i = 0; i < 128 * factor; ++i) {
         auto y = filter.output()->buffer[i];
         expect(std::isfinite(y[0]) && std::abs(y[0]) < 50, "Scream remains finite at maximum resonance/drive");
-        expect(y[2] == 0 && y[3] == 0, "Scream voice lanes do not leak into one another");
+        if (fx) expect(y[2] == y[0] && y[3] == y[1], "Filter FX Scream mirrors its stereo pair into lanes 2-3");
+        else expect(y[2] == 0 && y[3] == 0, "Scream voice lanes do not leak into one another");
         energy += y[0] * y[0];
       }
     }
@@ -179,7 +247,7 @@ void testPreset() {
   }
 }
 int run() {
-  testReferenceTone(); testRatesAndState(); testVoiceReset(); testEnvelopeRelease(); testPreset();
+  testWaveshaper(); testReferenceTone(); testRatesAndState(); testVoiceReset(); testEnvelopeRelease(); testPreset();
   if (!failures) std::cout << "Atlas Scream filter tests passed\n";
   return failures ? 1 : 0;
 }

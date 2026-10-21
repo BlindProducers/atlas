@@ -42,3 +42,6 @@ tools/
 New/
 __pycache__/
 *.pyc
+# AtlasBench: saved builds and results stay local.
+bench/baselines/
+bench/results/

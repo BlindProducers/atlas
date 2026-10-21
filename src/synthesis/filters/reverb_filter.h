@@ -20,6 +20,9 @@ public:
   void setSampleRate(int sample_rate) override;
   void process(int num_samples) override;
   void reset(poly_mask mask) override;
+  // A Filter FX slot's lanes 2-3 repeat lanes 0-1: process one stereo pair
+  // and copy it into lanes 2-3.
+  void setFxMode(bool fx) { fx_mode_ = fx; }
   // The delay memory of this filter and of every voice copy made from it,
   // about 18 MB each at 48 kHz. A filter holds it from construction; on
   // Windows the voice filters release it while another model is selected, as
@@ -44,9 +47,11 @@ private:
   void reserveLanes();
   void releaseLanes();
   std::shared_ptr<Shared> shared_;
-  std::array<ReverbFilterCore, poly_float::kSize> lanes_;
-  std::array<ReverbFilterBass, poly_float::kSize> bass_;
+  static_assert(ReverbFilterCore::kLanes == poly_float::kSize, "the core runs every lane");
+  ReverbFilterCore core_;
+  ReverbFilterBass bass_;
   int prepared_rate_ = kDefaultSampleRate;
   bool has_memory_ = false;
+  bool fx_mode_ = false;
 };
 }

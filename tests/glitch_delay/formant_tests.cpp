@@ -82,7 +82,7 @@ public:
 
     void runTest() override
     {
-        constexpr int length = 48000, startAt = 4000;
+        static constexpr int length = 48000, startAt = 4000;
 
         for (auto method : { FormantShifter::Method::lpc, FormantShifter::Method::cepstral })
         {

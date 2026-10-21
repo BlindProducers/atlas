@@ -17,7 +17,7 @@ Behaviour matches sfizz and FluidSynth where noted below.
 - `multisample_loader.*`: decoding (WAV, AIFF, FLAC, Ogg) to 16-bit, CRC32 and the content hash.
 - `multisample_container.*`: self-contained presets and the instrument cache.
 - `multisample_manager.*`: background loading, per-slot state, presets and host state.
-- Playback is in `src/synthesis/producers/multisample_{player,slot,source}.*` and `src/synthesis/modules/multisample_module.*`.
+- Playback is in `src/synthesis/producers/multisample_{player,slot,source}.*` and `src/synthesis/modules/multisample_module.*`. `MultiSamplePlayer::render` plays most of a note through `renderStretch`: wherever no start delay, note-off or fade falls, the envelope is decaying, sustaining or releasing, and every frame read is clear of the sample's ends and the loop's end, it skips the per-sample checks and interpolates both channels of a stereo sample in one SIMD register, with the same arithmetic per channel, so the output is bit-identical to the checked path.
 
 ## SFZ support
 
@@ -150,10 +150,11 @@ same way, from the preset's folder, ignoring case when the exact path is missing
 - Saving and restoring: `--container`, `--host-state`, `--sf2-preset-switch`.
 - Accessibility of the Instrument group: `--editor`.
 
-Five flags are for checking real libraries by hand and are not in ctest:
+Six flags are for checking real libraries by hand and are not in ctest:
 
 - `--manual <file> [preset]` prints what the loader found, including the instrument's controls.
 - `--controls <file>` plays a held C4 with each control at its lowest, file and highest setting (every option of a menu) and prints the levels.
 - `--compare <a> <b> [mapping]` lists, for every key and several velocities, the samples two files of one library play (an SFZ and its DecentSampler version) and how, and prints where they differ. `mapping` leaves out gain and envelope, which the two formats set differently.
 - `--hold <file> <note> <seconds>` holds a note and prints the level and largest sample step per 5 s window, to hear loops turn.
 - `--render <file> <out.wav> [preset]` plays a phrase and reports levels and speed.
+- `--cpu <file> [out.raw]` plays ten seconds of pedalled arpeggios and chords with the plugin's default settings and prints the load, the most voices sounding and a checksum of the output; `out.raw` keeps the output (interleaved 32-bit floats) to compare two builds.

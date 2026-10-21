@@ -1,5 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Run the unmodified user-supplied JSFX in EEL2, independently of Atlas DSP.
+// ns-eel.h includes <windows.h> on Windows; keep its min/max macros out.
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
 #include "reverb_filter_core.h"
 #include "filter_module.h"
 #include "synth_constants.h"
@@ -10,6 +14,7 @@
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <memory>
 #include <stdexcept>
 #include <string>
 extern "C" {
@@ -85,9 +90,12 @@ void moduleComparison(const char* path) {
         const int n = position + i;
         inputs[i] = b < 0 || b >= 100 ? 0 : float(.1 * std::sin(n * .13) + .07 * std::cos(n * .59));
         // Repeated samples give an exact host-rate reference on every phase.
-        // Left and right differ; the remaining lanes stay silent.
+        // Left and right differ; the remaining lanes stay silent for a voice
+        // filter and repeat lanes 0-1 for Filter FX, as in an effect slot.
+        const float left = float(inputs[i]), right = float(-.5 * inputs[i]);
         for (int phase = 0; phase < factor; ++phase)
-          audio.buffer[i * factor + phase] = vital::poly_float(inputs[i], -.5 * inputs[i], 0, 0);
+          audio.buffer[i * factor + phase] = mono ? vital::poly_float(left, right, left, right)
+                                                  : vital::poly_float(left, right, 0, 0);
       }
       module.process(count * factor);
       ref.set("samplesblock", count); ref.run("block");
@@ -95,7 +103,7 @@ void moduleComparison(const char* path) {
         ref.set("spl0", inputs[i]); ref.set("spl1", -.5 * inputs[i]); ref.run("sample");
         if (b < 0) continue;
         for (int phase = 0; phase < factor; ++phase) for (int lane = 0; lane < 4; ++lane) {
-          const double expected = lane < 2 ? ref.get(lane == 0 ? "spl0" : "spl1") : 0;
+          const double expected = lane < 2 || mono ? ref.get(lane % 2 == 0 ? "spl0" : "spl1") : 0;
           const double actual = module.output()->buffer[i * factor + phase][lane];
           if (!std::isfinite(actual)) throw std::runtime_error("Non-finite module output");
           error = std::max(error, std::abs(actual - expected));
@@ -121,34 +129,62 @@ int main(int argc, char** argv) {
   try {
     moduleComparison(argv[1]);
     double worst = 0; int cases = 0;
+    // The core runs four lanes: lanes 0-1 are one JSFX instance's left and
+    // right, lanes 2-3 another's at the next cutoff, so the lanes agree on
+    // neither cutoff nor input. Halfway through, lanes 0-1 are reset (a new
+    // note) and compared with a fresh JSFX while lanes 2-3 ring on.
+    const double cutoffs[] {8., 35., 100., 350., 400., 600., 800., 1200., 1600., 3200., 6400., 12800., 20000.};
+    constexpr int kCutoffs = sizeof(cutoffs) / sizeof(cutoffs[0]);
     for (double rate : {44100., 48000., 96000., 192000., 384000.})
-      for (double cutoff : {8., 35., 100., 350., 400., 600., 800., 1200., 1600., 3200., 6400., 12800., 20000.}) {
+      for (int which = 0; which < kCutoffs; ++which) {
+        const double cutoff = cutoffs[which], other_cutoff = cutoffs[(which + 1) % kCutoffs];
         const double resonance = (cases % 3) * .5, damp = (cases % 4) / 3.0;
-        Reference ref(argv[1], rate, cutoff, resonance, damp);
+        const double other_resonance = ((cases + 1) % 3) * .5, other_damp = ((cases + 2) % 4) / 3.0;
+        auto ref = std::make_unique<Reference>(argv[1], rate, cutoff, resonance, damp);
+        Reference other(argv[1], rate, other_cutoff, other_resonance, other_damp);
         vital::ReverbFilterCore core;
         core.reserve(rate); core.setSampleRate(rate);
         // Long enough to include the first 8 Hz reflections and feedback.
-        const int total = cutoff < 50 ? int(rate * .6) : 4096;
+        const int total = std::min(cutoff, other_cutoff) < 50 ? int(rate * .6) : 4096;
+        const int restart = (total / 2 / 127) * 127;
+        int since_restart = 0;
         for (int position = 0; position < total;) {
           const int count = std::min(127, total - position);
-          core.beginBlock(resonance, damp, count);
-          ref.set("samplesblock", count); ref.run("block");
+          if (position == restart) {
+            ref = std::make_unique<Reference>(argv[1], rate, cutoff, resonance, damp);
+            core.resetLane(0); core.resetLane(1);
+            since_restart = 0;
+          }
+          core.beginBlock(0, resonance, damp, count); core.beginBlock(1, resonance, damp, count);
+          core.beginBlock(2, other_resonance, other_damp, count); core.beginBlock(3, other_resonance, other_damp, count);
+          ref->set("samplesblock", count); ref->run("block");
+          other.set("samplesblock", count); other.run("block");
           for (int i = 0; i < count; ++i) {
-            const int n = position + i;
-            const double input = n == 0 ? .8 : .12 * std::sin(n * .731) + .07 * std::cos(n * .037);
-            ref.set("spl0", input); ref.set("spl1", input * -.5); ref.run("sample");
-            const double actual = core.tick(input, cutoff), expected = ref.get("spl0");
-            const double error = std::abs(actual - expected);
-            worst = std::max(worst, error);
-            if (!std::isfinite(actual) || error > 3e-6)
-              throw std::runtime_error("Mismatch rate=" + std::to_string(rate) + " cutoff=" + std::to_string(cutoff) +
-                  " sample=" + std::to_string(n) + " error=" + std::to_string(error));
+            const int n = position + i, m = since_restart++;
+            const double input = m == 0 ? .8 : .12 * std::sin(m * .731) + .07 * std::cos(m * .037);
+            const double other_input = n == 0 ? -.6 : .1 * std::sin(n * .29) - .05 * std::cos(n * .011);
+            ref->set("spl0", input); ref->set("spl1", input * -.5); ref->run("sample");
+            other.set("spl0", other_input); other.set("spl1", other_input * .7); other.run("sample");
+            alignas(16) const double inputs[4] { input, input * -.5, other_input, other_input * .7 };
+            alignas(16) const double lane_cutoffs[4] { cutoff, cutoff, other_cutoff, other_cutoff };
+            alignas(16) double actual[4];
+            core.tick(inputs, lane_cutoffs, actual);
+            const double expected[4] { ref->get("spl0"), ref->get("spl1"), other.get("spl0"), other.get("spl1") };
+            for (int lane = 0; lane < 4; ++lane) {
+              const double error = std::abs(actual[lane] - expected[lane]);
+              worst = std::max(worst, error);
+              if (!std::isfinite(actual[lane]) || error > 3e-6)
+                throw std::runtime_error("Mismatch rate=" + std::to_string(rate) + " cutoff=" +
+                    std::to_string(lane < 2 ? cutoff : other_cutoff) + " lane=" + std::to_string(lane) +
+                    " sample=" + std::to_string(n) + " error=" + std::to_string(error));
+            }
           }
           position += count;
         }
         ++cases;
       }
-    // Automation follows the source's log-cutoff ramp, including FIR boundaries.
+    // Automation follows the source's log-cutoff ramp, including FIR boundaries,
+    // on every lane at once.
     for (double rate : {44100., 48000.}) {
       Reference ref(argv[1], rate, 100, 0, 0);
       vital::ReverbFilterCore core; core.reserve(rate); core.setSampleRate(rate);
@@ -159,16 +195,22 @@ int main(int argc, char** argv) {
         const double resonance = (block % 5) / 4.0, damp = (block % 3) / 2.0;
         ref.set("cutoff_hz", cutoff); ref.set("resonance_pct", resonance * 100); ref.set("damp_pct", damp * 100);
         ref.run("slider"); ref.set("samplesblock", count); ref.run("block");
-        core.beginBlock(resonance, damp, count);
+        for (int lane = 0; lane < 4; ++lane) core.beginBlock(lane, resonance, damp, count);
         const double step = (std::log(cutoff) - log_cut) / count;
         for (int i = 0; i < count; ++i) {
           log_cut += step;
           const double input = .13 * std::sin((block * 128 + i) * .17);
-          ref.set("spl0", input); ref.set("spl1", input); ref.run("sample");
-          const double actual = core.tick(input, std::exp(log_cut));
-          const double error = std::abs(actual - ref.get("spl0"));
-          worst = std::max(worst, error);
-          if (!std::isfinite(actual) || error > 3e-6) throw std::runtime_error("Automation mismatch");
+          ref.set("spl0", input); ref.set("spl1", -input); ref.run("sample");
+          alignas(16) const double inputs[4] { input, -input, input, -input };
+          const double lane_cutoff = std::exp(log_cut);
+          alignas(16) const double lane_cutoffs[4] { lane_cutoff, lane_cutoff, lane_cutoff, lane_cutoff };
+          alignas(16) double actual[4];
+          core.tick(inputs, lane_cutoffs, actual);
+          for (int lane = 0; lane < 4; ++lane) {
+            const double error = std::abs(actual[lane] - ref.get(lane % 2 ? "spl1" : "spl0"));
+            worst = std::max(worst, error);
+            if (!std::isfinite(actual[lane]) || error > 3e-6) throw std::runtime_error("Automation mismatch");
+          }
         }
       }
       ++cases;

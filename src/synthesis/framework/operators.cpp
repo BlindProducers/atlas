@@ -153,6 +153,19 @@ namespace vital {
     const mono_float decay = futils::exp(-2.0f * kPi * cutoff_ / getSampleRate());
     poly_float* destination = output()->buffer;
 
+    // Settled (the next step changes no bit) and no note starts: every sample
+    // is the current value.
+    if (!note_on_mask.anyMask()) {
+      const poly_float next = utils::interpolate(target, current_value_, decay);
+      const poly_mask same = poly_int::equal(utils::reinterpretToInt(next), utils::reinterpretToInt(current_value_));
+      if (!(~same).anyMask()) {
+        for (int sample = 0; sample < num_samples; ++sample)
+          destination[sample] = current_value_;
+        output()->trigger_value = destination[0];
+        return;
+      }
+    }
+
     for (int sample = 0; sample < num_samples; ++sample) {
       const poly_mask reset_now = note_on_mask & poly_int::equal(sample, reset_offset);
       current_value_ = utils::maskLoad(current_value_, target, reset_now);

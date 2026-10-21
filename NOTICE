@@ -11,6 +11,9 @@ their sources.
 - BP Scream DSP (third_party/scream): MIT, Copyright 2025 Cure Audio,
   exacoustics, Xynth Audio. Includes ADAA (BSD-3, jatinchowdhury18) and
   Polylogarithm (MIT, Alexander Voigt).
+- fdlibm by Sun Microsystems (permissive notice, Copyright (C) 1993 Sun
+  Microsystems, Inc.): the log polynomial and ln 2 split in the Scream filter's
+  waveshaper (src/synthesis/filters/scream_tanh.cpp, notice in that file).
 - Wolf Shaper by Patrick Desaulniers (GPL v3 or later): the Waveshaper effect
   (third_party/licenses/WolfShaper.LICENSE).
 - Diopser by Robbert van der Helm (GPL v3 or later) and NIH-plug's parameter
@@ -70,7 +73,7 @@ their sources.
   (BSD-3), as submodules under third_party.
 - PFFFT by Julien Pommier, based on FFTPACKv4 by Paul Swarztrauber (NCAR), under
   the FFTPACK licence (BSD style, Copyright (c) 2004 the University Corporation
-  for Atmospheric Research): the oscillators' FFT on Windows (third_party/pffft,
+  for Atmospheric Research): every FFT in Atlas on every platform (third_party/pffft,
   licence text at the top of each file).
 - The Tape effect's noise recordings "Vinyl 1" to "Vinyl 8"
   (Factory/Samples/Tape; the README.atlas.md there maps each file to its source
