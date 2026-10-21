@@ -223,6 +223,92 @@ namespace {
     expect(flat != nullptr && table.creator.numGroups() == 1 && flat->numFrames() == 256,
            "flattening makes one wave source with every rendered position");
   }
+
+  // Vocode and pitched imports detect the file's pitch. A file too short to
+  // hold two of the shortest periods the detector looks for (an 8 ms hit, a
+  // 600-sample single cycle) crashed on Windows: the detector divided by its
+  // count of whole waves, zero there. Every length must load, with a finite
+  // table, and a file that short plays whole as one cycle.
+  void testShortAudioImports() {
+    const int rate = 48000;
+    // A fundamental and its third harmonic, starting off zero (an import
+    // trims leading silence).
+    auto tone = [rate](int length, double hz) {
+      std::vector<float> audio(length);
+      for (int i = 0; i < length; ++i) {
+        const double phase = 6.283185307179586 * hz * i / rate + 0.5;
+        audio[i] = float(0.5 * std::sin(phase) + 0.2 * std::sin(3.0 * phase));
+      }
+      return audio;
+    };
+    const WavetableCreator::AudioFileLoadStyle styles[] { WavetableCreator::kWavetableSplice, WavetableCreator::kVocoded,
+                                                         WavetableCreator::kTtwt, WavetableCreator::kPitched };
+    const char* names[] { "splice", "vocode", "TTWT", "pitched" };
+    auto finite = [](Table& table) {
+      const auto* data = table.wavetable.getAllData();
+      if (data == nullptr || data->num_frames <= 0)
+        return false;
+      for (int frame = 0; frame < data->num_frames; ++frame) {
+        for (int i = 0; i < vital::WaveFrame::kWaveformSize; ++i) {
+          if (!std::isfinite(data->wave_data[frame][i]))
+            return false;
+        }
+      }
+      return true;
+    };
+    auto fileSource = [](Table& table) {
+      return table.creator.numGroups() > 0 && table.creator.getGroup(0)->numComponents() > 0 ?
+          dynamic_cast<FileSource*>(table.creator.getGroup(0)->getComponent(0)) : nullptr;
+    };
+
+    // The reported file: 8 ms, and a single cycle of the common 600-sample kind.
+    for (int length : { rate * 8 / 1000, 600 }) {
+      const auto audio = tone(length, double(rate) / length);
+      for (int style = 0; style < 4; ++style) {
+        Table table;
+        table.creator.initFromAudioFile(audio.data(), length, rate, styles[style], FileSource::kWaveBlend);
+        const std::string name = std::string(names[style]) + " import of " + std::to_string(length) + " samples";
+        expect(finite(table), name + " renders a finite table");
+        auto* file = fileSource(table);
+        expect(file != nullptr, name + " is an audio layer");
+        if (file != nullptr && style != 0)
+          expect(std::abs(file->getWindowSize() - length) < 1.0e-6,
+                 name + " plays the whole file as one cycle (window " + std::to_string(file->getWindowSize()) + ")");
+      }
+    }
+
+    // Pitch detection at every length up to where the detector always has room
+    // (it searches periods up to half the file), as vocode and pitched imports
+    // and the audio layer's Load and Replace run it, with a very low tone
+    // whose best period falls at the top of the search. No length may crash.
+    for (int length = 2; length <= 4200; length += length < 1300 ? 1 : 37) {
+      for (double hz : { 10.0, 160.0 }) {
+        const auto audio = tone(length, hz);
+        for (int max_period : { vital::WaveFrame::kWaveformSize, rate / 50 }) {
+          FileSource file;
+          file.loadBuffer(audio.data(), length, rate);
+          file.detectPitch(max_period);
+          const double window = file.getWindowSize();
+          if (!(window >= 1.0 && window <= std::max(length, vital::WaveFrame::kWaveformSize))) {
+            expect(false, "pitch detection of " + std::to_string(length) + " samples gives a usable period (" +
+                              std::to_string(window) + ")");
+            return;
+          }
+        }
+      }
+    }
+
+    // A file long enough is still measured: a second of a 100 Hz tone gives its
+    // period of 480 samples (or a whole multiple of it, which repeats as well).
+    const auto long_tone = tone(rate, 100.0);
+    Table table;
+    table.creator.initFromAudioFile(long_tone.data(), rate, rate, WavetableCreator::kPitched, FileSource::kWaveBlend);
+    auto* file = fileSource(table);
+    const double window = file != nullptr ? file->getWindowSize() : 0.0;
+    const double periods = window / 480.0;
+    expect(window >= 479.0 && std::abs(periods - std::round(periods)) * 480.0 < 1.0,
+           "a long file still gets its detected period (window " + std::to_string(window) + ")");
+  }
 }
 
 int main() {
@@ -231,6 +317,7 @@ int main() {
   testAudioLayerKeepsItsStructure();
   testKeyframesAndModifiers();
   testLayersAndLines();
+  testShortAudioImports();
   std::cout << "Wavetable edit failures: " << failures << '\n';
   return failures == 0 ? 0 : 1;
 }
