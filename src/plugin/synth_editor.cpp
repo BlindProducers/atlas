@@ -5532,8 +5532,12 @@ class CpuUsageMeter final : public Component {
       if (value_changed) {
         repaint();
 #if ! JUCE_WINDOWS
-        if (auto* handler = getAccessibilityHandler())
-          handler->notifyAccessibilityEvent(AccessibilityEvent::valueChanged);
+        // Only while the meter has focus: four a second from an unfocused
+        // meter queue up in VoiceOver ahead of what the focused control
+        // says, such as a slider's new value.
+        if (hasKeyboardFocus(false))
+          if (auto* handler = getAccessibilityHandler())
+            handler->notifyAccessibilityEvent(AccessibilityEvent::valueChanged);
 #endif
       }
     }
