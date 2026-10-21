@@ -57,6 +57,14 @@ init                  5.35 %      3.95 %      -26.2 %   8.4 % -> 6.3 %
   even when the average load is low.
 - The **geometric mean** sums up the whole table in one figure.
 
+`--save-audio <dir>` also keeps each build's timed audio and prints how far
+each build is from the first, in dB below its level (`identical` when every
+sample matches). Rounding differences from a change of FFT or SIMD code land
+around -110 to -140 dB, far below hearing. A scenario that already varies
+between rounds of one build (Convolution Reverb, whose background IR loading
+finishes at different moments) differs for that reason alone; compare a build
+with itself to see how much.
+
 `--compare a.json b.json` prints saved results side by side. Saved results
 come from whatever the machine was doing that day, so for a decision, time
 both builds in one run.
@@ -87,7 +95,8 @@ flagged too.
 analog unison, Braids, OpenWurli and OpenB3, three filter pairs, and six effect
 chains. `--effects` measures each effect alone instead, and `--filters` each
 voice filter model alone, plus the Reverb model at 2 kHz (its default 100 Hz
-cutoff skips its FIR). `--list --effects` and `--list --filters` print them.
+cutoff skips its FIR); `--effects` also has Spectral Lock in its Spectral
+mode, the one that runs an FFT. `--list --effects` and `--list --filters` print them.
 `--only "fx-*,init"` picks scenarios by name.
 
 ## Getting steady numbers
