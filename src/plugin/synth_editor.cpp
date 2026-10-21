@@ -6973,20 +6973,29 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   };
   addChildComponent(modulation_amount_editor_);
 
-  // Settings > Modulation amount slider: after the box while an amount is
-  // typed for a modulation (setUpModulationAmountSlider). The box says what
-  // the slider is set to, so OK and Return set the amount either way.
+  // After the box while an amount is typed for a modulation
+  // (setUpModulationAmountSlider). The box says what the slider is set to, so
+  // OK and Return set the amount either way.
   modulation_amount_slider_.setSliderStyle(Slider::LinearHorizontal);
   modulation_amount_slider_.setTextBoxStyle(Slider::NoTextBox, true, 0, 0);
   modulation_amount_slider_.setTitle("Modulation amount");
   modulation_amount_slider_.setWantsKeyboardFocus(true);
   modulation_amount_slider_.onReturnKey = [this] { applyInlineTextPrompt(); };
+  // Escape on the slider is Cancel: the amount it played goes back.
+  modulation_amount_slider_.onEscapeKey = [this] { cancelInlineTextPrompt(); };
   modulation_amount_slider_.onValueChange = [this] {
     modulation_slider_text_ = modulation_amount_slider_.getTextFromValue(modulation_amount_slider_.getValue());
     modulation_amount_editor_.setText(modulation_slider_text_, dontSendNotification);
     auditionModulationAmount();
   };
   addChildComponent(modulation_amount_slider_);
+
+  modulation_bipolar_toggle_.setTitle("Bipolar");
+  modulation_bipolar_toggle_.setDescription("Moves the destination both ways from where it is, half the amount "
+                                            "each way, instead of one way only");
+  modulation_bipolar_toggle_.setWantsKeyboardFocus(true);
+  modulation_bipolar_toggle_.onClick = [this] { toggleModulationBipolar(); };
+  addChildComponent(modulation_bipolar_toggle_);
 
   modulation_amount_ok_.setTitle("Set modulation amount");
   modulation_amount_ok_.setDescription("Apply the typed initial modulation amount");
@@ -7091,7 +7100,11 @@ void SynthEditor::resized() {
       // The slider follows the box it extends.
       const int field_width = jmax(180, amount_row.getWidth() - 220);
       modulation_amount_editor_.setBounds(amount_row.removeFromLeft(jmax(160, field_width / 2)).reduced(3));
-      modulation_amount_slider_.setBounds(amount_row.removeFromLeft(jmax(120, amount_row.getWidth() - 220)).reduced(3));
+      const int toggle_width = modulation_bipolar_toggle_.isVisible() ? 110 : 0;
+      modulation_amount_slider_.setBounds(
+          amount_row.removeFromLeft(jmax(120, amount_row.getWidth() - 220 - toggle_width)).reduced(3));
+      if (toggle_width > 0)
+        modulation_bipolar_toggle_.setBounds(amount_row.removeFromLeft(toggle_width).reduced(3));
       modulation_amount_ok_.setBounds(amount_row.removeFromLeft(100).reduced(3));
       modulation_amount_cancel_.setBounds(amount_row.removeFromLeft(120).reduced(3));
     }
@@ -9776,18 +9789,6 @@ class AtlasSettingsContent : public Component, private FocusChangeListener {
       remove_all_mappings_.onClick = [this] { removeAllMappings(); };
       midi_.addChildComponent(remove_all_mappings_);
 
-      // Modulation: a slider beside the amount typed for a new modulation.
-      inner_.addAndMakeVisible(modulation_);
-      modulation_slider_.setTitle("Modulation amount slider");
-      modulation_slider_.setDescription("Adds a slider after the modulation amount text box. It moves through the "
-                                        "destination's own values, in its units and steps, and plays each amount as "
-                                        "it moves");
-      modulation_slider_.setToggleState(LoadSave::modulationAmountSlider(), dontSendNotification);
-      modulation_slider_.onClick = [this] {
-        LoadSave::saveModulationAmountSlider(modulation_slider_.getToggleState());
-      };
-      modulation_.addAndMakeVisible(modulation_slider_);
-
       // Accessibility: the speech categories.
       inner_.addAndMakeVisible(accessibility_);
       // Use speech feedback switches every announcement category with it, and
@@ -10296,7 +10297,6 @@ class AtlasSettingsContent : public Component, private FocusChangeListener {
         midi_rows.push_back(button.get());
       midi_rows.push_back(&remove_all_mappings_);
       placeGroup(midi_, midi_rows);
-      placeGroup(modulation_, { &modulation_slider_ });
       std::vector<Component*> speech;
       for (auto& toggle : speech_toggles_)
         speech.push_back(toggle.get());
@@ -10319,7 +10319,6 @@ class AtlasSettingsContent : public Component, private FocusChangeListener {
     SettingsGroup history_ { "Undo and redo" };
     SettingsGroup tuning_ { "Tuning" };
     SettingsGroup midi_ { "MIDI learn mappings" };
-    SettingsGroup modulation_ { "Modulation" };
     SettingsGroup accessibility_ { "Accessibility" };
     SettingsGroup community_ { "Online community browser" };
     SettingsGroup keyboard_help_ { "Keyboard help" };
@@ -10333,7 +10332,6 @@ class AtlasSettingsContent : public Component, private FocusChangeListener {
     std::vector<std::pair<int, std::string>> mappings_;
     std::vector<std::unique_ptr<AccessibleTextButton>> mapping_buttons_;
     AccessibleTextButton remove_all_mappings_;
-    SettingsToggle modulation_slider_ { "Modulation amount slider" };
     std::vector<std::unique_ptr<ToggleButton>> speech_toggles_;
     SettingsToggle show_community_ { "Show the community library in the preset browser" };
     SettingsText account_;
@@ -10619,9 +10617,9 @@ String SynthEditor::keyboardHelpText() {
       "  Shift+L - MIDI learn: the next MIDI control moved is mapped; Shift+L again cancels\n"
       "  Shift+C - Clear MIDI learn (Settings lists every mapping under MIDI learn mappings and removes them)\n"
       "  Levels and modulation amounts read and accept percentages: 0% to 100%, or -100% to 100%\n"
-      "  Adding modulation: type the value it moves to; with Settings > Modulation amount slider on, Tab to the "
-      "slider after the box, which steps like the control it modulates and plays each amount as it moves. Enter "
-      "keeps the amount; Escape puts back the one it had\n"
+      "  Adding modulation: type the value it moves to, or Tab to the slider after the box, which steps like the "
+      "control it modulates and plays each amount as it moves, then to Bipolar, which makes it move both ways. "
+      "Enter keeps the amount; Escape, like Cancel, puts back what it had\n"
       "\n"
       "Choosing from a menu (Type, Model, Style and other choices that change which controls are shown)\n"
       "  Down / Right - Next choice; Up / Left - Previous choice\n"
@@ -10857,6 +10855,10 @@ void SynthEditor::rebuildFocusOrder() {
     if (modulation_amount_prompt_visible_ && modulation_amount_slider_.isVisible()) {
       focus_order_.push_back(&modulation_amount_slider_);
       accessibility_focus_order_.push_back(&modulation_amount_slider_);
+    }
+    if (modulation_amount_prompt_visible_ && modulation_bipolar_toggle_.isVisible()) {
+      focus_order_.push_back(&modulation_bipolar_toggle_);
+      accessibility_focus_order_.push_back(&modulation_bipolar_toggle_);
     }
     focus_order_.push_back(&modulation_amount_ok_);
     focus_order_.push_back(&modulation_amount_cancel_);
@@ -17899,6 +17901,7 @@ void SynthEditor::promptForInitialModulationAmount(const String& sourceId, const
   modulation_amount_prompt_.setVisible(true);
   modulation_amount_editor_.setVisible(true);
   modulation_amount_slider_.setVisible(false);
+  modulation_bipolar_toggle_.setVisible(false);
   modulation_amount_ok_.setVisible(true);
   modulation_amount_cancel_.setVisible(true);
   String peak_value = "1.0";
@@ -17916,6 +17919,7 @@ void SynthEditor::promptForInitialModulationAmount(const String& sourceId, const
   }
   modulation_amount_editor_.setText(peak_value, dontSendNotification);
   setUpModulationAmountSlider(bridge, peak);
+  setUpModulationBipolarToggle();
   rebuildFocusOrder();
   resized();
   modulation_amount_editor_.grabKeyboardFocus();
@@ -17923,13 +17927,15 @@ void SynthEditor::promptForInitialModulationAmount(const String& sourceId, const
   if (auto* handler = modulation_amount_editor_.getAccessibilityHandler())
     handler->grabFocus();
   postPluginAnnouncement(modulation_amount_slider_.isVisible()
-                             ? "Type the value the modulation moves to, or Tab to its slider"
+                             ? (modulation_bipolar_toggle_.isVisible()
+                                    ? "Type the value the modulation moves to, or Tab to its slider and Bipolar"
+                                    : "Type the value the modulation moves to, or Tab to its slider")
                              : "Type the value the modulation moves to",
                          AccessibilityHandler::AnnouncementPriority::high);
 }
 
 void SynthEditor::setUpModulationAmountSlider(ValueBridge* destination, double peakValue) {
-  const bool shown = destination != nullptr && LoadSave::modulationAmountSlider();
+  const bool shown = destination != nullptr;
   modulation_amount_slider_.setVisible(shown);
   modulation_slider_text_.clear();
   if (!shown)
@@ -17971,7 +17977,9 @@ void SynthEditor::auditionModulationAmount() {
 }
 
 void SynthEditor::revertModulationAudition() {
-  if (!std::exchange(modulation_amount_auditioned_, false))
+  const bool amount_played = std::exchange(modulation_amount_auditioned_, false);
+  const bool bipolar_changed = std::exchange(modulation_bipolar_changed_, false);
+  if (!amount_played && !bipolar_changed)
     return;
   const int connection = synth_.getConnectionIndex(pending_modulation_source_.toStdString(),
                                                    pending_modulation_destination_.toStdString());
@@ -17980,9 +17988,46 @@ void SynthEditor::revertModulationAudition() {
   synth_.undoHistory().describeNextStep(
       modulationUndoDescription(pending_modulation_source_, pending_modulation_destination_, pending_modulation_created_),
       "modulation " + pending_modulation_source_ + " " + pending_modulation_destination_);
-  setParameterEngineValue("modulation_" + String(connection + 1) + "_amount", modulation_amount_at_open_);
+  const String prefix = "modulation_" + String(connection + 1) + "_";
+  if (amount_played)
+    setParameterEngineValue(prefix + "amount", modulation_amount_at_open_);
+  if (bipolar_changed) {
+    setParameterEngineValue(prefix + "bipolar", modulation_bipolar_at_open_ ? 1.0f : 0.0f);
+    refreshVisibleModulationLabels();
+  }
   // Its own step now, never part of what closed the prompt (a new route).
   synth_.undoHistory().commitPendingEdits();
+}
+
+void SynthEditor::setUpModulationBipolarToggle() {
+  const int connection = synth_.getConnectionIndex(pending_modulation_source_.toStdString(),
+                                                   pending_modulation_destination_.toStdString());
+  const auto found = connection >= 0 ?
+      synth_.getControls().find("modulation_" + std::to_string(connection + 1) + "_bipolar") : synth_.getControls().end();
+  const bool shown = found != synth_.getControls().end() && macroIndexForControlId(pending_modulation_source_) < 0;
+  modulation_bipolar_toggle_.setVisible(shown);
+  modulation_bipolar_changed_ = false;
+  if (!shown)
+    return;
+  modulation_bipolar_at_open_ = found->second->value() >= 0.5f;
+  modulation_bipolar_toggle_.setToggleState(modulation_bipolar_at_open_, dontSendNotification);
+}
+
+void SynthEditor::toggleModulationBipolar() {
+  if (!modulation_amount_prompt_visible_)
+    return;
+  const int connection = synth_.getConnectionIndex(pending_modulation_source_.toStdString(),
+                                                   pending_modulation_destination_.toStdString());
+  if (connection < 0)
+    return;
+  const bool bipolar = modulation_bipolar_toggle_.getToggleState();
+  // Joins the prompt's one undo step, as the slider's amounts do.
+  synth_.undoHistory().describeNextStep(
+      modulationUndoDescription(pending_modulation_source_, pending_modulation_destination_, pending_modulation_created_),
+      "modulation " + pending_modulation_source_ + " " + pending_modulation_destination_);
+  setParameterEngineValue("modulation_" + String(connection + 1) + "_bipolar", bipolar ? 1.0f : 0.0f);
+  modulation_bipolar_changed_ = bipolar != modulation_bipolar_at_open_;
+  refreshVisibleModulationLabels();
 }
 
 void SynthEditor::promptForParameterValue(const String& parameterId, Component& target) {
@@ -18025,6 +18070,7 @@ void SynthEditor::promptForParameterValue(const String& parameterId, Component& 
   modulation_amount_prompt_.setVisible(true);
   modulation_amount_editor_.setVisible(true);
   modulation_amount_slider_.setVisible(false);
+  modulation_bipolar_toggle_.setVisible(false);
   modulation_amount_ok_.setVisible(true);
   modulation_amount_cancel_.setVisible(true);
   modulation_amount_editor_.setText(value, dontSendNotification);
@@ -18090,6 +18136,7 @@ void SynthEditor::promptForCustomValue(const String& title, const String& value,
   modulation_amount_prompt_.setVisible(true);
   modulation_amount_editor_.setVisible(true);
   modulation_amount_slider_.setVisible(false);
+  modulation_bipolar_toggle_.setVisible(false);
   modulation_amount_ok_.setVisible(true);
   modulation_amount_cancel_.setVisible(true);
   modulation_amount_editor_.setText(value, dontSendNotification);
@@ -18145,6 +18192,7 @@ void SynthEditor::promptForConfirmation(const String& question, const String& co
   modulation_amount_prompt_.setVisible(true);
   modulation_amount_editor_.setVisible(false);
   modulation_amount_slider_.setVisible(false);
+  modulation_bipolar_toggle_.setVisible(false);
   modulation_amount_ok_.setVisible(true);
   modulation_amount_cancel_.setVisible(true);
   rebuildFocusOrder();
@@ -18248,6 +18296,7 @@ void SynthEditor::hideInlineTextPromptNow() {
   modulation_amount_prompt_.setVisible(false);
   modulation_amount_editor_.setVisible(false);
   modulation_amount_slider_.setVisible(false);
+  modulation_bipolar_toggle_.setVisible(false);
   modulation_amount_ok_.setVisible(false);
   modulation_amount_cancel_.setVisible(false);
   rebuildFocusOrder();
@@ -18271,8 +18320,10 @@ void SynthEditor::applyInitialModulationAmount() {
   if (modulation_amount_slider_.isVisible() && modulation_amount_editor_.getText() == modulation_slider_text_)
     if (auto* bridge = parameterBridge(destination_id))
       amount = modulationAmountForTarget(*bridge, modulation_amount_slider_.getValue());
-  // What the slider played is kept, or replaced by the amount typed.
+  // What the slider played is kept, or replaced by the amount typed, and
+  // Bipolar stays as it was set.
   modulation_amount_auditioned_ = false;
+  modulation_bipolar_changed_ = false;
   const int connection = synth_.getConnectionIndex(source_id.toStdString(), destination_id.toStdString());
   if (connection >= 0) {
     // Joins the step that made the route.

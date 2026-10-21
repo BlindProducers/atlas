@@ -1,12 +1,11 @@
 #pragma once
 
-// Settings > Modulation amount slider. With it on, the amount prompt of
-// Assign modulation has a slider after its text box. The slider moves through
+// The amount prompt of Assign modulation has a slider after its text box. The slider moves through
 // the values the modulation can take its destination to, steps and reads them
 // as the destination's own slider does (Filter 1 Cutoff in Hz, 10 Hz a step),
 // and the route plays each amount at once, to be heard. Return on it keeps
-// the amount, as OK does; anything else puts back the one the route had. With
-// it off the prompt is as it was. Included into macro_modulation_tests.cpp
+// the amount, as OK does; anything else puts back the one the route had.
+// Included into macro_modulation_tests.cpp
 // after editor_accessibility_tests.h and release_hardening_tests.h, whose
 // helpers it uses.
 
@@ -35,9 +34,7 @@ namespace {
   }
 
   void testModulationAmountSlider() {
-    // The setting is saved here, never in the user's own config.
     TemporaryConfig config;
-    LoadSave::saveModulationAmountSlider(false);
     atlas::speech::useDefaultSettingsForTesting();
     atlas::speech::settings().frequency_values_in_hz = true;
     StringArray said;
@@ -71,31 +68,15 @@ namespace {
       pumpEditorEvents();
     };
 
-    // Off, as it starts: the prompt is the text box and its buttons.
-    editor.openModulationAmountPromptForTesting("lfo_1", cutoff, cutoffRow());
-    expect(editor.isModulationAmountPromptOpen(), "Assign modulation opens the amount prompt");
-    expect(!slider.isVisible() && positionIn(editor.getKeyboardFocusOrder(), &slider) < 0 &&
-               positionIn(editor.getAccessibleFocusOrder(), &slider) < 0,
-           "with the setting off the prompt has no slider");
-    pumpUntil([&] { return !said.isEmpty(); });
-    expect(said.joinIntoString(" | ").contains("Type the value the modulation moves to") &&
-               !said.joinIntoString(" | ").contains("slider"),
-           "and says to type the value: " + said.joinIntoString(" | ").toStdString());
-    closePrompt();
-
-    // On: the slider follows the box, in the Tab order too, and reads in Hz,
-    // as Cutoff's own slider does, starting where Cutoff is now.
-    LoadSave::saveModulationAmountSlider(true);
-    said.clear();
+    // The slider follows the box, in the Tab order too, and reads in Hz, as
+    // Cutoff's own slider does, starting where Cutoff is now.
     editor.openModulationAmountPromptForTesting("lfo_2", cutoff, cutoffRow());
-    expect(slider.isVisible(), "with the setting on the prompt shows the slider");
+    expect(slider.isVisible(), "the prompt shows the slider");
     for (const auto* order : { &editor.getKeyboardFocusOrder(), &editor.getAccessibleFocusOrder() }) {
       const int box = positionIn(*order, &field);
       expect(box >= 0 && positionIn(*order, &slider) == box + 1, "the slider comes right after the text box");
     }
     expect(slider.getTitle() == "Modulation amount", "the slider is called Modulation amount");
-    // Said once the screen reader has caught up with the rows rebuilt after
-    // the first prompt, together with what that prompt left.
     pumpUntil([&] { return !said.isEmpty(); });
     expect(said.joinIntoString(" | ").contains("Type the value the modulation moves to, or Tab to its slider"),
            "the prompt names the slider: " + said.joinIntoString(" | ").toStdString());
@@ -190,8 +171,8 @@ namespace {
     slider.keyPressed(KeyPress(KeyPress::endKey));
     expect(slider.getValue() == 0.0, "End reaches Cutoff's minimum, " + spokenValue(slider).toStdString());
     playsTheSlider("lfo_2", cutoff, "after End");
-    expect(!slider.keyPressed(KeyPress(KeyPress::escapeKey)), "the slider leaves Escape to the prompt");
-    closePrompt();
+    expect(slider.keyPressed(KeyPress(KeyPress::escapeKey)), "Escape on the slider is Cancel");
+    pumpEditorEvents();
     expect(!editor.isModulationAmountPromptOpen() && routeAmount(synth, "lfo_2", cutoff) == kept,
            "Escape closes the prompt and puts back the amount the route had");
     expect(synth.undoHistory().numUndoSteps() == steps_before_escape,
@@ -237,24 +218,6 @@ namespace {
       closePrompt();
     }
 
-    // Settings has the switch, in a Modulation group, and saves it.
-    Component::SafePointer<DialogWindow> window(editor.showSettingsForTesting());
-    pumpEditorEvents();
-    auto* content = window != nullptr ? window->getContentComponent() : nullptr;
-    auto* group = content != nullptr ? titled(*content, "Modulation") : nullptr;
-    auto* toggle = group != nullptr ? dynamic_cast<Button*>(titled(*group, "Modulation amount slider")) : nullptr;
-    expect(toggle != nullptr && toggle->getToggleState(), "Settings > Modulation has Modulation amount slider, on");
-    if (toggle != nullptr) {
-      toggle->triggerClick();
-      pumpEditorEvents();
-      expect(!toggle->getToggleState() && !LoadSave::modulationAmountSlider(), "turning it off saves it off");
-      expect(config.text().contains("\"modulation_amount_slider\":false"), "in the config file");
-      toggle->triggerClick();
-      pumpEditorEvents();
-      expect(LoadSave::modulationAmountSlider(), "and on again");
-    }
-    if (window != nullptr)
-      delete window.getComponent();
     pumpEditorEvents();
     editor.removeFromDesktop();
     atlas::speech::setObserverForTesting({});
@@ -266,7 +229,6 @@ namespace {
   // or the window closing.
   void testPlayedAmountIsOneStepOrNone() {
     TemporaryConfig config;
-    LoadSave::saveModulationAmountSlider(true);
     atlas::speech::useDefaultSettingsForTesting();
     atlas::speech::setObserverForTesting([](const String&) {});
     SynthPlugin synth;
@@ -342,9 +304,78 @@ namespace {
     atlas::speech::setObserverForTesting({});
   }
 
+  float routeBipolar(SynthPlugin& synth, const String& source, const String& destination) {
+    const int connection = synth.getConnectionIndex(source.toStdString(), destination.toStdString());
+    if (connection < 0)
+      return std::numeric_limits<float>::quiet_NaN();
+    return synth.getControls().at("modulation_" + std::to_string(connection + 1) + "_bipolar")->value();
+  }
+
+  // Bipolar follows the slider in the prompt. It starts as the route is, sets
+  // the route's polarity at once, is kept by OK and put back by Escape, and
+  // joins the prompt's one undo step. A macro's prompt has none.
+  void testBipolarToggle() {
+    TemporaryConfig config;
+    atlas::speech::useDefaultSettingsForTesting();
+    atlas::speech::setObserverForTesting([](const String&) {});
+    SynthPlugin synth;
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    pumpEditorEvents();
+    auto& slider = editor.modulationAmountSliderForTesting();
+    auto& toggle = editor.modulationBipolarToggleForTesting();
+    auto& history = synth.undoHistory();
+    const String cutoff = "filter_1_cutoff";
+    auto openPrompt = [&](const String& source) {
+      editor.openModulationAmountPromptForTesting(source, cutoff, editor.controlForParameter(cutoff));
+      pumpEditorEvents();
+    };
+
+    const size_t steps_before = history.numUndoSteps();
+    openPrompt("lfo_1");
+    expect(toggle.isVisible() && toggle.getTitle() == "Bipolar", "the prompt has a Bipolar toggle");
+    for (const auto* order : { &editor.getKeyboardFocusOrder(), &editor.getAccessibleFocusOrder() }) {
+      const int at = positionIn(*order, &slider);
+      expect(at >= 0 && positionIn(*order, &toggle) == at + 1, "Bipolar comes right after the slider");
+    }
+    const bool lfo_default = routeBipolar(synth, "lfo_1", cutoff) >= 0.5f;
+    expect(toggle.getToggleState() == lfo_default, "Bipolar starts as the new route is");
+    toggle.triggerClick();
+    pumpEditorEvents();
+    expect((routeBipolar(synth, "lfo_1", cutoff) >= 0.5f) != lfo_default, "switching it sets the route at once");
+    editor.keyPressed(KeyPress(KeyPress::escapeKey));
+    pumpEditorEvents();
+    expect((routeBipolar(synth, "lfo_1", cutoff) >= 0.5f) == lfo_default, "Escape puts the polarity back");
+
+    openPrompt("lfo_1");
+    toggle.triggerClick();
+    pumpEditorEvents();
+    slider.keyPressed(KeyPress(KeyPress::returnKey));
+    pumpEditorEvents();
+    expect((routeBipolar(synth, "lfo_1", cutoff) >= 0.5f) != lfo_default, "OK keeps the polarity switched");
+    expect(history.numUndoSteps() == steps_before + 1,
+           "the route and its polarity are one step (" + std::to_string(history.numUndoSteps()) + " steps, " +
+               std::to_string(steps_before) + " before)");
+    history.undo();
+    pumpEditorEvents();
+    expect(synth.getConnectionIndex("lfo_1", cutoff.toStdString()) < 0, "one undo takes the route away");
+
+    openPrompt("macro_control_1");
+    expect(editor.isModulationAmountPromptOpen() && !toggle.isVisible() &&
+               positionIn(editor.getKeyboardFocusOrder(), &toggle) < 0,
+           "a macro's prompt has no Bipolar: the macro's own setting decides");
+    editor.keyPressed(KeyPress(KeyPress::escapeKey));
+    pumpEditorEvents();
+    editor.removeFromDesktop();
+    atlas::speech::setObserverForTesting({});
+  }
+
   int runModulationAmountSliderTests() {
     testModulationAmountSlider();
     testPlayedAmountIsOneStepOrNone();
+    testBipolarToggle();
     if (failures == 0)
       std::cout << "Atlas modulation amount slider tests passed\n";
     return failures == 0 ? 0 : 1;

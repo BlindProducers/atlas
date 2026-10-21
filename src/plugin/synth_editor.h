@@ -223,17 +223,21 @@ class AccessibleTextEditor : public TextEditor {
     std::unique_ptr<AccessibilityHandler> createAccessibilityHandler() override;
 };
 
-// The modulation amount prompt's slider (Settings > Modulation amount slider).
-// It moves through the values the modulation can take its destination to, and
+// The modulation amount prompt's slider, after its text box. It moves through the values the modulation can take its destination to, and
 // steps and reads them as the destination's own slider does; the route plays
-// each amount at once. Return keeps the amount, as OK does.
+// each amount at once. Return keeps the amount, as OK does; Escape is Cancel.
 class ModulationAmountSlider : public ParameterSlider {
   public:
     std::function<void()> onReturnKey;
+    std::function<void()> onEscapeKey;
 
     bool keyPressed(const KeyPress& key) override {
       if (key.getKeyCode() == KeyPress::returnKey && onReturnKey) {
         onReturnKey();
+        return true;
+      }
+      if (key.getKeyCode() == KeyPress::escapeKey && onEscapeKey) {
+        onEscapeKey();
         return true;
       }
       return ParameterSlider::keyPressed(key);
@@ -411,7 +415,7 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
       return modulationAmountSummary(sourceId, destinationId, amount);
     }
     // Tests: Assign modulation's amount prompt left open, with its text box
-    // and its slider (shown only with Settings > Modulation amount slider on).
+    // and its slider.
     void openModulationAmountPromptForTesting(const String& sourceId, const String& destinationId,
                                               Component* target = nullptr) {
       connectModulationAndPromptForAmount(sourceId, destinationId, target != nullptr ? *target : *this);
@@ -419,6 +423,7 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     bool isModulationAmountPromptOpen() const { return modulation_amount_prompt_visible_; }
     TextEditor& modulationAmountEditorForTesting() { return modulation_amount_editor_; }
     ParameterSlider& modulationAmountSliderForTesting() { return modulation_amount_slider_; }
+    ToggleButton& modulationBipolarToggleForTesting() { return modulation_bipolar_toggle_; }
     // The focusable control of the row showing `parameterId`, and the focused row's parameter.
     Component* controlForParameter(const String& parameterId) const;
     String focusedRowParameterId() const { return focusedParameterId(); }
@@ -1187,6 +1192,8 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     // the amount the route had when the prompt opened (revertModulationAudition).
     void auditionModulationAmount();
     void revertModulationAudition();
+    void setUpModulationBipolarToggle();
+    void toggleModulationBipolar();
     String modulationAmountSummary(const String& sourceId, const String& destinationId, float amount) const;
     bool isMacroBipolar(int macroIndex) const;
     void setMacroBipolar(int macroIndex, bool bipolar);
@@ -1264,6 +1271,12 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     // changed it since (auditionModulationAmount).
     float modulation_amount_at_open_ = 0.0f;
     bool modulation_amount_auditioned_ = false;
+    // Bipolar, after the slider: switches the route's polarity at once, and
+    // Cancel puts back the one it had when the prompt opened. A macro's routes
+    // follow the macro's own Bipolar, so its prompt has none.
+    SpokenToggleButton modulation_bipolar_toggle_ { "Bipolar" };
+    bool modulation_bipolar_at_open_ = false;
+    bool modulation_bipolar_changed_ = false;
     TextButton modulation_amount_ok_ { "OK" };
     TextButton modulation_amount_cancel_ { "Cancel" };
     Viewport viewport_;

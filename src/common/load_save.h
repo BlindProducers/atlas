@@ -142,9 +142,6 @@ class LoadSave {
     static bool shouldAnimateWidgets();
     static bool shouldScanDownloads();
     static bool displayHzFrequency();
-    // Settings > Modulation amount slider: whether the modulation amount
-    // prompt has a slider beside its text box. Off until the user turns it on.
-    static bool modulationAmountSlider();
     static bool authenticated();
     static int getOversamplingAmount();
     static float loadWindowSize();
@@ -163,7 +160,6 @@ class LoadSave {
     static void saveAnimateWidgets(bool animate_widgets);
     static void saveScanDownloads(bool scan_downloads);
     static void saveDisplayHzFrequency(bool display_hz);
-    static void saveModulationAmountSlider(bool shown);
     static void saveAuthenticated(bool authenticated);
     static void saveWindowSize(float window_size);
     static void saveMidiMapConfig(MidiManager* midi_manager);
