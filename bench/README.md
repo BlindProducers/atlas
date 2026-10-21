@@ -95,7 +95,8 @@ flagged too.
 analog unison, Braids, OpenWurli and OpenB3, three filter pairs, and six effect
 chains. `--effects` measures each effect alone instead, and `--filters` each
 voice filter model alone, plus the Reverb model at 2 kHz (its default 100 Hz
-cutoff skips its FIR); `--effects` also has Spectral Lock in its Spectral
+cutoff skips its FIR), the Scream model driven hard without autogain, and
+Scream as a Filter FX; `--effects` also has Spectral Lock in its Spectral
 mode, the one that runs an FFT. `--list --effects` and `--list --filters` print them.
 `--only "fx-*,init"` picks scenarios by name.
 
