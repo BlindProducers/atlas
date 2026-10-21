@@ -1,12 +1,40 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "multisample_player.h"
 #include "multisample_slot.h"
+#include "poly_values.h"
 
 #include <algorithm>
 #include <cmath>
 
 namespace vital {
   namespace {
+    // Frames index - 1 .. index + 2 of both channels, as floats: lanes 0-1 of
+    // `before` hold left and right at index - 1, lanes 2-3 at index; `after`
+    // likewise at index + 1 and index + 2.
+    force_inline void loadStereoFrames(const int16_t* left, const int16_t* right, int64_t index,
+                                       poly_float& before, poly_float& after) {
+#if VITAL_SSE2
+      const __m128i l = _mm_loadl_epi64(reinterpret_cast<const __m128i*>(left + index - 1));
+      const __m128i r = _mm_loadl_epi64(reinterpret_cast<const __m128i*>(right + index - 1));
+      const __m128i pairs = _mm_unpacklo_epi16(l, r);
+      // Each 16-bit value into the top of a 32-bit lane, then shifted down with its sign.
+      before = _mm_cvtepi32_ps(_mm_srai_epi32(_mm_unpacklo_epi16(pairs, pairs), 16));
+      after = _mm_cvtepi32_ps(_mm_srai_epi32(_mm_unpackhi_epi16(pairs, pairs), 16));
+#elif VITAL_NEON
+      const int16x4x2_t pairs = vzip_s16(vld1_s16(left + index - 1), vld1_s16(right + index - 1));
+      before = vcvtq_f32_s32(vmovl_s16(pairs.val[0]));
+      after = vcvtq_f32_s32(vmovl_s16(pairs.val[1]));
+#endif
+    }
+
+    // Lanes 2-3 moved to lanes 0-1.
+    force_inline poly_float upperPair(poly_float value) {
+#if VITAL_SSE2
+      return _mm_movehl_ps(value.value, value.value);
+#elif VITAL_NEON
+      return vcombine_f32(vget_high_f32(value.value), vget_high_f32(value.value));
+#endif
+    }
     // -96 dB: an envelope below this is finished.
     constexpr float kMultiSampleSilence = 1.585e-5f;
     constexpr float kMultiSampleFadeSeconds = 0.006f;
@@ -249,6 +277,123 @@ namespace vital {
     }
   }
 
+  // A plain stretch: no start delay, note-off or fade in it, the envelope
+  // decaying, sustaining or releasing, no ping-pong loop, and every frame it
+  // reads (and the position it ends on) clear of the sample's ends and the
+  // loop's end. There every check render() makes per sample is known to pass.
+  int MultiSamplePlayer::plainStretch(int from, int to, double rate, double rate_step, int64_t frames) const {
+    if (start_delay_ > 0 || fade_step_ > 0.0f || (looping_ && alternate_))
+      return 0;
+    if (stage_ != kDecay && stage_ != kSustain && stage_ != kRelease)
+      return 0;
+    int limit = to;
+    if (note_off_at_ >= from && note_off_at_ < limit)
+      limit = note_off_at_;
+    if (limit <= from || position_ < 1.0)
+      return 0;
+    // Frames up to index + 2 are read, so positions stay below frames - 2;
+    // a loop wraps (and looks ahead) from loop_end - 2; a one-shot ends at end_.
+    const double safe_end = looping_ ? static_cast<double>(std::min(loop_end_, frames)) - 2.0
+                                     : static_cast<double>(std::min(end_, frames - 2));
+    // The rate moves linearly, so its largest value is at one end; a frame of
+    // margin covers the rounding of the running position.
+    const double fastest = std::max(rate + rate_step, rate + (limit - from) * rate_step);
+    if (fastest <= 0.0)
+      return 0;
+    const double room = (safe_end - 1.0 - position_) / fastest;
+    if (room < 1.0)
+      return 0;
+    return static_cast<int>(std::min<double>(limit - from, std::floor(room)));
+  }
+
+  // The same arithmetic as render()'s loop, in the same order, for a plain
+  // stretch, with the player's state in locals. Returns the sample it stopped
+  // before; active_ is false if the envelope finished.
+  template<bool kStereo, bool kWidth>
+  int MultiSamplePlayer::renderStretch(float* left, float* right, int from, int to, const int16_t* data_left,
+                                       const int16_t* data_right, float width, float gain_step, float left_step,
+                                       float right_step, double rate_step, float& current_gain, float& current_left,
+                                       float& current_right, double& rate) {
+    double position = position_;
+    float level = level_;
+    Stage stage = stage_;
+    const float fade = fade_;
+    const float decay_multiplier = decay_multiplier_, release_multiplier = release_multiplier_, sustain = sustain_;
+    auto cubic = [](const int16_t* data, int64_t index, float t) {
+      const float xm1 = data[index - 1];
+      const float x0 = data[index];
+      const float x1 = data[index + 1];
+      const float x2 = data[index + 2];
+      const float c1 = 0.5f * (x1 - xm1);
+      const float c2 = xm1 - 2.5f * x0 + 2.0f * x1 - 0.5f * x2;
+      const float c3 = 0.5f * (x2 - xm1) + 1.5f * (x0 - x1);
+      return (((c3 * t + c2) * t + c1) * t + x0) * kMultiSampleScale;
+    };
+    int i = from;
+    for (; i < to; ++i) {
+      current_gain += gain_step;
+      current_left += left_step;
+      current_right += right_step;
+      rate += rate_step;
+
+      if (stage == kDecay) {
+        level *= decay_multiplier;
+        if (level <= sustain) {
+          level = sustain;
+          stage = kSustain;
+          if (sustain <= kMultiSampleSilence) {
+            stage = kDone;
+            level = 0.0f;
+          }
+        }
+      }
+      else if (stage == kRelease) {
+        level *= release_multiplier;
+        if (level < kMultiSampleSilence) {
+          level = 0.0f;
+          stage = kDone;
+        }
+      }
+      if (stage == kDone) {
+        active_ = false;
+        break;
+      }
+
+      const int64_t index = static_cast<int64_t>(position);
+      const float t = static_cast<float>(position - static_cast<double>(index));
+      float sample_left, sample_right;
+      if (kStereo) {
+        // Both channels' cubic at once, lane by lane the same arithmetic.
+        poly_float before, after;
+        loadStereoFrames(data_left, data_right, index, before, after);
+        const poly_float xm1 = before, x0 = upperPair(before), x1 = after, x2 = upperPair(after);
+        const poly_float c1 = poly_float(0.5f) * (x1 - xm1);
+        const poly_float c2 = xm1 - poly_float(2.5f) * x0 + poly_float(2.0f) * x1 - poly_float(0.5f) * x2;
+        const poly_float c3 = poly_float(0.5f) * (x2 - xm1) + poly_float(1.5f) * (x0 - x1);
+        const poly_float tt = t;
+        const poly_float value = (((c3 * tt + c2) * tt + c1) * tt + x0) * poly_float(kMultiSampleScale);
+        sample_left = value[0];
+        sample_right = value[1];
+      }
+      else
+        sample_left = sample_right = cubic(data_left, index, t);
+      if (kWidth) {
+        const float mid = 0.5f * (sample_left + sample_right);
+        const float side = 0.5f * (sample_left - sample_right) * width;
+        sample_left = mid + side;
+        sample_right = mid - side;
+      }
+      const float amplitude = level * fade * current_gain;
+      left[i] += sample_left * amplitude * current_left;
+      right[i] += sample_right * amplitude * current_right;
+      position += rate;
+    }
+    position_ = position;
+    level_ = level;
+    stage_ = stage;
+    return i;
+  }
+
   void MultiSamplePlayer::render(float* left, float* right, int num_samples, double rate_start, double rate_end,
                                  float gain, float left_gain, float right_gain) {
     if (!active_ || region_ == nullptr)
@@ -300,6 +445,23 @@ namespace vital {
     };
 
     for (int i = 0; i < num_samples; ++i) {
+      // Most of a note's life is a plain stretch; play it without the checks.
+      const int plain = plainStretch(i, num_samples, rate, rate_step, frames);
+      if (plain > 0) {
+        const bool widen = stereo && width != 1.0f;
+        if (stereo && widen)
+          i = renderStretch<true, true>(left, right, i, i + plain, data_left, data_right, width, gain_step, left_step,
+                                        right_step, rate_step, current_gain, current_left, current_right, rate);
+        else if (stereo)
+          i = renderStretch<true, false>(left, right, i, i + plain, data_left, data_right, width, gain_step, left_step,
+                                         right_step, rate_step, current_gain, current_left, current_right, rate);
+        else
+          i = renderStretch<false, false>(left, right, i, i + plain, data_left, data_right, width, gain_step, left_step,
+                                          right_step, rate_step, current_gain, current_left, current_right, rate);
+        if (!active_ || i >= num_samples)
+          break;
+      }
+
       current_gain += gain_step;
       current_left += left_step;
       current_right += right_step;

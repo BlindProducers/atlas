@@ -2806,6 +2806,83 @@ namespace {
     return 0;
   }
 
+  // Times a sustained piano-style passage with the plugin's default settings:
+  // arpeggios and chords under the sustain pedal, so many notes and their
+  // layers ring at once. Prints the load (processing time over audio time),
+  // the voices sounding and a checksum of the output; with `raw`, also writes
+  // the output as interleaved 32-bit floats for comparison between builds.
+  int manualCpu(const juce::File& file, const juce::File& raw) {
+    SynthPlugin plugin;
+    plugin.setPlayConfigDetails(0, 2, kRate, 128);
+    plugin.prepareToPlay(kRate, 128);
+    plugin.parameterChanged("osc_1_type", static_cast<float>(vital::source_types::kMultiSample));
+    setControl(plugin, "osc_1_on", 1.0f);
+    manager(plugin).loadFromUser(0, file);
+    settle(plugin);
+    if (manager(plugin).status(0).state != vital::multisample::SlotStatus::kLoaded) {
+      std::cout << "error: " << manager(plugin).status(0).error << "\n";
+      return 1;
+    }
+    std::vector<MidiEvent> events;
+    int at = kRate / 10;
+    const int chords[][4] = { { 48, 55, 60, 64 }, { 45, 52, 57, 60 }, { 41, 48, 53, 57 }, { 43, 50, 55, 59 } };
+    for (int bar = 0; bar < 8; ++bar) {
+      const int* chord = chords[bar % 4];
+      events.push_back({ at, juce::MidiMessage::controllerEvent(1, 64, 127) });
+      for (int i = 0; i < 4; ++i)
+        events.push_back({ at + 1 + i, juce::MidiMessage::noteOn(1, chord[i] - 12, 0.75f) });
+      for (int step = 0; step < 8; ++step) {
+        const int note = chord[step % 4] + 12 * (step / 4);
+        const int when = at + step * kRate / 8;
+        events.push_back({ when, juce::MidiMessage::noteOn(1, note, 0.55f + 0.05f * (step % 3)) });
+        events.push_back({ when + kRate / 10, juce::MidiMessage::noteOff(1, note) });
+      }
+      for (int i = 0; i < 4; ++i)
+        events.push_back({ at + kRate - 200, juce::MidiMessage::noteOff(1, chord[i] - 12) });
+      events.push_back({ at + kRate - 100, juce::MidiMessage::controllerEvent(1, 64, 0) });
+      at += kRate;
+    }
+    const int length = at + kRate * 2;
+    std::vector<float> output(static_cast<size_t>(length) * 2);
+    double busy = 0.0;
+    int most_voices = 0;
+    uint64_t checksum = 1469598103934665603ull;
+    for (int offset = 0; offset < length;) {
+      const int count = std::min(128, length - offset);
+      juce::AudioBuffer<float> audio(2, count);
+      audio.clear();
+      juce::MidiBuffer midi;
+      for (const MidiEvent& event : events) {
+        if (event.sample >= offset && event.sample < offset + count)
+          midi.addEvent(event.message, event.sample - offset);
+      }
+      const auto start = std::chrono::steady_clock::now();
+      plugin.processBlock(audio, midi);
+      busy += std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+      most_voices = std::max(most_voices, plugin.getEngine()->getNumActiveVoices());
+      for (int i = 0; i < count; ++i) {
+        for (int channel = 0; channel < 2; ++channel) {
+          const float value = audio.getSample(channel, i);
+          output[static_cast<size_t>(offset + i) * 2 + channel] = value;
+          uint32_t bits;
+          std::memcpy(&bits, &value, sizeof(bits));
+          checksum = (checksum ^ bits) * 1099511628211ull;
+        }
+      }
+      offset += count;
+    }
+    const double seconds = length / double(kRate);
+    std::cout << "audio " << seconds << " s, processing " << busy << " s, load " << 100.0 * busy / seconds
+              << " %, most voices " << most_voices << ", checksum " << std::hex << checksum << std::dec << "\n";
+    if (raw != juce::File()) {
+      juce::FileOutputStream stream(raw);
+      stream.setPosition(0);
+      stream.truncate();
+      stream.write(output.data(), output.size() * sizeof(float));
+    }
+    return 0;
+  }
+
   int manual(const juce::File& file, int preset) {
     LoadRequest request;
     request.file = file;
@@ -2881,6 +2958,8 @@ int main(int argc, char** argv) {
                       juce::String(argv[4]).getIntValue());
   if (flag == "--controls" && argc > 2)
     return manualControls(juce::File(juce::String(argv[2])));
+  if (flag == "--cpu" && argc > 2)
+    return manualCpu(juce::File(juce::String(argv[2])), argc > 3 ? juce::File(juce::String(argv[3])) : juce::File());
   if (flag == "--manual" && argc > 2)
     return manual(juce::File(juce::String(argv[2])), argc > 3 ? juce::String(argv[3]).getIntValue() : -1);
   if (flag == "--render" && argc > 3)

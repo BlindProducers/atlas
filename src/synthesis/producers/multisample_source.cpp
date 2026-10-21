@@ -183,20 +183,21 @@ namespace vital {
       }
     }
 
-    float left[kMultiSampleScratchSize];
-    float right[kMultiSampleScratchSize];
-    poly_float hold_value = 0.0f;
-    for (int voice = 0; voice < kVoicesPerProcessor; ++voice) {
-      const int lane = 2 * voice;
-      VoiceState& state = voices_[static_cast<size_t>(voice)];
-      bool sounding = false;
-      for (int start = 0; start < num_samples && slot_ != nullptr; start += kMultiSampleScratchSize) {
-        const int count = std::min(kMultiSampleScratchSize, num_samples - start);
-        std::fill(left, left + count, 0.0f);
-        std::fill(right, right + count, 0.0f);
+    // Each voice renders its players into its own left and right scratch; the
+    // lanes of every output sample are then put together at once.
+    float left[kVoicesPerProcessor][kMultiSampleScratchSize];
+    float right[kVoicesPerProcessor][kMultiSampleScratchSize];
+    bool sounding[kVoicesPerProcessor] {};
+    for (int start = 0; start < num_samples && slot_ != nullptr; start += kMultiSampleScratchSize) {
+      const int count = std::min(kMultiSampleScratchSize, num_samples - start);
+      bool rendered = false;
+      for (int voice = 0; voice < kVoicesPerProcessor; ++voice) {
+        const int lane = 2 * voice;
+        VoiceState& state = voices_[static_cast<size_t>(voice)];
+        std::fill(left[voice], left[voice] + count, 0.0f);
+        std::fill(right[voice], right[voice] + count, 0.0f);
         // Pitch bend, portamento and voice tuning are the bent note's distance from the tuned note.
         const float bend = midi_input[lane] - note_input[lane];
-        bool rendered = false;
         for (MultiSamplePlayer& player : state.players) {
           if (!player.active())
             continue;
@@ -209,20 +210,24 @@ namespace vital {
           float pan_left = 1.0f;
           float pan_right = 1.0f;
           MultiSamplePlayer::panGains(MultiSamplePlayer::ccPan(region, *slot_), pan_left, pan_right);
-          player.render(left, right, count, player.lastRate() > 0.0 ? player.lastRate() : rate, rate,
+          player.render(left[voice], right[voice], count, player.lastRate() > 0.0 ? player.lastRate() : rate, rate,
                         MultiSamplePlayer::ccGain(region, *slot_), pan_left, pan_right);
           rendered = true;
-          sounding = sounding || player.active();
-        }
-        if (!rendered)
-          continue;
-        for (int i = 0; i < count; ++i) {
-          raw[start + i].set(lane, left[i]);
-          raw[start + i].set(lane + 1, right[i]);
+          sounding[voice] = sounding[voice] || player.active();
         }
       }
-      state.held_samples += num_samples;
-      if (sounding && hold_enabled) {
+      // A voice without players leaves its lanes at the zero raw started with.
+      static_assert(kVoicesPerProcessor == 2, "two voices fill a poly_float's four lanes");
+      if (rendered) {
+        for (int i = 0; i < count; ++i)
+          raw[start + i] = poly_float(left[0][i], right[0][i], left[1][i], right[1][i]);
+      }
+    }
+    poly_float hold_value = 0.0f;
+    for (int voice = 0; voice < kVoicesPerProcessor; ++voice) {
+      const int lane = 2 * voice;
+      voices_[static_cast<size_t>(voice)].held_samples += num_samples;
+      if (sounding[voice] && hold_enabled) {
         hold_value.set(lane, 1.0f);
         hold_value.set(lane + 1, 1.0f);
       }
