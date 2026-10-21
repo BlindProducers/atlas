@@ -508,6 +508,7 @@ void realtimeTransitions() {
 // Defined at the end of this file, after <windows.h>, so its macros reach nothing else.
 double windowsPrivateWorkingSetMiB();
 double windowsCommitMiB();
+std::pair<double, double> windowsProcessCpuSeconds();
 #endif
 // Memory the process actually touched, as Activity Monitor reports it (on
 // Windows, the private working set Task Manager shows).
@@ -1154,10 +1155,14 @@ void idleCpu(const std::string& only) {
     };
     // User and system CPU seconds of the whole process.
     auto cpu_times = [] {
+#if JUCE_WINDOWS
+      return windowsProcessCpuSeconds();
+#else
       rusage usage {};
       getrusage(RUSAGE_SELF, &usage);
       return std::make_pair(usage.ru_utime.tv_sec + 1.0e-6 * usage.ru_utime.tv_usec,
                             usage.ru_stime.tv_sec + 1.0e-6 * usage.ru_stime.tv_usec);
+#endif
     };
     auto plugin = std::make_unique<SynthPlugin>();
     prepare(*plugin, 1.0f, chain);
@@ -1927,6 +1932,16 @@ double windowsPrivateWorkingSetMiB() {
 double windowsCommitMiB() {
   MemoryCounters counters;
   return readMemoryCounters(counters) ? counters.base.PrivateUsage / 1048576.0 : 0;
+}
+// User and system CPU seconds of the whole process (100 ns FILETIME units).
+std::pair<double, double> windowsProcessCpuSeconds() {
+  FILETIME creation {}, exit {}, kernel {}, user {};
+  if (!GetProcessTimes(GetCurrentProcess(), &creation, &exit, &kernel, &user))
+    return { 0.0, 0.0 };
+  auto seconds = [](const FILETIME& time) {
+    return ((ULONG64(time.dwHighDateTime) << 32) | time.dwLowDateTime) * 1.0e-7;
+  };
+  return { seconds(user), seconds(kernel) };
 }
 }
 #endif
