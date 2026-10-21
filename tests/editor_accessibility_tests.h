@@ -1747,7 +1747,7 @@ namespace {
     expect(second.existsAsFile(), "Escape keeps the preset");
     expect(Component::getCurrentlyFocusedComponent() == results,
            "Escape goes back to the preset table, focused " + focused_title().toStdString());
-    expect(said("Kept Focus test B"), "Escape says the preset was kept");
+    expect(!said("Kept Focus test B"), "Escape says nothing more");
 
     // Return on Move to Trash moves it; the next preset takes its place.
     expect(delete_selected(1), "Delete asks again");

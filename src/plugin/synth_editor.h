@@ -588,10 +588,11 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     FocusReturn focusForMessageBox() const;
     // Asks a yes or no question in the editor, in the inline prompt with its
     // text box hidden: the first button (`confirmLabel`) runs `confirm`,
-    // Cancel and Escape do nothing, and both go back to `target`. Used on
-    // Windows in place of a native box, which would take focus out of the plugin.
+    // Cancel (`cancelLabel`) and Escape do nothing and say nothing, and both go
+    // back to `target`.
+    // Used on Windows in place of a native box, which would take focus out of the plugin.
     void promptForConfirmation(const String& question, const String& confirmLabel, Component& target,
-                               std::function<void()> confirm, const String& cancelMessage);
+                               std::function<void()> confirm, const String& cancelLabel = "Cancel");
     // Gives the inline prompt back its text box and OK button after a question.
     void endConfirmationPrompt();
     bool isConfirmationButtonFocused() const {
@@ -1607,7 +1608,6 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     // The inline prompt's action is running (applyParameterValue): a box it
     // opens returns to the control the prompt returns to (focusForMessageBox).
     bool inline_prompt_applying_ = false;
-    String confirmation_cancel_message_;
     // Bumped by each hideInlineTextPrompt so only the last one hides the prompt.
     int inline_prompt_hide_generation_ = 0;
     String queued_effect_chain_rebuild_section_;

@@ -12701,8 +12701,7 @@ void SynthEditor::deleteSelectedPreset() {
   };
   if (kConfirmInEditor) {
     promptForConfirmation("Move " + name + " to Trash? It can be recovered from the Trash.",
-                          "Move to Trash", preset_table_, std::move(move_to_trash),
-                          "Kept " + name);
+                          "Move to Trash", preset_table_, std::move(move_to_trash));
     return;
   }
   NativeMessageBox::showYesNoBox(MessageBoxIconType::QuestionIcon, "Move preset to Trash?",
@@ -13913,7 +13912,33 @@ void SynthEditor::savePatch() {
   // (factory, bank or never saved) ask for a name and place.
   const File active = synth_.getActiveFile();
   if (active.existsAsFile() && isPresetEditable(active)) {
-    savePresetFile(active);
+    // Asked every time, so a stray Save never replaces the saved patch.
+    const String name = active.getFileNameWithoutExtension();
+    const String question = "You have made changes to \"" + name + "\". Are you sure you wish to overwrite it?";
+    Component::SafePointer<SynthEditor> safe_this(this);
+    if (kConfirmInEditor) {
+      Component* focused = Component::getCurrentlyFocusedComponent();
+      Component& target = focused != nullptr && isParentOf(focused) ? *focused
+                          : preset_menu_.isShowing() ? static_cast<Component&>(preset_menu_)
+                                                     : static_cast<Component&>(*this);
+      promptForConfirmation(question, "Save", target,
+                            [safe_this, active] {
+                              if (safe_this != nullptr)
+                                safe_this->savePresetFile(active);
+                            },
+                            "Don't save");
+      return;
+    }
+    NativeMessageBox::showAsync(MessageBoxOptions()
+                                    .withIconType(MessageBoxIconType::QuestionIcon)
+                                    .withTitle("Overwrite preset?")
+                                    .withMessage(question)
+                                    .withButton("Save")
+                                    .withButton("Don't save"),
+                                [safe_this, active](int button) {
+      if (safe_this != nullptr && button == 0)
+        safe_this->savePresetFile(active);
+    });
     return;
   }
   savePresetAs();
@@ -14122,8 +14147,7 @@ void SynthEditor::commitSavePresetDialog() {
                             [safe_this, destination] {
                               if (safe_this != nullptr)
                                 safe_this->savePresetFile(destination);
-                            },
-                            "Save cancelled. " + preset_name + " was not replaced");
+                            });
       return;
     }
     NativeMessageBox::showAsync(MessageBoxOptions()
@@ -14134,12 +14158,8 @@ void SynthEditor::commitSavePresetDialog() {
                                     .withButton("Replace")
                                     .withButton("Cancel"),
                                 [safe_this, destination](int button) {
-      if (safe_this == nullptr)
-        return;
-      if (button == 0)
+      if (safe_this != nullptr && button == 0)
         safe_this->savePresetFile(destination);
-      else
-        postPluginAnnouncement("Save cancelled", AccessibilityHandler::AnnouncementPriority::high);
     });
     return;
   }
@@ -18175,7 +18195,7 @@ void SynthEditor::promptForCustomValue(const String& title, const String& value,
 }
 
 void SynthEditor::promptForConfirmation(const String& question, const String& confirmLabel, Component& target,
-                                        std::function<void()> confirm, const String& cancelMessage) {
+                                        std::function<void()> confirm, const String& cancelLabel) {
   if (!confirm)
     return;
 
@@ -18186,7 +18206,6 @@ void SynthEditor::promptForConfirmation(const String& question, const String& co
   pending_modulation_created_ = false;
   parameter_value_prompt_visible_ = true;
   confirmation_prompt_visible_ = true;
-  confirmation_cancel_message_ = cancelMessage;
   pending_parameter_value_id_.clear();
   pending_custom_value_title_ = confirmLabel;
   pending_custom_value_apply_ = [confirm = std::move(confirm)](const String&) { confirm(); };
@@ -18200,7 +18219,8 @@ void SynthEditor::promptForConfirmation(const String& question, const String& co
   modulation_amount_ok_.setButtonText(confirmLabel);
   modulation_amount_ok_.setTitle(confirmLabel);
   modulation_amount_ok_.setDescription({});
-  modulation_amount_cancel_.setTitle("Cancel");
+  modulation_amount_cancel_.setButtonText(cancelLabel);
+  modulation_amount_cancel_.setTitle(cancelLabel);
   modulation_amount_cancel_.setDescription({});
 
   modulation_amount_prompt_.setVisible(true);
@@ -18228,8 +18248,8 @@ void SynthEditor::promptForConfirmation(const String& question, const String& co
 
 void SynthEditor::endConfirmationPrompt() {
   confirmation_prompt_visible_ = false;
-  confirmation_cancel_message_.clear();
   modulation_amount_ok_.setButtonText("OK");
+  modulation_amount_cancel_.setButtonText("Cancel");
 }
 
 void SynthEditor::rememberPromptFocus(Component& target) {
@@ -18641,7 +18661,6 @@ void SynthEditor::cancelInlineTextPrompt() {
   if (parameter_value_prompt_visible_) {
     parameter_value_prompt_visible_ = false;
     const bool confirmation = confirmation_prompt_visible_;
-    const String cancel_message = confirmation_cancel_message_;
     endConfirmationPrompt();
     const String parameter_id = pending_parameter_value_id_;
     pending_parameter_value_id_.clear();
@@ -18649,11 +18668,8 @@ void SynthEditor::cancelInlineTextPrompt() {
     pending_custom_value_apply_ = nullptr;
     returnFocusFromPrompt(false, parameter_id);
     hideInlineTextPrompt();
-    // A question answered No says what was kept, whatever the speech categories.
-    if (confirmation)
-      postPresetActionAnnouncement(cancel_message.isNotEmpty() ? cancel_message : String("Cancelled"),
-                                   AccessibilityHandler::AnnouncementPriority::medium);
-    else
+    // A question answered No says nothing: the focus going back is enough.
+    if (!confirmation)
       postPluginAnnouncement("Value entry cancelled", AccessibilityHandler::AnnouncementPriority::medium);
     return;
   }
