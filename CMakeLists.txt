@@ -181,6 +181,7 @@ target_sources(Atlas PRIVATE
   src/synthesis/modules/defuse_module.cpp
   src/synthesis/modules/scream_module.cpp
   src/synthesis/filters/scream_filter.cpp
+  src/synthesis/filters/scream_tanh.cpp
   src/synthesis/modules/spectral_compressor_module.cpp
   src/synthesis/modules/spectral_lock_module.cpp
   src/synthesis/effects/spectral_lock/spectral_lock_engine.cpp
@@ -263,6 +264,10 @@ set_source_files_properties(${ATLAS_OPENB3_SOURCES} src/synthesis/producers/open
   src/synthesis/modules/openb3_module.cpp src/synthesis/modules/scanner_vibrato_module.cpp PROPERTIES
   COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:precise>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffp-contract=off;-fno-fast-math>")
 set_source_files_properties(${ATLAS_ZL_COMPRESSOR_SOURCES} ${ATLAS_MAIM_SOURCES} PROPERTIES
+  COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:precise>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffp-contract=off;-fno-fast-math>")
+# The Scream filter's feedback loop amplifies any rounding difference, so its
+# SVFs and waveshaper round alike on arm64 and x64.
+set_source_files_properties(src/synthesis/filters/scream_filter.cpp src/synthesis/filters/scream_tanh.cpp PROPERTIES
   COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:precise>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffp-contract=off;-fno-fast-math>")
 
 # Braids is written for the firmware's two's-complement integer arithmetic.
