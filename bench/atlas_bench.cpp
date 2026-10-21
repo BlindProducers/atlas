@@ -133,6 +133,9 @@ namespace {
       scenarios.push_back({ juce::String("fx-") + kEffectIds[effect], juce::String(kEffectIds[effect]) + " alone", 4,
                             effectChain({ effect }) });
     }
+    // Spectral Lock's default mode is a filterbank; its Spectral mode runs an FFT.
+    scenarios.push_back({ "fx-spectral-lock-spectral", "spectral lock in Spectral mode", 4,
+                          effectChain({ kSpectralLock }) + Settings { { "fx_slot_1_spectral_lock_mode", 1 } } });
     return scenarios;
   }
 
@@ -166,6 +169,7 @@ namespace {
     bool effects = false;
     bool filters = false;
     bool child = false;
+    juce::File save_audio;   // where each build's timed output goes (--save-audio)
   };
 
   std::vector<Scenario> allScenarios(const Options& options) {
@@ -243,6 +247,7 @@ namespace {
     double rms = 0.0;
     bool finite = true;
     juce::uint64 checksum = 14695981039346656037ull;  // FNV-1a of the timed output's bits
+    std::vector<float> audio;  // the timed output, interleaved stereo (with --save-audio)
   };
 
   // Plays chords of `notes` notes, one a second, each held for 0.8 s, and
@@ -263,6 +268,8 @@ namespace {
     double sum_squares = 0.0;
     long long measured_samples = 0;
     Measurement result;
+    if (options.save_audio != juce::File())
+      result.audio.reserve(size_t(2 * (total - warmup + block)));
 
     for (int position = 0; position < total; position += block) {
       midi.clear();
@@ -294,6 +301,13 @@ namespace {
         }
       }
       measured_samples += block;
+      if (options.save_audio != juce::File()) {
+        const int output_channels = instance.getTotalNumOutputChannels();
+        for (int i = 0; i < block; ++i) {
+          for (int channel = 0; channel < 2; ++channel)
+            result.audio.push_back(audio.getSample(std::min(channel, std::max(0, output_channels - 1)), i));
+        }
+      }
     }
 
     const double block_duration = block / options.sample_rate;
@@ -397,6 +411,11 @@ namespace {
 
       Measurement measurement;
       runOnAudioThread(options, [&] { measurement = render(*instance, scenario, options); });
+      if (options.save_audio != juce::File()) {
+        options.save_audio.createDirectory();
+        options.save_audio.getChildFile(scenario.name + ".f32")
+            .replaceWithData(measurement.audio.data(), measurement.audio.size() * sizeof(float));
+      }
 
       std::cout << "  " << scenario.name.paddedRight(' ', 22) << juce::String(measurement.load_percent, 2) << " % load, p99 "
                 << juce::String(measurement.p99_block_percent, 1) << " % of a block";
@@ -563,6 +582,54 @@ namespace {
     std::cout << "\n";
   }
 
+  std::vector<float> readAudio(const juce::File& file) {
+    juce::MemoryBlock data;
+    file.loadFileAsData(data);
+    std::vector<float> samples(data.getSize() / sizeof(float));
+    std::memcpy(samples.data(), data.getData(), samples.size() * sizeof(float));
+    return samples;
+  }
+
+  // How far each build's audio is from the first build's, in dB below the
+  // first build's level. A difference far below hearing (-100 dB and lower)
+  // keeps the sound; a scenario that varies between rounds of one build
+  // differs for that reason alone.
+  void compareAudio(const juce::File& folder, int builds, const juce::Array<juce::var>& plugins) {
+    auto* names = plugins.isEmpty() ? nullptr : plugins[0].getProperty("scenarios", {}).getDynamicObject();
+    if (names == nullptr || builds < 2)
+      return;
+    std::cout << "\nAudio difference from [A] (RMS of the difference, in dB below [A]'s RMS; written to "
+              << folder.getFullPathName() << ")\n";
+    for (const auto& entry : names->getProperties()) {
+      const juce::String name = entry.name.toString();
+      const auto base = readAudio(folder.getChildFile("A").getChildFile(name + ".f32"));
+      std::cout << name.paddedRight(' ', 26);
+      for (int i = 1; i < builds; ++i) {
+        const auto letter = juce::String::charToString(char('A' + i));
+        const auto other = readAudio(folder.getChildFile(letter).getChildFile(name + ".f32"));
+        if (base.empty() || other.size() != base.size()) {
+          std::cout << juce::String("-").paddedRight(' ', 34);
+          continue;
+        }
+        double signal = 0.0, difference = 0.0, peak = 0.0;
+        for (size_t sample = 0; sample < base.size(); ++sample) {
+          const double delta = double(other[sample]) - base[sample];
+          signal += double(base[sample]) * base[sample];
+          difference += delta * delta;
+          peak = std::max(peak, std::abs(delta));
+        }
+        juce::String text = "[" + letter + "] ";
+        if (difference == 0.0)
+          text << "identical";
+        else
+          text << juce::String(10.0 * std::log10(difference / std::max(signal, 1.0e-30)), 1) << " dB (peak "
+               << juce::String(peak, 7) << ")";
+        std::cout << text.paddedRight(' ', 34);
+      }
+      std::cout << (steadyChecksum(entry.value).isEmpty() ? "varies between rounds of [A]" : "") << "\n";
+    }
+  }
+
   juce::StringArray childArguments(const Options& options, const juce::String& plugin, const juce::File& out) {
     juce::StringArray args;
     args.add(juce::File::getSpecialLocation(juce::File::currentExecutableFile).getFullPathName());
@@ -574,6 +641,8 @@ namespace {
       args.add("--effects");
     if (options.filters)
       args.add("--filters");
+    if (options.save_audio != juce::File())
+      args.addArray({ "--save-audio", options.save_audio.getFullPathName() });
     if (!options.only.isEmpty())
       args.addArray({ "--only", options.only.joinIntoString(",") });
     return args;
@@ -588,7 +657,12 @@ namespace {
         std::cout << "round " << round + 1 << "/" << options.rounds << ", [" << char('A' + i) << "] "
                   << options.plugins[i] << std::endl;
         juce::ChildProcess child;
-        if (!child.start(childArguments(options, options.plugins[i], temp))) {
+        // Each build's audio goes to its own folder, from the first round only.
+        Options child_options = options;
+        child_options.save_audio = round == 0 && options.save_audio != juce::File()
+                                       ? options.save_audio.getChildFile(juce::String::charToString(char('A' + i)))
+                                       : juce::File();
+        if (!child.start(childArguments(child_options, options.plugins[i], temp))) {
           std::cerr << "cannot start the benchmark process\n";
           return 1;
         }
@@ -630,6 +704,8 @@ namespace {
       std::cout << "results written to " << options.out.getFullPathName() << "\n";
     }
     printComparison(merged);
+    if (options.save_audio != juce::File())
+      compareAudio(options.save_audio, options.plugins.size(), merged);
     return 0;
   }
 
@@ -659,7 +735,7 @@ namespace {
       "      Times each build. The first is the baseline the others are compared with.\n"
       "  AtlasBench --compare <results.json> [<results.json> ...]\n"
       "      Prints saved results side by side.\n"
-      "  AtlasBench --list [--effects]\n"
+      "  AtlasBench --list [--effects | --filters]\n"
       "\n"
       "options:\n"
       "  --out <file>        save the results as JSON\n"
@@ -667,6 +743,8 @@ namespace {
       "  --seconds <s>       audio timed per scenario and round (default 6)\n"
       "  --only <a,b*>       only these scenarios (wildcards allowed)\n"
       "  --effects           one scenario per effect instead of the standard set\n"
+      "  --filters           one scenario per voice filter model instead of the standard set\n"
+      "  --save-audio <dir>  keep each build's audio there and print how far it is from [A]'s\n"
       "  --block <n>         block size (default 128)\n"
       "  --rate <hz>         sample rate (default 48000)\n"
       "  --core <n>          pin the audio thread to this logical core\n"
@@ -707,6 +785,8 @@ int main(int argc, char** argv) {
       options.effects = true;
     else if (arg == "--filters")
       options.filters = true;
+    else if (arg == "--save-audio" && has_value)
+      options.save_audio = juce::File::getCurrentWorkingDirectory().getChildFile(argv[++i]);
     else if (arg == "--child")
       options.child = true;
     else if (arg == "--list")
