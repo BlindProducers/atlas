@@ -181,6 +181,8 @@ namespace vital {
       kGlitchDelay,
       kOpenWurliAmp,
       kScannerVibrato,
+      kAnalogueCompressor,
+      kMaim,
       kNumEffects
     };
 

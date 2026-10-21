@@ -65,9 +65,12 @@ namespace vital {
     for (int arp = 0; arp < kNumArpeggiators; ++arp) {
       const std::string prefix = "arp_" + std::to_string(arp + 1) + "_";
       arp_on_[arp] = createBaseControl(prefix + "on");
-      createBaseControl(prefix + "time_mode");
-      createBaseControl(prefix + "sync_rate");
-      createBaseControl(prefix + "free_rate");
+      // The arpeggiator runs outside the voices (SynthBase) and reads these
+      // three as the engine's modulation leaves them, so an LFO, envelope or
+      // wheel can drive its speed.
+      createMonoModControl(prefix + "time_mode");
+      createMonoModControl(prefix + "sync_rate");
+      createMonoModControl(prefix + "free_rate");
       createBaseControl(prefix + "style");
       createBaseControl(prefix + "play_order");
       createBaseControl(prefix + "gate");
@@ -369,14 +372,6 @@ namespace vital {
     poly_float* bus2_output = output(kBus2Out)->buffer;
     poly_float* bus3_output = output(kBus3Out)->buffer;
     poly_float* direct_output = output(kDirectOut)->buffer;
-    utils::zeroBuffer(filter1_output, num_samples);
-    utils::zeroBuffer(filter2_output, num_samples);
-    utils::zeroBuffer(raw_output, num_samples);
-    utils::zeroBuffer(bus1_output, num_samples);
-    utils::zeroBuffer(bus2_output, num_samples);
-    utils::zeroBuffer(bus3_output, num_samples);
-    utils::zeroBuffer(direct_output, num_samples);
-
     bool filter1_on = isFilter1On();
     bool filter2_on = isFilter2On();
     FilterRouting routing = filterRouting(filter1_on, filter2_on,
@@ -385,6 +380,43 @@ namespace vital {
     auto sourceDestination = [routing, filter1_on, filter2_on](const Value* destination) {
       return filterSourceDestination(destination->value(), routing, filter1_on, filter2_on);
     };
+    // The outputs (bits kToFilter1 to kDirectOut) a rendered slot adds to.
+    auto slotOutputs = [&](int i) {
+      int destination = sourceDestination(slot_destinations_[i]);
+      bool raw = destination == constants::kEffects;
+      bool filter1 = destination == constants::kFilter1 || destination == constants::kDualFilters;
+      bool filter2 = destination == constants::kFilter2 || destination == constants::kDualFilters;
+      unsigned mask = 0;
+      if (raw || (!filter2 && filter1 && !filter1_on) ||
+                 (!filter1 && filter2 && !filter2_on) ||
+                 (filter1 && filter2 && !filter1_on && !filter2_on))
+        mask |= 1u << kRawOut;
+      if (filter1) mask |= 1u << kToFilter1;
+      if (filter2) mask |= 1u << kToFilter2;
+      if (destination == constants::kBus1) mask |= 1u << kBus1Out;
+      if (destination == constants::kBus2) mask |= 1u << kBus2Out;
+      if (destination == constants::kBus3) mask |= 1u << kBus3Out;
+      if (destination == constants::kDirectOut) mask |= 1u << kDirectOut;
+      return mask;
+    };
+
+    // Clear only the outputs written this block or the last: every voice has
+    // seven, and clearing all of them each block was a real share of a voice.
+    unsigned written = 0;
+    for (int i = 0; i < kNumOscillators; ++i) {
+      if (audible[i] && (rendered & (1u << i)) != 0)
+        written |= slotOutputs(i);
+    }
+    // An output no longer written is cleared whole, as a later, longer block
+    // reads past this one's samples.
+    for (int index = kToFilter1; index <= kDirectOut; ++index) {
+      const unsigned bit = 1u << index;
+      if (written & bit)
+        utils::zeroBuffer(output(index)->buffer, num_samples);
+      else if (written_outputs_ & bit)
+        utils::zeroBuffer(output(index)->buffer, output(index)->buffer_size);
+    }
+    written_outputs_ = written;
 
     // Whether a Multi-sample instrument holds the voice open.
     poly_float instrument_hold = 0.0f;
@@ -429,31 +461,20 @@ namespace vital {
       const poly_float* buffer = slots_[i]->output(SourceSlotModule::kLevelled)->buffer;
       const ZoneGain& zone_gain = zone_gains[i];
       const poly_float* ratio = gating && !slots_[i]->holdsVoiceOpen() ? envelope_ratio : nullptr;
-      int destination = sourceDestination(slot_destinations_[i]);
-      bool raw = destination == constants::kEffects;
-      bool filter1 = destination == constants::kFilter1 || destination == constants::kDualFilters;
-      bool filter2 = destination == constants::kFilter2 || destination == constants::kDualFilters;
-      bool bus1 = destination == constants::kBus1;
-      bool bus2 = destination == constants::kBus2;
-      bool bus3 = destination == constants::kBus3;
-      bool direct_out = destination == constants::kDirectOut;
-
-      if (raw || (!filter2 && filter1 && !filter1_on) ||
-                 (!filter1 && filter2 && !filter2_on) ||
-                 (filter1 && filter2 && !filter1_on && !filter2_on)) {
+      const unsigned outputs = slotOutputs(i);
+      if (outputs & (1u << kRawOut))
         addZonedBuffer(raw_output, buffer, zone_gain, num_samples, ratio);
-      }
-      if (filter1)
+      if (outputs & (1u << kToFilter1))
         addZonedBuffer(filter1_output, buffer, zone_gain, num_samples, ratio);
-      if (filter2)
+      if (outputs & (1u << kToFilter2))
         addZonedBuffer(filter2_output, buffer, zone_gain, num_samples, ratio);
-      if (bus1)
+      if (outputs & (1u << kBus1Out))
         addZonedBuffer(bus1_output, buffer, zone_gain, num_samples, ratio);
-      if (bus2)
+      if (outputs & (1u << kBus2Out))
         addZonedBuffer(bus2_output, buffer, zone_gain, num_samples, ratio);
-      if (bus3)
+      if (outputs & (1u << kBus3Out))
         addZonedBuffer(bus3_output, buffer, zone_gain, num_samples, ratio);
-      if (direct_out)
+      if (outputs & (1u << kDirectOut))
         addZonedBuffer(direct_output, buffer, zone_gain, num_samples, ratio);
     }
   }

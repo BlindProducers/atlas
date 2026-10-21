@@ -24,12 +24,18 @@
 #include "convolution_reverb_module.h"
 #include "synth_strings.h"
 #include "multisample_manager.h"
+#include "speech_manager.h"
+#include "speech_slot.h"
 
 #include <limits>
 #include <optional>
 
 namespace {
   constexpr const char* kFxAutomationStateKey = "fx_automation_slots";
+  // Where in the song each Speech slot's notes start and which stretches
+  // have played (SpeechSlot), saved with the host's project rather than
+  // with presets.
+  constexpr const char* kSpeechSongKey = "speech_song";
 
   std::string fxBusPrefix(int bus) {
     return bus == 0 ? "" : "bus_" + std::to_string(bus) + "_";
@@ -60,7 +66,7 @@ namespace {
       "erosion_", "floaty_delay_", "spectral_compressor_", "scream_", "tremolo_pan_", "tape_", "defuse_", "suppressor_", "trance_gate_", "spectral_lock_", "resonator_",
       "analoguechorus_", "analogueflanger_", "analogueecho_",
       "analoguerotary_", "analoguespring_", "analoguewah_", "spectral_balance_", "glitch_delay_",
-      "openwurli_amp_", "scanner_vibrato_"
+      "openwurli_amp_", "scanner_vibrato_", "analoguecompressor_", "maim_"
     };
     for (const auto& prefix : prefixes) {
       if (name.rfind(prefix, 0) == 0)
@@ -169,6 +175,8 @@ SynthPlugin::SynthPlugin() {
       bridge->setEnvelopeSyncContext(controls_.at(prefix + "_tempo_sync"), controls_.at("beats_per_minute"));
     }
     bridge->setListener(this);
+    // The editor's gestures on it mark the user's changes for undo.
+    bridge->addListener(&undo_gesture_listener_);
     bridge_lookup_[engine_name] = bridge;
     addParameter(bridge);
   }
@@ -221,6 +229,9 @@ void SynthPlugin::endChangeGesture(const std::string& name) {
 }
 
 void SynthPlugin::setValueNotifyHost(const std::string& name, vital::mono_float value) {
+  // A value MIDI learn or the audio thread set is where undo starts from.
+  if (!MessageManager::existsAndIsCurrentThread())
+    undo_history_.absorbExternalChange(name);
   const auto direct = bridge_lookup_.find(name);
   if (direct != bridge_lookup_.end()) {
     vital::mono_float plugin_value = direct->second->convertToPluginValue(value);
@@ -243,9 +254,27 @@ void SynthPlugin::StateChangeNotifier::handleAsyncUpdate() {
 }
 
 void SynthPlugin::markStateChanged() {
+  markStateChanged(std::string());
+}
+
+void SynthPlugin::markStateChanged(const std::string& undoBlock) {
+  if (restoring_state_ || !MessageManager::existsAndIsCurrentThread())
+    return;
+  undo_history_.noteStructureEdit(undoBlock);
+  state_change_notifier_.triggerAsyncUpdate();
+}
+
+void SynthPlugin::notifyHostStateChanged() {
   if (restoring_state_ || !MessageManager::existsAndIsCurrentThread())
     return;
   state_change_notifier_.triggerAsyncUpdate();
+}
+
+void SynthPlugin::applyUndoValue(const std::string& name, vital::mono_float value) {
+  beginChangeGesture(name);
+  valueChanged(name, value);
+  setValueNotifyHost(name, value);
+  endChangeGesture(name);
 }
 
 void SynthPlugin::pauseProcessing(bool pause) {
@@ -363,7 +392,9 @@ void SynthPlugin::updateLatencyAfterControlChange(const std::string& name) {
           name.compare(start, std::string::npos, "spectral_gate_fft_size") == 0 ||
           name.compare(start, std::string::npos, "spectral_lock_mode") == 0 ||
           name.compare(start, std::string::npos, "filter_fx_model") == 0 ||
-          name.compare(start, std::string::npos, "filter_fx_style") == 0;
+          name.compare(start, std::string::npos, "filter_fx_style") == 0 ||
+          name.compare(start, std::string::npos, "maim_encoder") == 0 ||
+          name.compare(start, std::string::npos, "maim_lpc_rate") == 0;
     }
   }
   if (affects_latency) {
@@ -423,6 +454,11 @@ void SynthPlugin::processBlock(AudioSampleBuffer& buffer, MidiBuffer& midi_messa
     multisample_manager_->waitForPendingLoads(300000);
     multisample_manager_->processPendingResults(false);
   }
+  // Likewise for Speech text still being rendered.
+  if (isNonRealtime() && speech_manager_->hasPendingWork()) {
+    speech_manager_->waitForPendingWork(300000);
+    speech_manager_->processPendingResults(false);
+  }
 
   updateHostLatency();
 
@@ -449,6 +485,9 @@ void SynthPlugin::processBlock(AudioSampleBuffer& buffer, MidiBuffer& midi_messa
     if (position_info_.bpm)
       engine_->setBpm(position_info_.bpm);
 
+    const bool looping = position_info_.isLooping && position_info_.ppqLoopEnd > position_info_.ppqLoopStart;
+    song_loop_start_ = looping ? position_info_.ppqLoopStart : 0.0;
+    song_loop_end_ = looping ? position_info_.ppqLoopEnd : 0.0;
     if (is_playing && position_info_.bpm > 0.0) {
       double bps = position_info_.bpm / kSecondsPerMinute;
       last_seconds_time_ = position_info_.ppqPosition / bps;
@@ -459,6 +498,10 @@ void SynthPlugin::processBlock(AudioSampleBuffer& buffer, MidiBuffer& midi_messa
     engine_->allNotesOff(0);
     clearArpeggiators();
   }
+  // Playback without a song position sings the Speech text from its first
+  // syllable; with one, the slots count the song's notes (SpeechSlot).
+  if (!was_playing_ && is_playing)
+    engine_->rewindSpeech();
   was_playing_ = is_playing;
   engine_->setTransportPlaying(is_playing);
 
@@ -498,7 +541,14 @@ AudioProcessorEditor* SynthPlugin::createEditor() {
 }
 
 void SynthPlugin::parameterChanged(const std::string& name, vital::mono_float value) {
+  // Inside one of the editor's gestures the change is the user's, a step for
+  // undo; otherwise the host or its automation made it, and undo starts from it.
+  const bool user_edit = undo_history_.isRecordingUserEdit();
+  if (user_edit)
+    undo_history_.noteValueEdit(name);
   valueChangedExternal(name, value);
+  if (!user_edit)
+    undo_history_.absorbExternalChange(name);
   const auto direct = bridge_lookup_.find(name);
   if (direct == bridge_lookup_.end()) {
     if (auto* proxy = fxAutomationParameterForTarget(name)) {
@@ -508,7 +558,7 @@ void SynthPlugin::parameterChanged(const std::string& name, vital::mono_float va
     else {
       // An editor control the host does not see (an effect's parameters, an
       // oscillator type's own controls): the host learns of it no other way.
-      markStateChanged();
+      notifyHostStateChanged();
     }
   }
   updateLatencyAfterControlChange(name);
@@ -962,6 +1012,27 @@ void SynthPlugin::getStateInformation(MemoryBlock& dest_data) {
   json data = LoadSave::stateToJson(this, getCallbackLock());
   data["tuning"] = getTuning()->stateToJson();
   data[kFxAutomationStateKey] = fxAutomationAssignmentsToJson();
+  std::vector<double> song_notes[vital::kNumOscillators];
+  std::vector<vital::SpeechSlot::Range> song_played[vital::kNumOscillators];
+  bool any_song = false;
+  {
+    ScopedLock lock(getCallbackLock());
+    for (int i = 0; i < vital::kNumOscillators; ++i) {
+      song_notes[i] = engine_->getSpeechSlot(i)->songNotes();
+      song_played[i] = engine_->getSpeechSlot(i)->playedRanges();
+      any_song = any_song || !song_notes[i].empty() || !song_played[i].empty();
+    }
+  }
+  if (any_song) {
+    json slots = json::array();
+    for (int i = 0; i < vital::kNumOscillators; ++i) {
+      json played = json::array();
+      for (const vital::SpeechSlot::Range& range : song_played[i])
+        played.push_back({ range.start, range.end });
+      slots.push_back({ { "notes", song_notes[i] }, { "played", std::move(played) } });
+    }
+    data[kSpeechSongKey] = std::move(slots);
+  }
 
   // The JSON text and a terminating NUL, as MemoryOutputStream::writeString
   // wrote them, without its copies of the text.
@@ -978,6 +1049,9 @@ void SynthPlugin::setStateInformation(const void* data, int size_in_bytes) {
     explicit Restoring(bool& restoring) : flag(restoring) { flag = true; }
     ~Restoring() { flag = false; }
   } restoring(restoring_state_);
+  // The host's own state (a project, the host's undo, a host preset): the
+  // patch's undo history no longer fits it.
+  undo_history_.clear();
 
   // Parse while this instance still plays: only applying the state needs
   // processing paused. The state is JSON text, normally ending in a NUL.
@@ -1011,6 +1085,9 @@ void SynthPlugin::setStateInformation(const void* data, int size_in_bytes) {
       // jsonToState takes the state over; read the rest first.
       const bool has_fx_automation = json_data.is_object() && json_data.count(kFxAutomationStateKey);
       const bool has_tuning = json_data.is_object() && json_data.count("tuning");
+      const bool has_song = json_data.is_object() && json_data.count(kSpeechSongKey) &&
+                            json_data[kSpeechSongKey].is_array();
+      const json song = has_song ? std::move(json_data[kSpeechSongKey]) : json();
       const json fx_automation = has_fx_automation ? std::move(json_data[kFxAutomationStateKey]) : json();
       const json tuning = has_tuning ? std::move(json_data["tuning"]) : json();
       LoadSave::jsonToState(this, save_info_, std::move(json_data));
@@ -1023,6 +1100,25 @@ void SynthPlugin::setStateInformation(const void* data, int size_in_bytes) {
 
       if (has_tuning)
         getTuning()->jsonToState(tuning);
+
+      for (int i = 0; i < vital::kNumOscillators; ++i) {
+        std::vector<double> notes;
+        std::vector<vital::SpeechSlot::Range> played;
+        const json* slot = has_song && i < static_cast<int>(song.size()) && song[i].is_object() ? &song[i] : nullptr;
+        if (slot != nullptr && slot->count("notes") && (*slot)["notes"].is_array()) {
+          for (const json& note : (*slot)["notes"]) {
+            if (note.is_number())
+              notes.push_back(note.get<double>());
+          }
+        }
+        if (slot != nullptr && slot->count("played") && (*slot)["played"].is_array()) {
+          for (const json& range : (*slot)["played"]) {
+            if (range.is_array() && range.size() == 2 && range[0].is_number() && range[1].is_number())
+              played.push_back({ range[0].get<double>(), range[1].get<double>() });
+          }
+        }
+        engine_->getSpeechSlot(i)->setSong(std::move(notes), std::move(played));
+      }
     }
     catch (const json::exception& e) {
       std::string error = "There was an error open the preset. Preset file is corrupted.";
@@ -1040,8 +1136,11 @@ void SynthPlugin::setStateInformation(const void* data, int size_in_bytes) {
   suspendProcessing(false);
 
   SynthGuiInterface* editor = getGuiInterface();
-  if (editor)
+  if (editor) {
     editor->updateFullGui();
+    // The editor is open: what the user does next starts from this state.
+    undo_history_.ensureBaseline();
+  }
 }
 
 AudioProcessor* JUCE_CALLTYPE createPluginFilter() {

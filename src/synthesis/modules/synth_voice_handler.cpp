@@ -31,6 +31,7 @@
 #include "modulation_connection_processor.h"
 #include "futils.h"
 #include "multisample_slot.h"
+#include "speech_slot.h"
 
 #include <cstdlib>
 
@@ -308,6 +309,16 @@ namespace vital {
     data_->mod_sources["mod_wheel"] = smooth_mod_wheel->output();
     data_->mod_sources["pitch_wheel"] = pitch_wheel_percent();
 
+    // A parameter outside the voices (an effect's mix, say) has no voice to
+    // take a wheel from, and must keep following it after the notes have
+    // ended, so a route to one reads the wheel's last position on any channel
+    // instead of a voice's (SynthBase::createModulationChange swaps it in).
+    SmoothControlSource* smooth_global_mod_wheel = new SmoothControlSource();
+    smooth_global_mod_wheel->plug(global_mod_wheel(), SmoothControlSource::kTarget);
+    addMonoProcessor(smooth_global_mod_wheel);
+    mono_mod_sources_["mod_wheel"] = smooth_global_mod_wheel->output();
+    mono_mod_sources_["pitch_wheel"] = global_pitch_wheel_percent();
+
     createStatusOutput("note", note_percentage_->output());
     createStatusOutput("note_in_octave", note_in_octave());
     createStatusOutput("aftertouch" ,aftertouch());
@@ -409,6 +420,53 @@ namespace vital {
     addProcessor(amplitude_);
   }
 
+  void SynthVoiceHandler::prepareSpeechHolds(int num_samples) {
+    // Keyboard notes down where the block starts, and where in the block
+    // (in oversampled samples, as the voices' triggers count) they are
+    // released. A note ringing on the sustain pedal is not down.
+    constexpr int kFirstArpChannel = 16;
+    const int oversample = getOversampleAmount();
+    int held = 0;
+    std::array<int, SpeechSlot::kMaxHeldReleases> releases;
+    int num_releases = 0;
+    for (Voice* voice : activeVoices()) {
+      if (voice->state().channel >= kFirstArpChannel)
+        continue;
+      const bool has_event = voice->hasNewEvent();
+      const int offset = has_event ? voice->event_sample() * oversample : -1;
+      const bool event_now = has_event && offset < num_samples;
+      int release = -1;
+      if (voice->key_state() == Voice::kHeld) {
+        // Killed to free the voice for another note.
+        if (event_now && voice->state().event == kVoiceKill)
+          release = offset;
+      }
+      else if (voice->key_state() == Voice::kReleased && has_event && voice->state().event == kVoiceOff &&
+               voice->last_key_state() == Voice::kHeld) {
+        if (event_now)
+          release = offset;
+      }
+      else
+        continue;
+
+      if (release < 0)
+        held++;
+      else if (release > 0 && num_releases < static_cast<int>(releases.size())) {
+        held++;
+        releases[static_cast<size_t>(num_releases++)] = release;
+      }
+    }
+
+    for (int i = 0; i < kNumOscillators; ++i) {
+      SpeechSlot* speech = producers_->slot(i)->getSpeech();
+      // An arpeggiator's notes move on through the text whatever keys feed it.
+      if (producers_->sourceHasActiveArp(i))
+        speech->setHeldNotes(0, nullptr, 0);
+      else
+        speech->setHeldNotes(held, releases.data(), num_releases);
+    }
+  }
+
   void SynthVoiceHandler::process(int num_samples) {
     poly_mask reset_mask = reset()->trigger_mask;
     if (reset_mask.anyMask())
@@ -420,8 +478,12 @@ namespace vital {
     const poly_mask rendered_voice_mask = getCurrentVoiceMask();
     const Voice* rendered_voice = getCurrentVoice();
     const bool voices_rendered = getNumActiveVoices() > 0;
+    prepareSpeechHolds(num_samples);
     VoiceHandler::process(num_samples);
     mixMultiSampleTails(num_samples, voices_rendered);
+    // Speech slots time note-ons to group a chord on one syllable.
+    for (int i = 0; i < kNumOscillators; ++i)
+      producers_->slot(i)->getSpeech()->advanceClock(num_samples, getSampleRate());
     int num_voices = getNumActiveVoices();
     num_voices_.buffer[0] = num_voices;
     note_retriggered_.clearTrigger();
@@ -590,6 +652,11 @@ namespace vital {
     Output* output = getModulationSource(source);
     if (output != nullptr && output->owner != nullptr)
       output->owner->enable(false);
+  }
+
+  Output* SynthVoiceHandler::getMonoModulationSource(const std::string& source) {
+    const auto found = mono_mod_sources_.find(source);
+    return found == mono_mod_sources_.end() ? nullptr : found->second;
   }
 
   void SynthVoiceHandler::enableModulationConnection(ModulationConnectionProcessor* processor) {

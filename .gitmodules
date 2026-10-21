@@ -2,6 +2,7 @@
 	path = third_party/JUCE8
 	url = https://github.com/juce-framework/JUCE.git
 	shallow = true
+	ignore = dirty
 [submodule "third_party/concurrentqueue"]
 	path = third_party/concurrentqueue
 	url = https://github.com/cameron314/concurrentqueue.git
@@ -44,3 +45,11 @@
 	url = https://github.com/michele-perrone/OpenB3.git
 	shallow = true
 	update = none
+[submodule "third_party/espeak-ng"]
+	path = third_party/espeak-ng
+	url = https://github.com/espeak-ng/espeak-ng.git
+	shallow = true
+[submodule "third_party/opus"]
+	path = third_party/opus
+	url = https://github.com/xiph/opus.git
+	shallow = true

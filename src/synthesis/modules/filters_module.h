@@ -92,6 +92,9 @@ namespace vital {
       std::shared_ptr<Output> filter_1_amplitude_;
       std::shared_ptr<Output> filter_2_amplitude_;
       bool envelope_before_[2] { false, false };
+      // Outputs routed to last block, cleared when nothing routes to them now.
+      // All at first: a new voice copy has not cleared its buffers yet.
+      unsigned written_outputs_ = (1u << (kDirectOut + 1)) - 1;
       std::array<int, poly_float::kSize> tail_hold_ {};
       std::array<int, poly_float::kSize> kill_remaining_ {};
       std::array<bool, poly_float::kSize> killed_ {};

@@ -40,12 +40,55 @@ set(ATLAS_JUCE_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/third_party/JUCE8" CACHE PATH
 foreach(dependency "${ATLAS_JUCE_SOURCE}/CMakeLists.txt"
                    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/nlohmann_json/include/nlohmann/json.hpp"
                    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/concurrentqueue/concurrentqueue.h"
-                   "${CMAKE_CURRENT_SOURCE_DIR}/third_party/kissfft/kissfft.hh")
+                   "${CMAKE_CURRENT_SOURCE_DIR}/third_party/kissfft/kissfft.hh"
+                   "${CMAKE_CURRENT_SOURCE_DIR}/third_party/espeak-ng/CMakeLists.txt")
   if(NOT EXISTS "${dependency}")
     message(FATAL_ERROR "Missing ${dependency}. Fetch the submodules with: git submodule update --init")
   endif()
 endforeach()
+
+# Atlas's changes to JUCE, applied to the submodule's working tree once (a
+# patch that already applies in reverse is in place). third_party/README.atlas.md
+# says what each one does.
+find_package(Git REQUIRED)
+file(GLOB ATLAS_JUCE_PATCHES "${CMAKE_CURRENT_SOURCE_DIR}/third_party/patches/juce8-*.patch")
+foreach(patch ${ATLAS_JUCE_PATCHES})
+  execute_process(COMMAND "${GIT_EXECUTABLE}" apply --reverse --check "${patch}"
+                  WORKING_DIRECTORY "${ATLAS_JUCE_SOURCE}" RESULT_VARIABLE already_applied
+                  OUTPUT_QUIET ERROR_QUIET)
+  if(NOT already_applied EQUAL 0)
+    execute_process(COMMAND "${GIT_EXECUTABLE}" apply "${patch}"
+                    WORKING_DIRECTORY "${ATLAS_JUCE_SOURCE}" RESULT_VARIABLE patch_result
+                    ERROR_VARIABLE patch_error)
+    if(NOT patch_result EQUAL 0)
+      message(FATAL_ERROR "Could not apply ${patch} to ${ATLAS_JUCE_SOURCE}:\n${patch_error}")
+    endif()
+    message(STATUS "Applied ${patch}")
+  endif()
+endforeach()
 add_subdirectory("${ATLAS_JUCE_SOURCE}" JUCE)
+
+# espeak-ng (GPL-3.0-or-later) speaks the Speech oscillator's text: its
+# static library, the espeak-ng program that compiles its data, and the data
+# (phonemes, intonations and every language's dictionary) that the bundles
+# carry in Resources/espeak-ng-data. No audio output, MBROLA or async mode.
+set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
+set(BUILD_SHARED_LIBS OFF)
+set(COMPILE_INTONATIONS ON)
+set(ENABLE_TESTS OFF)
+set(BUILD_TESTING OFF)
+set(USE_MBROLA OFF)
+set(USE_LIBSONIC OFF)
+set(USE_LIBPCAUDIO OFF)
+set(USE_ASYNC OFF)
+set(USE_KLATT ON)
+set(USE_SPEECHPLAYER ON)
+set(ESPEAK_COMPAT OFF)
+set(ESPEAK_BUILD_MANPAGES OFF)
+add_subdirectory(third_party/espeak-ng espeak-ng EXCLUDE_FROM_ALL)
+unset(BUILD_SHARED_LIBS)
+# The folder espeak_Initialize takes: it holds espeak-ng-data.
+set(ATLAS_ESPEAK_DATA_ROOT "${CMAKE_CURRENT_BINARY_DIR}/espeak-ng")
 # Every Atlas target includes nlohmann json as "nlohmann/json.hpp".
 include_directories(third_party/nlohmann_json/include)
 
@@ -88,6 +131,27 @@ set(ATLAS_OPENB3_SOURCES
   src/synthesis/effects/openb3/tonewheel_organ.cpp
   src/synthesis/effects/openb3/scanner_vibrato.cpp
   src/synthesis/effects/openb3/whirl.cpp)
+
+# The Analogue Compressor (ZL Compressor's engine) works in decibels with
+# logarithms of signals that reach zero, so it keeps IEEE semantics: no
+# fast-math, and no FMA contraction, so macOS and Windows compute alike.
+set(ATLAS_ZL_COMPRESSOR_SOURCES
+  src/synthesis/effects/zl_compressor/zl_compressor_engine.cpp
+  src/synthesis/modules/analogue_compressor_module.cpp)
+
+# The Maim effect (Maim's controllers around its codecs): the LPC vocoder's
+# quantizers and the packet patterns decide the same way on every platform
+# only with IEEE semantics, so no fast-math and no FMA contraction.
+set(ATLAS_MAIM_SOURCES
+  src/synthesis/effects/maim/blade_codec.cpp
+  src/synthesis/effects/maim/gsm_codec.cpp
+  src/synthesis/effects/maim/lpc_codec.cpp
+  src/synthesis/effects/maim/maim_engine.cpp
+  src/synthesis/effects/maim/mp3_codec.cpp
+  src/synthesis/effects/maim/mp3_manager.cpp
+  src/synthesis/effects/maim/opus_codec.cpp
+  src/synthesis/effects/maim/resampler.cpp
+  src/synthesis/modules/maim_module.cpp)
 
 # PFFFT replaces JUCE's scalar FFT fallback for the oscillators
 # (src/common/fourier_transform.h, third_party/pffft). On by default where JUCE
@@ -182,6 +246,10 @@ target_sources(Atlas PRIVATE
   src/synthesis/producers/openb3_source.cpp
   src/synthesis/modules/openb3_module.cpp
   src/synthesis/modules/scanner_vibrato_module.cpp
+  # ZL Compressor by zsliu98 (AGPL v3): the Analogue Compressor effect.
+  ${ATLAS_ZL_COMPRESSOR_SOURCES}
+  # Maim by Arden Butterfield (GPL v3): the Maim effect.
+  ${ATLAS_MAIM_SOURCES}
   src/unity_build/common.cpp
   src/unity_build/synthesis.cpp
   src/unity_build/plugin.cpp)
@@ -195,6 +263,8 @@ set_source_files_properties(${ATLAS_OPENWURLI_SOURCES} src/synthesis/producers/o
   COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:strict>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffp-contract=off;-fno-fast-math>")
 set_source_files_properties(${ATLAS_OPENB3_SOURCES} src/synthesis/producers/openb3_source.cpp
   src/synthesis/modules/openb3_module.cpp src/synthesis/modules/scanner_vibrato_module.cpp PROPERTIES
+  COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:strict>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffp-contract=off;-fno-fast-math>")
+set_source_files_properties(${ATLAS_ZL_COMPRESSOR_SOURCES} ${ATLAS_MAIM_SOURCES} PROPERTIES
   COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:strict>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffp-contract=off;-fno-fast-math>")
 
 # Braids is written for the firmware's two's-complement integer arithmetic.
@@ -210,9 +280,133 @@ set_source_files_properties(${ATLAS_BRAIDS_SOURCES} PROPERTIES
   COMPILE_DEFINITIONS TEST
   COMPILE_OPTIONS "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-fwrapv;-w>")
 
+# The Maim effect's codecs. Maim's circuit-bent LAME (libmp3lame 3.99.5 with
+# mpglib's decoder, LGPL 2.1 or later) and BladeEnc (LGPL 2.1 or later) are
+# kept in third_party/maim; libgsm (its own permissive licence) in
+# third_party/gsm; Opus (BSD-3) is a submodule built by its own CMake. The C
+# libraries build without warnings and without FMA contraction, so the
+# encoders decide the same way on macOS and Windows. Atlas reaches them only
+# through third_party/maim/include, keeping their config.h and common.h off
+# its include path.
+add_library(atlas_maim_lame STATIC
+  third_party/maim/lame/libmp3lame/VbrTag.c
+  third_party/maim/lame/libmp3lame/bitstream.c
+  third_party/maim/lame/libmp3lame/encoder.c
+  third_party/maim/lame/libmp3lame/fft.c
+  third_party/maim/lame/libmp3lame/gain_analysis.c
+  third_party/maim/lame/libmp3lame/id3tag.c
+  third_party/maim/lame/libmp3lame/lame.c
+  third_party/maim/lame/libmp3lame/mpglib_interface.c
+  third_party/maim/lame/libmp3lame/newmdct.c
+  third_party/maim/lame/libmp3lame/presets.c
+  third_party/maim/lame/libmp3lame/psymodel.c
+  third_party/maim/lame/libmp3lame/quantize.c
+  third_party/maim/lame/libmp3lame/quantize_pvt.c
+  third_party/maim/lame/libmp3lame/reservoir.c
+  third_party/maim/lame/libmp3lame/set_get.c
+  third_party/maim/lame/libmp3lame/tables.c
+  third_party/maim/lame/libmp3lame/takehiro.c
+  third_party/maim/lame/libmp3lame/util.c
+  third_party/maim/lame/libmp3lame/vbrquantize.c
+  third_party/maim/lame/libmp3lame/version.c
+  third_party/maim/lame/mpglib/common.c
+  third_party/maim/lame/mpglib/dct64_i386.c
+  third_party/maim/lame/mpglib/decode_i386.c
+  third_party/maim/lame/mpglib/interface.c
+  third_party/maim/lame/mpglib/layer1.c
+  third_party/maim/lame/mpglib/layer2.c
+  third_party/maim/lame/mpglib/layer3.c
+  third_party/maim/lame/mpglib/tabinit.c)
+target_include_directories(atlas_maim_lame PRIVATE
+  third_party/maim/lame/atlas_config
+  third_party/maim/lame/include
+  third_party/maim/lame/libmp3lame
+  third_party/maim/lame/mpglib)
+target_compile_definitions(atlas_maim_lame PRIVATE HAVE_CONFIG_H=1)
+
+add_library(atlas_maim_blade STATIC
+  third_party/maim/blade/bladeenc/blade.c
+  third_party/maim/blade/bladeenc/codec.c
+  third_party/maim/blade/bladeenc/common.c
+  third_party/maim/blade/bladeenc/encode.c
+  third_party/maim/blade/bladeenc/formatbitstream2.c
+  third_party/maim/blade/bladeenc/l3bitstream.c
+  third_party/maim/blade/bladeenc/l3psy.c
+  third_party/maim/blade/bladeenc/loop.c
+  third_party/maim/blade/bladeenc/mdct.c
+  third_party/maim/blade/bladeenc/reservoir.c
+  third_party/maim/blade/bladeenc/subs.c
+  third_party/maim/blade/bladeenc/tables.c)
+
+# libgsm without its toast command-line tool. SASR: >> is an arithmetic
+# shift on every compiler Atlas builds with.
+add_library(atlas_gsm STATIC
+  third_party/gsm/src/add.c
+  third_party/gsm/src/code.c
+  third_party/gsm/src/debug.c
+  third_party/gsm/src/decode.c
+  third_party/gsm/src/gsm_create.c
+  third_party/gsm/src/gsm_decode.c
+  third_party/gsm/src/gsm_destroy.c
+  third_party/gsm/src/gsm_encode.c
+  third_party/gsm/src/gsm_explode.c
+  third_party/gsm/src/gsm_implode.c
+  third_party/gsm/src/gsm_option.c
+  third_party/gsm/src/gsm_print.c
+  third_party/gsm/src/long_term.c
+  third_party/gsm/src/lpc.c
+  third_party/gsm/src/preprocess.c
+  third_party/gsm/src/rpe.c
+  third_party/gsm/src/short_term.c
+  third_party/gsm/src/table.c)
+target_include_directories(atlas_gsm PRIVATE third_party/gsm/inc)
+target_compile_definitions(atlas_gsm PRIVATE SASR=1 NeedFunctionPrototypes=1)
+
+foreach(library atlas_maim_lame atlas_maim_blade atlas_gsm)
+  set_property(TARGET ${library} PROPERTY POSITION_INDEPENDENT_CODE ON)
+  target_compile_options(${library} PRIVATE
+    $<$<C_COMPILER_ID:MSVC>:/w;/fp:precise>
+    $<$<NOT:$<C_COMPILER_ID:MSVC>>:-w;-ffp-contract=off;-fno-fast-math>)
+endforeach()
+
+set(OPUS_BUILD_SHARED_LIBRARY OFF CACHE BOOL "" FORCE)
+set(OPUS_BUILD_PROGRAMS OFF CACHE BOOL "" FORCE)
+set(OPUS_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(OPUS_INSTALL_PKG_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
+set(OPUS_INSTALL_CMAKE_CONFIG_MODULE OFF CACHE BOOL "" FORCE)
+set(OPUS_DRED OFF CACHE BOOL "" FORCE)
+set(OPUS_OSCE OFF CACHE BOOL "" FORCE)
+if(MSVC)
+  # Opus picks the C runtime itself and takes the DLL one unless told
+  # otherwise; Atlas and its other static libraries use the static one, and
+  # mixing them makes the plug-in link two runtimes (LNK4098).
+  set(OPUS_STATIC_RUNTIME ON CACHE BOOL "" FORCE)
+endif()
+# Opus reads the target CPU from CMAKE_SYSTEM_PROCESSOR, which Visual Studio
+# generators fill with the host's: an x64 build on a Windows on ARM machine
+# would get Opus's ARM configuration and none of its SSE paths. The platform
+# the generator was given names the target.
+if(CMAKE_VS_PLATFORM_NAME STREQUAL "x64")
+  set(CMAKE_SYSTEM_PROCESSOR AMD64)
+elseif(CMAKE_VS_PLATFORM_NAME STREQUAL "Win32")
+  set(CMAKE_SYSTEM_PROCESSOR x86)
+elseif(CMAKE_VS_PLATFORM_NAME STREQUAL "ARM64")
+  set(CMAKE_SYSTEM_PROCESSOR ARM64)
+endif()
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64|ARM64")
+  # Every arm64 CPU has NEON, and Opus has no runtime check for it on macOS;
+  # presuming it, as Opus does for aarch64 Linux, compiles its NEON paths in.
+  set(OPUS_PRESUME_NEON ON CACHE BOOL "" FORCE)
+else()
+  set(OPUS_PRESUME_NEON OFF CACHE BOOL "" FORCE)
+endif()
+add_subdirectory(third_party/opus opus EXCLUDE_FROM_ALL)
+set_property(TARGET opus PROPERTY POSITION_INDEPENDENT_CODE ON)
+
 target_include_directories(Atlas PRIVATE
   src/common
   src/common/multisample
+  src/common/speech
   src/common/wavetable
   src/interface/look_and_feel
   src/plugin
@@ -228,7 +422,8 @@ target_include_directories(Atlas PRIVATE
   src/synthesis/producers
   src/synthesis/utilities
   third_party
-  third_party/concurrentqueue)
+  third_party/concurrentqueue
+  third_party/maim/include)
 
 target_compile_definitions(Atlas PRIVATE
   VITAL_ACCESSIBLE_UI=1
@@ -248,8 +443,26 @@ target_link_libraries(Atlas PRIVATE
   juce::juce_audio_utils
   juce::juce_dsp
   juce::juce_gui_extra
+  atlas_espeak
+  atlas_maim_lame
+  atlas_maim_blade
+  atlas_gsm
+  opus
   PUBLIC
   juce::juce_recommended_config_flags)
+# Links espeak-ng without its usage requirements: those put its compat shims
+# for math.h, stdio.h, string.h, wchar.h and others ahead of the system
+# headers in every Atlas and JUCE translation unit (MSVC warns of
+# _USE_MATH_DEFINES being redefined in each one). LINK_ONLY drops them only
+# on the way through a link interface, hence the interface target.
+# espeak_speech.cpp needs only the public header, and the static library's
+# symbols must not be declared dllimport on Windows.
+add_library(atlas_espeak INTERFACE)
+target_link_libraries(atlas_espeak INTERFACE $<LINK_ONLY:espeak-ng>)
+target_include_directories(atlas_espeak INTERFACE third_party/espeak-ng/src/include)
+target_compile_definitions(atlas_espeak INTERFACE LIBESPEAK_NG_EXPORT=1)
+# espeak-ng's compiled data, which the bundles copy below.
+add_dependencies(Atlas data)
 
 # Copy the Tape effect's noise recordings before the final signature, including
 # AU bundles whose linker signature alone does not seal resource files. Asset
@@ -264,6 +477,9 @@ if(APPLE)
       COMMAND ${CMAKE_COMMAND} -E rm -rf "$<TARGET_BUNDLE_DIR:Atlas_${format}>/Contents/Resources/Tape"
       COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Factory/Samples/Tape"
         "$<TARGET_BUNDLE_DIR:Atlas_${format}>/Contents/Resources/Tape"
+      COMMAND ${CMAKE_COMMAND} -E rm -rf "$<TARGET_BUNDLE_DIR:Atlas_${format}>/Contents/Resources/espeak-ng-data"
+      COMMAND ${CMAKE_COMMAND} -E copy_directory "${ATLAS_ESPEAK_DATA_ROOT}/espeak-ng-data"
+        "$<TARGET_BUNDLE_DIR:Atlas_${format}>/Contents/Resources/espeak-ng-data"
       COMMAND /usr/bin/codesign --force --sign - --timestamp=none "$<TARGET_BUNDLE_DIR:Atlas_${format}>"
       VERBATIM)
   endforeach()
@@ -320,12 +536,18 @@ elseif(WIN32)
   add_custom_command(TARGET Atlas_VST3 POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E rm -rf "$<TARGET_FILE_DIR:Atlas_VST3>/../Resources/Tape"
     COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Factory/Samples/Tape"
-      "$<TARGET_FILE_DIR:Atlas_VST3>/../Resources/Tape" VERBATIM)
+      "$<TARGET_FILE_DIR:Atlas_VST3>/../Resources/Tape"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "$<TARGET_FILE_DIR:Atlas_VST3>/../Resources/espeak-ng-data"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${ATLAS_ESPEAK_DATA_ROOT}/espeak-ng-data"
+      "$<TARGET_FILE_DIR:Atlas_VST3>/../Resources/espeak-ng-data" VERBATIM)
 else()
   add_custom_command(TARGET Atlas_VST3 POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E rm -rf "$<TARGET_FILE_DIR:Atlas_VST3>/../Resources/Tape"
     COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Factory/Samples/Tape"
-      "$<TARGET_FILE_DIR:Atlas_VST3>/../Resources/Tape" VERBATIM)
+      "$<TARGET_FILE_DIR:Atlas_VST3>/../Resources/Tape"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "$<TARGET_FILE_DIR:Atlas_VST3>/../Resources/espeak-ng-data"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${ATLAS_ESPEAK_DATA_ROOT}/espeak-ng-data"
+      "$<TARGET_FILE_DIR:Atlas_VST3>/../Resources/espeak-ng-data" VERBATIM)
 endif()
 
 option(ATLAS_BUILD_TIMING_TESTS "Build the Atlas test suite (run with ctest)" OFF)
@@ -337,6 +559,7 @@ if(ATLAS_BUILD_TIMING_TESTS)
   target_include_directories(AtlasTimingTests PRIVATE
     src/common
     src/common/wavetable
+    src/interface/look_and_feel
     src/synthesis/effects
     src/synthesis/filters
     src/synthesis/framework
@@ -387,6 +610,7 @@ if(ATLAS_BUILD_TIMING_TESTS)
   add_test(NAME atlas_release_velocity_glide COMMAND AtlasTimingTests --release-velocity-glide)
   add_test(NAME atlas_analog_oscillator COMMAND AtlasTimingTests --analog-oscillator)
   add_test(NAME atlas_fourier_transform COMMAND AtlasTimingTests --fourier-transform)
+  add_test(NAME atlas_maim COMMAND AtlasTimingTests --maim)
   add_test(NAME atlas_analog_oscillator_controls COMMAND AtlasTimingTests --analog-oscillator-controls)
 
   juce_add_console_app(AtlasCpuTests PRODUCT_NAME "Atlas CPU Tests")
@@ -420,6 +644,7 @@ if(ATLAS_BUILD_TIMING_TESTS)
   add_test(NAME atlas_convolution_threading COMMAND AtlasPreparedEffectTests --convolution-threading)
   set_tests_properties(atlas_convolution_threading PROPERTIES TIMEOUT 60)
   add_test(NAME atlas_ir_switching COMMAND AtlasPreparedEffectTests --ir-switching)
+  add_test(NAME atlas_effect_sleep COMMAND AtlasPreparedEffectTests --effect-sleep)
   set_tests_properties(atlas_ir_switching PROPERTIES TIMEOUT 60)
   # Reports plugin and effect chain construction time and memory, and the
   # cost of processing with light effects; `--construction chain` measures one chain.
@@ -499,6 +724,9 @@ if(ATLAS_BUILD_TIMING_TESTS)
   add_test(NAME atlas_editor_accessibility COMMAND AtlasMacroTests --editor-accessibility)
   add_test(NAME atlas_editor_speech COMMAND AtlasMacroTests --editor-speech)
   add_test(NAME atlas_editor_rebuild_focus COMMAND AtlasMacroTests --editor-rebuild-focus)
+  add_test(NAME atlas_editor_focus COMMAND AtlasMacroTests --editor-focus)
+  # Undo and redo of values, presets, the default patch, effects, routes and LFO edits.
+  add_test(NAME atlas_editor_undo COMMAND AtlasMacroTests --editor-undo)
   add_test(NAME atlas_oscillator_modulation COMMAND AtlasMacroTests --oscillator-modulation)
   add_test(NAME atlas_arpeggiator COMMAND AtlasMacroTests --arpeggiator)
   # Voice allocation with arpeggiator tails, MIDI learn, state restore and
@@ -583,6 +811,23 @@ if(ATLAS_BUILD_TIMING_TESTS)
     Atlas juce::juce_audio_utils juce::juce_dsp juce::juce_gui_extra juce::juce_recommended_config_flags)
   foreach(braids_test models pitch strike random-phase slot-modulation resampler parameters editor)
     add_test(NAME atlas_braids_${braids_test} COMMAND AtlasBraidsTests --${braids_test})
+  endforeach()
+
+  juce_add_console_app(AtlasSpeechTests PRODUCT_NAME "Atlas Speech Tests")
+  juce_generate_juce_header(AtlasSpeechTests)
+  target_sources(AtlasSpeechTests PRIVATE tests/speech_tests.cpp)
+  target_include_directories(AtlasSpeechTests PRIVATE
+    src/common src/common/multisample src/common/speech src/common/wavetable src/plugin src/interface/look_and_feel
+    src/synthesis/framework src/synthesis/modules src/synthesis/effects
+    src/synthesis/filters src/synthesis/producers src/synthesis/synth_engine
+    src/synthesis/lookups src/synthesis/modulators src/synthesis/utilities third_party)
+  target_compile_definitions(AtlasSpeechTests PRIVATE
+    VITAL_ACCESSIBLE_UI=1 HEADLESS=0 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_DSP_USE_SHARED_FFTW=0
+    JUCE_MODAL_LOOPS_PERMITTED=1 "ATLAS_TEST_ESPEAK_DATA=\"${ATLAS_ESPEAK_DATA_ROOT}\"")
+  target_link_libraries(AtlasSpeechTests PRIVATE
+    Atlas juce::juce_audio_utils juce::juce_dsp juce::juce_gui_extra juce::juce_recommended_config_flags)
+  foreach(speech_test syllables phrase pitch tuning slot-modulation split spoken voice-controls envelope voice-kill legato sequence transport parameters editor)
+    add_test(NAME atlas_speech_${speech_test} COMMAND AtlasSpeechTests --${speech_test})
   endforeach()
 
   juce_add_console_app(AtlasOpenWurliTests PRODUCT_NAME "Atlas OpenWurli Tests")
@@ -886,6 +1131,7 @@ if(ATLAS_BUILD_TIMING_TESTS)
   add_test(NAME atlas_analogue_labels COMMAND AtlasAnalogueTests --labels)
   add_test(NAME atlas_analogue_spring COMMAND AtlasAnalogueTests --spring)
   add_test(NAME atlas_analogue_wah COMMAND AtlasAnalogueTests --wah)
+  add_test(NAME atlas_analogue_compressor COMMAND AtlasAnalogueTests --compressor)
   add_test(NAME atlas_analogue_cpu COMMAND AtlasAnalogueTests --cpu)
   set_tests_properties(atlas_analogue_cpu PROPERTIES LABELS cpu)
 

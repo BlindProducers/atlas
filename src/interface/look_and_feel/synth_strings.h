@@ -231,6 +231,26 @@ namespace strings {
     "Braids",
     "OpenWurli",
     "OpenB3",
+    "Speech",
+  };
+
+  // The Speech oscillator's espeak-ng languages and voice variants, in the
+  // order of src/common/speech_voices.inc (presets store the positions).
+  const std::string kSpeechLanguageNames[] = {
+#define SPEECH_LANGUAGE(name, identifier) name,
+#define SPEECH_VARIANT(name, identifier)
+#include "speech_voices.inc"
+#undef SPEECH_LANGUAGE
+#undef SPEECH_VARIANT
+  };
+
+  const std::string kSpeechVariantNames[] = {
+    "Default",
+#define SPEECH_LANGUAGE(name, identifier)
+#define SPEECH_VARIANT(name, identifier) name,
+#include "speech_voices.inc"
+#undef SPEECH_LANGUAGE
+#undef SPEECH_VARIANT
   };
 
   const std::string kMultiSampleAmpEnvNames[] = {
@@ -246,6 +266,22 @@ namespace strings {
   const std::string kOpenB3AmpEnvNames[] = {
     "Organ",
     "Envelope 1",
+  };
+
+  const std::string kSpeechAmpEnvNames[] = {
+    "Voice",
+    "Envelope 1",
+  };
+
+  const std::string kSpeechModeNames[] = {
+    "Sung",
+    "Spoken",
+  };
+
+  const std::string kSpeechSplitNames[] = {
+    "Syllable",
+    "Word",
+    "Phrase",
   };
 
   const std::string kOpenB3PercussionVolumeNames[] = { "Normal", "Soft" };
@@ -620,7 +656,9 @@ namespace strings {
     "spectral_balance",
     "glitch_delay",
     "openwurli_amp",
-    "scanner_vibrato"
+    "scanner_vibrato",
+    "analoguecompressor",
+    "maim"
   };
 
   const std::string kEffectSlotTypeNames[] = {
@@ -663,7 +701,9 @@ namespace strings {
     "Spectral Balance",
     "Glitch Delay",
     "OpenWurli Amp",
-    "Scanner Vibrato"
+    "Scanner Vibrato",
+    "Analogue Compressor",
+    "Maim"
   };
 
   // Both tables are indexed by effect; a missing entry would read out of bounds.
@@ -717,6 +757,16 @@ namespace strings {
   const std::string kAnalogueRotarySpeedNames[] = { "Slow", "Fast", "Stop" };
   const std::string kAnalogueSpringTankNames[] = { "Short", "Medium", "Long" };
   const std::string kScannerVibratoModeNames[] = { "V1", "V2", "V3", "C1", "C2", "C3" };
+  // ZL Compressor's styles, in the order of atlas::zl::Style.
+  const std::string kAnalogueCompressorModeNames[] = { "Clean", "Classic", "Optical", "Vocal" };
+  // Maim's encoders, in the order of atlas::maim::Encoder, and its choices.
+  const std::string kMaimEncoderNames[] = { "Blade", "LAME", "Opus", "GSM", "LPC" };
+  const std::string kMaimBitrateNames[] = { "8 kbps", "16 kbps", "24 kbps", "32 kbps", "40 kbps", "48 kbps",
+                                           "56 kbps", "64 kbps", "80 kbps", "96 kbps", "112 kbps", "128 kbps",
+                                           "160 kbps", "192 kbps", "224 kbps", "256 kbps", "320 kbps" };
+  const std::string kMaimLpcRateNames[] = { "2 kHz", "3 kHz", "4 kHz", "5 kHz", "6 kHz", "8 kHz", "11.025 kHz",
+                                           "12 kHz", "16 kHz", "22.05 kHz" };
+  const std::string kMaimLossModeNames[] = { "Drop", "Stick" };
   const std::string kAnalogueWahModelNames[] = { "Cry Baby", "V846", "Mu-Tron III" };
   const std::string kAnalogueWahModeNames[] = { "LP", "BP", "HP" };
   const std::string kAnalogueWahRangeNames[] = { "Lo", "Hi" };
@@ -1014,6 +1064,8 @@ namespace strings {
     "GLITCH DELAY",
     "OPENWURLI AMP",
     "SCANNER VIBRATO",
+    "ANALOGUE COMPRESSOR",
+    "MAIM",
   };
 
   const std::string kDestinationMenuNames[vital::constants::kNumDestinations] = {
@@ -1064,6 +1116,8 @@ namespace strings {
     "Glitch Delay",
     "OpenWurli Amp",
     "Scanner Vibrato",
+    "Analogue Compressor",
+    "Maim",
   };
 
   const std::string kBusDestinationNames[vital::constants::kNumBusDestinations] = {

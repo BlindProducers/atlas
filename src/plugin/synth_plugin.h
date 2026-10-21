@@ -20,6 +20,7 @@
 
 #include "synth_base.h"
 #include "fx_automation_parameter.h"
+#include "undo_history.h"
 #include "value_bridge.h"
 
 #include <array>
@@ -53,8 +54,17 @@ class SynthPlugin : public SynthBase, public AudioProcessor, public ValueBridge:
     bool isProcessingPaused() const override { return isSuspended(); }
     // Tells the host the state changed where no host parameter shows it (a
     // preset load, an effect, a route, a wavetable or LFO edit), so it marks
-    // the project modified. Coalesced; message thread; never during a restore.
+    // the project modified, and records the change for undo. Coalesced;
+    // message thread; never during a restore.
     void markStateChanged() override;
+    // The same for a change in one part of the state, named as
+    // UndoHistory::noteStructureEdit names it ("settings/lfos/2"), which
+    // undo records at less cost than a change anywhere.
+    void markStateChanged(const std::string& undoBlock);
+    UndoHistory& undoHistory() { return undo_history_; }
+    // Parameter bridges the editor owns tell undo about their gestures here,
+    // as the host's parameters do.
+    AudioProcessorParameter::Listener& undoGestureListener() { return undo_gesture_listener_; }
 
     void prepareToPlay(double sample_rate, int buffer_size) override;
     void releaseResources() override;
@@ -170,6 +180,27 @@ class SynthPlugin : public SynthBase, public AudioProcessor, public ValueBridge:
     void clearFxAutomationAssignments(bool notifyHost);
     json fxAutomationAssignmentsToJson() const;
     void loadFxAutomationAssignments(const json& data);
+
+    // Undo reads and loads the state, and sets values back as the editor does.
+    friend class UndoHistory;
+    // markStateChanged's notice to the host, without recording anything for undo.
+    void notifyHostStateChanged();
+    // Sets a control as undo finds it, telling the host as an editor change does.
+    void applyUndoValue(const std::string& name, vital::mono_float value);
+    // Gestures on a control the editor changes mark the user's changes for undo.
+    struct UndoGestureListener : public AudioProcessorParameter::Listener {
+      explicit UndoGestureListener(UndoHistory& history) : history_(history) { }
+      void parameterValueChanged(int, float) override { }
+      void parameterGestureChanged(int, bool starting) override {
+        if (starting)
+          history_.beginUserEdit();
+        else
+          history_.endUserEdit();
+      }
+      UndoHistory& history_;
+    };
+    UndoHistory undo_history_ { *this };
+    UndoGestureListener undo_gesture_listener_ { undo_history_ };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SynthPlugin)
 };

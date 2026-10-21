@@ -265,21 +265,39 @@ namespace vital {
 
     current_control_value = utils::maskLoad(current_control_value, control_value_, getResetMask(kReset));
     poly_float delta_control_value = (control_value_ - current_control_value) * (1.0f / num_samples);
-    for (int s = 0; s < num_samples; ++s) {
-      current_control_value += delta_control_value;
-      dest[s] = current_control_value;
+
+    // Every per-voice parameter's mono total runs each block, voices or not,
+    // and most only pass their smoothed base through. Write the control ramp
+    // together with the first audio-rate input in one pass (a copy when the
+    // ramp is zero) rather than writing it and then adding to it.
+    bool written = false;
+    for (int i = kNumStaticInputs; i < num_inputs; ++i) {
+      if (input(i)->source == &Processor::null_source_ || input(i)->source->owner->isControlRate())
+        continue;
+
+      VITAL_ASSERT(inputMatchesBufferSize(i));
+      const poly_float* source = input(i)->source->buffer;
+      if (written) {
+        for (int s = 0; s < num_samples; ++s)
+          dest[s] += source[s];
+      }
+      else if (utils::equal(current_control_value, 0.0f) && utils::equal(control_value_, 0.0f)) {
+        utils::copyBuffer(dest, source, num_samples);
+        written = true;
+      }
+      else {
+        for (int s = 0; s < num_samples; ++s) {
+          current_control_value += delta_control_value;
+          dest[s] = current_control_value + source[s];
+        }
+        written = true;
+      }
     }
 
-    for (int i = kNumStaticInputs; i < num_inputs; ++i) {
-      if (input(i)->source != &Processor::null_source_ && !input(i)->source->owner->isControlRate()) {
-        VITAL_ASSERT(inputMatchesBufferSize(i));
-
-        const poly_float* source = input(i)->source->buffer;
-
-        for (int s = 0; s < num_samples; ++s) {
-          poly_float value = source[s];
-          dest[s] += value;
-        }
+    if (!written) {
+      for (int s = 0; s < num_samples; ++s) {
+        current_control_value += delta_control_value;
+        dest[s] = current_control_value;
       }
     }
 

@@ -167,3 +167,28 @@
       ValueDetails::kLinear, false, "%", "Analogue Wah Mix", nullptr },
     { "effect_chain_slot_35", 0x020116, 0.0, constants::kNumEffects - 1, constants::kAnalogueWah, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Effect Chain Slot 35", nullptr },
+
+    // Analogue Compressor: ZL Compressor's engine. Mode is ZL's style menu.
+    // Ratio is stored as log2 of the ratio (1:1 to 100:1); Attack and Release
+    // as the cube root of ZL's milliseconds, so short times get fine steps.
+    // Mix is ZL's Wet: it scales the gain change and makeup in dB.
+    { "analoguecompressor_on", 0x020127, 0.0, 1.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Analogue Compressor Switch", strings::kOffOnNames },
+    { "analoguecompressor_mode", 0x020127, 0.0, 3.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Analogue Compressor Mode", strings::kAnalogueCompressorModeNames },
+    { "analoguecompressor_threshold", 0x020127, -60.0, 0.0, -18.0, 0.0, 1.0,
+      ValueDetails::kLinear, false, " dB", "Analogue Compressor Threshold", nullptr },
+    { "analoguecompressor_ratio", 0x020127, 0.0, 6.643856, 1.5849625, 0.0, 1.0,
+      ValueDetails::kExponential, false, ":1", "Analogue Compressor Ratio", nullptr },
+    { "analoguecompressor_knee", 0x020127, 0.0, 32.0, 8.0, 0.0, 1.0,
+      ValueDetails::kLinear, false, " dB", "Analogue Compressor Knee", nullptr },
+    { "analoguecompressor_attack", 0x020127, 0.0, 10.0, 4.6415888, 0.0, 0.001,
+      ValueDetails::kCubic, false, " secs", "Analogue Compressor Attack", nullptr },
+    { "analoguecompressor_release", 0x020127, 0.0, 17.0997595, 7.9370053, 0.0, 0.001,
+      ValueDetails::kCubic, false, " secs", "Analogue Compressor Release", nullptr },
+    { "analoguecompressor_makeup", 0x020127, -30.0, 30.0, 0.0, 0.0, 1.0,
+      ValueDetails::kLinear, false, " dB", "Analogue Compressor Makeup", nullptr },
+    { "analoguecompressor_mix", 0x020127, 0.0, 1.0, 1.0, 0.0, 100.0,
+      ValueDetails::kLinear, false, "%", "Analogue Compressor Mix", nullptr },
+    { "effect_chain_slot_40", 0x020127, 0.0, constants::kNumEffects - 1, constants::kAnalogueCompressor, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Effect Chain Slot 40", nullptr },

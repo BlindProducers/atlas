@@ -36,6 +36,7 @@ namespace vital {
   class Decimator;
   class PeakMeter;
   class MultiSampleSlot;
+  class SpeechSlot;
   struct MultiSampleMidiState;
   class Sample;
   class SourceSlotModule;
@@ -74,6 +75,9 @@ namespace vital {
       int getNumActiveVoices();
       ModulationConnectionBank& getModulationBank();
       Output* getIndependentRandomModulationSource(const std::string& source, int connection_index);
+      // The global stand-in for a per-voice source, for a route to a
+      // parameter outside the voices; see SynthVoiceHandler.
+      Output* getMonoModulationSource(const std::string& source);
       mono_float getLastActiveNote() const;
 
       void setTuning(const Tuning* tuning);
@@ -113,6 +117,15 @@ namespace vital {
       Sample* getSample(int index);
       SourceSlotModule* getSourceSlot(int index);
       MultiSampleSlot* getMultiSample(int index);
+      ReorderableEffectChain* getMainEffectChain() { return effect_chain_; }
+      SpeechSlot* getSpeechSlot(int index);
+      // Every Speech slot's next note sings its first syllable.
+      void rewindSpeech();
+      // Before each block while the host plays: where the block starts in
+      // the song, in quarter notes, and the host's loop (`loop_end` <=
+      // `loop_start` without one), so Speech syllables follow the song.
+      void setSpeechSongPosition(double quarters, double quarters_per_second, double seconds,
+                                 double loop_start, double loop_end);
       // Message thread with processing paused: build every oscillator slot's active type module.
       bool prepareSelectedSources();
       // Message thread with processing paused: bring every voice copy of the

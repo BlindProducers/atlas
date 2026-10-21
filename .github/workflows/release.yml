@@ -10,8 +10,10 @@ name: Build and publish
 
 env:
   # The pre-release the dev branch publishes: its tag is v<version>-<this>,
-  # its title "Atlas <version> beta N". Bump it for the next beta.
-  ATLAS_PRERELEASE: beta.1
+  # its title "Atlas <version> beta N". Bump it for the next beta, and write
+  # what changed since the one before in docs/releases/v<version>-<this>.md,
+  # which the publish job puts at the top of the release notes.
+  ATLAS_PRERELEASE: beta.2
 
 on:
   push:
@@ -39,8 +41,8 @@ jobs:
       - uses: actions/checkout@v7
 
       # .gitmodules marks the reference-test submodules update = none, so this
-      # fetches only the four the plugin needs (JUCE, nlohmann json,
-      # concurrentqueue and KISS FFT), shallow.
+      # fetches only the five the plugin needs (JUCE, nlohmann json,
+      # concurrentqueue, KISS FFT and espeak-ng), shallow.
       - name: Fetch submodules
         run: git submodule update --init --jobs 4
 
@@ -98,9 +100,10 @@ jobs:
         run: cmake --build build --config Release --parallel 1 --target Atlas_VST3
 
       # The zip holds the whole bundle folder (the DLL under
-      # Contents/x86_64-win and the Tape effect's clips under
-      # Contents/Resources/Tape); the installer puts that folder into the
-      # system VST3 folder (installer/windows/Atlas.iss).
+      # Contents/x86_64-win, the Tape effect's clips under
+      # Contents/Resources/Tape and espeak-ng's data under
+      # Contents/Resources/espeak-ng-data); the installer puts that folder
+      # into the system VST3 folder (installer/windows/Atlas.iss).
       - name: Package
         shell: pwsh
         run: |
@@ -145,9 +148,15 @@ jobs:
           # beta.1 reads as "beta 1" in the title and notes.
           beta="${ATLAS_PRERELEASE/./ }"
           title="Atlas ${version} ${beta}"
+          # What changed since the beta before, written when ATLAS_PRERELEASE
+          # was bumped; an older beta republished by hand may have none.
+          changes=""
+          if [ -f "docs/releases/${tag}.md" ]; then
+            changes="$(cat "docs/releases/${tag}.md")"$'\n\n'
+          fi
           notes="Atlas ${version} ${beta}, built from commit ${GITHUB_SHA} on the dev branch (${GITHUB_SHA::7}: $(git log -1 --format=%s)). Every push to dev replaces these files until the next beta.
 
-          This is a beta release. Atlas is still being developed and tested: expect rough edges, keep copies of the presets you care about, and tell us what works and what does not.
+          ${changes}This is a beta release. Atlas is still being developed and tested: expect rough edges, keep copies of the presets you care about, and tell us what works and what does not.
 
           Atlas can get loud. Some oscillators, filters and effects reach well above 0 dBFS, so a limiter after Atlas, on the track or on the master, is recommended when you play it, especially on headphones.
 

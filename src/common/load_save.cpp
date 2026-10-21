@@ -17,6 +17,7 @@
 #include "load_save.h"
 #include "multisample_container.h"
 #include "multisample_manager.h"
+#include "speech_manager.h"
 #include <mutex>
 #include "source_types.h"
 #include "legacy_source_aliases.h"
@@ -391,6 +392,14 @@ json LoadSave::stateToJson(SynthBase* synth, const CriticalSection& critical_sec
       if (!spec.empty())
         settings_data[prefix + "multisample"] = spec.toJson(false);
     }
+
+    // A Speech slot's text, which espeak-ng renders again on load.
+    vital::speech::Manager* speech = synth->getSpeechManager();
+    if (speech != nullptr && type_value == vital::source_types::kSpeech) {
+      const std::string text = speech->text(slot);
+      if (!text.empty())
+        settings_data[prefix + "speech_text"] = text;
+    }
   }
 
   json convolution_irs = json::object();
@@ -586,6 +595,17 @@ void LoadSave::loadSlotInstruments(SynthBase* synth, const json& settings) {
       spec = vital::multisample::InstrumentSpec::fromJson(data);
     multisample->applySpec(slot, spec, synth->multiSampleContainer());
   }
+}
+
+void LoadSave::loadSlotSpeech(SynthBase* synth, const json& settings) {
+  vital::speech::Manager* speech = synth->getSpeechManager();
+  if (speech == nullptr)
+    return;
+  for (int slot = 0; slot < vital::kNumOscillators; ++slot) {
+    const auto text = settings.find(vital::source_types::slotPrefix(slot) + "speech_text");
+    speech->setText(slot, text != settings.end() && text->is_string() ? text->get<std::string>() : std::string());
+  }
+  speech->refresh();
 }
 
 void LoadSave::migrateFixedSourcesToSlots(json& settings, json& modulations) {
@@ -1734,6 +1754,7 @@ bool LoadSave::jsonToState(SynthBase* synth, std::map<std::string, String>& save
   loadModulations(synth, modulations);
   loadSlotSamples(synth, settings);
   loadSlotInstruments(synth, settings);
+  loadSlotSpeech(synth, settings);
   loadConvolutionIrs(synth, objectFieldOrEmpty(settings, "convolution_irs"));
   loadWavetables(synth, wavetables);
   loadFilterTables(synth, objectFieldOrEmpty(settings, "filter_tables"));
@@ -1902,6 +1923,23 @@ namespace {
     return file;
   }
 
+  // The last config read, kept while the file on disk is unchanged. The editor
+  // reads settings (such as hz_frequency) for every readout it refreshes, and
+  // parsing the file each time cost a large share of the idle editor's CPU.
+  struct ConfigCache {
+    std::mutex mutex;
+    bool valid = false;
+    File file;
+    Time modified;
+    int64 size = -1;
+    json data;
+  };
+
+  ConfigCache& configCache() {
+    static ConfigCache cache;
+    return cache;
+  }
+
   void makeStringsUtf8(json& value) {
     if (value.is_string()) {
       const std::string& text = value.get_ref<const std::string&>();
@@ -1941,6 +1979,12 @@ void LoadSave::setConfigFileForTesting(const File& file) {
 File LoadSave::getConfigFile() {
   if (configFileOverride() != File())
     return configFileOverride();
+  // The editor reads settings many times a second; work the path out once.
+  static const File file = defaultConfigFile();
+  return file;
+}
+
+File LoadSave::defaultConfigFile() {
 #if defined(JUCE_DATA_STRUCTURES_H_INCLUDED)
   PropertiesFile::Options config_options;
   config_options.applicationName = "Atlas";
@@ -2014,20 +2058,44 @@ File LoadSave::getDefaultSkin() {
 #endif
 }
 
-json LoadSave::getConfigJson() {
-  File config_file = getConfigFile();
-  if (!config_file.exists())
-    return json();
+namespace {
+  // The current config, read again only when the file has changed. Call with
+  // the cache's mutex held.
+  const json& currentConfig(ConfigCache& cache) {
+    static const json empty;
+    File config_file = LoadSave::getConfigFile();
+    if (!config_file.exists())
+      return empty;
 
-  try {
-    json parsed = json::parse(config_file.loadFileAsString().toStdString(), nullptr, false);
-    if (parsed.is_discarded() || !parsed.is_object())
-      return json();
-    return parsed;
+    // Another instance or process may have rewritten the file since; its time
+    // and size say whether the cached copy still matches it.
+    const Time modified = config_file.getLastModificationTime();
+    const int64 size = config_file.getSize();
+    if (cache.valid && cache.file == config_file && cache.modified == modified && cache.size == size)
+      return cache.data;
+
+    json parsed;
+    try {
+      parsed = json::parse(config_file.loadFileAsString().toStdString(), nullptr, false);
+      if (parsed.is_discarded() || !parsed.is_object())
+        parsed = json();
+    }
+    catch (const json::exception& e) {
+      parsed = json();
+    }
+    cache.valid = true;
+    cache.file = config_file;
+    cache.modified = modified;
+    cache.size = size;
+    cache.data = std::move(parsed);
+    return cache.data;
   }
-  catch (const json::exception& e) {
-    return json();
-  }
+}
+
+json LoadSave::getConfigJson() {
+  ConfigCache& cache = configCache();
+  std::lock_guard<std::mutex> lock(cache.mutex);
+  return currentConfig(cache);
 }
 
 json LoadSave::getFavoritesJson() {
@@ -2078,6 +2146,10 @@ void LoadSave::saveJsonToConfig(json config_state) {
   if (!config_file.exists())
     config_file.create();
   config_file.replaceWithText(config_state.dump());
+  // A rewrite within the file time's resolution could keep its time and size.
+  ConfigCache& cache = configCache();
+  std::lock_guard<std::mutex> lock(cache.mutex);
+  cache.valid = false;
 }
 
 void LoadSave::saveJsonToFavorites(json favorites_json) {
@@ -2447,12 +2519,12 @@ bool LoadSave::shouldScanDownloads() {
 }
 
 bool LoadSave::displayHzFrequency() {
-  json data = getConfigJson();
-
-  if (!data.count("hz_frequency"))
-    return false;
-
-  return data["hz_frequency"];
+  // Every frequency readout asks this, so read the cache without copying it.
+  ConfigCache& cache = configCache();
+  std::lock_guard<std::mutex> lock(cache.mutex);
+  const json& data = currentConfig(cache);
+  const auto found = data.is_object() ? data.find("hz_frequency") : data.end();
+  return found != data.end() && found->is_boolean() && found->get<bool>();
 }
 
 bool LoadSave::authenticated() {

@@ -70,7 +70,7 @@ Atlas contains over 35 effects covering everything from EQ and compression to ad
 - **16 Macros & MIDI Sources**: Map velocity, channel aftertouch, mod wheel, pitch bend, key tracking, and 16 user macros.
 - **Audio-Rate Modulation**: Oscillators can be chosen as modulation sources to drive parameters like pitch, phase, shape, and filter cutoffs at audio rate (per-sample) directly through the matrix.
 - **Modulation Matrix**: Modulate nearly any parameter with bipolar/unipolar modes, remap curves, and stereo offsets. Parameter values can be typed directly in their native units (semitones, Hz, dB, etc.).
-- **Dual Arpeggiators**: Two independent arpeggiators with customizable pattern styles, step counts, octave ranges, gate, repeats, and swing, assignable to specific oscillators.
+- **Dual Arpeggiators**: Two independent arpeggiators with customizable pattern styles, step counts, octave ranges, gate, repeats, and swing, assignable to specific oscillators. An LFO, envelope, mod wheel, or other source can modulate the rate and time mode.
 
 ---
 

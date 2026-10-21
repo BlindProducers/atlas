@@ -17,6 +17,7 @@
 #include "synth_parameters.h"
 #include "source_types.h"
 #include "braids_engine.h"
+#include "speech_voices.h"
 
 #include "compressor.h"
 #include "distortion.h"
@@ -561,6 +562,8 @@ namespace vital {
       ValueDetails::kLinear, false, " Hz", "Scanner Vibrato Rate", nullptr },
     { "effect_chain_slot_39", 0x02011d, 0.0, constants::kNumEffects - 1, constants::kScannerVibrato, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Effect Chain Slot 39", nullptr },
+
+#include "maim_parameters.inc"
 
     { "spectral_compressor_on", 0x020104, 0.0, 1.0, 0.0, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Spectral Compressor Switch", strings::kOffOnNames },
@@ -1930,6 +1933,49 @@ namespace vital {
       ValueDetails::kLinear, false, "", "OpenB3 Tune", nullptr },
   };
 
+  // Speech oscillator type (espeak-ng): registered once per slot as
+  // osc_N_speech_*. The text it sings is slot state, not a parameter; these
+  // choose the voice espeak-ng renders it with.
+  const ValueDetails ValueDetailsLookup::speech_slot_parameter_list[] = {
+    { "speech_language", 0x000000, 0.0, speech::kNumLanguages - 1, speech::kDefaultLanguage, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Speech Language", strings::kSpeechLanguageNames },
+    { "speech_variant", 0x000000, 0.0, speech::kNumVariants - 1, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Speech Variant", strings::kSpeechVariantNames },
+    // Voice: each syllable shapes its note and sings to its last consonant
+    // after release. Envelope 1: the slot follows Env 1.
+    { "speech_amp_env", 0x000000, 0.0, 1.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Speech Amplitude Envelope", strings::kSpeechAmpEnvNames },
+    { "speech_transpose", 0x000000, -48.0, 48.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Speech Transpose", nullptr },
+    { "speech_tune", 0x000000, -1.0, 1.0, 0.0, 0.0, 100.0,
+      ValueDetails::kLinear, false, "", "Speech Tune", nullptr },
+    // Sung: a monotone the notes give the melody, the vowel held while the
+    // key is down. Spoken: espeak-ng's own intonation, played through.
+    { "speech_mode", 0x000000, 0.0, 1.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Speech Mode", strings::kSpeechModeNames },
+    // What each note takes: the next syllable, word or the whole text.
+    { "speech_split", 0x000000, 0.0, 2.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Speech Split", strings::kSpeechSplitNames },
+    // Moves the voice's formants, in semitones; the pitch stays. Changing the
+    // variant sets it back to 0.
+    { "speech_formant", 0x000000, -12.0, 12.0, 0.0, 0.0, 1.0,
+      ValueDetails::kLinear, false, " semitones", "Speech Formant", nullptr },
+    // 0% the voice as espeak-ng spoke it; 100% a whisper. Changing the
+    // variant sets it back to 0%.
+    { "speech_breath", 0x000000, 0.0, 1.0, 0.0, 0.0, 100.0,
+      ValueDetails::kLinear, false, "%", "Speech Breathiness", nullptr },
+    // How fast consonants and unheld vowels play, 0% to 400%; 100% is 65% of
+    // espeak-ng's speaking speed (SpeechSource::kBaseSpeed).
+    { "speech_speed", 0x000000, 0.0, 4.0, 1.0, 0.0, 100.0,
+      ValueDetails::kLinear, false, "%", "Speech Speed", nullptr },
+    // A vibrato that fades in after each note starts: depth in semitones,
+    // rate as log2 Hz (1 to 12 Hz).
+    { "speech_vibrato", 0x000000, 0.0, 1.0, 0.0, 0.0, 100.0,
+      ValueDetails::kLinear, false, " cents", "Speech Vibrato Depth", nullptr },
+    { "speech_vibrato_rate", 0x000000, 0.0, 3.5849625, 2.4594316, 0.0, 1.0,
+      ValueDetails::kExponential, false, " Hz", "Speech Vibrato Rate", nullptr },
+  };
+
   const ValueDetails ValueDetailsLookup::mod_parameter_list[] = {
     { "amount", 0x000000, -1.0, 1.0, 0.0, 0.0, 1.0,
       ValueDetails::kLinear, false, "", "Amount", nullptr },
@@ -2009,7 +2055,7 @@ namespace vital {
         "erosion_", "floaty_delay_", "spectral_compressor_", "scream_", "tremolo_pan_", "tape_", "defuse_", "suppressor_", "trance_gate_", "spectral_lock_", "resonator_",
         "analoguechorus_", "analogueflanger_", "analogueecho_",
         "analoguerotary_", "analoguespring_", "analoguewah_", "spectral_balance_", "glitch_delay_",
-        "openwurli_amp_", "scanner_vibrato_"
+        "openwurli_amp_", "scanner_vibrato_", "analoguecompressor_", "maim_"
       };
       for (const auto& prefix : effect_prefixes) {
         if (name.rfind(prefix, 0) == 0)
@@ -2168,6 +2214,12 @@ namespace vital {
     for (int osc = 0; osc < kNumOscillators; ++osc) {
       addParameterGroup(b3_slot_parameter_list, num_b3_parameters, osc, kOscIdPrefix,
                         kOscNamePrefix, kOpenB3Version);
+    }
+    static constexpr int kSpeechVersion = 0x020126;
+    const int num_speech_parameters = sizeof(speech_slot_parameter_list) / sizeof(ValueDetails);
+    for (int osc = 0; osc < kNumOscillators; ++osc) {
+      addParameterGroup(speech_slot_parameter_list, num_speech_parameters, osc, kOscIdPrefix,
+                        kOscNamePrefix, kSpeechVersion);
     }
 
     int num_filter_parameters = sizeof(filter_parameter_list) / sizeof(ValueDetails);

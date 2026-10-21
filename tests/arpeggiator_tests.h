@@ -443,4 +443,82 @@ namespace {
     expect(most_voices == 8, "An eight-note chord on one oscillator uses one voice per note, got " +
            std::to_string(most_voices));
   }
+
+  // The arpeggiator's time mode and rates are modulation destinations. It
+  // runs outside the voices and reads them as the engine's modulation leaves
+  // them each block, so a macro on Free rate or Sync rate changes how often
+  // the steps come.
+  void testArpRateFollowsModulation() {
+    SynthPlugin synth;
+    prepare(synth);
+    for (const char* name : { "arp_1_time_mode", "arp_1_sync_rate", "arp_1_free_rate",
+                              "arp_2_time_mode", "arp_2_sync_rate", "arp_2_free_rate" }) {
+      expect(synth.getEngine()->getMonoModulationDestination(name) != nullptr,
+             std::string(name) + " is a modulation destination");
+    }
+    auto& controls = synth.getControls();
+    controls.at("arp_1_on")->set(1.0f);
+    controls.at("arp_1_gate")->set(50.0f);
+    controls.at("env_1_release")->set(std::pow(0.01f, 0.25f));   // 10 ms: a step's voice ends in the gap
+    const auto range = [](const char* name) {
+      const auto& details = vital::Parameters::getDetails(name);
+      return details.max - details.min;
+    };
+    // Steps in two seconds of holding one key: each step starts a voice, and
+    // the gate leaves a gap in which it ends.
+    const auto steps_in_two_seconds = [&]() {
+      MidiBuffer hold;
+      hold.addEvent(MidiMessage::noteOn(1, 60, 1.0f), 0);
+      renderMidi(synth, hold);
+      bool sounding = synth.getEngine()->getNumActiveVoices() > 0;
+      int steps = sounding ? 1 : 0;
+      MidiBuffer empty;
+      for (int block = 1; block < 2 * 48000 / 128; ++block) {
+        renderMidi(synth, empty);
+        const bool now = synth.getEngine()->getNumActiveVoices() > 0;
+        if (now && !sounding)
+          ++steps;
+        sounding = now;
+      }
+      MidiBuffer release;
+      release.addEvent(MidiMessage::noteOff(1, 60), 0);
+      renderMidi(synth, release);
+      for (int block = 0; block < 40; ++block)
+        renderMidi(synth, empty);
+      return steps;
+    };
+
+    // Free: 2 Hz, and a macro adding 6 Hz.
+    controls.at("arp_1_time_mode")->set(static_cast<float>(AtlasArpeggiator::kFree));
+    controls.at("arp_1_free_rate")->set(2.0f);
+    connect(synth, "macro_control_1", "arp_1_free_rate", 6.0f / range("arp_1_free_rate"));
+    controls.at("macro_control_1")->set(0.0f);
+    render(synth, 256);
+    const int free_steps = steps_in_two_seconds();
+    controls.at("macro_control_1")->set(1.0f);
+    render(synth, 256);
+    const int modulated_free_steps = steps_in_two_seconds();
+    expect(free_steps >= 3 && free_steps <= 6,
+           "A 2 Hz Free rate steps about four times in two seconds, got " + std::to_string(free_steps));
+    expect(modulated_free_steps >= 14 && modulated_free_steps <= 19,
+           "A macro adding 6 Hz to the Free rate steps about sixteen times in two seconds, got " +
+           std::to_string(modulated_free_steps));
+
+    // Sync: 1/8 at 120 BPM, and a macro pushing it three divisions up to 1/16.
+    controls.at("macro_control_1")->set(0.0f);
+    controls.at("arp_1_time_mode")->set(static_cast<float>(AtlasArpeggiator::kSync));
+    controls.at("arp_1_sync_rate")->set(static_cast<float>(arpSyncRateIndex("1/8")));
+    connect(synth, "macro_control_2", "arp_1_sync_rate", 3.0f / range("arp_1_sync_rate"));
+    controls.at("macro_control_2")->set(0.0f);
+    render(synth, 256);
+    const int sync_steps = steps_in_two_seconds();
+    controls.at("macro_control_2")->set(1.0f);
+    render(synth, 256);
+    const int modulated_sync_steps = steps_in_two_seconds();
+    expect(sync_steps >= 7 && sync_steps <= 10,
+           "A 1/8 Sync rate steps about eight times in two seconds, got " + std::to_string(sync_steps));
+    expect(modulated_sync_steps >= 14 && modulated_sync_steps <= 19,
+           "A macro pushing the Sync rate to 1/16 steps about sixteen times in two seconds, got " +
+           std::to_string(modulated_sync_steps));
+  }
 }

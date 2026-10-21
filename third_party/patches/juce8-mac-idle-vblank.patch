@@ -1,0 +1,76 @@
+diff --git a/modules/juce_gui_basics/native/juce_NSViewComponentPeer_mac.mm b/modules/juce_gui_basics/native/juce_NSViewComponentPeer_mac.mm
+index 4eb8addb95..16cc17cf1c 100644
+--- a/modules/juce_gui_basics/native/juce_NSViewComponentPeer_mac.mm
++++ b/modules/juce_gui_basics/native/juce_NSViewComponentPeer_mac.mm
+@@ -1087,6 +1087,7 @@ void repaint (const Rectangle<int>& area) override
+         // As a workaround for this, we use a RectangleList to do our own coalescing of regions before
+         // asynchronously asking the OS to repaint them.
+         deferredRepaints.add (area.toFloat());
++        vBlankWanted.store (true, std::memory_order_relaxed);
+     }
+ 
+     static bool shouldThrottleRepaint()
+@@ -1098,6 +1099,10 @@ void onVBlank (double timestampSec)
+     {
+         callVBlankListeners (timestampSec);
+         setNeedsDisplayRectangles();
++
++        // Atlas: stop waking the message thread on every vblank while
++        // nothing is waiting to be drawn and nobody listens for vblanks.
++        vBlankWanted.store (! deferredRepaints.isEmpty() || ! vBlankListeners.isEmpty(), std::memory_order_relaxed);
+     }
+ 
+     void setNeedsDisplayRectangles()
+@@ -1131,6 +1136,11 @@ void setNeedsDisplayRectangles()
+             deferredRepaints.clear();
+     }
+ 
++    void vBlankListenerAdded() override
++    {
++        vBlankWanted.store (true, std::memory_order_relaxed);
++    }
++
+     void performAnyPendingRepaintsNow() override
+     {
+         [view displayIfNeeded];
+@@ -1757,6 +1767,7 @@ auto tie() const
+ 
+     Rectangle<float> lastSizeBeforeZoom;
+     RectangleList<float> deferredRepaints;
++    std::atomic<bool> vBlankWanted { true };
+     uint32 lastRepaintTime;
+ 
+     std::optional<KeyEventAttributes> lastSeenKeyEvent;
+@@ -1794,6 +1805,9 @@ explicit AsyncRepainter (NSViewComponentPeer& o) : owner (o) {}
+ 
+         void markUpdated (const CGDirectDisplayID x, double timestampSec)
+         {
++            if (! owner.vBlankWanted.load (std::memory_order_relaxed))
++                return;
++
+             {
+                 const std::scoped_lock lock { mutex };
+ 
+diff --git a/modules/juce_gui_basics/windows/juce_ComponentPeer.h b/modules/juce_gui_basics/windows/juce_ComponentPeer.h
+index 1ac1523d44..5c924cb041 100644
+--- a/modules/juce_gui_basics/windows/juce_ComponentPeer.h
++++ b/modules/juce_gui_basics/windows/juce_ComponentPeer.h
+@@ -545,7 +545,7 @@ public:
+     };
+ 
+     /** Adds a VBlankListener. */
+-    void addVBlankListener (VBlankListener* listenerToAdd)       { vBlankListeners.add (listenerToAdd); }
++    void addVBlankListener (VBlankListener* listenerToAdd)       { vBlankListeners.add (listenerToAdd); vBlankListenerAdded(); }
+ 
+     /** Removes a VBlankListener. */
+     void removeVBlankListener (VBlankListener* listenerToRemove) { vBlankListeners.remove (listenerToRemove); }
+@@ -680,6 +680,9 @@ protected:
+     static void forceDisplayUpdate();
+     void callVBlankListeners (double timestampSec);
+ 
++    // Atlas: lets a peer that skips idle vblanks start delivering them again.
++    virtual void vBlankListenerAdded() {}
++
+     Component& component;
+     const int styleFlags;
+     Rectangle<int> lastNonFullscreenBounds;

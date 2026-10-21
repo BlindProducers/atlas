@@ -120,6 +120,9 @@ namespace vital {
         filter2_input_ = filter2_input;
       }
 
+      // An arpeggiator plays slot `destination`, so keyboard notes do not.
+      bool sourceHasActiveArp(int destination) const;
+
     protected:
       // Per-block start/end zone gain used to crossfade a producer in or out of its zone.
       struct ZoneGain {
@@ -130,7 +133,6 @@ namespace vital {
       bool isFilter1On() { return filter1_on_ == nullptr || filter1_on_->value() > 0.5f; }
       bool isFilter2On() { return filter2_on_ == nullptr || filter2_on_->value() > 0.5f; }
       bool arpDestinationOn(int arp, int destination) const;
-      bool sourceHasActiveArp(int destination) const;
       poly_float getSourcePlaybackMask(int destination, poly_float zone_mask) const;
       poly_float getZoneMask(Value* key_start, Value* key_end, Value* velocity_start, Value* velocity_end);
       void plugPitchClamp(cr::ZonePitchClamp* clamp, Value* key_start, Value* key_end);
@@ -171,6 +173,9 @@ namespace vital {
 
       static constexpr mono_float kInstrumentGateSeconds = 0.005f;
       poly_float envelope_gate_ = 0.0f;
+      // Outputs written last block, cleared when nothing writes them this one.
+      // All at first: a new voice copy has not cleared its buffers yet.
+      unsigned written_outputs_ = (1u << (kDirectOut + 1)) - 1;
 
       Value* portamento_glide_zones_;
       Value* zone_crossfade_;

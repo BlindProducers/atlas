@@ -38,6 +38,8 @@
 #include "resonator_module.h"
 #include "openwurli_amp_module.h"
 #include "scanner_vibrato_module.h"
+#include "analogue_compressor_module.h"
+#include "maim_module.h"
 #include "note_monitor.h"
 #include "table_filter.h"
 #include "reorderable_effect_chain.h"
@@ -45,6 +47,7 @@
 #include "synth_strings.h"
 #include "sound_engine.h"
 #include "value_switch.h"
+#include "operators.h"
 #include "synth_oscillator.h"
 #include "smooth_value.h"
 #include "fourier_transform.h"
@@ -54,6 +57,7 @@
 #include <execinfo.h>
 #include <mach/mach.h>
 #include <unistd.h>
+#include <sys/resource.h>
 #elif JUCE_WINDOWS
 #include <malloc.h>
 #endif
@@ -195,6 +199,8 @@ std::unique_ptr<vital::SynthModule> create(int type, vital::Output* bpm) {
     case constants::kGlitchDelay: return std::make_unique<GlitchDelayModule>(bpm, nullptr);
     case constants::kOpenWurliAmp: return std::make_unique<OpenWurliAmpModule>();
     case constants::kScannerVibrato: return std::make_unique<ScannerVibratoModule>();
+    case constants::kAnalogueCompressor: return std::make_unique<AnalogueCompressorModule>();
+    case constants::kMaim: return std::make_unique<MaimModule>();
   }
   return {};
 }
@@ -1088,6 +1094,264 @@ void effectCpu(const std::string& only) {
   }
 }
 
+// CPU per host block (512 samples at 48 kHz) with no notes playing: the default
+// patch and a four-effect chain, at 1x and the default 2x oversampling, then
+// every effect alone in a slot at 2x. With an editor open, also the process
+// CPU the message thread spends while nothing plays.
+void idleCpu(const std::string& only) {
+  using namespace vital;
+  constexpr int kBlock = 512;
+  const double budget_us = 1.0e6 * kBlock / 48000.0;
+  auto prepare = [&](SynthPlugin& plugin, float oversampling, const std::vector<int>& effects) {
+    plugin.setPlayConfigDetails(0, 2, 48000, kBlock);
+    plugin.prepareToPlay(48000, kBlock);
+    plugin.valueChanged("oversampling", oversampling);
+    for (size_t slot = 0; slot < effects.size(); ++slot)
+      selectEffect(plugin, "fx_slot_" + std::to_string(slot + 1) + "_", effects[slot]);
+    plugin.getEngine()->prepareSelectedEffects();
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(250);
+  };
+  auto measure = [&](float oversampling, const std::vector<int>& effects) {
+    SynthPlugin plugin;
+    prepare(plugin, oversampling, effects);
+    juce::AudioBuffer<float> audio(2, kBlock);
+    juce::MidiBuffer midi;
+    for (int block = 0; block < 200; ++block) {
+      audio.clear();
+      plugin.processBlock(audio, midi);
+    }
+    double best = std::numeric_limits<double>::max();
+    for (int round = 0; round < 5; ++round) {
+      const auto start = std::chrono::steady_clock::now();
+      for (int block = 0; block < 200; ++block) {
+        audio.clear();
+        plugin.processBlock(audio, midi);
+      }
+      best = std::min(best, std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count() / 200);
+    }
+    return best;
+  };
+  auto report = [&](const std::string& name, double us) {
+    std::cout << name << " us_per_block=" << us << " budget_percent=" << 100.0 * us / budget_us << std::endl;
+  };
+  const std::vector<int> chain = { constants::kDistortion, constants::kReverb, constants::kChorus, constants::kDelay };
+  if (only.empty() || only == "summary") {
+    report("idle default 1x", measure(0.0f, {}));
+    report("idle default 2x", measure(1.0f, {}));
+    report("idle 4-effect chain 1x", measure(0.0f, chain));
+    report("idle 4-effect chain 2x", measure(1.0f, chain));
+  }
+  if (only.empty() || only == "effects") {
+    const double base = measure(1.0f, {});
+    for (int type = 0; type < constants::kNumEffects; ++type)
+      report(std::string("idle 2x effect=") + strings::kEffectOrder[type], measure(1.0f, { type }) - base);
+  }
+  if (only.empty() || only == "editor") {
+    auto pump = [](int ms) {
+      const auto end = juce::Time::getMillisecondCounter() + uint32(ms);
+      while (juce::Time::getMillisecondCounter() < end)
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(10);
+    };
+    // User and system CPU seconds of the whole process.
+    auto cpu_times = [] {
+      rusage usage {};
+      getrusage(RUSAGE_SELF, &usage);
+      return std::make_pair(usage.ru_utime.tv_sec + 1.0e-6 * usage.ru_utime.tv_usec,
+                            usage.ru_stime.tv_sec + 1.0e-6 * usage.ru_stime.tv_usec);
+    };
+    auto plugin = std::make_unique<SynthPlugin>();
+    prepare(*plugin, 1.0f, chain);
+    // As in a host, an audio thread renders a block every 512 samples while
+    // the message thread runs, so the process CPU includes it and the time
+    // per block shows what the editor adds to the audio thread.
+    std::atomic<bool> rendering { true };
+    std::atomic<int64_t> render_ns { 0 };
+    std::atomic<int> render_blocks { 0 };
+    std::thread audio_thread([&] {
+      juce::AudioBuffer<float> audio(2, kBlock);
+      juce::MidiBuffer midi;
+      const auto period = std::chrono::microseconds(static_cast<int64_t>(budget_us));
+      auto next = std::chrono::steady_clock::now();
+      while (rendering.load()) {
+        const auto start = std::chrono::steady_clock::now();
+        audio.clear();
+        plugin->processBlock(audio, midi);
+        render_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count();
+        ++render_blocks;
+        next += period;
+        std::this_thread::sleep_until(next);
+      }
+    });
+    auto measure_cpu = [&](const char* name, int ms) {
+      render_ns = 0;
+      render_blocks = 0;
+      const auto start = cpu_times();
+      pump(ms);
+      const auto end = cpu_times();
+      const double seconds = ms / 1000.0;
+      const double block_us = render_blocks > 0 ? 1.0e-3 * render_ns / render_blocks : 0.0;
+      std::cout << name << " cpu_percent=" << 100.0 * (end.first - start.first + end.second - start.second) / seconds
+                << " user_percent=" << 100.0 * (end.first - start.first) / seconds
+                << " system_percent=" << 100.0 * (end.second - start.second) / seconds
+                << " audio_us_per_block=" << block_us << std::endl;
+    };
+    pump(1000);
+    measure_cpu("message thread, no editor,", 5000);
+    std::unique_ptr<juce::AudioProcessorEditor> editor(plugin->createEditorIfNeeded());
+    editor->addToDesktop(juce::ComponentPeer::windowHasTitleBar);
+    editor->setVisible(true);
+    pump(2000);
+    measure_cpu("message thread, editor open,", 5000);
+    // The editor refreshes its readouts faster while the user works in it.
+    editor->toFront(true);
+    if (auto* first = editor->getChildComponent(0)) first->grabKeyboardFocus();
+    pump(500);
+    if (editor->hasKeyboardFocus(true))
+      measure_cpu("message thread, editor focused,", 5000);
+    else
+      std::cout << "editor could not take the keyboard focus" << std::endl;
+    plugin->editorBeingDeleted(editor.get());
+    editor.reset();
+    rendering = false;
+    audio_thread.join();
+  }
+}
+
+// A slot sleeps once its input and output have stayed silent for its hold
+// time, and wakes on the next note's first block. Every effect, alone in the
+// main chain's first slot at its defaults: it either keeps sounding (noise) or
+// sleeps, and after sleeping a note sounds through it at once. A 4 s Delay
+// with feedback must not sleep between its echoes.
+void effectSleep() {
+  using namespace vital;
+  constexpr int kBlock = 512;
+  constexpr int kRate = 48000;
+  auto prepare = [&](SynthPlugin& plugin, int type) {
+    plugin.setPlayConfigDetails(0, 2, kRate, kBlock);
+    plugin.prepareToPlay(kRate, kBlock);
+    selectEffect(plugin, "fx_slot_1_", type);
+    plugin.getEngine()->prepareSelectedEffects();
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(250);
+  };
+  auto peak = [](const juce::AudioBuffer<float>& audio) {
+    return std::max(audio.getMagnitude(0, 0, audio.getNumSamples()), audio.getMagnitude(1, 0, audio.getNumSamples()));
+  };
+  for (int type = 0; type < constants::kNumEffects; ++type) {
+    const std::string name = strings::kEffectOrder[type];
+    SynthPlugin plugin;
+    prepare(plugin, type);
+    auto* chain = plugin.getEngine()->getMainEffectChain();
+    juce::AudioBuffer<float> audio(2, kBlock);
+    juce::MidiBuffer midi;
+    midi.addEvent(juce::MidiMessage::noteOn(1, 60, .8f), 0);
+    for (int block = 0; block < 20; ++block) {
+      audio.clear();
+      plugin.processBlock(audio, midi);
+      midi.clear();
+    }
+    midi.addEvent(juce::MidiMessage::noteOff(1, 60), 0);
+    int slept_block = -1;
+    for (int block = 0; block < 60 * kRate / kBlock && slept_block < 0; ++block) {
+      audio.clear();
+      plugin.processBlock(audio, midi);
+      midi.clear();
+      if (chain->isSlotAsleep(0))
+        slept_block = block;
+    }
+    if (slept_block < 0) {
+      std::cout << "effect=" << name << " keeps sounding" << std::endl;
+      continue;
+    }
+    // Asleep, the slot passes its silent input through.
+    float asleep_peak = 0.0f;
+    for (int block = 0; block < 40; ++block) {
+      audio.clear();
+      plugin.processBlock(audio, midi);
+      asleep_peak = std::max(asleep_peak, peak(audio));
+    }
+    expect(chain->isSlotAsleep(0), name + " stays asleep in silence");
+    expect(asleep_peak < 1.0e-4f, name + " is silent while asleep");
+    midi.addEvent(juce::MidiMessage::noteOn(1, 64, .8f), 0);
+    float woken_peak = 0.0f;
+    for (int block = 0; block < 10; ++block) {
+      audio.clear();
+      plugin.processBlock(audio, midi);
+      midi.clear();
+      if (block == 0)
+        expect(!chain->isSlotAsleep(0), name + " wakes on the note's first block");
+      woken_peak = std::max(woken_peak, peak(audio));
+    }
+    expect(woken_peak > 1.0e-3f, name + " sounds after waking");
+    std::cout << "effect=" << name << " slept_after_s=" << (slept_block + 1) * double(kBlock) / kRate
+              << " woken_peak=" << woken_peak << std::endl;
+  }
+
+  // Echoes 4 s apart: the slot must stay awake through the gap.
+  SynthPlugin plugin;
+  prepare(plugin, constants::kDelay);
+  plugin.valueChanged("fx_slot_1_delay_sync", 0.0f);
+  plugin.valueChanged("fx_slot_1_delay_frequency", -2.0f);
+  plugin.valueChanged("fx_slot_1_delay_feedback", 0.5f);
+  auto* chain = plugin.getEngine()->getMainEffectChain();
+  juce::AudioBuffer<float> audio(2, kBlock);
+  juce::MidiBuffer midi;
+  midi.addEvent(juce::MidiMessage::noteOn(1, 60, .8f), 0);
+  midi.addEvent(juce::MidiMessage::noteOff(1, 60), kBlock / 2);
+  float echo_peak = 0.0f;
+  bool slept_before_echo = false;
+  for (int block = 0; block < 5 * kRate / kBlock; ++block) {
+    audio.clear();
+    plugin.processBlock(audio, midi);
+    midi.clear();
+    const double seconds = block * double(kBlock) / kRate;
+    if (seconds < 3.8 && chain->isSlotAsleep(0)) slept_before_echo = true;
+    if (seconds > 3.8 && seconds < 4.6) echo_peak = std::max(echo_peak, peak(audio));
+  }
+  expect(!slept_before_echo, "a 4 s Delay stays awake between echoes");
+  expect(echo_peak > 1.0e-3f, "a 4 s Delay's echo still sounds");
+  std::cout << "4 s delay echo_peak=" << echo_peak << std::endl;
+}
+
+// Renders blocks of 512 at 48 kHz for `seconds` of audio, holding `notes`
+// notes of the default patch (none: idle), for a profiler to sample. With
+// `preset`, that patch instead. ATLAS_LIST_MODULATION_SUMS=1 lists the
+// modulation totals that run every block.
+void cpuLoop(double seconds, int notes, const std::string& preset) {
+  constexpr int kBlock = 512;
+  SynthPlugin plugin;
+  plugin.setPlayConfigDetails(0, 2, 48000, kBlock);
+  plugin.prepareToPlay(48000, kBlock);
+  if (!preset.empty()) {
+    std::string error;
+    expect(plugin.loadFromFile(juce::File(preset), error), "the preset loads");
+  }
+  plugin.getEngine()->prepareSelectedEffects();
+  juce::MessageManager::getInstance()->runDispatchLoopUntil(250);
+  if (std::getenv("ATLAS_LIST_MODULATION_SUMS")) {
+    // Audio-rate modulation totals that run every block, mono and per voice.
+    for (const auto& destination : plugin.getEngine()->getMonoModulationDestinations())
+      if (dynamic_cast<vital::ModulationSum*>(destination.second) != nullptr && destination.second->enabled())
+        std::cout << "mono_sum " << destination.first << std::endl;
+    for (const auto& destination : plugin.getEngine()->getPolyModulationDestinations())
+      if (dynamic_cast<vital::ModulationSum*>(destination.second) != nullptr && destination.second->enabled())
+        std::cout << "poly_sum " << destination.first << std::endl;
+  }
+  juce::AudioBuffer<float> audio(2, kBlock);
+  juce::MidiBuffer midi;
+  const int chord[] = { 48, 55, 60, 64, 67, 71, 74, 79 };
+  for (int i = 0; i < notes && i < 8; ++i)
+    midi.addEvent(juce::MidiMessage::noteOn(1, chord[i], .8f), 0);
+  const int blocks = static_cast<int>(seconds * 48000 / kBlock);
+  const auto start = std::chrono::steady_clock::now();
+  for (int block = 0; block < blocks; ++block) {
+    audio.clear();
+    plugin.processBlock(audio, midi);
+    midi.clear();
+  }
+  const double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count() / blocks;
+  std::cout << "notes=" << notes << " us_per_block=" << us << std::endl;
+}
+
 // The arpeggiator's cost in realtime blocks of 512 at 48 kHz: a preset (or the
 // default patch) holding a four-note chord, with and without Arp 1 at 1/16 and
 // a Distortion, Reverb, Chorus and Delay chain. Prints the mean and worst
@@ -1576,6 +1840,18 @@ int main(int argc, char** argv) {
     return compareRenders(argv[2], argv[3]);
   if (argc > 1 && String(argv[1]) == "--effect-cpu") {
     effectCpu(argc > 2 ? argv[2] : "");
+    return failures ? 1 : 0;
+  }
+  if (argc > 1 && String(argv[1]) == "--effect-sleep") {
+    effectSleep();
+    return failures ? 1 : 0;
+  }
+  if (argc > 3 && String(argv[1]) == "--cpu-loop") {
+    cpuLoop(String(argv[2]).getDoubleValue(), String(argv[3]).getIntValue(), argc > 4 ? argv[4] : "");
+    return failures ? 1 : 0;
+  }
+  if (argc > 1 && String(argv[1]) == "--idle-cpu") {
+    idleCpu(argc > 2 ? argv[2] : "");
     return failures ? 1 : 0;
   }
   if (argc > 1 && String(argv[1]) == "--arp-cpu") {

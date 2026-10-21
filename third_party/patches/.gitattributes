@@ -1,0 +1,2 @@
+# The JUCE patches carry JUCE's CRLF lines; keep them byte for byte.
+*.patch -text

@@ -18,11 +18,14 @@
 #include "multisample_container.h"
 #include "multisample_manager.h"
 #include "multisample_slot.h"
+#include "speech_manager.h"
+#include "speech_slot.h"
 #include "source_types.h"
 #include "source_slot_module.h"
 
 #include "sample_source.h"
 #include "sound_engine.h"
+#include "value_switch.h"
 #include "load_save.h"
 #include "memory.h"
 #include "modulation_connection_processor.h"
@@ -83,8 +86,18 @@ namespace {
     "retrigger_division", "play_order", "loop", "octave"
   };
 
-  AtlasArpeggiator::Settings arpeggiatorSettings(const std::array<vital::Value*, 21>& controls) {
-    const auto value = [&](int index, float fallback) {
+  // The value an arpeggiator control has after the engine's modulation, or
+  // null for a control modulation cannot reach.
+  const vital::Output* modulatedControl(vital::SoundEngine& engine, const std::string& name) {
+    vital::ValueSwitch* modulation_switch = engine.getMonoModulationSwitch(name);
+    return modulation_switch ? modulation_switch->output(vital::ValueSwitch::kSwitch) : nullptr;
+  }
+
+  AtlasArpeggiator::Settings arpeggiatorSettings(const std::array<vital::Value*, 21>& controls,
+                                                 const std::array<const vital::Output*, 21>& modulations) {
+    const auto value = [&](int index, float fallback) -> float {
+      if (modulations[index])
+        return modulations[index]->buffer[0][0];
       return controls[index] ? controls[index]->value() : fallback;
     };
     AtlasArpeggiator::Settings settings;
@@ -152,6 +165,28 @@ SynthBase::SynthBase() : expired_(false) {
         ScopedLock lock(getCriticalSection());
         target->setInstrument(std::move(instrument), keep_sounding);
       });
+  speech_manager_ = std::make_unique<vital::speech::Manager>(
+      [this](int slot, std::shared_ptr<const vital::speech::Phrase> phrase) {
+        vital::SpeechSlot* target = engine_->getSpeechSlot(slot);
+        // Free the phrases it drops outside the lock.
+        std::shared_ptr<const vital::speech::Phrase> previous = target->phrase();
+        std::shared_ptr<const vital::speech::Phrase> retired = target->retired();
+        ScopedLock lock(getCriticalSection());
+        target->setPhrase(std::move(phrase));
+      },
+      [this](int slot) {
+        vital::speech::Manager::Voice voice;
+        const std::string prefix = vital::source_types::slotPrefix(slot);
+        auto value = [this](const std::string& name, float fallback) {
+          const auto found = controls_.find(name);
+          return found == controls_.end() ? fallback : found->second->value();
+        };
+        voice.active = static_cast<int>(value(prefix + "type", 0.0f) + 0.5f) == vital::source_types::kSpeech;
+        voice.language = static_cast<int>(value(prefix + "speech_language", 0.0f) + 0.5f);
+        voice.variant = static_cast<int>(value(prefix + "speech_variant", 0.0f) + 0.5f);
+        voice.spoken = static_cast<int>(value(prefix + "speech_mode", 0.0f) + 0.5f) == 1;
+        return voice;
+      });
 
   mod_connections_.reserve(vital::kMaxModulationConnections);
 
@@ -183,8 +218,10 @@ SynthBase::SynthBase() : expired_(false) {
   for (int arp = 0; arp < vital::kNumArpeggiators; ++arp) {
     const std::string prefix = "arp_" + std::to_string(arp + 1) + "_";
     for (size_t i = 0; i < kArpeggiatorControlNames.size(); ++i) {
-      const auto found = controls_.find(prefix + kArpeggiatorControlNames[i]);
+      const std::string name = prefix + kArpeggiatorControlNames[i];
+      const auto found = controls_.find(name);
       if (found != controls_.end()) arpeggiator_controls_[arp][i] = found->second;
+      arpeggiator_modulations_[arp][i] = modulatedControl(*engine_, name);
     }
   }
   auto findControl = [this](const std::string& name) -> vital::Value* {
@@ -222,6 +259,7 @@ SynthBase::SynthBase() : expired_(false) {
     }
   }
   prepareMidiSchedulingBuffers();
+  speech_manager_->startWatching();
 
   Startup::doStartupChecks(midi_manager_.get());
   if (LoadSave::shouldScanDownloads())
@@ -399,6 +437,15 @@ void SynthBase::valueChanged(const std::string& name, vital::mono_float value) {
     setVoiceReverbMemory(voice_filter, false);
   if (changed && isSourceTypeControl(name))
     scheduleSourcePreparation();
+  // A new Speech variant starts from its own formants and breath. Preset
+  // loads set the controls directly, so saved values survive them.
+  const std::string variant_suffix = "_speech_variant";
+  if (changed && name.rfind("osc_", 0) == 0 && name.size() > variant_suffix.size() &&
+      name.compare(name.size() - variant_suffix.size(), variant_suffix.size(), variant_suffix) == 0) {
+    const std::string prefix = name.substr(0, name.size() - variant_suffix.size());
+    resetSpeechControl(prefix + "_speech_formant");
+    resetSpeechControl(prefix + "_speech_breath");
+  }
   if (changed && isEffectSlotTypeControl(name))
     scheduleEffectControlReservation();
   // Filter Table allocates its convolution buffers when a filter first selects it.
@@ -420,6 +467,17 @@ void SynthBase::valueChanged(const std::string& name, vital::mono_float value) {
       queueGuiControlUpdate(target, amount);
     }
   }
+}
+
+void SynthBase::resetSpeechControl(const std::string& name) {
+  const auto found = controls_.find(name);
+  if (found == controls_.end() || found->second == nullptr || found->second->value() == 0.0f)
+    return;
+  found->second->set(0.0f);
+  beginChangeGesture(name);
+  setValueNotifyHost(name, 0.0f);
+  endChangeGesture(name);
+  queueGuiControlUpdate(name, 0.0f);
 }
 
 void SynthBase::valueChangedInternal(const std::string& name, vital::mono_float value) {
@@ -524,6 +582,13 @@ vital::modulation_change SynthBase::createModulationChange(vital::ModulationConn
   change.destination_scale = vital::Parameters::getParameterRange(connection->destination_name);
   change.poly_modulation_switch = engine_->getPolyModulationSwitch(connection->destination_name);
   change.poly_destination = engine_->getPolyModulationDestination(connection->destination_name);
+  if (change.poly_destination == nullptr) {
+    // A parameter outside the voices follows the wheel itself, not one
+    // voice's: it has no voice to read once the notes end, and used to stay
+    // where the last one left it.
+    if (vital::Output* mono_source = engine_->getMonoModulationSource(connection->source_name))
+      change.source = mono_source;
+  }
   change.modulation_processor = connection->modulation_processor.get();
   change.source_slot = vital::source_types::slotForOutputSource(connection->source_name);
   if (change.source_slot >= 0)
@@ -929,6 +994,7 @@ void SynthBase::initEngine() {
   clearPendingGuiUpdates();
   clearModulations();
   multisample_manager_->clearAll();
+  speech_manager_->clearAll();
   if (getWavetableCreator(0)) {
     for (int i = 0; i < vital::kNumOscillators; ++i)
       getWavetableCreator(i)->init();
@@ -1374,7 +1440,7 @@ void SynthBase::buildScheduledMidiEvents(MidiBuffer& midi_messages, int start_sa
       // releases any generated note still waiting for its note-off.
       AtlasArpeggiator::Settings disabled_settings[vital::kNumArpeggiators];
       for (int arp = 0; arp < vital::kNumArpeggiators; ++arp)
-        disabled_settings[arp] = arpeggiatorSettings(arpeggiator_controls_[arp]);
+        disabled_settings[arp] = arpeggiatorSettings(arpeggiator_controls_[arp], arpeggiator_modulations_[arp]);
       MidiBuffer& empty_input = midi_scheduling_buffers_.arp_segment_input;
       MidiBuffer& arp_output = midi_scheduling_buffers_.arp_output;
       empty_input.clear();
@@ -1401,7 +1467,7 @@ void SynthBase::buildScheduledMidiEvents(MidiBuffer& midi_messages, int start_sa
   else {
     AtlasArpeggiator::Settings arp_settings[vital::kNumArpeggiators];
     for (int arp = 0; arp < vital::kNumArpeggiators; ++arp)
-      arp_settings[arp] = arpeggiatorSettings(arpeggiator_controls_[arp]);
+      arp_settings[arp] = arpeggiatorSettings(arpeggiator_controls_[arp], arpeggiator_modulations_[arp]);
     const double bpm = host_bpm > 0.0 ? host_bpm :
         60.0 * controlValue(controls_, "beats_per_minute", 2.0f);
     for (auto& arp_group : arpeggiators_) {
@@ -1549,13 +1615,22 @@ void SynthBase::processAudioAndMidi(AudioSampleBuffer* buffer, int channels, Mid
   // still sounds, so what is played together stays in time.
   if (has_ppq_position)
     engine_->setVoiceClockOrigin(0.0);
+  // Speech syllables follow the song position while the host plays.
+  const double quarters_per_second = has_ppq_position ? host_bpm / 60.0 : 0.0;
+  auto render = [&](int from, int to) {
+    if (has_ppq_position)
+      engine_->setSpeechSongPosition(ppq_position + from * seconds_per_sample * quarters_per_second,
+                                     quarters_per_second, (to - from) * seconds_per_sample,
+                                     song_loop_start_, song_loop_end_);
+    processAudio(buffer, channels, to - from, start_sample + from);
+  };
   int cursor = 0;
   int event_index = 0;
   while (event_index < scheduled_midi_event_count_) {
     const int event_offset = std::min(num_samples, scheduled_midi_events_[event_index].sample_offset);
     if (event_offset > cursor) {
       engine_->correctToTime(start_seconds + cursor * seconds_per_sample);
-      processAudio(buffer, channels, event_offset - cursor, start_sample + cursor);
+      render(cursor, event_offset);
       cursor = event_offset;
     }
 
@@ -1574,7 +1649,7 @@ void SynthBase::processAudioAndMidi(AudioSampleBuffer* buffer, int channels, Mid
 
   if (cursor < num_samples) {
     engine_->correctToTime(start_seconds + cursor * seconds_per_sample);
-    processAudio(buffer, channels, num_samples - cursor, start_sample + cursor);
+    render(cursor, num_samples);
   }
 }
 
@@ -1606,7 +1681,7 @@ void SynthBase::processMidi(MidiBuffer& midi_messages, int start_sample, int end
     AtlasArpeggiator::Settings arp_settings[vital::kNumArpeggiators];
     bool any_arp_enabled = false;
     for (int arp = 0; arp < vital::kNumArpeggiators; ++arp) {
-      arp_settings[arp] = arpeggiatorSettings(arpeggiator_controls_[arp]);
+      arp_settings[arp] = arpeggiatorSettings(arpeggiator_controls_[arp], arpeggiator_modulations_[arp]);
       any_arp_enabled = any_arp_enabled || arp_settings[arp].enabled;
     }
     if (any_arp_enabled) {

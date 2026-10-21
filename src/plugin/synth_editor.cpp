@@ -17,6 +17,7 @@
 #include "synth_editor.h"
 #include "multisample_container.h"
 #include "multisample_manager.h"
+#include "speech_manager.h"
 #include "delay.h"
 
 #include "synth_plugin.h"
@@ -24,6 +25,7 @@
 #include "value_bridge.h"
 #include "tape_controls.h"
 #include "resonator/resonator_engine.h"
+#include "maim/maim_common.h"
 #include "analogue/chorus_engine.h"
 #include "analogue/echo_engine.h"
 #include "analogue/rotary_engine.h"
@@ -89,6 +91,8 @@ namespace {
   constexpr int kBrowserRescanMenuId = 0x3fff0001;
   // How long after a rebuild the screen reader is moved back to the focused control.
   constexpr int kScreenReaderRefocusDelayMs = 250;
+  // How long the inline prompt stays on screen after focus has left it.
+  constexpr int kInlinePromptHideDelayMs = 600;
   // Whether a rebuild keeps the focused choice that started it and its groups
   // (SynthEditor::keepFocusedSwitchingRow). NVDA reads every group around a
   // control it is moved to; VoiceOver's behaviour stays as it was.
@@ -105,6 +109,15 @@ namespace {
   constexpr bool kSectionKeysStepThroughEffectSlots = true;
 #else
   constexpr bool kSectionKeysStepThroughEffectSlots = false;
+#endif
+  // Whether those steps also go through the groupings inside a slot's effect
+  // (the EQ's bands, Mid and Side, the compressor's bands, Glitch Delay's and
+  // Maim's groups): Slot 2 (EQ), Low band, Band 1 ... High band, then the next
+  // slot. Asked for on Windows, where NVDA otherwise only meets them by Tab.
+#if JUCE_WINDOWS
+  constexpr bool kSectionKeysStepThroughEffectGroups = true;
+#else
+  constexpr bool kSectionKeysStepThroughEffectGroups = false;
 #endif
   // Whether a step to a bus's effects chain (comma, period, a number key)
   // lands on its Bus heading, as Ctrl 1 to 3 do, and says the bus ("Bus 2").
@@ -124,6 +137,60 @@ namespace {
 #else
   constexpr bool kRightBracketOpensMenus = false;
 #endif
+  // Whether Atlas puts the focus back itself once a message box, file chooser
+  // or dialog window closes (SynthEditor::restoreFocusAfterOsWindow). JUCE
+  // runs Windows' boxes and choosers on threads of their own, and when one
+  // closes Windows gives the focus to the host's window, so NVDA lands in the
+  // host. The Mac gives it back to the plugin itself.
+  // Whether yes or no questions (moving a preset to the Trash, replacing
+  // one) are asked in the editor (SynthEditor::promptForConfirmation) rather
+  // than in a native box, so the focus never leaves the plugin and Escape
+  // cancels, as in Atlas's other forms. Windows' boxes ignore Escape.
+#if JUCE_WINDOWS
+  constexpr bool kOsWindowsReturnFocus = true;
+  constexpr bool kConfirmInEditor = true;
+  // "Show selected preset in Explorer" on Windows, "Reveal ... in Finder" on the Mac.
+  constexpr const char* kFileBrowserName = "Explorer";
+  constexpr const char* kShowInFileBrowserVerb = "Show";
+  constexpr const char* kShownInFileBrowserVerb = "Showing";
+#else
+  constexpr bool kOsWindowsReturnFocus = false;
+  constexpr bool kConfirmInEditor = false;
+  constexpr const char* kFileBrowserName = "Finder";
+  constexpr const char* kShowInFileBrowserVerb = "Reveal";
+  constexpr const char* kShownInFileBrowserVerb = "Revealed";
+#endif
+  // How long after a box closes Atlas looks again, in case the host took the
+  // focus back to its own window after Atlas had restored it.
+  constexpr int kOsWindowFocusCheckMs = 250;
+  // Whether an autoloaded preset leaves the focus where the user is: a load
+  // that comes after they moved on (a held arrow's delayed load) or left the
+  // plugin does not pull the focus back into the preset list, and one that
+  // fails is said rather than shown in a box. On the Mac the VoiceOver cursor
+  // moves through the list without the keyboard focus, so loading focuses the
+  // list there.
+  // Whether a preset filter list (Library, Bank ...) names its selected row in
+  // its description, which NVDA reads when the list gets the focus: NVDA says
+  // nothing else about where a list is, and every arrow in it applies a row.
+  // VoiceOver reads the selected row itself.
+  // Whether a rebuild that cannot find the control that had the focus puts the
+  // focus on its section's heading. With no focused control JUCE gives every
+  // key to the host, so the arrows, Space and Tab act in REAPER.
+#if JUCE_WINDOWS
+  constexpr bool kAutoloadLeavesFocusAlone = true;
+  constexpr bool kFacetListsNameTheirSelection = true;
+  constexpr bool kRebuildNeverOrphansFocus = true;
+#else
+  constexpr bool kAutoloadLeavesFocusAlone = false;
+  constexpr bool kFacetListsNameTheirSelection = false;
+  constexpr bool kRebuildNeverOrphansFocus = false;
+#endif
+
+  // The preset results table's keys, said after the selected preset.
+  String presetTableKeysHelp() {
+    return String("Press Return to load, F to change favourite, R to rename, E to edit metadata, S to choose the "
+                  "next sort column, Shift S to reverse the sort, or Delete to move an editable preset to Trash.");
+  }
 
   enum PresetFacetKind {
     kLibraryFacet = 1,
@@ -380,9 +447,56 @@ namespace {
     return settings.other;
   }
 
+  // While a rebuild waits to move the screen reader back onto its control,
+  // announcements wait with it: the move makes the reader speak the control,
+  // which would cut off whatever it was saying. Held messages are spoken
+  // together, since each new announcement would also cut off the one before.
+  struct HeldAnnouncements {
+    int holds = 0;
+    StringArray messages;
+    AccessibilityHandler::AnnouncementPriority priority = AccessibilityHandler::AnnouncementPriority::low;
+  };
+
+  HeldAnnouncements& heldAnnouncements() {
+    static HeldAnnouncements held;
+    return held;
+  }
+
+  void postAnnouncement(const String& message, AccessibilityHandler::AnnouncementPriority priority) {
+    auto& held = heldAnnouncements();
+    if (held.holds == 0) {
+      atlas::speech::announce(message, priority);
+      return;
+    }
+    held.messages.add(message);
+    held.priority = jmax(held.priority, priority);
+  }
+
+  void holdAnnouncements() {
+    ++heldAnnouncements().holds;
+  }
+
+  void releaseAnnouncements() {
+    auto& held = heldAnnouncements();
+    if (held.holds == 0 || --held.holds > 0 || held.messages.isEmpty())
+      return;
+    const String message = held.messages.joinIntoString(". ");
+    const auto priority = held.priority;
+    held.messages.clear();
+    held.priority = AccessibilityHandler::AnnouncementPriority::low;
+    atlas::speech::announce(message, priority);
+  }
+
+  struct ScopedAnnouncementHold {
+    ScopedAnnouncementHold() { holdAnnouncements(); }
+    ~ScopedAnnouncementHold() { releaseAnnouncements(); }
+    ScopedAnnouncementHold(const ScopedAnnouncementHold&) = delete;
+    ScopedAnnouncementHold& operator=(const ScopedAnnouncementHold&) = delete;
+  };
+
   void postPluginAnnouncement(const String& message, AccessibilityHandler::AnnouncementPriority priority) {
     if (shouldPostPluginAnnouncement(message))
-      atlas::speech::announce(message, priority);
+      postAnnouncement(message, priority);
   }
 
   // Where a step landed, for a name that holds none of the navigation words
@@ -390,7 +504,7 @@ namespace {
   void postNavigationAnnouncement(const String& message) {
     const auto& settings = accessibilitySpeechSettings();
     if (settings.speech_feedback && settings.navigation)
-      atlas::speech::announce(message, AccessibilityHandler::AnnouncementPriority::high);
+      postAnnouncement(message, AccessibilityHandler::AnnouncementPriority::high);
   }
 
   // Direct responses to a preset-browser command must not disappear when the
@@ -399,7 +513,14 @@ namespace {
   void postPresetActionAnnouncement(const String& message,
                                     AccessibilityHandler::AnnouncementPriority priority) {
     if (accessibilitySpeechSettings().speech_feedback)
-      atlas::speech::announce(message, priority);
+      postAnnouncement(message, priority);
+  }
+
+  // What undo and redo did. The user pressed the key and waits to hear it,
+  // so no optional category silences it.
+  void postUndoAnnouncement(const String& message) {
+    if (accessibilitySpeechSettings().speech_feedback)
+      postAnnouncement(message, AccessibilityHandler::AnnouncementPriority::high);
   }
 
   // What the screen reader would read from a control where JUCE gives NVDA
@@ -410,7 +531,7 @@ namespace {
   void postWindowsReadout(const String& message) {
 #if JUCE_WINDOWS
     if (accessibilitySpeechSettings().speech_feedback)
-      atlas::speech::announce(message, AccessibilityHandler::AnnouncementPriority::high);
+      postAnnouncement(message, AccessibilityHandler::AnnouncementPriority::high);
 #else
     ignoreUnused(message);
 #endif
@@ -426,10 +547,16 @@ namespace {
       if (callback)
         callback(result);
 #if JUCE_WINDOWS
+      // One message later than the item's own action, which JUCE posts after
+      // this callback, and the rebuild that action queues (an effect slot's
+      // Remove or Replace): otherwise NVDA is moved to the old control just
+      // before the rebuild deletes it, and reads it and its replacement.
       MessageManager::callAsync([] {
-        if (auto* focused = Component::getCurrentlyFocusedComponent())
-          if (auto* handler = focused->getAccessibilityHandler())
-            handler->grabFocus();
+        MessageManager::callAsync([] {
+          if (auto* focused = Component::getCurrentlyFocusedComponent())
+            if (auto* handler = focused->getAccessibilityHandler())
+              handler->grabFocus();
+        });
       });
 #endif
     });
@@ -442,7 +569,7 @@ namespace {
   void postLfoAnnouncement(const String& message) {
     const auto& settings = accessibilitySpeechSettings();
     if (settings.speech_feedback && settings.lfo_editor)
-      atlas::speech::announce(message, AccessibilityHandler::AnnouncementPriority::high);
+      postAnnouncement(message, AccessibilityHandler::AnnouncementPriority::high);
   }
 
   // The wavetable keyboard editor's frames, harmonics, layers, keyframes and
@@ -452,7 +579,7 @@ namespace {
                                        AccessibilityHandler::AnnouncementPriority priority) {
     const auto& settings = accessibilitySpeechSettings();
     if (settings.speech_feedback && settings.wavetable_editor)
-      atlas::speech::announce(message, priority);
+      postAnnouncement(message, priority);
   }
 
   void postModulationRemapAnnouncement(const String& message) {
@@ -460,7 +587,7 @@ namespace {
     // the modulation category without repeating a spoken category prefix.
     const auto& settings = accessibilitySpeechSettings();
     if (settings.speech_feedback && settings.modulation)
-      atlas::speech::announce(message, AccessibilityHandler::AnnouncementPriority::high);
+      postAnnouncement(message, AccessibilityHandler::AnnouncementPriority::high);
   }
 
   struct MsegTimeDivision {
@@ -1447,7 +1574,9 @@ namespace {
         "Floaty Delay",
         "Glitch Delay",
         "OpenWurli Amp",
-        "Scanner Vibrato"
+        "Scanner Vibrato",
+        "Analogue Compressor",
+        "Maim"
       };
       for (int envelope = 1; envelope <= vital::kNumEnvelopes; ++envelope)
         result.push_back("Envelope " + String(envelope));
@@ -1522,7 +1651,8 @@ namespace {
         section == "Analogue Flanger" || section == "Analogue Echo" ||
         section == "Analogue Rotary" || section == "Analogue Spring" ||
         section == "Analogue Wah" || section == "Spectral Balance" || section == "Glitch Delay" ||
-        section == "OpenWurli Amp" || section == "Scanner Vibrato")
+        section == "OpenWurli Amp" || section == "Scanner Vibrato" || section == "Analogue Compressor" ||
+        section == "Maim")
       return "Effects";
     if (section == "Modulation routing")
       return "Modulation";
@@ -1692,6 +1822,13 @@ namespace {
       return rank({ "volume", "tremolo_depth", "speaker" });
     if (effect_id == "scanner_vibrato")
       return rank({ "mode", "rate" });
+    if (effect_id == "analoguecompressor")
+      return rank({ "mode", "threshold", "ratio", "knee", "attack", "release", "makeup", "mix" });
+    if (effect_id == "maim")
+      return rank({ "encoder", "bitrate", "lpc_rate", "turbo", "tilt", "error", "mix", "shift", "level_shift",
+                    "feedback", "butterfly_straight", "butterfly_crossed", "band_step", "band_invert", "window_step",
+                    "band_shift", "band_reverse", "loss_period", "loss_width", "loss_jitter", "loss_mode", "drive",
+                    "low_cut", "high_cut", "makeup" });
     if (effect_id == "glitch_delay")
       return glitchDelayParameterRank(suffix);
     if (effect_id == "spectral_balance")
@@ -1740,8 +1877,9 @@ namespace {
       if (model == atlas::resonator::kTube) return 3;
       return 0;
     }
+    // Maim's encoders each show their own rows.
     if (control_id.endsWith("analoguechorus_model") || control_id.endsWith("analoguerotary_model") ||
-        control_id.endsWith("glitch_delay_tap_view"))
+        control_id.endsWith("glitch_delay_tap_view") || control_id.endsWith("maim_encoder"))
       return roundToInt(value);
     // The two pedals share their rows; the Mu-Tron III adds its own.
     if (control_id.endsWith("analoguewah_model"))
@@ -1766,7 +1904,7 @@ namespace {
     for (const char* variant : { "dimension_expander_mode", "resonator_model", "analoguechorus_model",
                                  "analogueecho_medium", "analoguerotary_model", "analoguewah_model",
                                  "convolution_reverb_predelay_sync", "spectral_lock_mode",
-                                 "glitch_delay_tap_view" }) {
+                                 "glitch_delay_tap_view", "maim_encoder" }) {
       if (id == variant || id.endsWith(String("_") + variant))
         return true;
     }
@@ -1774,15 +1912,33 @@ namespace {
   }
 
   // Switches that change which rows the editor shows, so flipping one
-  // rebuilds it: Envelope 1's analog mode swaps its Power rows for Analog Age.
+  // rebuilds it: Envelope 1's analog mode swaps its Power rows for Analog Age,
+  // and Glide zones shows Zone crossfade.
   bool isRowSwitchingToggle(const String& id) {
-    return id == "env_1_analog";
+    return id == "env_1_analog" || id == "portamento_glide_zones";
   }
 
   // Convolution Reverb: free predelay in milliseconds, or a synced division.
   bool isConvolutionReverbParameterRelevant(const String& suffix, int synced) {
     if (suffix == "predelay") return synced == 0;
     if (suffix == "predelay_tempo") return synced == 1;
+    return true;
+  }
+
+  // Maim shows the rows its Encoder uses: the bitrate for the MP3 encoders
+  // and Opus, the spectral, butterfly and MDCT bends for the MP3 encoders
+  // (the band step, inversion and window step for LAME alone), packet loss
+  // for Opus, GSM and LPC, and the sample rate for LPC.
+  bool isMaimParameterRelevant(const String& suffix, int encoder) {
+    using namespace atlas::maim;
+    const bool mp3 = encoder == kBlade || encoder == kLame;
+    if (suffix == "bitrate" || suffix == "turbo") return mp3 || encoder == kOpus;
+    if (suffix == "lpc_rate") return encoder == kLpc;
+    if (suffix == "band_step" || suffix == "band_invert" || suffix == "window_step") return encoder == kLame;
+    if (suffix == "tilt" || suffix == "shift" || suffix == "level_shift" || suffix == "feedback" ||
+        suffix.startsWith("butterfly_") || suffix == "band_shift" || suffix == "band_reverse")
+      return mp3;
+    if (suffix.startsWith("loss_")) return !mp3;
     return true;
   }
 
@@ -2236,6 +2392,20 @@ namespace {
       }
     }
 
+    // Speech: how notes take the words, the voice, how it sounds, then the
+    // envelope mode; the pitch rows follow in their own group.
+    if (id.startsWith("speech_")) {
+      const String suffix = id.fromFirstOccurrenceOf("speech_", false, false);
+      static const std::array<const char*, 12> speech_order = {{
+        "mode", "split", "language", "variant", "formant", "breath", "speed", "vibrato", "vibrato_rate",
+        "amp_env", "transpose", "tune"
+      }};
+      for (int i = 0; i < static_cast<int>(speech_order.size()); ++i) {
+        if (suffix == speech_order[i])
+          return 5770 + i;
+      }
+    }
+
     for (int random = 1; random <= vital::kNumRandomLfos; ++random) {
       const String prefix = "random_" + String(random) + "_";
       if (!id.startsWith(prefix))
@@ -2386,12 +2556,12 @@ namespace {
     static const std::vector<EffectCategory> categories = [] {
       std::vector<EffectCategory> result {
         { "Analogue", { kAnalogueChorus, kAnalogueFlanger, kAnalogueEcho, kAnalogueRotary, kAnalogueSpring, kAnalogueWah,
-                        kTape, kOpenWurliAmp, kScannerVibrato } },
+                        kTape, kOpenWurliAmp, kScannerVibrato, kAnalogueCompressor } },
         { "Dynamics", { kCompressor, kLimiter, kSuppressor } },
         { "Space", { kReverb, kConvolutionReverb, kDelay, kFloatyDelay, kGlitchDelay } },
         { "Modulation", { kChorus, kFlanger, kPhaser, kTremoloPan, kDimensionExpander, kPhaseShift,
                           kFrequencyShifter, kTranceGate } },
-        { "Distortion and character", { kDistortion, kWaveShaper, kErosion, kResonator } },
+        { "Distortion and character", { kDistortion, kWaveShaper, kErosion, kResonator, kMaim } },
         { "Filter and EQ", { kFilterFx, kEq, kMidSideEq, kDefuse } },
         { "Spectral", { kSpectralGate, kSpectralCompressor, kSpectralLock, kSpectralBalance } },
       };
@@ -2479,6 +2649,8 @@ namespace {
     if (rest.startsWith("glitch_delay_")) return "Glitch Delay";
     if (rest.startsWith("openwurli_amp_")) return "OpenWurli Amp";
     if (rest.startsWith("scanner_vibrato_")) return "Scanner Vibrato";
+    if (rest.startsWith("analoguecompressor_")) return "Analogue Compressor";
+    if (rest.startsWith("maim_")) return "Maim";
     if (rest.startsWith("spectral_compressor_")) return "Spectral Compressor";
     if (rest.startsWith("spectral_gate_")) return "Spectral Gate";
     if (rest.startsWith("erosion_")) return "Erosion";
@@ -2634,6 +2806,8 @@ namespace {
     if (id.startsWith("glitch_delay_")) return "Glitch Delay";
     if (id.startsWith("openwurli_amp_")) return "OpenWurli Amp";
     if (id.startsWith("scanner_vibrato_")) return "Scanner Vibrato";
+    if (id.startsWith("analoguecompressor_")) return "Analogue Compressor";
+    if (id.startsWith("maim_")) return "Maim";
     if (id.startsWith("spectral_compressor_")) return "Spectral Compressor";
     if (id.startsWith("spectral_gate_")) return "Spectral Gate";
     if (const int arp = arpeggiatorForId(id); arp > 0) return "Arpeggiator " + String(arp);
@@ -2778,9 +2952,29 @@ namespace {
     return readableId(id);
   }
 
+  // How undo names a route the user made, or the amount they gave one.
+  String modulationUndoDescription(const String& sourceId, const String& destinationId, bool created) {
+    return String(created ? "add modulation from " : "modulation amount from ") + modulationSourceLabelForId(sourceId) +
+           " to " + modulationDestinationLabelForId(destinationId);
+  }
+
+  // The arpeggiator runs outside the voices and reads its modulation as one
+  // value a block, and every step it plays is a new note. A source that a
+  // note restarts or sets (an envelope, the note-on random, velocity, pitch,
+  // pressure on the key, which never reaches an arp note anyway) cannot shape
+  // its speed, so its rates and time mode take only sources that run on
+  // their own or that a player moves by hand.
+  bool sourceFitsArpeggiator(const String& source_id) {
+    return source_id.startsWith("lfo_") || source_id.startsWith("random_") ||
+           source_id.startsWith("macro_") || source_id == "mod_wheel" || source_id == "pitch_wheel";
+  }
+
   bool isInvalidModulationPair(const String& source_id, const String& destination_id) {
     if (source_id.isEmpty() || destination_id.isEmpty())
       return false;
+
+    if (arpeggiatorForId(destination_id) > 0 && !sourceFitsArpeggiator(source_id))
+      return true;
 
     // An oscillator's audio can't modulate the oscillator itself (no self FM yet).
     if (const int slot = vital::source_types::slotForOutputSource(source_id.toStdString()); slot >= 0)
@@ -2858,6 +3052,75 @@ namespace {
       return "Choose whether pitch quantize uses this source's scale or the global scale.";
     if (suffix == "transpose_quantize")
       return "Snap pitch modulation to the selected key and scale.";
+    return {};
+  }
+
+  String maimHelpText(const String& suffix) {
+    if (suffix == "encoder")
+      return "Choose the codec the sound goes through. Blade and LAME are real MP3 encoders, each with its own "
+             "tone: Blade is bubbly and washes out transients, LAME rolls off the highs as the bitrate drops. Both "
+             "take the spectral, butterfly and MDCT bends. Opus is the modern internet codec, GSM the 13 kilobit "
+             "telephone codec and LPC a 2.4 kilobit vocoder; these three take packet loss instead.";
+    if (suffix == "bitrate")
+      return "Set how many kilobits a second the MP3 or Opus encoder may use. Lower bitrates discard more of the "
+             "sound. Blade starts at 32; Opus runs at half the figure shown, as in Maim.";
+    if (suffix == "lpc_rate")
+      return "Set the sample rate the LPC vocoder runs at, from 2 to 22.05 kilohertz. Lower rates narrow the band "
+             "its ten poles cover and sound crushed. The vocoder never runs faster than the processing rate.";
+    if (suffix == "turbo")
+      return "Squeeze the MP3 frames below what the bitrate allows, for more of the encoder's artefacts. With Opus "
+             "it splits frames into shorter packets at random.";
+    if (suffix == "tilt")
+      return "Bias the encoder's psychoacoustic threshold. Negative keeps the low frequencies and discards the "
+             "highs; positive keeps the highs and discards the lows. Acts on long blocks: through transients the "
+             "encoder codes short blocks, which it leaves alone.";
+    if (suffix == "error")
+      return "Corrupt the encoded data: shuffles lines of the MP3 spectrum, or flips bits in Opus, GSM and LPC "
+             "packets.";
+    if (suffix == "mix")
+      return "Blend the dry sound, delayed to line up, with the codec's output. 100 percent is the codec alone.";
+    if (suffix == "shift")
+      return "Shift the MP3 spectrum up or down by this many MDCT lines, of the 576 in a frame.";
+    if (suffix == "level_shift")
+      return "Above zero, raise the quiet spectrum lines, adding noise under the sound. Below zero, remove every "
+             "line under a level, for a bubbly, chirping thinning.";
+    if (suffix == "feedback")
+      return "Feed each spectrum frame's levels back into the next, for a buzzy resonance.";
+    if (suffix == "butterfly_straight")
+      return "How much of each band stays put in the MP3 encoder's aliasing butterfly. 100 percent, with Crossed at "
+             "zero, is the encoder as designed. The butterfly runs on long blocks, so transients pass unbent.";
+    if (suffix == "butterfly_crossed")
+      return "How much of each band the butterfly leaks into its neighbour, for interference between neighbouring "
+             "bands.";
+    if (suffix == "band_step")
+      return "How many MDCT lines LAME steps between bands. 18 is LAME as designed; fewer overlap the bands.";
+    if (suffix == "band_invert")
+      return "Fill LAME's bands from the top down instead of the bottom up.";
+    if (suffix == "window_step")
+      return "How far LAME's analysis window moves between subbands. 64 is LAME as designed; near zero it holds a "
+             "tone, and negative values run backwards.";
+    if (suffix == "band_shift")
+      return "Feed each MDCT band from the band this many above or below it, wrapping round at the ends, which "
+             "moves the whole spectrum in steps of a band: 689 hertz at 44.1 kilohertz.";
+    if (suffix == "band_reverse")
+      return "Feed the bands from the top down, so the lows take the highs' content and the highs the lows'.";
+    if (suffix == "loss_period")
+      return "The length of one packet loss cycle, from 50 milliseconds to 2 seconds.";
+    if (suffix == "loss_width")
+      return "The share of each cycle during which packets get through. 100 percent loses nothing.";
+    if (suffix == "loss_jitter")
+      return "Vary the delivered and lost parts of each cycle at random by up to this much.";
+    if (suffix == "loss_mode")
+      return "What the decoder does with a lost packet. Drop leaves silence, which Opus conceals from the sound "
+             "before it; Stick decodes the last packet that arrived again.";
+    if (suffix == "drive")
+      return "Gain into the codec, from minus 36 to 36 decibels. Above 0 decibels the encoder's input clips.";
+    if (suffix == "makeup")
+      return "Gain after the codec and its filters, from minus 36 to 36 decibels.";
+    if (suffix == "low_cut")
+      return "A gentle high-pass filter after the codec, with its cutoff here.";
+    if (suffix == "high_cut")
+      return "A gentle low-pass filter after the codec, with its cutoff here.";
     return {};
   }
 
@@ -3143,6 +3406,48 @@ namespace {
       if (suffix == "transpose")
         return "Transpose the organ in semitones. The nearest of the 61 keys, from C2 to C7, gives the wiring.";
       if (suffix == "tune") return "Fine tune the organ in cents.";
+    }
+
+    if (legacy_id.startsWith("speech_")) {
+      const String suffix = legacy_id.fromFirstOccurrenceOf("speech_", false, false);
+      if (suffix == "language")
+        return "Choose the language espeak-ng reads the words in. It decides how they are pronounced and split "
+               "into syllables.";
+      if (suffix == "variant")
+        return "Choose an espeak-ng voice variant, such as a different speaker or the Klatt synthesizer. Default "
+               "is the language's own voice.";
+      if (suffix == "amp_env")
+        return "Choose what shapes each note. Voice lets each syllable shape its note: its vowel holds while the "
+               "key is down, and after release the syllable sings on to its last consonant, keeping the voice "
+               "open. Envelope 1 shapes the voice with Envelope 1 instead, so a short release can cut a final "
+               "consonant.";
+      if (suffix == "transpose")
+        return "Transpose the voice in semitones. The voice keeps its formants, so it sings higher or lower "
+               "without sounding smaller or larger.";
+      if (suffix == "tune") return "Fine tune the voice in cents.";
+      if (suffix == "mode")
+        return "Choose how the words are voiced. Sung speaks them in a monotone and sings each note's pitch, "
+               "holding the vowel while the key is down. Spoken keeps espeak-ng's own intonation and plays "
+               "the words straight through: middle C speaks at the voice's own pitch, and other notes move "
+               "the whole intonation up or down.";
+      if (suffix == "split")
+        return "Choose what each note takes from the words: the next syllable, the next word, or the whole "
+               "text. Sung, the last syllable's vowel holds while the key is down.";
+      if (suffix == "formant")
+        return "Move the voice's formants up or down in semitones without changing its pitch. Up sounds "
+               "smaller and brighter, down larger and darker. Choosing another variant sets it back to 0.";
+      if (suffix == "breath")
+        return "Add breath to the voice. 0% is the voice as espeak-ng spoke it; higher values blend in a "
+               "whisper of the same words, and 100% whispers them. Choosing another variant sets it back "
+               "to 0%.";
+      if (suffix == "speed")
+        return "Set how fast the consonants and the vowels that are not held play, from 0% to 400%. 100% is "
+               "a little slower than espeak-ng speaks, which sings too fast; about 150% is its own speed. The pitch "
+               "stays.";
+      if (suffix == "vibrato")
+        return "Set the depth of a vibrato that fades in after each note starts, in cents either side of the "
+               "pitch. 0 cents is no vibrato.";
+      if (suffix == "vibrato_rate") return "Set how fast the vibrato wavers, in hertz.";
     }
 
     if (legacy_id.startsWith("wurli_")) {
@@ -3498,6 +3803,36 @@ namespace {
       if (scanner_suffix == "rate")
         return "Set how fast the scanner turns. 7.25 hertz is OpenB3's; a real organ's motor runs near 7.";
     }
+    const String analogue_compressor_suffix = effectSuffix("analoguecompressor_");
+    if (analogue_compressor_suffix.isNotEmpty()) {
+      if (analogue_compressor_suffix == "mode")
+        return "Choose how the compressor listens. Clean follows the input's level directly, for transparent "
+               "control. Classic listens to its own output, as feedback compressors do, for a smoother, more "
+               "musical response. Optical smooths the level before the ratio, like the slow light cell of an "
+               "opto compressor. Vocal is a feedback design that smooths the gain itself, gentle on voices.";
+      if (analogue_compressor_suffix == "threshold")
+        return "Set the level above which compression starts, from minus 60 to 0 dB. Lower settings compress more.";
+      if (analogue_compressor_suffix == "ratio")
+        return "Set how strongly levels above the threshold are reduced. 2:1 halves the excess; 100:1 acts as a "
+               "limiter.";
+      if (analogue_compressor_suffix == "knee")
+        return "Soften the change around the threshold. Compression fades in this many dB either side of it; "
+               "zero is a hard knee.";
+      if (analogue_compressor_suffix == "attack")
+        return "Set how quickly compression reacts when the level rises. Longer attacks let transients through.";
+      if (analogue_compressor_suffix == "release")
+        return "Set how quickly compression lets go when the level falls. Short releases pump; long ones are smoother.";
+      if (analogue_compressor_suffix == "makeup")
+        return "Add or remove gain after compression, from minus 30 to 30 dB, to match the level you started with.";
+      if (analogue_compressor_suffix == "mix")
+        return "Scale the compression and the makeup gain. 100 percent is the full effect and zero is the dry "
+               "signal; in between, the gain change shrinks in dB rather than blending two signals.";
+    }
+    if (const String maim_suffix = effectSuffix("maim_"); maim_suffix.isNotEmpty()) {
+      const String help = maimHelpText(maim_suffix);
+      if (help.isNotEmpty())
+        return help;
+    }
     const String analogue_spring_suffix = effectSuffix("analoguespring_");
     if (analogue_spring_suffix.isNotEmpty()) {
       if (analogue_spring_suffix == "tank") return "Choose a Short, Medium or Long spring tank. Longer tanks ring longer.";
@@ -3585,7 +3920,7 @@ namespace {
       "eq_", "flanger_", "frequency_shifter_", "limiter_", "mid_side_eq_", "phase_shift_", "phaser_",
       "reverb_", "utility_", "waveshaper_", "spectral_gate_", "erosion_", "floaty_delay_", "spectral_compressor_", "scream_", "tremolo_pan_", "tape_", "defuse_", "suppressor_", "trance_gate_", "spectral_lock_", "resonator_",
       "analoguechorus_", "analogueflanger_", "analogueecho_", "analoguerotary_", "analoguespring_", "analoguewah_",
-      "spectral_balance_", "openwurli_amp_", "scanner_vibrato_"
+      "spectral_balance_", "openwurli_amp_", "scanner_vibrato_", "analoguecompressor_", "maim_"
     };
     for (const auto& prefix : effect_prefixes) {
       effect_suffix = effectSuffix(prefix);
@@ -3699,6 +4034,27 @@ namespace {
 #else
     return modifiers.isCtrlDown() && !modifiers.isAltDown();
 #endif
+  }
+
+  // Command Z undoes; Shift Command Z, and Command Y, redo. -1 for undo, 1
+  // for redo, 0 for any other key.
+  int undoRedoDirection(const KeyPress& key) {
+    const ModifierKeys modifiers = key.getModifiers();
+    if (!isCommandChord(modifiers))
+      return 0;
+    const juce_wchar character = CharacterFunctions::toLowerCase(static_cast<juce_wchar>(key.getKeyCode()));
+    if (character == 'z')
+      return modifiers.isShiftDown() ? 1 : -1;
+    if (character == 'y' && !modifiers.isShiftDown())
+      return 1;
+    return 0;
+  }
+
+  // The undo or redo chord is held down now (a key-down being handled).
+  bool isUndoRedoChordDown() {
+    if (!isCommandChord(ModifierKeys::getCurrentModifiersRealtime()))
+      return false;
+    return KeyPress::isKeyCurrentlyDown('Z') || KeyPress::isKeyCurrentlyDown('Y');
   }
 
   bool isEffectMoveEarlierKey(const KeyPress& key) {
@@ -4318,6 +4674,12 @@ namespace {
           onFocusGained();
       }
 
+      bool keyPressed(const KeyPress& key) override {
+        if (isArrowKeyFromAnOpenMenu(*this, key))
+          return true;
+        return ComboBox::keyPressed(key);
+      }
+
       std::unique_ptr<AccessibilityHandler> createAccessibilityHandler() override {
         class Handler final : public AccessibilityHandler {
           public:
@@ -4377,6 +4739,8 @@ namespace {
       }
 
       bool keyPressed(const KeyPress& key) override {
+        if (isArrowKeyFromAnOpenMenu(*this, key))
+          return true;
         if (onAccessibleCommand && onAccessibleCommand(key, *this)) return true;
         if (onContextMenuCommand && isContextMenuKey(key)) {
           onContextMenuCommand();
@@ -4423,6 +4787,8 @@ namespace {
       }
 
       bool keyPressed(const KeyPress& key) override {
+        if (isArrowKeyFromAnOpenMenu(*this, key))
+          return true;
         if (onAccessibleCommand && onAccessibleCommand(key, *this))
           return true;
         if (onContextMenuCommand && isContextMenuKey(key)) {
@@ -4553,6 +4919,69 @@ std::unique_ptr<AccessibilityHandler> AccessibleComboBox::createAccessibilityHan
       };
 
       ComboBox& combo_box_;
+  };
+
+  return std::make_unique<Handler>(*this);
+}
+
+std::unique_ptr<AccessibilityHandler> AccessibleTextEditor::createAccessibilityHandler() {
+  // JUCE's own TextEditor handler, except for the state and the help (see the
+  // class). JUCE keeps that handler private, so the text interface is repeated.
+  class Handler final : public AccessibilityHandler {
+    public:
+      explicit Handler(TextEditor& editorToWrap) :
+          AccessibilityHandler(editorToWrap,
+                               editorToWrap.isReadOnly() ? AccessibilityRole::staticText
+                                                         : AccessibilityRole::editableText,
+                               {}, AccessibilityHandler::Interfaces{ std::make_unique<TextInterface>(editorToWrap) }),
+          editor_(editorToWrap) { }
+
+      AccessibleState getCurrentState() const override {
+        return AccessibilityHandler::getCurrentState().withAccessibleOffscreen();
+      }
+
+      String getHelp() const override {
+        const String help = editor_.getHelpText();
+        return help.isNotEmpty() ? help : editor_.getTooltip();
+      }
+
+    private:
+      class TextInterface final : public AccessibilityTextInterface {
+        public:
+          explicit TextInterface(TextEditor& editorToWrap) : editor_(editorToWrap) { }
+
+          bool isDisplayingProtectedText() const override { return editor_.getPasswordCharacter() != 0; }
+          bool isReadOnly() const override { return editor_.isReadOnly(); }
+          int getTotalNumCharacters() const override { return editor_.getText().length(); }
+          Range<int> getSelection() const override { return editor_.getHighlightedRegion(); }
+          void setSelection(Range<int> range) override { editor_.setHighlightedRegion(range); }
+
+          String getText(Range<int> range) const override {
+            if (isDisplayingProtectedText())
+              return String::repeatedString(String::charToString(editor_.getPasswordCharacter()),
+                                            getTotalNumCharacters());
+            return editor_.getTextInRange(range);
+          }
+
+          void setText(const String& text) override { editor_.setText(text); }
+          int getTextInsertionOffset() const override { return editor_.getCaretPosition(); }
+
+          RectangleList<int> getTextBounds(Range<int> range) const override {
+            RectangleList<int> bounds;
+            for (const auto& rectangle : editor_.getTextBounds(range))
+              bounds.add(editor_.localAreaToGlobal(rectangle));
+            return bounds;
+          }
+
+          int getOffsetAtPoint(Point<int> point) const override {
+            return editor_.getTextIndexAt(editor_.getLocalPoint(nullptr, point));
+          }
+
+        private:
+          TextEditor& editor_;
+      };
+
+      TextEditor& editor_;
   };
 
   return std::make_unique<Handler>(*this);
@@ -4840,7 +5269,12 @@ class AccessibleParameterRow : public Component {
            !is_off_on(bridge->getDetails().string_lookup));
       const bool spectral_lock_control = parameter_id.startsWith("spectral_lock_") || parameter_id.contains("_spectral_lock_");
       const bool row_switching_choice = isRowSwitchingChoice(parameter_id);
-      use_combo_control_ = row_switching_choice ||
+      // Speech's language and variant lists are long: a menu reads them best.
+      const bool speech_voice_control = parameter_id.endsWith("_speech_language") ||
+                                        parameter_id.endsWith("_speech_variant");
+      // The Analogue Compressor's Mode keeps its rows, but reads best as a menu.
+      const bool analogue_compressor_mode = parameter_id.endsWith("analoguecompressor_mode");
+      use_combo_control_ = row_switching_choice || speech_voice_control || analogue_compressor_mode ||
                            (spectral_lock_control && (parameter_id.endsWith("_root") || parameter_id.endsWith("_scale")));
       const bool tape_control = parameter_id.startsWith("tape_") || parameter_id.contains("_tape_");
       const bool suppressor_control = parameter_id.startsWith("suppressor_") || parameter_id.contains("_suppressor_");
@@ -4855,6 +5289,7 @@ class AccessibleParameterRow : public Component {
       const bool glitch_delay_control = parameter_id.startsWith("glitch_delay_") || parameter_id.contains("_glitch_delay_");
       // Analogue Chorus, Flanger and Echo share one prefix family.
       const bool analogue_control = parameter_id.startsWith("analogue") || parameter_id.contains("_analogue");
+      const bool maim_control = parameter_id.startsWith("maim_") || parameter_id.contains("_maim_");
       const auto accessible_name = accessibleName.isNotEmpty() ? accessibleName : (random_rate ? String("Rate") : name);
       const String parameter_description = accessibleDescription.isNotEmpty()
           ? accessibleDescription
@@ -5016,6 +5451,25 @@ class AccessibleParameterRow : public Component {
                             : parameter_id.endsWith("_spread") ? 0.1 : 1.0;
           slider_.adjustmentStep = [step] { return step; };
         }
+        if (bridge != nullptr && maim_control && interval == 0.0 &&
+            bridge->getDetails().value_scale != vital::ValueDetails::kExponential &&
+            bridge->getDetails().value_scale != vital::ValueDetails::kIndexed) {
+          // Keys move in display units: one percent, half a decibel, or 50 ms
+          // of the loss period, which is stored as the cube root of its seconds.
+          const auto& details = bridge->getDetails();
+          const double minimum = details.min, span = details.max - minimum, scale = details.display_multiply;
+          const bool cubic = details.value_scale == vital::ValueDetails::kCubic;
+          slider_.toAdjustmentValue = [minimum, span, scale, cubic](double v) {
+            const double stored = minimum + span * v;
+            return (cubic ? stored * stored * stored : stored) * scale;
+          };
+          slider_.fromAdjustmentValue = [minimum, span, scale, cubic](double display) {
+            const double value = display / scale;
+            return ((cubic ? std::cbrt(jmax(0.0, value)) : value) - minimum) / span;
+          };
+          const double step = cubic ? 0.05 : String(details.display_units).trim() == "dB" ? 0.5 : 1.0;
+          slider_.adjustmentStep = [step] { return step; };
+        }
         if (bridge != nullptr && analogue_control && interval == 0.0 &&
             bridge->getDetails().value_scale != vital::ValueDetails::kExponential) {
           // Keys move in display units: one percent, degree or millisecond.
@@ -5115,6 +5569,7 @@ class AccessibleParameterRow : public Component {
                                         : suppressor_control ? "Arrows change percentages by one percent, Release by 0.05, Curve Frequency by 10 Hz, and Curve Width by 10. Shift arrows use one tenth of the step; Page keys use ten times the step. Enter types a value, Backspace restores its default, Home selects maximum and End minimum."
                                         : defuse_control ? "Use arrows to adjust, Shift arrows for finer changes, and Page keys for ten times the increment. Stages change by one, Frequency by 10 Hz, Resonance by 0.01, Spread by 0.1 octave, and Automation Precision by one percent. Enter types a value; Backspace restores the default. Home selects maximum and End minimum. Shift M opens the context menu."
                                         : tape_control ? "Use arrows to adjust, Shift arrows for finer changes, and Page keys for larger changes. Wow Rate uses 0.01 Hz, Flutter Rate 0.1 Hz, cutoffs 10 Hz, levels 0.1, Drive and percentages one percent. Enter types a value; Backspace restores the default. Home selects maximum and End minimum. Shift M opens the context menu."
+                                        : maim_control ? "Use arrows for changes, Shift arrows for a tenth of the step, and Page keys for ten times the step. Percentages move one percent, Drive and Makeup half a decibel, Loss Period 50 milliseconds, the cutoffs 10 hertz, and lines, bands and steps one at a time. Home for maximum, End for minimum, Enter to type a value, Backspace to reset to default. Press Shift M for the context menu, Shift L for MIDI learn, and Shift C to clear MIDI learn."
                                         : glitch_delay_control ? "Use arrows for changes, Shift arrows for a tenth of the step, and Page keys for ten times the step. Tap times, Glide and tape times move 10 ms; Buffer and Smear Size 5 ms; slice and grain sizes 1 ms; High Cut 100 Hz; Low Cut and ring frequencies 10 Hz; pitch ranges one semitone; sweep speeds and formant shifts 0.1 semitone; FM ratios 0.05; FM index and rate reduction 0.1; densities one grain a second; Volume 0.5 dB and Output Gain 0.1 dB; percentages one percent. Home for maximum, End for minimum, Enter to type a value, Backspace to reset to default. Press Shift M for the context menu, Shift L for MIDI learn, and Shift C to clear MIDI learn."
                                         : resonator_control ? "Use arrows for changes, Shift arrows for finer changes, and Page keys for ten times the step. Tune moves one semitone; Decay, rates and Filter Frequency move in even ratio steps; percentages, degrees, cents and Glide milliseconds move by one; decibels, LFO Amount and Filter Bandwidth by 0.1; Ratio by 0.01. Named choices move one item at a time. Home for maximum, End for minimum, Enter to type a value, Backspace to reset to default. Press Shift M for the context menu, Shift L for MIDI learn, and Shift C to clear MIDI learn."
                                         : tremolo_control ? "Use arrows for changes, Shift arrows for finer changes, and Page keys for larger changes. Free Rate uses 0.1 Hz steps, Stereo Phase and Offset use one degree, Depth and Mix use one percent, and Smoothing uses 0.1 ms. Named choices move one item at a time. Home for maximum, End for minimum, Enter to type a value, Backspace to reset to default. Press Shift M for the context menu, Shift L for MIDI learn, and Shift C to clear MIDI learn."
@@ -5284,7 +5739,17 @@ class AccessibleParameterRow : public Component {
         const double parameter_value = jlimit(min_normalized_value_, max_normalized_value_,
                                               static_cast<double>(parameter_.getValue()));
         slider_.setValue(sliderValueForParameterValue(parameter_value), dontSendNotification);
-        if (bridge != nullptr && bridge->hasEnvelopeSyncContext()) {
+        // The timer refreshes every row 20 times a second. Format the time
+        // again only when something it shows has changed.
+        const float beats_per_second = bridge != nullptr && bridge->hasEnvelopeSyncContext() ?
+            bridge->envelopeBeatsPerSecond() : 0.0f;
+        if (bridge != nullptr && bridge->hasEnvelopeSyncContext() &&
+            (!envelope_text_current_ || parameter_value != envelope_text_value_ ||
+             synced_envelope_time_ != envelope_text_synced_ || beats_per_second != envelope_text_bps_)) {
+          envelope_text_current_ = true;
+          envelope_text_value_ = parameter_value;
+          envelope_text_synced_ = synced_envelope_time_;
+          envelope_text_bps_ = beats_per_second;
           const String text = slider_.getTextFromValue(slider_.getValue());
           if (text != envelope_time_text_) {
             envelope_time_text_ = text;
@@ -5575,6 +6040,10 @@ class AccessibleParameterRow : public Component {
     bool updating_ = false;
     bool synced_envelope_time_ = false;
     String envelope_time_text_;
+    bool envelope_text_current_ = false;
+    double envelope_text_value_ = 0.0;
+    bool envelope_text_synced_ = false;
+    float envelope_text_bps_ = 0.0f;
 
     void beginParameterChange() {
       parameter_.beginChangeGesture();
@@ -5856,7 +6325,9 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   addChildComponent(preset_summary_);
 
   preset_menu_.setTitle("Preset menu");
-  preset_menu_.setDescription("Save the patch, save it as the default, initialize it, import a preset file or bank, export a bank or the patch, reveal the selected preset, and refresh the list. Loading, favourites, renaming and sorting are in the preset browser and its context menu");
+  preset_menu_.setDescription("Save the patch, save it as the default, initialize it, import a preset file or bank, export a bank or the patch, " +
+                              String(kShowInFileBrowserVerb).toLowerCase() + " the selected preset in " + kFileBrowserName +
+                              ", and refresh the list. Loading, favourites, renaming and sorting are in the preset browser and its context menu");
   preset_menu_.setHelpText("Press Enter to open preset browser actions");
   preset_menu_.setWantsKeyboardFocus(true);
   preset_menu_.onClick = [this] { showPresetMenu(); };
@@ -5918,7 +6389,7 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   preset_table_.setModel(preset_table_model_.get());
   preset_table_.setTitle("Preset results table");
   const String command = atlas::keys::commandName();
-  preset_table_.setDescription("Sortable preset results with Name first. Press Return to load, F to change favourite, R to rename, E to edit metadata, S to choose the next sort column, Shift S to reverse the sort, or Delete to move an editable preset to Trash. " +
+  preset_table_.setDescription("Sortable preset results with Name first. " + presetTableKeysHelp() + " " +
                                command + " S saves the patch, Shift " + command + " S saves it as a new preset.");
   preset_table_.setHelpText("Use arrow keys to select a preset. Return loads, F toggles favourite, R renames, E edits metadata, S chooses the next sort column, Shift S reverses the sort, and column headers can also be pressed to sort. " +
                             command + " S saves the patch and Shift " + command + " S saves it as a new preset.");
@@ -6125,8 +6596,11 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   modulation_amount_editor_.setHelpText("Type a value from minus one to one, then press Return or OK");
   modulation_amount_editor_.setWantsKeyboardFocus(true);
   modulation_amount_editor_.onReturnKey = [this] { applyInlineTextPrompt(); };
-  // The text box keeps Escape from reaching SynthEditor::keyPressed.
-  modulation_amount_editor_.onEscapeKey = [this] { cancelInlineTextPrompt(); };
+  // The field keeps Escape to itself, so the editor's own Escape key never sees it.
+  modulation_amount_editor_.onEscapeKey = [this] {
+    if (modulation_amount_prompt_visible_ || parameter_value_prompt_visible_)
+      cancelInlineTextPrompt();
+  };
   addChildComponent(modulation_amount_editor_);
 
   modulation_amount_ok_.setTitle("Set modulation amount");
@@ -6161,6 +6635,9 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   // an older, smaller editor size, so enforce the usable minimum here.
   setResizeLimits(900, 720, 1400, 1000);
   setSize(900, 720);
+  // What the user changes from now on can be undone. A history recorded while
+  // the editor was closed before stays.
+  synth_.undoHistory().ensureBaseline();
   startTimerHz(20);
 }
 
@@ -6197,9 +6674,16 @@ void SynthEditor::resized() {
     bounds.removeFromTop(8);
     modulation_amount_prompt_.setBounds(bounds.removeFromTop(34));
     auto amount_row = bounds.removeFromTop(38);
-    modulation_amount_editor_.setBounds(amount_row.removeFromLeft(jmax(180, amount_row.getWidth() - 220)).reduced(3));
-    modulation_amount_ok_.setBounds(amount_row.removeFromLeft(100).reduced(3));
-    modulation_amount_cancel_.setBounds(amount_row.removeFromLeft(120).reduced(3));
+    if (confirmation_prompt_visible_) {
+      // A question has no text box; its first button says what it does.
+      modulation_amount_ok_.setBounds(amount_row.removeFromLeft(240).reduced(3));
+      modulation_amount_cancel_.setBounds(amount_row.removeFromLeft(120).reduced(3));
+    }
+    else {
+      modulation_amount_editor_.setBounds(amount_row.removeFromLeft(jmax(180, amount_row.getWidth() - 220)).reduced(3));
+      modulation_amount_ok_.setBounds(amount_row.removeFromLeft(100).reduced(3));
+      modulation_amount_cancel_.setBounds(amount_row.removeFromLeft(120).reduced(3));
+    }
   }
   if (save_patch_dialog_visible_) {
     bounds.removeFromTop(8);
@@ -6236,6 +6720,7 @@ void SynthEditor::buildSections() {
   }
   internal_fx_bridges_.clear();
   parameters_by_id_.clear();
+  effect_slot_type_controls_ = {};
 
   sections_[kPresetSection];
   for (auto* parameter : synth_.getParameters()) {
@@ -6262,6 +6747,8 @@ void SynthEditor::buildSections() {
     else {
       bridge = std::make_unique<ValueBridge>(id.toStdString(), found->second);
       bridge->setListener(&synth_);
+      // Its gestures mark the user's changes for undo, as on the host's parameters.
+      bridge->addListener(&synth_.undoGestureListener());
       if (vital::suppressor::isFrequency(id.toStdString()))
         bridge->suppressorSampleRate = [this] { return synth_.getFxSampleRate(); };
     }
@@ -6749,7 +7236,12 @@ std::unique_ptr<AccessibleParameterRow> SynthEditor::buildAccessibleParameterRow
         return accessibleParameterText(*bridge, value);
       };
       const String type_name = String(strings::kOscillatorTypeNames[slot_type]).toLowerCase();
-      const String help = fm
+      const String help = slot_type == vital::source_types::kSpeech
+          ? String("Choose an FM source or a ring modulation source from another oscillator. FM bends the "
+                   "voice's pitch at audio rate while its formants and the syllable's timing stay put, and "
+                   "ring modulation multiplies its output by the source. Wavetable warps stay stored for the "
+                   "Wavetable type and read as None here.")
+          : fm
           ? "Choose an FM source or a ring modulation source from another oscillator. FM modulates this " +
             type_name + " oscillator's playback rate at audio rate, running it backwards at high amounts, and "
             "ring modulation multiplies its output by the source. Wavetable warps stay stored for the "
@@ -7397,6 +7889,13 @@ void SynthEditor::addOscillatorSectionContent(int oscillator, const String& sect
                                               rows_in(OscillatorRowGroup::kType), inner_y, inner_width);
                                 });
   }
+  else if (slot_type == vital::source_types::kSpeech) {
+    addSpeechControlsGroup(oscillator, parent, y, x, width, focus_order, section_name,
+                           [&](Component& group, int& inner_y, int inner_width) {
+                             add_rows_to(dynamic_cast<AccessibleSectionHeader*>(&group),
+                                         rows_in(OscillatorRowGroup::kType), inner_y, inner_width);
+                           });
+  }
   else {
     add_group(OscillatorRowGroup::kType, type_name + " controls", type_name.toLowerCase() + " controls",
               type_name + " settings of " + section_name);
@@ -7439,8 +7938,11 @@ bool SynthEditor::restoreFocusAfterRebuild(const String& parameterId, Component*
   // A queued rebuild (an effect slot variant) asks for this before it runs.
   refocusScreenReader = std::exchange(screen_reader_refocus_requested_, false) || refocusScreenReader;
   Component* initial = findRebuildFocusTarget(parameterId, persistentComponent, accessibleTitle, preferredSection);
-  if (initial == nullptr)
+  if (initial == nullptr) {
+    if (kRebuildNeverOrphansFocus)
+      refocusIfFocusOrphaned(preferredSection);
     return false;
+  }
   // The rebuild kept this control (keepFocusedSwitchingRow): the screen
   // reader never left it.
   if (initial == kept_switching_control_)
@@ -7454,11 +7956,14 @@ bool SynthEditor::restoreFocusAfterRebuild(const String& parameterId, Component*
   }
 
   // Resolve again when the grab runs: another rebuild may have replaced the
-  // control in between, and the fresh one is the right target.
+  // control in between, and the fresh one is the right target. Only the last
+  // restore grabs, so an earlier one cannot take the focus back to its own,
+  // older target after a later one.
   Component::SafePointer<SynthEditor> safe_this(this);
   Component::SafePointer<Component> safe_persistent(persistentComponent);
-  MessageManager::callAsync([safe_this, safe_persistent, parameterId, accessibleTitle, preferredSection] {
-    if (safe_this == nullptr)
+  const int grab = ++rebuild_focus_grab_generation_;
+  MessageManager::callAsync([safe_this, safe_persistent, parameterId, accessibleTitle, preferredSection, grab] {
+    if (safe_this == nullptr || safe_this->rebuild_focus_grab_generation_ != grab)
       return;
     Component* target = safe_this->findRebuildFocusTarget(parameterId, safe_persistent.getComponent(),
                                                           accessibleTitle, preferredSection);
@@ -7476,16 +7981,17 @@ bool SynthEditor::restoreFocusAfterRebuild(const String& parameterId, Component*
   const int generation = ++screen_reader_refocus_generation_;
   if (!refocusScreenReader)
     return true;
+  holdAnnouncements();
   Timer::callAfterDelay(kScreenReaderRefocusDelayMs, [safe_this, generation] {
-    if (safe_this == nullptr || safe_this->screen_reader_refocus_generation_ != generation)
-      return;
     auto* focused = Component::getCurrentlyFocusedComponent();
-    if (focused == nullptr || !safe_this->isParentOf(focused) || !focused->isShowing())
-      return;
-    if (auto* handler = focused->getAccessibilityHandler()) {
-      handler->giveAwayFocus();
-      handler->grabFocus();
+    if (safe_this != nullptr && safe_this->screen_reader_refocus_generation_ == generation &&
+        focused != nullptr && safe_this->isParentOf(focused) && focused->isShowing()) {
+      if (auto* handler = focused->getAccessibilityHandler()) {
+        handler->giveAwayFocus();
+        handler->grabFocus();
+      }
     }
+    releaseAnnouncements();
   });
   return true;
 }
@@ -7533,6 +8039,285 @@ Component* SynthEditor::findRebuildFocusTarget(const String& parameterId, Compon
   }
 
   return target;
+}
+
+Component* SynthEditor::sectionHeadingFor(const String& section) const {
+  if (section.isEmpty())
+    return nullptr;
+  Component* nearest = nullptr;
+  int nearest_length = 0;
+  for (auto* component : row_focus_order_) {
+    if (component == nullptr || !component->isShowing() ||
+        dynamic_cast<AccessibleSectionHeader*>(component) == nullptr)
+      continue;
+    const String key = component->getProperties()["SectionName"].toString();
+    if (key.isEmpty())
+      continue;
+    if (key == section)
+      return component;
+    if (key.length() > nearest_length && section.startsWith(key)) {
+      nearest = component;
+      nearest_length = key.length();
+    }
+  }
+  return nearest;
+}
+
+void SynthEditor::refocusIfFocusOrphaned(const String& section) {
+  // Once the rebuild has settled: its caller may still focus a control of
+  // its own (a prompt's fallback row, the preset list after a load).
+  Component::SafePointer<SynthEditor> safe_this(this);
+  MessageManager::callAsync([safe_this, section] {
+    if (safe_this == nullptr || !safe_this->isShowing() || Component::getCurrentlyFocusedComponent() != nullptr)
+      return;
+    // The window has lost the keyboard to another one: nothing to take back,
+    // and focusGained puts the focus on the replacement when it returns.
+    auto* peer = safe_this->getPeer();
+    if (peer == nullptr || !peer->isFocused() || !safe_this->window_focus_return_.isEmpty())
+      return;
+    Component* heading = safe_this->sectionHeadingFor(section.isNotEmpty() ? section : safe_this->last_section_name_);
+    if (heading == nullptr) {
+      safe_this->grabKeyboardFocus();
+      return;
+    }
+    safe_this->ensureComponentVisible(heading);
+    heading->grabKeyboardFocus();
+    if (auto* handler = heading->getAccessibilityHandler())
+      handler->grabFocus();
+  });
+}
+
+SynthEditor::FocusReturn SynthEditor::focusToReturnTo() const {
+  Component* focused = Component::getCurrentlyFocusedComponent();
+  if ((focused == nullptr || !isParentOf(focused)) && getPeer() != nullptr)
+    focused = getPeer()->getLastFocusedSubcomponent();
+  FocusReturn result;
+  if (focused == nullptr || !isParentOf(focused))
+    return result;
+
+  for (const auto& row : rows_) {
+    if (row != nullptr && (row->focusableControl() == focused || row->focusableControl()->isParentOf(focused))) {
+      result.parameter_id = row->parameterId();
+      break;
+    }
+  }
+  result.title = focused->getTitle().isNotEmpty() ? focused->getTitle() : focused->getName();
+  for (auto* component = focused; component != nullptr; component = component->getParentComponent()) {
+    const String key = component->getProperties()["SectionName"].toString();
+    if (key.isNotEmpty()) {
+      result.section = key;
+      break;
+    }
+  }
+  result.component = focused;
+  return result;
+}
+
+// Counts a file chooser, message box or dialog window as open until it calls
+// back, or is deleted without calling back (a chooser replaced by another).
+struct SynthEditor::OpenOsWindow {
+  Component::SafePointer<SynthEditor> editor;
+  FocusReturn focus;
+  bool open = true;
+  ~OpenOsWindow() { close(); }
+  void close() {
+    if (std::exchange(open, false) && editor != nullptr)
+      --editor->open_os_windows_;
+  }
+};
+
+std::shared_ptr<SynthEditor::OpenOsWindow> SynthEditor::openOsWindow(FocusReturn focus) {
+  auto window = std::make_shared<OpenOsWindow>();
+  window->editor = this;
+  // A window opened from another's callback (an error box after a file
+  // chooser) gives focus back where that one would have: focus is nowhere
+  // in the plugin while the callback runs.
+  window->focus = os_window_callback_focus_ != nullptr ? *os_window_callback_focus_ : std::move(focus);
+  if (kOsWindowsReturnFocus) {
+    // The editor itself had the focus (as just after the window opens): it
+    // takes it back, rather than leaving it in the host.
+    if (window->focus.isEmpty() && os_window_callback_focus_ == nullptr && hasKeyboardFocus(false)) {
+      window->focus.component = this;
+      window->focus.title = getTitle();
+    }
+    // A window with nothing to give back (a box that came up while the user
+    // was in the host) must not hold up another window's return.
+    if (window->focus.isEmpty()) {
+      window->open = false;
+      return window;
+    }
+  }
+  ++open_os_windows_;
+  return window;
+}
+
+void SynthEditor::closeOsWindow(const std::shared_ptr<OpenOsWindow>& window, const std::function<void()>& callback) {
+  window->close();
+  const ScopedAnnouncementHold hold;
+  if (auto* editor = window->editor.getComponent()) {
+    const FocusReturn* outer = std::exchange(editor->os_window_callback_focus_, &window->focus);
+    if (callback)
+      callback();
+    if (window->editor != nullptr)
+      window->editor->os_window_callback_focus_ = outer;
+  }
+  else if (callback) {
+    callback();
+  }
+  // A second window the callback opened (a bank export asks for the folder,
+  // then the file; a failed import shows an error) gives focus back when it closes.
+  if (auto* editor = window->editor.getComponent(); editor != nullptr && editor->open_os_windows_ == 0 &&
+                                                    !window->focus.isEmpty())
+    editor->restoreFocusAfterOsWindow(window->focus);
+}
+
+void SynthEditor::restoreFocusAfterOsWindow(const FocusReturn& focus) {
+  // Leave focus alone if the callback moved it on, to a prompt it opened say.
+  auto* focused = Component::getCurrentlyFocusedComponent();
+  auto* target = findRebuildFocusTarget(focus.parameter_id, focus.component.getComponent(), focus.title, focus.section);
+  const bool moved_on = focused != nullptr && focused != this && focused != target && isParentOf(focused);
+  if (moved_on)
+    return;
+  // Back on the control VoiceOver was on before the window: it follows focus
+  // to a new element, not back to that one (see returnFocusFromPrompt). Not
+  // the editor itself, whose element holds the whole window's.
+  if (target != nullptr && target != this && target == focus.component.getComponent())
+    target->invalidateAccessibilityHandler();
+  const bool restored = restoreFocusAfterRebuild(focus.parameter_id, focus.component.getComponent(), focus.title,
+                                                 focus.section, true);
+  if (!kOsWindowsReturnFocus)
+    return;
+  // The control is gone and nothing replaced it: its section's heading, or
+  // else the window, takes the keyboard back from the host, so Tab and
+  // Atlas's keys work again.
+  if (!restored && !hasKeyboardFocus(true) && isShowing()) {
+    if (auto* heading = sectionHeadingFor(focus.section))
+      heading->grabKeyboardFocus();
+    else
+      grabKeyboardFocus();
+  }
+  // A host that moves focus to its own window a moment after the box has
+  // closed would take it back again; look once more, while the host is still
+  // the foreground application (the user has not switched away).
+  Component::SafePointer<SynthEditor> safe_this(this);
+  Timer::callAfterDelay(kOsWindowFocusCheckMs, [safe_this, focus] {
+    if (safe_this == nullptr || safe_this->open_os_windows_ > 0 || safe_this->hasKeyboardFocus(true) ||
+        !safe_this->isShowing() || !Process::isForegroundProcess())
+      return;
+    if (safe_this->restoreFocusAfterRebuild(focus.parameter_id, focus.component.getComponent(), focus.title,
+                                             focus.section, true))
+      return;
+    if (auto* heading = safe_this->sectionHeadingFor(focus.section))
+      heading->grabKeyboardFocus();
+    else
+      safe_this->grabKeyboardFocus();
+  });
+}
+
+void SynthEditor::launchFileChooser(FileChooser& chooser, int flags,
+                                    std::function<void(const FileChooser&)> callback) {
+  // The chooser takes the window's focus, and the host does not always give
+  // it back to the control that opened it; a screen reader can end up at the
+  // top of the window. Rows rebuilt meanwhile (a loaded preset) replace it.
+  auto window = openOsWindow(focusToReturnTo());
+  chooser.launchAsync(flags, [window, callback = std::move(callback)](const FileChooser& result) {
+    SynthEditor::closeOsWindow(window, [&] { callback(result); });
+  });
+}
+
+SynthEditor::FocusReturn SynthEditor::focusForMessageBox() const {
+  // A box an inline prompt's action opens (a rename that failed) comes up
+  // just as the prompt gives focus back and hides: its text box is focused
+  // now but is gone by the time the box closes.
+  // Only while its action runs: a box that comes up while the prompt is
+  // open and waiting returns to the prompt itself.
+  if (inline_prompt_applying_ && pending_parameter_value_focus_ != nullptr) {
+    FocusReturn result;
+    result.parameter_id = pending_prompt_focus_parameter_;
+    result.title = pending_prompt_focus_title_;
+    result.section = pending_prompt_focus_section_;
+    result.component = pending_parameter_value_focus_.getComponent();
+    return result;
+  }
+  // A box that comes up while the user is in the host (a background load that
+  // failed) must not pull them into the plugin when it closes.
+  if (!hasKeyboardFocus(true) && os_window_callback_focus_ == nullptr)
+    return {};
+  return focusToReturnTo();
+}
+
+void SynthEditor::showMessageBox(const MessageBoxOptions& options, std::function<void(int)> callback,
+                                 Component* returnTo) {
+  if (!kOsWindowsReturnFocus) {
+    NativeMessageBox::showAsync(options, std::move(callback));
+    return;
+  }
+  FocusReturn focus;
+  if (returnTo != nullptr) {
+    focus.component = returnTo;
+    focus.title = returnTo->getTitle();
+  }
+  else {
+    focus = focusForMessageBox();
+  }
+  auto window = openOsWindow(std::move(focus));
+  NativeMessageBox::showAsync(options, [window, callback = std::move(callback)](int button) {
+    SynthEditor::closeOsWindow(window, [&] {
+      if (callback)
+        callback(button);
+    });
+  });
+}
+
+void SynthEditor::showWarningBox(const String& title, const String& message, Component* returnTo) {
+  showMessageBox(MessageBoxOptions::makeOptionsOk(MessageBoxIconType::WarningIcon, title, message), {}, returnTo);
+}
+
+DialogWindow* SynthEditor::launchDialogWindow(DialogWindow::LaunchOptions& options) {
+  // Captured before the dialog takes the focus.
+  std::shared_ptr<OpenOsWindow> window;
+  if (kOsWindowsReturnFocus)
+    window = openOsWindow(focusToReturnTo());
+  auto* dialog = options.launchAsync();
+  if (dialog == nullptr || window == nullptr)
+    return dialog;
+  // JUCE deletes the window right after its modal callbacks, so the focus
+  // goes back once it has gone.
+  ModalComponentManager::getInstance()->attachCallback(dialog, ModalCallbackFunction::create([window](int) {
+    MessageManager::callAsync([window] {
+      auto* editor = window->editor.getComponent();
+      // The host may already have given the focus back.
+      if (editor != nullptr && editor->hasKeyboardFocus(true)) {
+        window->close();
+        return;
+      }
+      SynthEditor::closeOsWindow(window, {});
+    });
+  }));
+  return dialog;
+}
+
+void SynthEditor::focusOfChildComponentChanged(FocusChangeType cause) {
+  // The window losing focus to a file chooser, a menu or the host comes as a
+  // mouse click. Remember the control it had: rows rebuilt before focus comes
+  // back replace it.
+  if (!hasKeyboardFocus(true)) {
+    if (cause == focusChangedByMouseClick)
+      window_focus_return_ = focusToReturnTo();
+    return;
+  }
+  if (!hasKeyboardFocus(false))
+    window_focus_return_ = {};
+}
+
+void SynthEditor::focusGained(FocusChangeType) {
+  // Focus came back to a window whose control was replaced meanwhile, so JUCE
+  // focused the editor itself, which a screen reader reads as the top of the
+  // window. Go to the replacement instead.
+  if (window_focus_return_.isEmpty())
+    return;
+  const FocusReturn focus = std::exchange(window_focus_return_, {});
+  restoreFocusAfterRebuild(focus.parameter_id, focus.component.getComponent(), focus.title, focus.section, true);
 }
 
 void SynthEditor::keepFocusedSwitchingRow() {
@@ -7628,12 +8413,14 @@ bool SynthEditor::refreshFilterRowsIfNeeded() {
 
   const String parameter_id = focusedParameterId();
   const String accessible_title = focusedAccessibleTitle();
+  // Several sections share control names: stay in this one.
+  const String section_key = focusedSectionKey();
   auto* persistent_focus = persistentFocusedComponent();
 
   keepFocusedSwitchingRow();
   showAllSections(false);
 
-  restoreFocusAfterRebuild(parameter_id, persistent_focus, accessible_title, {}, true);
+  restoreFocusAfterRebuild(parameter_id, persistent_focus, accessible_title, section_key, true);
   releaseKeptFocus();
 
   return true;
@@ -7652,10 +8439,11 @@ bool SynthEditor::refreshRandomAmplitudeRowsIfNeeded() {
 
   const String parameter_id = focusedParameterId();
   const String accessible_title = focusedAccessibleTitle();
+  const String section_key = focusedSectionKey();
   auto* persistent_focus = persistentFocusedComponent();
   keepFocusedSwitchingRow();
   showAllSections(false);
-  restoreFocusAfterRebuild(parameter_id, persistent_focus, accessible_title, {}, true);
+  restoreFocusAfterRebuild(parameter_id, persistent_focus, accessible_title, section_key, true);
   releaseKeptFocus();
   return true;
 }
@@ -7746,12 +8534,14 @@ bool SynthEditor::refreshEnvelopeAnalogRowsIfNeeded() {
 
   const String parameter_id = focusedParameterId();
   const String accessible_title = focusedAccessibleTitle();
+  // Several sections share control names: stay in this one.
+  const String section_key = focusedSectionKey();
   auto* persistent_focus = persistentFocusedComponent();
 
   keepFocusedSwitchingRow();
   showAllSections(false);
 
-  restoreFocusAfterRebuild(parameter_id, persistent_focus, accessible_title, {}, true);
+  restoreFocusAfterRebuild(parameter_id, persistent_focus, accessible_title, section_key, true);
   releaseKeptFocus();
 
   return true;
@@ -7771,11 +8561,16 @@ bool SynthEditor::refreshZoneCrossfadeRowIfNeeded() {
 
   const String parameter_id = focusedParameterId();
   const String accessible_title = focusedAccessibleTitle();
+  const String section_key = focusedSectionKey();
   auto* persistent_focus = persistentFocusedComponent();
 
+  // Glide zones decides whether Zone crossfade shows: on Windows its switch
+  // stays through the rebuild, as Envelope 1's Analog switch does.
+  keepFocusedSwitchingRow();
   showAllSections(false);
 
-  restoreFocusAfterRebuild(parameter_id, persistent_focus, accessible_title, {}, true);
+  restoreFocusAfterRebuild(parameter_id, persistent_focus, accessible_title, section_key, true);
+  releaseKeptFocus();
 
   return true;
 }
@@ -8368,6 +9163,15 @@ PopupMenu SynthEditor::createMidiLearnMenu() {
 void SynthEditor::showNavigationMenu() {
   PopupMenu menu;
   menu.addSectionHeader("Editor");
+  // Undo and redo, named after what they would do, for a host that keeps
+  // Command Z for itself.
+  auto& history = synth_.undoHistory();
+  const String undo = history.undoDescription();
+  const String redo = history.redoDescription();
+  const String command = atlas::keys::commandName();
+  menu.addItem(9, (undo.isEmpty() ? String("Undo") : "Undo " + undo) + " (" + command + " Z)", undo.isNotEmpty());
+  menu.addItem(10, (redo.isEmpty() ? String("Redo") : "Redo " + redo) + " (Shift " + command + " Z)", redo.isNotEmpty());
+  menu.addSeparator();
   menu.addItem(6, "Load tuning file...");
   if (!synth_.getTuning()->isDefault())
     menu.addItem(7, "Clear tuning: " + String(synth_.getTuning()->getName()));
@@ -8387,6 +9191,8 @@ void SynthEditor::showNavigationMenu() {
       showAccessibilitySettingsMenu();
     else if (result == 8)
       showKeyboardHelp();
+    else if (result == 9 || result == 10)
+      undoOrRedo(result == 10);
   });
 }
 
@@ -8447,7 +9253,7 @@ void SynthEditor::showAccessibilitySettingsMenu() {
   opts.useNativeTitleBar = true;
   opts.resizable = false;
   opts.escapeKeyTriggersCloseButton = true;
-  auto* dlg = opts.launchAsync();
+  auto* dlg = launchDialogWindow(opts);
   if (dlg) {
     Component::SafePointer<DialogWindow> safe_dlg(dlg);
     MessageManager::callAsync([safe_dlg]() {
@@ -8471,7 +9277,10 @@ namespace {
     const String command = "Ctrl", context_menu = "Shift+M or Shift+F10", heading_menu = context_menu;
 #endif
     const String effect_slot_steps = kSectionKeysStepThroughEffectSlots
-        ? "  On an effects chain, Comma / Period also step through its effects (Slot 1, Slot 2 and so on)\n"
+        ? (kSectionKeysStepThroughEffectGroups
+               ? "  On an effects chain, Comma / Period also step through its effects (Slot 1, Slot 2 and so on) and the "
+                 "groupings inside them, such as an EQ's bands or Glitch Delay's groups\n"
+               : "  On an effects chain, Comma / Period also step through its effects (Slot 1, Slot 2 and so on)\n")
         : "";
     return String(text).replace("{Cmd}", command).replace("{ContextMenuKeys}", context_menu)
                        .replace("{HeadingMenuKeys}", heading_menu)
@@ -8496,6 +9305,12 @@ void SynthEditor::showKeyboardHelp() {
       "\n"
       "Most single-letter shortcuts work when a parameter or the editor has focus, but not while a "
       "text field is focused.\n"
+      "\n"
+      "Undo and redo (anywhere in Atlas; the Editor menu has them too)\n"
+      "  {Cmd}+Z - Undo the last change: a value, a preset load, Initialize patch, Save patch as default, "
+      "an effect added, removed or moved, a modulation route, or an LFO or wavetable edit\n"
+      "  Shift+{Cmd}+Z or {Cmd}+Y - Redo\n"
+      "  Quick changes to the same control are undone together. In a text box {Cmd}+Z undoes the typing.\n"
       "\n"
       "Section navigation\n"
       "  O - Oscillators\n"
@@ -8709,7 +9524,7 @@ void SynthEditor::showKeyboardHelp() {
   opts.useNativeTitleBar = true;
   opts.resizable = true;
   opts.escapeKeyTriggersCloseButton = true;
-  auto* dlg = opts.launchAsync();
+  auto* dlg = launchDialogWindow(opts);
   if (dlg) {
     Component::SafePointer<DialogWindow> safe_dlg(dlg);
     MessageManager::callAsync([safe_dlg]() {
@@ -8729,6 +9544,7 @@ void SynthEditor::initializePatch() {
   const String parameter_id = focusedParameterId();
   const String accessible_title = focusedAccessibleTitle();
   auto* persistent_focus = persistentFocusedComponent();
+  synth_.undoHistory().describeNextStep("initialize patch");
   const File default_file = defaultPatchFile();
   std::string error;
   if (default_file.existsAsFile() && synth_.loadFromFile(default_file, error)) {
@@ -8752,16 +9568,77 @@ void SynthEditor::initializePatch() {
 
 void SynthEditor::savePatchAsDefault() {
   const File destination = defaultPatchFile().withFileExtension(vital::kPresetExtension);
+  // The default it replaces, so that undo can put it back (or take away a
+  // default that did not exist).
+  std::optional<MemoryBlock> previous;
+  bool previous_read = true;
+  if (destination.existsAsFile()) {
+    MemoryBlock data;
+    previous_read = destination.loadFileAsData(data);
+    if (previous_read)
+      previous = std::move(data);
+  }
   if (!synth_.saveCopyToFile(destination)) {
-    NativeMessageBox::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Unable to save default patch",
-                                          "The default patch could not be written.");
+    showWarningBox("Unable to save default patch",
+                   "The default patch could not be written.");
     postPluginAnnouncement("Unable to save default patch", AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
+  // A default that could not be read could not be put back: no step then.
+  MemoryBlock saved;
+  if (previous_read && destination.loadFileAsData(saved))
+    synth_.undoHistory().recordFileChange(destination, "save patch as default", std::move(previous), std::move(saved));
 
   refreshPresetList();
   updatePresetSummary();
   postPluginAnnouncement("Saved patch as default", AccessibilityHandler::AnnouncementPriority::high);
+}
+
+void SynthEditor::undoOrRedo(bool redo) {
+  // Where the focus is, to find it again if the rows are rebuilt.
+  const String parameter_id = focusedParameterId();
+  const String accessible_title = focusedAccessibleTitle();
+  const String section = focusedSectionKey();
+  auto* persistent_focus = persistentFocusedComponent();
+
+  auto& history = synth_.undoHistory();
+  const UndoHistory::Outcome outcome = redo ? history.redo() : history.undo();
+  if (!outcome.applied) {
+    if (outcome.failure.isNotEmpty())
+      postUndoAnnouncement(String(redo ? "Could not redo " : "Could not undo ") + outcome.description + ". " +
+                           outcome.failure);
+    else
+      postUndoAnnouncement(redo ? "Nothing to redo" : "Nothing to undo");
+    return;
+  }
+
+  if (outcome.file_changed)
+    refreshPresetList(false);
+  if (outcome.reloaded || outcome.effects_changed || outcome.names_changed) {
+    // The patch's parts, effects or names changed: build the rows again, as
+    // after a preset load, and keep the focus where it was.
+    updateFullGui();
+    updatePresetSummary();
+    restoreFocusAfterRebuild(parameter_id, persistent_focus, accessible_title, section);
+  }
+  else {
+    // The rows show the values again; a choice that decides them rebuilds them.
+    timerCallback();
+  }
+  postUndoAnnouncement(undoAnnouncement(outcome, redo));
+}
+
+String SynthEditor::undoAnnouncement(const UndoHistory::Outcome& outcome, bool redo) const {
+  const String verb = redo ? "Redo " : "Undo ";
+  // One control: its name and the value it has now, as its row reads it.
+  if (!outcome.reloaded && outcome.controls.size() == 1) {
+    if (auto* bridge = parameterBridge(String(outcome.controls.front())))
+      return verb + bridge->getName(128) + ", " + accessibleParameterText(*bridge, bridge->getValue());
+  }
+  String message = verb + outcome.description;
+  if (outcome.preset_name_changed)
+    message << ". Current preset: " << (synth_.getPresetName().isEmpty() ? String("Untitled") : synth_.getPresetName());
+  return message;
 }
 
 
@@ -8771,10 +9648,12 @@ void SynthEditor::rebuildFocusOrder() {
   focus_order_.push_back(&menu_button_);
   accessibility_focus_order_.push_back(&menu_button_);
   if (modulation_amount_prompt_visible_ || parameter_value_prompt_visible_) {
-    focus_order_.push_back(&modulation_amount_editor_);
+    if (!confirmation_prompt_visible_) {
+      focus_order_.push_back(&modulation_amount_editor_);
+      accessibility_focus_order_.push_back(&modulation_amount_editor_);
+    }
     focus_order_.push_back(&modulation_amount_ok_);
     focus_order_.push_back(&modulation_amount_cancel_);
-    accessibility_focus_order_.push_back(&modulation_amount_editor_);
     accessibility_focus_order_.push_back(&modulation_amount_ok_);
     accessibility_focus_order_.push_back(&modulation_amount_cancel_);
   }
@@ -8879,6 +9758,7 @@ void SynthEditor::removeModulationFromParameter(const String& sourceId, const St
   // A control outside the rows outlives the rebuild, though its title may
   // change now that the route is gone, so keep a pointer to it as well.
   Component::SafePointer<Component> persistent(rows_container_.isParentOf(&target) ? nullptr : &target);
+  synth_.undoHistory().describeNextStep("remove modulation from " + source_label + " to " + destination_label);
   synth_.disconnectModulation(sourceId.toStdString(), destinationId.toStdString());
   refreshVisibleModulationLabels();
   showAllSections(false);
@@ -8895,6 +9775,7 @@ void SynthEditor::clearModulationSlot(int slot) {
   if (connection == nullptr || (connection->source_name.empty() && connection->destination_name.empty()))
     return;
 
+  synth_.undoHistory().describeNextStep("clear modulation slot " + String(slot));
   synth_.disconnectModulation(connection);
   // A slot holding only a source or only a destination was never connected.
   connection->resetConnection("", "");
@@ -8904,6 +9785,7 @@ void SynthEditor::clearModulationSlot(int slot) {
     setParameterEngineValue(prefix + suffix, 0.0f);
   if (connection->modulation_processor != nullptr)
     connection->modulation_processor->lineMapGenerator()->initLinear();
+  synth_.markStateChanged("settings/modulations");
 
   refreshVisibleModulationLabels();
   const String announcement = modulationSlotHeaderTitle(slot) + " cleared";
@@ -9168,6 +10050,8 @@ void SynthEditor::startPresetListLoad(bool announce, bool forceRefresh) {
         if (safe_this != nullptr && generation == safe_this->preset_list_generation_) {
           safe_this->preset_list_loading_ = false;
           safe_this->preset_index_progress_.clear();
+          // Nothing new was found, so a preset waiting to be selected never will be.
+          safe_this->select_after_refresh_.clear();
           safe_this->updatePresetSummary();
         }
       });
@@ -9187,23 +10071,34 @@ void SynthEditor::applyPresetList(std::vector<PresetBrowserItem> items, bool ann
   if (generation != preset_list_generation_)
     return;
 
+  // A refresh that finds a filter's last preset gone (deleted outside Atlas)
+  // says the filter went back to All rather than silently showing more.
+  const bool refresh = preset_list_loaded_;
+  const String library = last_preset_library_;
+  const String bank = last_preset_bank_;
+  const String category = last_preset_category_;
+  const String tag = last_preset_tag_;
   preset_index_ = std::move(items);
   preset_favorites_ = LoadSave::getFavorites();
   preset_list_loading_ = stillScanning;
   if (!stillScanning)
     preset_index_progress_.clear();
   preset_list_loaded_ = true;
-  all_presets_.clear();
-  preset_index_by_path_.clear();
-  preset_index_by_path_.reserve(preset_index_.size());
-  for (size_t i = 0; i < preset_index_.size(); ++i) {
-    const auto& item = preset_index_[i];
-    all_presets_.add(item.file);
-    preset_index_by_path_[item.file.getFullPathName().toStdString()] = i;
-  }
+  rebuildPresetLookup();
   populatePresetFilters();
   filterPresetList();
+  // Before a saved preset's selection below changes the filters on purpose.
+  const String fallback = refresh ? presetFilterFallbackNotice(library, bank, category, tag) : String();
+  // Only if nothing has moved the user since the save (a trash, a load, a
+  // rename or a pick), or it would pull them away from where they are now.
+  if (!stillScanning && select_after_refresh_.isNotEmpty()) {
+    const String saved = std::exchange(select_after_refresh_, {});
+    if (saved == last_preset_path_)
+      selectPresetFile(File(saved));
+  }
   updatePresetSummary();
+  if (fallback.isNotEmpty())
+    postPresetActionAnnouncement(fallback, AccessibilityHandler::AnnouncementPriority::medium);
   if (announce)
     postPluginAnnouncement("Preset list refreshed, " + String(all_presets_.size()) + " presets found",
                                            AccessibilityHandler::AnnouncementPriority::medium);
@@ -9371,6 +10266,17 @@ void SynthEditor::populatePresetFilters() {
     }
     table->setSelectedRows(selected_rows, dontSendNotification);
     table->repaint();
+    if (kFacetListsNameTheirSelection) {
+      // NVDA reads this when the list gets the focus, so the user hears where
+      // it is without pressing an arrow, which would apply another row.
+      const String title = table->getTitle();
+      const int rows = presetFacetRowCount(kind);
+      String description;
+      if (!selected_rows.isEmpty() && isPositiveAndBelow(local_row, rows))
+        description = title + ": " + listRowText(presetFacetCellText(kind, local_row), local_row, rows) + ". ";
+      table->setDescription(description + "Filter presets by " + title.toLowerCase() +
+                            ". The selected row is applied immediately.");
+    }
   }
 }
 
@@ -9383,6 +10289,9 @@ void SynthEditor::filterPresetList() {
   }
 
   ScopedValueSetter<bool> guard(updating_preset_list_, true);
+  // The preset the table shows now, which the selection follows (to its new
+  // row after a sort) when the remembered one stays hidden.
+  const File shown = selectedPresetFile();
   filtered_presets_.clear();
   const String filter = preset_search_.getText().trim().toLowerCase();
   std::vector<File> matches;
@@ -9441,15 +10350,20 @@ void SynthEditor::filterPresetList() {
                              : String();
   preset_table_.updateContent();
   if (!filtered_presets_.isEmpty()) {
-    int selected = 0;
+    int matched = -1;
     for (int i = 0; i < filtered_presets_.size(); ++i) {
       if (filtered_presets_[i].getFullPathName() == previous_path) {
-        selected = i;
+        matched = i;
         break;
       }
     }
-    preset_table_.selectRow(selected, false, true);
-    last_preset_path_ = filtered_presets_[selected].getFullPathName();
+    const int row = matched >= 0 ? matched : jmax(0, filtered_presets_.indexOf(shown));
+    preset_table_.selectRow(row, false, true);
+    // A preset these filters hide stays the one to come back to: a search
+    // typed and cleared, or a bank stepped away from and back to, finds it
+    // again rather than the top of the list.
+    if (matched >= 0 || previous_path.isEmpty())
+      last_preset_path_ = filtered_presets_[row].getFullPathName();
   }
   else {
     preset_table_.deselectAllRows();
@@ -9498,6 +10412,7 @@ void SynthEditor::activatePresetFacet(int kind, int row) {
   if (selected_facet == nullptr)
     return;
   const auto facet = *selected_facet;
+  select_after_refresh_.clear();
   switch (kind) {
     case kLibraryFacet:
       last_preset_library_ = facet.value;
@@ -9576,6 +10491,7 @@ void SynthEditor::presetSelectionChanged(int row, bool allowAutoload) {
   }
 
   last_preset_path_ = filtered_presets_[row].getFullPathName();
+  select_after_refresh_.clear();   // the user's pick wins over a saved preset still waiting for the rescan
   updatePresetManagementControls();
   if (!allowAutoload || !preset_preview_.getToggleState())
     return;
@@ -9622,6 +10538,10 @@ void SynthEditor::updatePresetManagementControls() {
   if (!selected) {
     preset_details_.setText("No preset selected", dontSendNotification);
     preset_details_.setDescription("No preset selected");
+    // Not the details of the preset selected before, which may be gone.
+    preset_table_.setDescription(!preset_list_loaded_ ? String("Preset list loading")
+                                 : filtered_presets_.isEmpty() ? String("No presets match the filters")
+                                                               : String("No preset selected"));
     return;
   }
 
@@ -9640,7 +10560,7 @@ void SynthEditor::updatePresetManagementControls() {
   details += ". File: " + file.getFullPathName();
   preset_details_.setText(details, dontSendNotification);
   preset_details_.setDescription(details);
-  preset_table_.setDescription(details + ". Press Return to load, F to change favourite, R to rename, E to edit metadata, S to choose the next sort column, Shift S to reverse the sort, or Delete to move an editable preset to Trash.");
+  preset_table_.setDescription(details + ". " + presetTableKeysHelp());
   if (auto* handler = preset_details_.getAccessibilityHandler())
     handler->notifyAccessibilityEvent(AccessibilityEvent::titleChanged);
 }
@@ -9681,15 +10601,21 @@ void SynthEditor::renameSelectedPreset() {
   Component::SafePointer<SynthEditor> safe_this(this);
   promptForCustomValue("Preset name", file.getFileNameWithoutExtension(), preset_table_,
                        [safe_this, file](const String& value) {
-    if (safe_this == nullptr || !file.existsAsFile())
+    if (safe_this == nullptr)
       return;
+    if (!file.existsAsFile()) {
+      postPresetActionAnnouncement("Unable to rename preset, the file no longer exists",
+                                   AccessibilityHandler::AnnouncementPriority::high);
+      return;
+    }
     const String name = sanitizePresetPathPart(value, file.getFileNameWithoutExtension());
     const File destination = file.getSiblingFile(name + file.getFileExtension());
-    if (destination == file)
+    if (destination == file) {
+      postPresetActionAnnouncement("Preset name unchanged", AccessibilityHandler::AnnouncementPriority::medium);
       return;
+    }
     if (destination.existsAsFile()) {
-      NativeMessageBox::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Unable to rename preset",
-                                            "A preset with that name already exists in this folder.");
+      safe_this->showWarningBox("Unable to rename preset", "A preset with that name already exists in this folder.");
       postPresetActionAnnouncement("Unable to rename preset because that name already exists",
                                    AccessibilityHandler::AnnouncementPriority::high);
       return;
@@ -9701,15 +10627,14 @@ void SynthEditor::renameSelectedPreset() {
     const String tags = item != nullptr ? item->tags.joinIntoString(", ") : LoadSave::getTagsFromFile(file);
     const String comments = item != nullptr ? item->comments : presetJsonStringField(file, "comments");
     if (!file.moveFileTo(destination)) {
-      NativeMessageBox::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Unable to rename preset",
-                                            "Atlas could not move the preset file.");
+      safe_this->showWarningBox("Unable to rename preset", "Atlas could not move the preset file.");
       postPresetActionAnnouncement("Unable to rename preset", AccessibilityHandler::AnnouncementPriority::high);
       return;
     }
     if (!writePresetMetadata(destination, name, author, category, tags, comments)) {
       destination.moveFileTo(file);
-      NativeMessageBox::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Unable to rename preset",
-                                            "Atlas moved the file back because its metadata could not be updated.");
+      safe_this->showWarningBox("Unable to rename preset",
+                                "Atlas moved the file back because its metadata could not be updated.");
       postPresetActionAnnouncement("Unable to rename preset", AccessibilityHandler::AnnouncementPriority::high);
       return;
     }
@@ -9718,9 +10643,13 @@ void SynthEditor::renameSelectedPreset() {
       LoadSave::removeFavorite(file);
       LoadSave::addFavorite(destination);
     }
-    if (safe_this->synth_.getActiveFile() == file)
+    if (safe_this->synth_.getActiveFile() == file) {
+      safe_this->synth_.undoHistory().commitPendingEdits();
       safe_this->synth_.setActiveFile(destination);
-    safe_this->last_preset_path_ = destination.getFullPathName();
+      // The loaded preset's file moved, not the patch: nothing to undo.
+      safe_this->synth_.undoHistory().rebaseline();
+    }
+    safe_this->replacePresetInBrowser(file, destination);
     safe_this->refreshPresetList(false);
     postPresetActionAnnouncement("Renamed preset to " + name, AccessibilityHandler::AnnouncementPriority::high);
   });
@@ -9735,7 +10664,7 @@ void SynthEditor::showPresetMetadataDialog() {
   }
 
   if (!save_patch_dialog_visible_)
-    save_patch_return_focus_ = Component::getCurrentlyFocusedComponent();
+    save_patch_return_focus_ = focusToReturnTo();
   const auto* item = presetItemForFile(file);
   preset_metadata_edit_mode_ = true;
   preset_metadata_file_ = file;
@@ -9777,44 +10706,170 @@ void SynthEditor::showPresetMetadataDialog() {
 void SynthEditor::revealSelectedPreset() {
   const File file = selectedPresetFile();
   if (!file.existsAsFile()) {
-    postPluginAnnouncement("Choose a preset first", AccessibilityHandler::AnnouncementPriority::high);
+    postPresetActionAnnouncement("Choose a preset first", AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
   file.revealToUser();
-  postPluginAnnouncement("Revealed " + file.getFileNameWithoutExtension() + " in Finder",
-                         AccessibilityHandler::AnnouncementPriority::medium);
+  postPresetActionAnnouncement(String(kShownInFileBrowserVerb) + " " + file.getFileNameWithoutExtension() + " in " +
+                                 kFileBrowserName,
+                               AccessibilityHandler::AnnouncementPriority::medium);
 }
 
 void SynthEditor::deleteSelectedPreset() {
   const File file = selectedPresetFile();
   if (!isPresetEditable(file)) {
-    postPluginAnnouncement("Only presets in the user library can be moved to Trash",
-                           AccessibilityHandler::AnnouncementPriority::high);
+    postPresetActionAnnouncement("Only presets in the user library can be moved to Trash",
+                                 AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
 
+  const String name = file.getFileNameWithoutExtension();
   Component::SafePointer<SynthEditor> safe_this(this);
+  auto move_to_trash = [safe_this, file] {
+    if (safe_this != nullptr)
+      safe_this->movePresetToTrash(file);
+  };
+  if (kConfirmInEditor) {
+    promptForConfirmation("Move " + name + " to Trash? It can be recovered from the Trash.",
+                          "Move to Trash", preset_table_, std::move(move_to_trash),
+                          "Kept " + name);
+    return;
+  }
   NativeMessageBox::showYesNoBox(MessageBoxIconType::QuestionIcon, "Move preset to Trash?",
-                                 "Move “" + file.getFileNameWithoutExtension() +
-                                   "” to Trash? It can be recovered from the Trash.",
-                                 &preset_table_, ModalCallbackFunction::create([safe_this, file](int result) {
-    if (safe_this == nullptr || result != 1)
-      return;
-    if (!file.moveToTrash()) {
-      NativeMessageBox::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Unable to move preset",
-                                            "Atlas could not move the preset to Trash.");
-      postPluginAnnouncement("Unable to move preset to Trash", AccessibilityHandler::AnnouncementPriority::high);
-      return;
-    }
-    if (safe_this->isPresetFavorite(file))
-      LoadSave::removeFavorite(file);
-    if (safe_this->synth_.getActiveFile() == file)
-      safe_this->synth_.clearActiveFile();
-    safe_this->refreshPresetList(false);
-    postPluginAnnouncement("Moved " + file.getFileNameWithoutExtension() +
-                             " to Trash. It can be recovered from the Trash.",
-                           AccessibilityHandler::AnnouncementPriority::high);
+                                 "Move “" + name + "” to Trash? It can be recovered from the Trash.",
+                                 &preset_table_, ModalCallbackFunction::create([move_to_trash](int result) {
+    if (result == 1)
+      move_to_trash();
   }));
+}
+
+std::function<bool(const File&)>& SynthEditor::trashFileForTesting() {
+  static std::function<bool(const File&)> trash;
+  return trash;
+}
+
+void SynthEditor::movePresetToTrash(const File& file) {
+  const String name = file.getFileNameWithoutExtension();
+  const bool moved = trashFileForTesting() ? trashFileForTesting()(file) : file.moveToTrash();
+  if (!moved) {
+    showWarningBox("Unable to move preset", "Atlas could not move the preset to Trash.",
+                   &preset_table_);
+    postPresetActionAnnouncement("Unable to move preset to Trash",
+                                 AccessibilityHandler::AnnouncementPriority::high);
+    return;
+  }
+  if (isPresetFavorite(file))
+    LoadSave::removeFavorite(file);
+  if (synth_.getActiveFile() == file)
+    synth_.clearActiveFile();
+
+  // The preset after it takes its place, as in a file list. Without this the
+  // rescan finds the remembered preset gone and starts again at the top of
+  // the list, which with All banks is a preset of another bank.
+  last_preset_path_ = presetPathAfter(file);
+  const String library = last_preset_library_;
+  const String bank = last_preset_bank_;
+  const String category = last_preset_category_;
+  const String tag = last_preset_tag_;
+  forgetPreset(file);
+  const String fallback = presetFilterFallbackNotice(library, bank, category, tag);
+  refreshPresetList(false);
+
+  String message = "Moved " + name + " to Trash.";
+  if (fallback.isNotEmpty())
+    message += " " + fallback + ".";
+  const File selected = selectedPresetFile();
+  if (selected.existsAsFile())
+    message += " " + listRowText(selected.getFileNameWithoutExtension(), preset_table_.getSelectedRow(),
+                                 filtered_presets_.size());
+  else
+    message += " No presets are shown.";
+  postPresetActionAnnouncement(message, AccessibilityHandler::AnnouncementPriority::high);
+}
+
+String SynthEditor::presetPathAfter(const File& file) const {
+  const int row = filtered_presets_.indexOf(file);
+  if (row < 0)
+    return last_preset_path_;
+  const int next = row + 1 < filtered_presets_.size() ? row + 1 : row - 1;
+  return next >= 0 ? filtered_presets_[next].getFullPathName() : String();
+}
+
+void SynthEditor::rebuildPresetLookup() {
+  all_presets_.clear();
+  preset_index_by_path_.clear();
+  preset_index_by_path_.reserve(preset_index_.size());
+  for (size_t i = 0; i < preset_index_.size(); ++i) {
+    const auto& item = preset_index_[i];
+    all_presets_.add(item.file);
+    preset_index_by_path_[item.file.getFullPathName().toStdString()] = i;
+  }
+}
+
+void SynthEditor::forgetPreset(const File& file) {
+  auto is_file = [&file](const PresetBrowserItem& item) { return item.file == file; };
+  preset_index_.erase(std::remove_if(preset_index_.begin(), preset_index_.end(), is_file), preset_index_.end());
+  {
+    // Every Atlas instance's browser starts from this list.
+    const ScopedLock lock(presetBrowserCacheLock());
+    auto& cached = cachedPresetBrowserItems();
+    cached.erase(std::remove_if(cached.begin(), cached.end(), is_file), cached.end());
+  }
+  preset_favorites_.erase(file.getFullPathName().toStdString());
+  rebuildPresetLookup();
+  populatePresetFilters();
+  filterPresetList();
+}
+
+void SynthEditor::replacePresetInBrowser(const File& from, const File& to) {
+  const String after = presetPathAfter(from);
+  const PresetBrowserItem replacement = buildPresetBrowserItem(to, LoadSave::getDataDirectory());
+  auto replace = [&](std::vector<PresetBrowserItem>& items) {
+    bool replaced = false;
+    for (auto& item : items) {
+      if (item.file == from || item.file == to) {
+        if (!std::exchange(replaced, true))
+          item = replacement;
+        else
+          item.file = File();   // a second entry, dropped below
+      }
+    }
+    items.erase(std::remove_if(items.begin(), items.end(),
+                               [](const PresetBrowserItem& item) { return item.file == File(); }),
+                items.end());
+    if (!replaced)
+      items.push_back(replacement);
+  };
+  replace(preset_index_);
+  {
+    const ScopedLock lock(presetBrowserCacheLock());
+    replace(cachedPresetBrowserItems());
+  }
+  if (preset_favorites_.erase(from.getFullPathName().toStdString()) > 0)
+    preset_favorites_.insert(to.getFullPathName().toStdString());
+  rebuildPresetLookup();
+  last_preset_path_ = to.getFullPathName();
+  populatePresetFilters();
+  filterPresetList();
+  if (selectedPresetFile() != to && after.isNotEmpty()) {
+    last_preset_path_ = after;
+    filterPresetList();
+  }
+}
+
+String SynthEditor::presetFilterFallbackNotice(const String& library, const String& bank, const String& category,
+                                               const String& tag) const {
+  // The broadest filter that went back to All says so; the ones under it
+  // went with it.
+  if (library != kAllLibraries && last_preset_library_ == kAllLibraries)
+    return "No presets left in the " + library + " library. Showing all libraries";
+  if (bank != kAllBanks && last_preset_bank_ == kAllBanks)
+    return "No presets left in " + bank + ". Showing all banks";
+  if (category != kAllCategories && last_preset_category_ == kAllCategories)
+    return "No presets left in " + category + ". Showing all categories";
+  if (tag != kAllTags && last_preset_tag_ == kAllTags)
+    return "No presets left tagged " + tag + ". Showing all tags";
+  return {};
 }
 
 void SynthEditor::schedulePresetFilterUpdate(bool rebuildFilters) {
@@ -9896,7 +10951,7 @@ void SynthEditor::showPresetMenu() {
   menu.addItem(kImportBank, "Import preset bank...");
   menu.addItem(kExportBank, "Export folder as bank...");
   menu.addItem(kExportPreset, "Export patch as preset file...");
-  menu.addItem(kReveal, "Reveal selected preset in Finder", has_selection);
+  menu.addItem(kReveal, String(kShowInFileBrowserVerb) + " selected preset in " + kFileBrowserName, has_selection);
   menu.addSeparator();
   menu.addItem(kRefresh, "Refresh preset list");
   menu.addItem(kScanDownloads, LoadSave::shouldScanDownloads() ? "Turn scan Downloads folder on startup off"
@@ -9933,7 +10988,7 @@ void SynthEditor::showSelectedPresetMenu(Component& target) {
   menu.addSeparator();
   menu.addItem(3, "Rename preset... (R)", editable);
   menu.addItem(4, "Edit preset metadata... (E)", editable);
-  menu.addItem(5, "Reveal preset in Finder", has_selection);
+  menu.addItem(5, String(kShowInFileBrowserVerb) + " preset in " + kFileBrowserName, has_selection);
   menu.addItem(6, "Move preset to Trash... (Delete)", editable);
 
   Component::SafePointer<SynthEditor> safe_this(this);
@@ -9986,6 +11041,14 @@ void SynthEditor::selectPresetFile(const File& file) {
   }
 
   const auto* item = presetItemForFile(file);
+  // A preset just saved is not in the list until the rescan lands; looking
+  // for it now would find nothing and select the top of the list. (A file
+  // outside the library, imported from elsewhere, is never in the list.)
+  if (item == nullptr && preset_list_loading_ && file.isAChildOf(LoadSave::getDataDirectory())) {
+    select_after_refresh_ = file.getFullPathName();
+    return;
+  }
+  select_after_refresh_.clear();
   const String library = item != nullptr ? item->library : presetLibraryName(file);
   if (preset_libraries_.contains(library)) {
     last_preset_library_ = library;
@@ -10020,8 +11083,8 @@ void SynthEditor::loadSelectedPreset() {
 void SynthEditor::choosePresetFile() {
   preset_chooser_ = std::make_unique<FileChooser>("Open Atlas preset", LoadSave::getDataDirectory(),
                                                   vital::kPresetExtensionsList);
-  preset_chooser_->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
-                               [this](const FileChooser& chooser) {
+  launchFileChooser(*preset_chooser_, FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
+                                      [this](const FileChooser& chooser) {
     const auto file = chooser.getResult();
     if (file.existsAsFile())
       loadPresetFile(file, false, true);
@@ -10030,10 +11093,13 @@ void SynthEditor::choosePresetFile() {
 }
 
 void SynthEditor::loadPresetFile(File file, bool preview, bool updateBrowserFilters) {
+  // A preset that fails to autoload while the arrows move through the list
+  // is said, not shown in a box that would take the focus off the list.
+  const bool quiet_errors = preview && kAutoloadLeavesFocusAlone;
   if (!file.existsAsFile()) {
-    NativeMessageBox::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Unable to load preset",
-                                          "The preset file no longer exists. Refresh the preset list.");
-    postPluginAnnouncement("Preset file no longer exists", AccessibilityHandler::AnnouncementPriority::high);
+    if (!quiet_errors)
+      showWarningBox("Unable to load preset", "The preset file no longer exists. Refresh the preset list.");
+    postPresetActionAnnouncement("Preset file no longer exists", AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
   const String parameter_id = focusedParameterId();
@@ -10041,10 +11107,18 @@ void SynthEditor::loadPresetFile(File file, bool preview, bool updateBrowserFilt
   auto* persistent_focus = persistentFocusedComponent();
   // The table sits inside the rows, so persistentFocusedComponent never names it.
   const bool loaded_from_table = preset_table_.hasKeyboardFocus(true);
+  // Presets autoloaded one after another while browsing are one step: undo
+  // goes back to the patch from before the browsing.
+  synth_.undoHistory().describeNextStep("load preset " + file.getFileNameWithoutExtension(),
+                                        preview ? "autoload" : "");
   std::string error;
   if (!synth_.loadFromFile(file, error)) {
-    NativeMessageBox::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Unable to load preset", error);
-    postPluginAnnouncement("Unable to load preset", AccessibilityHandler::AnnouncementPriority::high);
+    if (!quiet_errors)
+      showWarningBox("Unable to load preset", error);
+    postPresetActionAnnouncement(quiet_errors ? "Unable to load preset " + file.getFileNameWithoutExtension() + ". " +
+                                                  String(error)
+                                              : String("Unable to load preset"),
+                                 AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
   last_preset_path_ = file.getFullPathName();
@@ -10060,14 +11134,21 @@ void SynthEditor::loadPresetFile(File file, bool preview, bool updateBrowserFilt
     filterPresetList();
   updatePresetSummary();
   restoreFocusAfterRebuild(parameter_id, persistent_focus, accessible_title);
-  if (preview || loaded_from_table) {
+  // An autoload that comes a moment after the arrow key (the delayed load of
+  // a held arrow) returns to the list only if the list still had the focus:
+  // the user may have moved on to another control, or left the plugin.
+  if (loaded_from_table || (preview && !kAutoloadLeavesFocusAlone)) {
     Component::SafePointer<SynthEditor> safe_this(this);
     Component::SafePointer<Component> preset_list_focus(&preset_table_);
     MessageManager::callAsync([safe_this, preset_list_focus] {
-      if (safe_this != nullptr && preset_list_focus != nullptr && preset_list_focus->isShowing()) {
-        safe_this->ensureComponentVisible(preset_list_focus.getComponent());
-        preset_list_focus->grabKeyboardFocus();
-      }
+      if (safe_this == nullptr || preset_list_focus == nullptr || !preset_list_focus->isShowing())
+        return;
+      // Never from the host's window: the focus left the plugin meanwhile.
+      if (kAutoloadLeavesFocusAlone && Component::getCurrentlyFocusedComponent() == nullptr &&
+          safe_this->getPeer() != nullptr && !safe_this->getPeer()->isFocused())
+        return;
+      safe_this->ensureComponentVisible(preset_list_focus.getComponent());
+      preset_list_focus->grabKeyboardFocus();
     });
   }
   postPluginAnnouncement((preview ? "Autoloaded preset " : "Loaded preset ") +
@@ -10079,8 +11160,8 @@ void SynthEditor::loadPresetFile(File file, bool preview, bool updateBrowserFilt
 void SynthEditor::chooseBankFile() {
   preset_chooser_ = std::make_unique<FileChooser>("Import Atlas bank", LoadSave::getDataDirectory(),
                                                   vital::kBankExtensionsList);
-  preset_chooser_->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
-                               [this](const FileChooser& chooser) {
+  launchFileChooser(*preset_chooser_, FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
+                                      [this](const FileChooser& chooser) {
     const auto file = chooser.getResult();
     if (file.existsAsFile())
       importBankFile(file);
@@ -10091,8 +11172,8 @@ void SynthEditor::chooseBankFile() {
 void SynthEditor::importBankFile(const File& file) {
   FileInputStream input_stream(file);
   if (!input_stream.openedOk()) {
-    NativeMessageBox::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Unable to import bank",
-                                          "The bank file could not be opened.");
+    showWarningBox("Unable to import bank",
+                   "The bank file could not be opened.");
     postPluginAnnouncement("Unable to open bank file", AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
@@ -10114,16 +11195,16 @@ void SynthEditor::importBankFile(const File& file) {
   }
 
   LoadSave::writeErrorLog("Unzipping bank failed: " + unzip_result.getErrorMessage());
-  NativeMessageBox::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Unable to import bank",
-                                        unzip_result.getErrorMessage());
+  showWarningBox("Unable to import bank",
+                 unzip_result.getErrorMessage());
   postPluginAnnouncement("Unable to import bank", AccessibilityHandler::AnnouncementPriority::high);
 }
 
 void SynthEditor::chooseFolderToExportBank() {
   preset_chooser_ = std::make_unique<FileChooser>("Choose folder to export as an Atlas bank",
                                                   LoadSave::getUserPresetDirectory());
-  preset_chooser_->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectDirectories,
-                               [this](const FileChooser& chooser) {
+  launchFileChooser(*preset_chooser_, FileBrowserComponent::openMode | FileBrowserComponent::canSelectDirectories,
+                                      [this](const FileChooser& chooser) {
     const File source_folder = chooser.getResult();
     preset_chooser_.reset();
     if (!source_folder.isDirectory())
@@ -10135,9 +11216,9 @@ void SynthEditor::chooseFolderToExportBank() {
     const File default_file = source_folder.getSiblingFile(bank_name).withFileExtension(vital::kBankExtension);
     bank_chooser_ = std::make_unique<FileChooser>("Export Atlas bank", default_file,
                                                   String("*.") + vital::kBankExtension);
-    bank_chooser_->launchAsync(FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles |
-                                   FileBrowserComponent::warnAboutOverwriting,
-                               [this, source_folder](const FileChooser& save_chooser) {
+    launchFileChooser(*bank_chooser_, FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles |
+                                          FileBrowserComponent::warnAboutOverwriting,
+                                      [this, source_folder](const FileChooser& save_chooser) {
       const File destination = save_chooser.getResult();
       if (destination != File())
         exportFolderAsBank(source_folder, destination);
@@ -10148,8 +11229,8 @@ void SynthEditor::chooseFolderToExportBank() {
 
 void SynthEditor::exportFolderAsBank(const File& sourceFolder, const File& destinationFile) {
   if (!sourceFolder.isDirectory()) {
-    NativeMessageBox::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Unable to export bank",
-                                          "The selected source is not a folder.");
+    showWarningBox("Unable to export bank",
+                   "The selected source is not a folder.");
     return;
   }
 
@@ -10159,8 +11240,8 @@ void SynthEditor::exportFolderAsBank(const File& sourceFolder, const File& desti
                               ";*." + vital::kLegacyWavetableExtension + ";" + vital::kSampleExtensionsList +
                               ";" + vital::kLfoExtensionsList + ";*." + vital::kFxExtension);
   if (files.isEmpty()) {
-    NativeMessageBox::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Unable to export bank",
-                                          "No Atlas presets, tables, samples, LFOs, or FX presets were found.");
+    showWarningBox("Unable to export bank",
+                   "No Atlas presets, tables, samples, LFOs, or FX presets were found.");
     postPluginAnnouncement("No bank content found", AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
@@ -10208,16 +11289,16 @@ void SynthEditor::exportFolderAsBank(const File& sourceFolder, const File& desti
   }
 
   if (total_bytes > 0xF0000000ll) {
-    NativeMessageBox::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Unable to export bank",
-                                          "The bank would be larger than 4 GB, the most a bank can hold.");
+    showWarningBox("Unable to export bank",
+                   "The bank would be larger than 4 GB, the most a bank can hold.");
     postPluginAnnouncement("Bank too large to export", AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
 
   FileOutputStream output(destination);
   if (!output.openedOk() || !bank_zip.writeToStream(output, nullptr)) {
-    NativeMessageBox::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Unable to export bank",
-                                          "The bank file could not be written.");
+    showWarningBox("Unable to export bank",
+                   "The bank file could not be written.");
     postPluginAnnouncement("Unable to export bank", AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
@@ -10230,10 +11311,11 @@ void SynthEditor::exportFolderAsBank(const File& sourceFolder, const File& desti
 void SynthEditor::loadTuningFile() {
   tuning_chooser_ = std::make_unique<FileChooser>("Load Tuning", LoadSave::getDataDirectory(),
                                                   Tuning::allFileExtensions());
-  tuning_chooser_->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
-                               [this](const FileChooser& chooser) {
+  launchFileChooser(*tuning_chooser_, FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
+                                      [this](const FileChooser& chooser) {
     const File file = chooser.getResult();
     if (file.existsAsFile()) {
+      synth_.undoHistory().describeNextStep("load tuning " + file.getFileNameWithoutExtension());
       synth_.loadTuningFile(file);
       postPluginAnnouncement("Loaded tuning " + String(synth_.getTuning()->getName()),
                              AccessibilityHandler::AnnouncementPriority::high);
@@ -10243,8 +11325,9 @@ void SynthEditor::loadTuningFile() {
 }
 
 void SynthEditor::clearTuning() {
+  synth_.undoHistory().describeNextStep("clear tuning");
   synth_.getTuning()->setDefaultTuning();
-  synth_.markStateChanged();
+  synth_.markStateChanged("atlas/tuning");
   postPluginAnnouncement("Tuning cleared", AccessibilityHandler::AnnouncementPriority::high);
 }
 
@@ -10255,18 +11338,22 @@ void SynthEditor::exportPreset() {
                                 .withFileExtension(vital::kPresetExtension);
   export_chooser_ = std::make_unique<FileChooser>("Export Preset", default_file,
                                                   String("*.") + vital::kPresetExtension);
-  export_chooser_->launchAsync(FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles |
-                                   FileBrowserComponent::warnAboutOverwriting,
-                               [this](const FileChooser& chooser) {
+  launchFileChooser(*export_chooser_, FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles |
+                                          FileBrowserComponent::warnAboutOverwriting,
+                                      [this](const FileChooser& chooser) {
     const File destination = chooser.getResult();
     if (destination != File()) {
       const File preset = destination.withFileExtension(vital::kPresetExtension);
-      if (synth_.saveToFile(preset))
+      synth_.undoHistory().commitPendingEdits();
+      if (synth_.saveToFile(preset)) {
+        // Saving names the patch after its file: not a step to undo.
+        synth_.undoHistory().rebaseline();
         postPluginAnnouncement("Exported preset " + preset.getFileNameWithoutExtension(),
                                AccessibilityHandler::AnnouncementPriority::high);
+      }
       else {
-        NativeMessageBox::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Unable to export preset",
-                                              "The preset could not be written to disk.");
+        showWarningBox("Unable to export preset",
+                       "The preset could not be written to disk.");
         postPluginAnnouncement("Unable to export preset", AccessibilityHandler::AnnouncementPriority::high);
       }
     }
@@ -10300,7 +11387,7 @@ void SynthEditor::savePatch() {
 
 void SynthEditor::showSavePresetDialog() {
   if (!save_patch_dialog_visible_)
-    save_patch_return_focus_ = Component::getCurrentlyFocusedComponent();
+    save_patch_return_focus_ = focusToReturnTo();
   preset_metadata_edit_mode_ = false;
   preset_metadata_file_ = File();
   String preset_name = synth_.getPresetName().isEmpty() ? "Untitled" : synth_.getPresetName();
@@ -10336,11 +11423,21 @@ void SynthEditor::showSavePresetDialog() {
 }
 
 void SynthEditor::hideSavePresetDialog() {
-  // Back to the control the form was opened from, before the form's own
-  // controls hide and hand the focus to the editor itself.
-  if (auto* target = save_patch_return_focus_.getComponent(); target != nullptr && target->isShowing())
-    target->grabKeyboardFocus();
-  save_patch_return_focus_ = nullptr;
+  // Back to the control the form was opened from, or its replacement when a
+  // rebuild replaced it meanwhile, before the form's own controls hide and
+  // hand the focus to the editor itself (read as the top of the window).
+  // Only from the form itself: Escape pressed after Tab left the form closes
+  // it and leaves the user where they are.
+  const FocusReturn focus = std::exchange(save_patch_return_focus_, {});
+  const bool in_form = Component::getCurrentlyFocusedComponent() == this ||
+                       save_patch_name_.hasKeyboardFocus(true) || save_patch_author_.hasKeyboardFocus(true) ||
+                       save_patch_bank_.hasKeyboardFocus(true) || save_patch_category_.hasKeyboardFocus(true) ||
+                       save_patch_tags_.hasKeyboardFocus(true) || save_patch_comments_.hasKeyboardFocus(true) ||
+                       save_patch_ok_.hasKeyboardFocus(false) || save_patch_cancel_.hasKeyboardFocus(false);
+  if (in_form &&
+      !restoreFocusAfterRebuild(focus.parameter_id, focus.component.getComponent(), focus.title, focus.section, true) &&
+      preset_menu_.isShowing())
+    preset_menu_.grabKeyboardFocus();
   save_patch_dialog_visible_ = false;
   save_patch_prompt_.setVisible(false);
   save_patch_name_.setVisible(false);
@@ -10373,8 +11470,8 @@ void SynthEditor::commitSavePresetDialog() {
     const File source = preset_metadata_file_;
     if (!isPresetEditable(source)) {
       hideSavePresetDialog();
-      postPluginAnnouncement("The selected preset can no longer be edited",
-                             AccessibilityHandler::AnnouncementPriority::high);
+      postPresetActionAnnouncement("The selected preset can no longer be edited",
+                                   AccessibilityHandler::AnnouncementPriority::high);
       return;
     }
 
@@ -10383,10 +11480,9 @@ void SynthEditor::commitSavePresetDialog() {
                                                                     : "." + String(vital::kPresetExtension);
     const File destination = destination_directory.getChildFile(preset_name + extension);
     if (destination != source && destination.existsAsFile()) {
-      NativeMessageBox::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Unable to save metadata",
-                                            "A preset with that name already exists in the chosen bank and category.");
-      postPluginAnnouncement("Unable to save metadata because the destination already exists",
-                             AccessibilityHandler::AnnouncementPriority::high);
+      showWarningBox("Unable to save metadata", "A preset with that name already exists in the chosen bank and category.");
+      postPresetActionAnnouncement("Unable to save preset metadata because a preset with that name already exists there",
+                                   AccessibilityHandler::AnnouncementPriority::high);
       return;
     }
     bool saved = destination_directory.createDirectory().wasOk();
@@ -10400,10 +11496,9 @@ void SynthEditor::commitSavePresetDialog() {
       }
     }
     if (!saved) {
-      NativeMessageBox::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Unable to save metadata",
-                                            "Atlas could not update the preset. Any attempted move was rolled back.");
-      postPluginAnnouncement("Unable to save preset metadata",
-                             AccessibilityHandler::AnnouncementPriority::high);
+      showWarningBox("Unable to save metadata", "Atlas could not update the preset. Any attempted move was rolled back.");
+      postPresetActionAnnouncement("Unable to save preset metadata",
+                                   AccessibilityHandler::AnnouncementPriority::high);
       return;
     }
 
@@ -10412,26 +11507,45 @@ void SynthEditor::commitSavePresetDialog() {
       LoadSave::addFavorite(destination);
     }
     if (synth_.getActiveFile() == source) {
+      synth_.undoHistory().commitPendingEdits();
       synth_.setPresetName(preset_name);
       synth_.setAuthor(author);
       synth_.setStyle(category);
       synth_.setTags(tags);
       synth_.setComments(comments);
       synth_.setActiveFile(destination);
+      // The loaded preset's file changed, not the patch: nothing to undo.
+      synth_.undoHistory().rebaseline();
     }
-    last_preset_path_ = destination.getFullPathName();
+    // The list shows the edit at once, before focus goes back to it.
+    const String library = last_preset_library_;
+    const String shown_bank = last_preset_bank_;
+    const String shown_category = last_preset_category_;
+    const String tag = last_preset_tag_;
+    replacePresetInBrowser(source, destination);
+    const String fallback = presetFilterFallbackNotice(library, shown_bank, shown_category, tag);
+    // What the focus move makes the screen reader say would cut this short.
+    const ScopedAnnouncementHold hold;
     hideSavePresetDialog();
     refreshPresetList(false);
-    postPluginAnnouncement("Saved metadata for " + preset_name,
-                           AccessibilityHandler::AnnouncementPriority::high);
+    String message = "Saved metadata for " + preset_name;
+    if (selectedPresetFile() != destination)
+      message += ". It is now in " + bank + (category.isNotEmpty() ? ", " + category : String()) +
+                 ", outside the presets shown";
+    if (fallback.isNotEmpty())
+      message += ". " + fallback;
+    postPresetActionAnnouncement(message, AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
 
+  // The name and details are part of saving, not a step to undo.
+  synth_.undoHistory().commitPendingEdits();
   synth_.setPresetName(preset_name);
   synth_.setAuthor(author);
   synth_.setStyle(category);
   synth_.setTags(tags);
   synth_.setComments(comments);
+  synth_.undoHistory().rebaseline();
 
   File destination = presetCategoryDirectory(userPresetBankDirectory(bank), category);
   destination = destination.getChildFile(preset_name);
@@ -10442,6 +11556,22 @@ void SynthEditor::commitSavePresetDialog() {
   const File existing = destination.withFileExtension(vital::kPresetExtension);
   if (existing.existsAsFile() && existing != synth_.getActiveFile()) {
     Component::SafePointer<SynthEditor> safe_this(this);
+    if (kConfirmInEditor) {
+      // Asked from the control the form went back to.
+      Component* focused = Component::getCurrentlyFocusedComponent();
+      Component& target = focused != nullptr && isParentOf(focused) ? *focused
+                          : preset_menu_.isShowing() ? static_cast<Component&>(preset_menu_)
+                                                     : static_cast<Component&>(*this);
+      promptForConfirmation("A preset called " + preset_name + " already exists in " +
+                              existing.getParentDirectory().getFileName() + ". Replace it?",
+                            "Replace preset", target,
+                            [safe_this, destination] {
+                              if (safe_this != nullptr)
+                                safe_this->savePresetFile(destination);
+                            },
+                            "Save cancelled. " + preset_name + " was not replaced");
+      return;
+    }
     NativeMessageBox::showAsync(MessageBoxOptions()
                                     .withIconType(MessageBoxIconType::QuestionIcon)
                                     .withTitle("Replace preset?")
@@ -10463,12 +11593,15 @@ void SynthEditor::commitSavePresetDialog() {
 }
 
 void SynthEditor::savePresetFile(const File& file) {
+  // Edits before the save stay undoable; the new name and file are not a step.
+  synth_.undoHistory().commitPendingEdits();
   if (!synth_.saveToFile(file)) {
-    NativeMessageBox::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Unable to save preset",
-                                          "The preset could not be written to disk.");
+    showWarningBox("Unable to save preset",
+                   "The preset could not be written to disk.");
     postPluginAnnouncement("Unable to save preset", AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
+  synth_.undoHistory().rebaseline();
   last_preset_path_ = synth_.getActiveFile().getFullPathName();
   refreshPresetList();
   selectPresetFile(synth_.getActiveFile());
@@ -10493,6 +11626,28 @@ LineGenerator* SynthEditor::lfoGeneratorForIndex(int lfoIndex) const {
 
 LineGenerator* SynthEditor::activeLfoGenerator() const {
   return lfoGeneratorForIndex(active_lfo_index_);
+}
+
+std::string SynthEditor::lfoUndoBlock(const LineGenerator* generator) const {
+  for (int i = 0; i < vital::kNumLfos; ++i) {
+    if (synth_.getLfoSource(i) == generator)
+      return "settings/lfos/" + std::to_string(i);
+  }
+  return {};
+}
+
+std::string SynthEditor::wavetableUndoBlock(int oscillator) const {
+  return isPositiveAndBelow(oscillator, vital::kNumOscillators) ? "settings/wavetables/" + std::to_string(oscillator)
+                                                                : std::string();
+}
+
+std::string SynthEditor::wavetableUndoBlock(const WavetableCreator* creator) const {
+  for (int i = 0; i < vital::kNumOscillators; ++i) {
+    if (synth_.getWavetableCreator(i) == creator)
+      return wavetableUndoBlock(i);
+  }
+  // Otherwise a filter's table.
+  return creator != nullptr ? "settings/filter_tables" : std::string();
 }
 
 int SynthEditor::selectedLfoPointIndex() const {
@@ -10680,7 +11835,7 @@ void SynthEditor::writeLfoPoints(LineGenerator* generator, std::vector<CopiedLfo
   }
   generator->setSmooth(smooth);
   generator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(lfoUndoBlock(generator));
 }
 
 void SynthEditor::replaceLfoEditorBlock(const std::vector<CopiedLfoPoint>& replacement,
@@ -11177,7 +12332,7 @@ void SynthEditor::stepLfoCurve(int direction) {
       generator->setPower(index, powerForCurveIndex(next_curve));
   }
   generator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(lfoUndoBlock(generator));
 
   if (mode == LineGenerator::kModePerformer)
     postLfoAnnouncement("Performer shape curve " + curveNameForIndex(next_curve) + ", " +
@@ -11242,7 +12397,7 @@ void SynthEditor::clearLfoShape() {
   generator->setPower(1, power);
   generator->setSmooth(false);
   generator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(lfoUndoBlock(generator));
   lfo_cursor_phase_ = 0.0f;
   selected_lfo_point_phases_.clear();
   syncLfoEditorState();
@@ -11520,7 +12675,7 @@ void SynthEditor::pasteLfoPoints() {
     generator->setPower(i, points[static_cast<size_t>(i)].power);
   }
   generator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(lfoUndoBlock(generator));
 
   lfo_cursor_phase_ = paste_start;
   syncLfoEditorState();
@@ -11560,7 +12715,7 @@ void SynthEditor::pasteLfoShape() {
   generator->setShapeMode(copied_lfo_shape_mode_);
   generator->setSmooth(copied_lfo_shape_smooth_);
   generator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(lfoUndoBlock(generator));
 
   lfo_cursor_phase_ = 0.0f;
   selected_lfo_point_phases_.clear();
@@ -11905,7 +13060,7 @@ void SynthEditor::applyLfoShapePreset() {
       }
       generator->setSmooth(false);
       generator->render();
-      synth_.markStateChanged();
+      synth_.markStateChanged(lfoUndoBlock(generator));
     };
 
     auto insertPoints = [this, generator](const std::vector<ShapePoint>& source) {
@@ -11956,7 +13111,7 @@ void SynthEditor::applyLfoShapePreset() {
     if (mode == LineGenerator::kModeLfo && (shape == 1 || shape == 18 || shape == 19)) {
       generator->setSmooth(true);
       generator->render();
-      synth_.markStateChanged();
+      synth_.markStateChanged(lfoUndoBlock(generator));
     }
   }
   generator->setShapeMode(mode);
@@ -11989,7 +13144,7 @@ void SynthEditor::addLfoPoint() {
   const float output_value = generator->valueAtPhase(lfo_cursor_phase_);
   generator->addPoint(insert_index, { lfo_cursor_phase_, 1.0f - output_value });
   generator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(lfoUndoBlock(generator));
   syncLfoEditorState();
   setLfoEditorItem(insert_index, false);
   selected_lfo_point_phases_.clear();
@@ -12035,7 +13190,7 @@ void SynthEditor::deleteLfoPoint() {
     generator->removePoint(index);
   }
   generator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(lfoUndoBlock(generator));
   selected_lfo_point_phases_.clear();
   syncLfoEditorState();
   if (indices.size() == 1)
@@ -12123,7 +13278,7 @@ void SynthEditor::moveLfoPointTime(float delta) {
     generator->setPower(i, points[static_cast<size_t>(i)].power);
   }
   generator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(lfoUndoBlock(generator));
   lfo_cursor_phase_ = selected_lfo_point_phases_.empty() ? lfo_cursor_phase_ : selected_lfo_point_phases_.front();
   syncLfoEditorState();
   const int moved_index = lfoPointIndexAtPhase(lfo_cursor_phase_);
@@ -12184,7 +13339,7 @@ void SynthEditor::moveLfoPointValue(float delta) {
       selected_lfo_point_phases_.push_back(point.first);
     }
     generator->render();
-    synth_.markStateChanged();
+    synth_.markStateChanged(lfoUndoBlock(generator));
     lfo_cursor_phase_ = start;
     syncLfoEditorState();
     postLfoAnnouncement("Performer shape range " + percentString(minimum + applied_delta) + " to " +
@@ -12208,7 +13363,7 @@ void SynthEditor::moveLfoPointValue(float delta) {
     generator->setPoint(index, { point.first, 1.0f - output_value });
   }
   generator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(lfoUndoBlock(generator));
   syncLfoEditorState();
   if (indices.size() == 1)
     postLfoAnnouncement("Value " + percentString(output_value) + ", " + lfoPointDescription(indices.front()));
@@ -12248,7 +13403,7 @@ void SynthEditor::setLfoPointCurve(int curve_index) {
       generator->setPower(index, powerForCurveIndex(curve_index));
   }
   generator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(lfoUndoBlock(generator));
   if (mode == LineGenerator::kModePerformer)
     postLfoAnnouncement("Performer shape curve " + curveNameForIndex(curve_index) + ", " +
                         lfoTimeDescription(lfoEditorBlockStart(lfo_cursor_phase_)));
@@ -12275,8 +13430,10 @@ void SynthEditor::setParameterEngineValue(const String& id, float engineValue) {
 
   auto& controls = synth_.getControls();
   auto found = controls.find(id.toStdString());
-  if (found != controls.end() && found->second != nullptr)
+  if (found != controls.end() && found->second != nullptr) {
+    synth_.undoHistory().noteValueEdit(id.toStdString());
     synth_.valueChanged(id.toStdString(), engineValue);
+  }
 }
 
 void SynthEditor::randomizeAmplitudeSeed(const String& id) {
@@ -12300,8 +13457,11 @@ void SynthEditor::randomizeAmplitudeSeed(const String& id) {
 void SynthEditor::setInternalParameterEngineValue(const String& id, float engineValue) {
   auto& controls = synth_.getControls();
   auto found = controls.find(id.toStdString());
-  if (found != controls.end() && found->second != nullptr)
+  if (found != controls.end() && found->second != nullptr) {
+    // No gesture or host parameter sees this change: tell undo directly.
+    synth_.undoHistory().noteValueEdit(id.toStdString());
     synth_.valueChanged(id.toStdString(), engineValue);
+  }
 }
 
 int SynthEditor::oscillatorIndexForSectionName(const String& sectionName) const {
@@ -12431,6 +13591,7 @@ void SynthEditor::pasteOscillatorClipboard(int targetOscillator, Component& targ
     return;
 
   const String target_prefix = "osc_" + String(targetOscillator + 1) + "_";
+  synth_.undoHistory().describeNextStep("paste to Oscillator " + String(targetOscillator + 1));
   synth_.pauseProcessing(true);
   if (!copied_oscillator_.wavetable.is_null()) {
     if (auto* creator = synth_.getWavetableCreator(targetOscillator)) {
@@ -12442,8 +13603,10 @@ void SynthEditor::pasteOscillatorClipboard(int targetOscillator, Component& targ
   for (const auto& parameter : copied_oscillator_.parameters)
     setParameterEngineValue(target_prefix + parameter.suffix, parameter.engine_value);
   if (!copied_oscillator_.sample.is_null()) {
-    if (auto* sample = synth_.getSample(targetOscillator))
+    if (auto* sample = synth_.getSample(targetOscillator)) {
       sample->jsonToState(copied_oscillator_.sample);
+      synth_.undoHistory().noteStructureEdit();
+    }
   }
   synth_.pauseProcessing(false);
 
@@ -12538,6 +13701,7 @@ void SynthEditor::refreshRoutingControls() {
 }
 
 void SynthEditor::applyRoutingPreset(int preset) {
+  synth_.undoHistory().describeNextStep("filter routing");
   if (preset == 0) {
     setParameterEngineValue("filter_1_filter_input", 0.0f);
     setParameterEngineValue("filter_2_filter_input", 0.0f);
@@ -12571,20 +13735,28 @@ void SynthEditor::applyRoutingPreset(int preset) {
 }
 
 int SynthEditor::effectSlotType(const String& sectionName, int slot) const {
-  if (!isPositiveAndBelow(slot, vital::constants::kMaxEffectSlots))
+  return effectSlotTypeInChain(fxBusForSection(sectionName), slot);
+}
+
+int SynthEditor::effectSlotTypeInChain(int chain, int slot) const {
+  if (!isPositiveAndBelow(slot, vital::constants::kMaxEffectSlots) || !isPositiveAndNotGreaterThan(chain, vital::kNumBuses))
     return 0;
 
-  const String id = effectSlotPrefix(sectionName, slot) + "type";
-  if (auto* bridge = parameterBridge(id))
-    return jlimit(0, static_cast<int>(vital::constants::kNumEffects),
-                  static_cast<int>(std::round(bridge->convertToEngineValue(bridge->getValue()))));
-
-  const auto& controls = synth_.getControls();
-  const auto found = controls.find(id.toStdString());
-  if (found == controls.end() || found->second == nullptr)
-    return 0;
-  return jlimit(0, static_cast<int>(vital::constants::kNumEffects),
-                static_cast<int>(std::round(found->second->value())));
+  auto& cached = effect_slot_type_controls_[static_cast<size_t>(chain)][static_cast<size_t>(slot)];
+  if (cached.bridge == nullptr && cached.control == nullptr) {
+    const String id = (chain == 0 ? String() : "bus_" + String(chain) + "_") + "fx_slot_" + String(slot + 1) + "_type";
+    cached.bridge = parameterBridge(id);
+    if (cached.bridge == nullptr) {
+      const auto& controls = synth_.getControls();
+      const auto found = controls.find(id.toStdString());
+      if (found == controls.end() || found->second == nullptr)
+        return 0;
+      cached.control = found->second;
+    }
+  }
+  const float value = cached.bridge != nullptr ? cached.bridge->convertToEngineValue(cached.bridge->getValue())
+                                               : cached.control->value();
+  return jlimit(0, static_cast<int>(vital::constants::kNumEffects), static_cast<int>(std::round(value)));
 }
 
 int SynthEditor::firstEmptyEffectSlot(const String& sectionName) const {
@@ -12597,8 +13769,9 @@ int SynthEditor::firstEmptyEffectSlot(const String& sectionName) const {
 
 std::vector<int> SynthEditor::activeEffectSlots(const String& sectionName) const {
   std::vector<int> slots;
+  const int chain = fxBusForSection(sectionName);
   for (int slot = 0; slot < vital::constants::kMaxEffectSlots; ++slot) {
-    if (effectSlotType(sectionName, slot) > 0)
+    if (effectSlotTypeInChain(chain, slot) > 0)
       slots.push_back(slot);
   }
   return slots;
@@ -12788,6 +13961,9 @@ void SynthEditor::swapEffectSlotModuleState(const String& firstPrefix, const Str
   }
 
   synth_.swapMidiLearnPrefixes(firstPrefix.toStdString(), secondPrefix.toStdString());
+  // Two effects of the same type swapped leave their types alone: undo must
+  // still look at the impulse responses and tables that moved.
+  synth_.undoHistory().noteStructureEdit();
 }
 
 void SynthEditor::clearEffectSlot(const String& sectionName, int slot) {
@@ -12848,6 +14024,7 @@ void SynthEditor::removeEffectSlot(const String& sectionName, int slot, const St
     return;
 
   const String removed = effectSlotTitle(sectionName, slot);
+  synth_.undoHistory().describeNextStep("remove " + effectName(effectSlotType(sectionName, slot) - 1));
   clearEffectSlot(sectionName, slot);
   scheduleEffectChainRebuild(sectionName, focusedTitle);
   postPluginAnnouncement("Removed " + removed, AccessibilityHandler::AnnouncementPriority::high);
@@ -12865,6 +14042,7 @@ void SynthEditor::replaceEffectSlot(const String& sectionName, int slot, int eff
   const int index = static_cast<int>(std::distance(slots.begin(), found));
   const String replaced = effectName(effectSlotType(sectionName, slot) - 1);
   const String slot_prefix = effectSlotPrefix(sectionName, slot);
+  synth_.undoHistory().describeNextStep("replace " + replaced + " with " + effectName(effect));
   clearEffectSlot(sectionName, slot);
   synth_.pauseProcessing(true);
   setInternalParameterEngineValue(slot_prefix + "enabled", 0.0f);
@@ -13028,6 +14206,7 @@ void SynthEditor::pasteEffectSlotClipboard(const String& targetSection, const St
   }
 
   const String slot_prefix = effectSlotPrefix(targetSection, slot);
+  synth_.undoHistory().describeNextStep("paste " + name);
   synth_.pauseProcessing(true);
   setInternalParameterEngineValue(slot_prefix + "enabled", 0.0f);
   setInternalParameterEngineValue(slot_prefix + "type", static_cast<float>(type));
@@ -13153,6 +14332,7 @@ void SynthEditor::addEffectToChain(const String& sectionName, int effect, Compon
   }
 
   const String slot_prefix = effectSlotPrefix(sectionName, slot);
+  synth_.undoHistory().describeNextStep("add " + effectName(effect));
   synth_.pauseProcessing(true);
   setInternalParameterEngineValue(slot_prefix + "enabled", 0.0f);
   setInternalParameterEngineValue(slot_prefix + "type", static_cast<float>(effect + 1));
@@ -13300,6 +14480,13 @@ void SynthEditor::addEffectSlotGroups(const String& sectionName, Component& pare
       else if (isEffectMoveLaterKey(key))
         direction = 1;
       else if (key.getKeyCode() == KeyPress::backspaceKey || key.getKeyCode() == KeyPress::deleteKey) {
+        // Not from a grouping inside the slot (Band 2 of an EQ), where comma
+        // and period land on Windows and NVDA reads only the grouping: the key
+        // reaches the slot from there, and would remove the whole effect.
+        auto* focused = Component::getCurrentlyFocusedComponent();
+        if (kSectionKeysStepThroughEffectGroups && focused != &target && target.isParentOf(focused) &&
+            dynamic_cast<AccessibleSectionHeader*>(focused) != nullptr)
+          return true;
         removeEffectSlot(sectionName, slot, "Add effect");
         return true;
       }
@@ -13313,6 +14500,7 @@ void SynthEditor::addEffectSlotGroups(const String& sectionName, Component& pare
 
       const String moved = effectSlotTitle(sectionName, slot);
       const String moved_title = "Slot " + String(next + 1) + " (" + effectName(type - 1) + ")";
+      synth_.undoHistory().describeNextStep("move " + effectName(type - 1));
       swapEffectSlots(sectionName, slot, slots_now[static_cast<size_t>(next)]);
       scheduleEffectChainRebuild(sectionName, moved_title);
       postPluginAnnouncement(moved + " moved to position " + String(next + 1),
@@ -13385,6 +14573,13 @@ void SynthEditor::addEffectSlotGroups(const String& sectionName, Component& pare
       glitch_delay_synced = sync != synth_.getControls().end() && sync->second->value() >= 0.5f;
       effect_slot_modes_[effect_prefix + "sync"] = glitch_delay_synced ? 1 : 0;
     }
+    int maim_encoder = atlas::maim::kLame;
+    if (effect_id == "maim") {
+      const auto found = synth_.getControls().find((effect_prefix + "encoder").toStdString());
+      if (found != synth_.getControls().end())
+        maim_encoder = jlimit(0, atlas::maim::kNumEncoders - 1, roundToInt(found->second->value()));
+      effect_slot_modes_[effect_prefix + "encoder"] = effectSlotRowVariant(effect_prefix + "encoder", float(maim_encoder));
+    }
     int analogue_chorus_model = 0;
     if (effect_id == "analoguechorus") {
       const auto found = synth_.getControls().find((effect_prefix + "model").toStdString());
@@ -13431,6 +14626,8 @@ void SynthEditor::addEffectSlotGroups(const String& sectionName, Component& pare
       if (effect_id == "convolution_reverb" && !isConvolutionReverbParameterRelevant(suffix, convolution_predelay_synced))
         continue;
       if (effect_id == "glitch_delay" && !isGlitchDelayParameterRelevant(suffix, glitch_delay_tap, glitch_delay_synced))
+        continue;
+      if (effect_id == "maim" && !isMaimParameterRelevant(suffix, maim_encoder))
         continue;
       if (shouldExposeEffectSlotParameter(effect_id, suffix) &&
           shouldShowParameterInSection(sectionName, parameter))
@@ -13610,19 +14807,58 @@ void SynthEditor::addEffectSlotGroups(const String& sectionName, Component& pare
       slot_y = group_y;
     }
 
+    // Some effects nest their rows in groups. Each group lists its rows by
+    // suffix, then its subgroups; a group with no rows to show is left out.
+    struct RowGroup {
+      String title, description;
+      StringArray suffixes;
+      std::vector<RowGroup> children;
+    };
+    std::map<String, AudioProcessorParameter*> by_suffix;
+    for (const auto& entry : effect_parameters)
+      by_suffix[entry.suffix] = entry.parameter;
+
+    const String group_key = sectionName + " slot " + String(slot + 1) + " " + effectName(type - 1).toLowerCase() + " ";
+    const auto has_rows = [&by_suffix](const RowGroup& group, const auto& self) -> bool {
+      for (const auto& suffix : group.suffixes)
+        if (by_suffix.count(suffix)) return true;
+      for (const auto& child : group.children)
+        if (self(child, self)) return true;
+      return false;
+    };
+    const auto place_group = [&](const RowGroup& group, AccessibleSectionHeader& parent, int& parent_y,
+                                 int group_width, const String& key, const auto& self) -> void {
+      if (!has_rows(group, has_rows))
+        return;
+      const String group_id = key + group.title.toLowerCase();
+      auto header = makeSectionHeader(group.title, groupRank(sectionName), false, group_id);
+      auto* header_ptr = header.get();
+      header_ptr->setDescription(group.description);
+      header_ptr->setExplicitFocusOrder(focusOrder++);
+      header_ptr->setBounds(10, parent_y, group_width, header_ptr->headerHeight());
+      parent.addAndMakeVisible(header_ptr);
+      parent.addAccessibleChild(header_ptr);
+      row_focus_order_.push_back(header_ptr);
+      section_headers_.push_back(std::move(header));
+
+      int inner_y = header_ptr->headerHeight() + 8;
+      for (const auto& suffix : group.suffixes) {
+        const auto found = by_suffix.find(suffix);
+        if (found != by_suffix.end())
+          add_parameter_row(*found->second, *header_ptr, *header_ptr, inner_y, group_width);
+      }
+      for (const auto& child : group.children)
+        self(child, *header_ptr, inner_y, jmax(600, group_width - 20), group_id + " ", self);
+      header_ptr->setBounds(10, parent_y, group_width, inner_y + 2);
+      parent_y += inner_y + 10;
+    };
+    const int group_width = jmax(600, width - 20);
+    bool grouped_rows = false;
+
     // Glitch Delay nests its rows as Astralay groups them: Global (timing, tape
     // stop, glitch engine, output), then the shown tap's delay controls and its
     // glitches, one group per glitch type.
     if (effect_id == "glitch_delay") {
-      std::map<String, AudioProcessorParameter*> by_suffix;
-      for (const auto& entry : effect_parameters)
-        by_suffix[entry.suffix] = entry.parameter;
-
-      struct RowGroup {
-        String title, description;
-        StringArray suffixes;
-        std::vector<RowGroup> children;
-      };
       const String tap = "tap_" + String(glitch_delay_tap + 1) + "_";
       const auto tap_rows = [&tap](std::initializer_list<const char*> controls) {
         StringArray result;
@@ -13656,50 +14892,90 @@ void SynthEditor::addEffectSlotGroups(const String& sectionName, Component& pare
           { "Bit crusher", "Bit depth and sample rate reduction",
             tap_rows({ "crush_prob", "crush_bits_min", "crush_bits_max", "crush_rate_min", "crush_rate_max" }), {} } } } } };
 
-      const String group_key = sectionName + " slot " + String(slot + 1) + " glitch delay ";
-      const auto has_rows = [&by_suffix](const RowGroup& group, const auto& self) -> bool {
-        for (const auto& suffix : group.suffixes)
-          if (by_suffix.count(suffix)) return true;
-        for (const auto& child : group.children)
-          if (self(child, self)) return true;
-        return false;
-      };
-      const auto place_group = [&](const RowGroup& group, AccessibleSectionHeader& parent, int& parent_y,
-                                   int group_width, const String& key, const auto& self) -> void {
-        if (!has_rows(group, has_rows))
-          return;
-        const String group_id = key + group.title.toLowerCase();
-        auto header = makeSectionHeader(group.title, groupRank(sectionName), false, group_id);
-        auto* header_ptr = header.get();
-        header_ptr->setDescription(group.description);
-        header_ptr->setExplicitFocusOrder(focusOrder++);
-        header_ptr->setBounds(10, parent_y, group_width, header_ptr->headerHeight());
-        parent.addAndMakeVisible(header_ptr);
-        parent.addAccessibleChild(header_ptr);
-        row_focus_order_.push_back(header_ptr);
-        section_headers_.push_back(std::move(header));
-
-        int inner_y = header_ptr->headerHeight() + 8;
-        for (const auto& suffix : group.suffixes) {
-          const auto found = by_suffix.find(suffix);
-          if (found != by_suffix.end())
-            add_parameter_row(*found->second, *header_ptr, *header_ptr, inner_y, group_width);
-        }
-        for (const auto& child : group.children)
-          self(child, *header_ptr, inner_y, jmax(600, group_width - 20), group_id + " ", self);
-        header_ptr->setBounds(10, parent_y, group_width, inner_y + 2);
-        parent_y += inner_y + 10;
-      };
-
-      const int group_width = jmax(600, width - 20);
       place_group(global, *slot_ptr, slot_y, group_width, group_key, place_group);
       if (const auto view = by_suffix.find("tap_view"); view != by_suffix.end())
         add_parameter_row(*view->second, *slot_ptr, *slot_ptr, slot_y, width);
       place_group(tap_group, *slot_ptr, slot_y, group_width, group_key, place_group);
+      grouped_rows = true;
+    }
+
+    // The EQ gives each band its own group. Mid Side EQ has the same six bands
+    // for each channel, so they sit in a Mid group and a Side group.
+    if (effect_id == "eq" || effect_id == "mid_side_eq") {
+      const auto equalizer_bands = [](const String& channel) {
+        const auto band = [&channel](const String& title, const String& modes, const String& band_prefix) {
+          StringArray suffixes;
+          for (const auto* control : { "mode", "cutoff", "gain", "resonance" })
+            suffixes.add(channel + band_prefix + control);
+          return RowGroup { title, modes + ", with cutoff, gain and resonance", suffixes, {} };
+        };
+        return std::vector<RowGroup> {
+          band("Low band", "Shelf or high pass", "low_"),
+          band("Band 1", "Shelf or notch", "band_"),
+          band("Band 2", "Shelf or notch", "band_2_"),
+          band("Band 3", "Shelf or notch", "band_3_"),
+          band("Band 4", "Shelf or notch", "band_4_"),
+          band("High band", "Shelf or low pass", "high_") };
+      };
+      const std::vector<RowGroup> groups = effect_id == "eq" ? equalizer_bands("") : std::vector<RowGroup> {
+        { "Mid", "The six bands for the mid channel, what the left and right channels share", {},
+          equalizer_bands("mid_eq_") },
+        { "Side", "The six bands for the side channel, the difference between left and right", {},
+          equalizer_bands("side_eq_") } };
+      for (const auto& group : groups)
+        place_group(group, *slot_ptr, slot_y, group_width, group_key, place_group);
+      grouped_rows = true;
+    }
+
+    // Maim keeps the encoder, its bitrate or sample rate, Turbo, Tilt, Error
+    // and Mix at the top of the slot, then groups the rest as Maim's panels
+    // do. Groups whose rows the encoder has no use for are left out.
+    if (effect_id == "maim") {
+      for (const auto* control : { "encoder", "bitrate", "lpc_rate", "turbo", "tilt", "error", "mix" }) {
+        if (const auto found = by_suffix.find(control); found != by_suffix.end())
+          add_parameter_row(*found->second, *slot_ptr, *slot_ptr, slot_y, width);
+      }
+      const std::vector<RowGroup> groups {
+        { "Spectral", "Shifts, thins and feeds back the MP3 spectrum", { "shift", "level_shift", "feedback" }, {} },
+        { "Butterfly", "The MP3 encoder's aliasing butterfly, straight and crossed",
+          { "butterfly_straight", "butterfly_crossed" }, {} },
+        { "MDCT", "How LAME steps through its bands and windows, and which band each MP3 band reads",
+          { "band_step", "band_invert", "window_step", "band_shift", "band_reverse" }, {} },
+        { "Packet loss", "A cycle of delivered and lost packets, and what the decoder does with the lost ones",
+          { "loss_period", "loss_width", "loss_jitter", "loss_mode" }, {} },
+        { "Gain and filters", "Drive into the codec, the filters after it and the makeup gain",
+          { "drive", "low_cut", "high_cut", "makeup" }, {} } };
+      for (const auto& group : groups)
+        place_group(group, *slot_ptr, slot_y, group_width, group_key, place_group);
+      grouped_rows = true;
+    }
+
+    // The compressor keeps its global controls at the top of the slot, then
+    // gives each band its own group. The crossovers sit at 120 Hz and 2.5 kHz;
+    // Enabled Bands decides whether the Low and High bands run, and the Mid
+    // band takes whatever they leave.
+    if (effect_id == "compressor") {
+      for (const auto* control : { "enabled_bands", "attack", "release", "mix" }) {
+        if (const auto found = by_suffix.find(control); found != by_suffix.end())
+          add_parameter_row(*found->second, *slot_ptr, *slot_ptr, slot_y, width);
+      }
+      const auto band = [](const String& title, const String& range, const String& band_prefix) {
+        StringArray suffixes;
+        for (const auto* control : { "upper_threshold", "upper_ratio", "lower_threshold", "lower_ratio", "gain" })
+          suffixes.add(band_prefix + control);
+        return RowGroup { title, range + ", with upper and lower thresholds and ratios, and gain", suffixes, {} };
+      };
+      for (const auto& group : { band("Low band", "Below 120 Hz, in Multiband and Low Band modes", "low_"),
+                                 band("Mid band", "Always on: 120 Hz to 2.5 kHz in Multiband mode, everything above 120 Hz "
+                                                  "in Low Band mode, everything below 2.5 kHz in High Band mode, and the "
+                                                  "whole signal in Single Band mode", "band_"),
+                                 band("High band", "Above 2.5 kHz, in Multiband and High Band modes", "high_") })
+        place_group(group, *slot_ptr, slot_y, group_width, group_key, place_group);
+      grouped_rows = true;
     }
 
     for (const auto& entry : effect_parameters) {
-      if (effect_id == "glitch_delay")
+      if (grouped_rows)
         break;
       if (type - 1 == vital::constants::kConvolutionReverb &&
           (entry.suffix.startsWith("ir_") || entry.suffix.startsWith("fade_")))
@@ -13751,6 +15027,9 @@ void SynthEditor::setAutomationProxyCallbacks(AccessibleParameterRow& row) {
       },
       [this](const String& parameterId, bool remove) {
         const String parameter_name = modulationDestinationLabelForId(parameterId);
+        auto& history = synth_.undoHistory();
+        history.describeNextStep((remove ? "remove automation from " : "automate ") + parameter_name);
+        history.noteStructureEdit("atlas/fx_automation");
         if (remove) {
           const String slot_name = synth_.fxAutomationSlotNameForParameter(parameterId.toStdString());
           if (synth_.removeFxParameterAutomation(parameterId.toStdString()))
@@ -13921,11 +15200,13 @@ void SynthEditor::scheduleEffectChainRebuild(const String& preferredSection, con
 
 void SynthEditor::rebuildSectionsAfterEffectOrderChange(const String& preferredSection, const String& focusedTitle,
                                                         const String& focusedParameter) {
-  const String section = preferredSection.isNotEmpty() ? preferredSection : last_section_name_;
   // An explicit title names the control that must end up focused (a button
   // whose action caused the rebuild); only without one do we fall back to
   // whatever is focused now, which may be the window itself mid-action.
   const bool explicit_target = focusedTitle.isNotEmpty() || focusedParameter.isNotEmpty();
+  const String focused_section = explicit_target ? String() : focusedSectionKey();
+  const String section = preferredSection.isNotEmpty() ? preferredSection
+                         : focused_section.isNotEmpty() ? focused_section : last_section_name_;
   const String accessible_title = focusedTitle.isNotEmpty() ? focusedTitle : focusedAccessibleTitle();
   const String parameter_id = focusedParameter.isNotEmpty() ? focusedParameter
                             : (focusedTitle.isNotEmpty() ? String() : focusedParameterId());
@@ -13945,6 +15226,12 @@ void SynthEditor::connectModulationAndPromptForAmount(const String& sourceId, co
                                                       Component& target) {
   if (sourceId.isEmpty() || destinationId.isEmpty())
     return;
+  if (arpeggiatorForId(destinationId) > 0 && !sourceFitsArpeggiator(sourceId)) {
+    postPluginAnnouncement(modulationSourceLabelForId(sourceId) +
+                           " cannot modulate the arpeggiator: every step it plays is a new note",
+                           AccessibilityHandler::AnnouncementPriority::high);
+    return;
+  }
   if (isInvalidModulationPair(sourceId, destinationId)) {
     postPluginAnnouncement(modulationSourceLabelForId(sourceId) + " cannot modulate its own controls",
                                            AccessibilityHandler::AnnouncementPriority::high);
@@ -13957,6 +15244,10 @@ void SynthEditor::connectModulationAndPromptForAmount(const String& sourceId, co
     return;
   }
 
+  // The route and the amount typed into the prompt after it are one step.
+  const bool existed = synth_.getConnectionIndex(sourceId.toStdString(), destinationId.toStdString()) >= 0;
+  synth_.undoHistory().describeNextStep(modulationUndoDescription(sourceId, destinationId, !existed),
+                                        "modulation " + sourceId + " " + destinationId);
   const bool created = synth_.connectModulation(sourceId.toStdString(), destinationId.toStdString());
   const int connection = synth_.getConnectionIndex(sourceId.toStdString(), destinationId.toStdString());
   if (connection < 0) {
@@ -13990,6 +15281,7 @@ void SynthEditor::connectModulationAndPromptForAmount(const String& sourceId, co
 
 void SynthEditor::promptForInitialModulationAmount(const String& sourceId, const String& destinationId,
                                                    bool created, Component& target) {
+  endConfirmationPrompt();
   parameter_value_prompt_visible_ = false;
   pending_parameter_value_id_.clear();
   pending_custom_value_title_.clear();
@@ -14050,6 +15342,7 @@ void SynthEditor::promptForParameterValue(const String& parameterId, Component& 
   if (bridge == nullptr)
     return;
 
+  endConfirmationPrompt();
   modulation_amount_prompt_visible_ = false;
   pending_modulation_source_.clear();
   pending_modulation_destination_.clear();
@@ -14106,7 +15399,9 @@ void SynthEditor::promptForMacroName(int macroIndex, Component& target) {
                          if (name.isEmpty())
                            name = "MACRO " + String(macroIndex + 1);
 
+                         synth_.undoHistory().describeNextStep("rename Macro " + String(macroIndex + 1));
                          synth_.setMacroName(macroIndex, name);
+                         synth_.markStateChanged("macro" + std::to_string(macroIndex + 1));
                          if (target_pointer != nullptr) {
                            target_pointer->setTitle(name);
                            target_pointer->setDescription("Adjust " + name);
@@ -14119,6 +15414,7 @@ void SynthEditor::promptForCustomValue(const String& title, const String& value,
   if (!apply)
     return;
 
+  endConfirmationPrompt();
   modulation_amount_prompt_visible_ = false;
   pending_modulation_source_.clear();
   pending_modulation_destination_.clear();
@@ -14149,7 +15445,8 @@ void SynthEditor::promptForCustomValue(const String& title, const String& value,
   resized();
   Component::SafePointer<SynthEditor> safe_this(this);
   MessageManager::callAsync([safe_this] {
-    if (safe_this == nullptr || !safe_this->parameter_value_prompt_visible_)
+    if (safe_this == nullptr || !safe_this->parameter_value_prompt_visible_ ||
+        safe_this->confirmation_prompt_visible_)
       return;
     safe_this->modulation_amount_editor_.grabKeyboardFocus();
     safe_this->modulation_amount_editor_.selectAll();
@@ -14164,6 +15461,61 @@ void SynthEditor::promptForCustomValue(const String& title, const String& value,
                            AccessibilityHandler::AnnouncementPriority::high);
 }
 
+void SynthEditor::promptForConfirmation(const String& question, const String& confirmLabel, Component& target,
+                                        std::function<void()> confirm, const String& cancelMessage) {
+  if (!confirm)
+    return;
+
+  modulation_amount_prompt_visible_ = false;
+  pending_modulation_source_.clear();
+  pending_modulation_destination_.clear();
+  pending_modulation_created_ = false;
+  parameter_value_prompt_visible_ = true;
+  confirmation_prompt_visible_ = true;
+  confirmation_cancel_message_ = cancelMessage;
+  pending_parameter_value_id_.clear();
+  pending_custom_value_title_ = confirmLabel;
+  pending_custom_value_apply_ = [confirm = std::move(confirm)](const String&) { confirm(); };
+  rememberPromptFocus(target);
+
+  // The buttons say only what they do, so moving between them does not
+  // repeat the question; the question is said once, below.
+  modulation_amount_prompt_.setText(question, dontSendNotification);
+  modulation_amount_prompt_.setTitle(question);
+  modulation_amount_prompt_.setDescription(question);
+  modulation_amount_ok_.setButtonText(confirmLabel);
+  modulation_amount_ok_.setTitle(confirmLabel);
+  modulation_amount_ok_.setDescription({});
+  modulation_amount_cancel_.setTitle("Cancel");
+  modulation_amount_cancel_.setDescription({});
+
+  modulation_amount_prompt_.setVisible(true);
+  modulation_amount_editor_.setVisible(false);
+  modulation_amount_ok_.setVisible(true);
+  modulation_amount_cancel_.setVisible(true);
+  rebuildFocusOrder();
+  resized();
+  // Said after NVDA has read the first button it is moved to, which would
+  // otherwise cut the question short.
+  holdAnnouncements();
+  postPresetActionAnnouncement(question, AccessibilityHandler::AnnouncementPriority::high);
+  Component::SafePointer<SynthEditor> safe_this(this);
+  MessageManager::callAsync([safe_this] {
+    if (safe_this != nullptr && safe_this->confirmation_prompt_visible_) {
+      safe_this->modulation_amount_ok_.grabKeyboardFocus();
+      if (auto* handler = safe_this->modulation_amount_ok_.getAccessibilityHandler())
+        handler->grabFocus();
+    }
+    Timer::callAfterDelay(kScreenReaderRefocusDelayMs, [] { releaseAnnouncements(); });
+  });
+}
+
+void SynthEditor::endConfirmationPrompt() {
+  confirmation_prompt_visible_ = false;
+  confirmation_cancel_message_.clear();
+  modulation_amount_ok_.setButtonText("OK");
+}
+
 void SynthEditor::rememberPromptFocus(Component& target) {
   pending_parameter_value_focus_ = &target;
   pending_prompt_focus_title_ = target.getTitle();
@@ -14176,6 +15528,11 @@ void SynthEditor::rememberPromptFocus(Component& target) {
       break;
     }
   }
+  // A button outside the rows (Wavetable actions) has the same title in
+  // every oscillator: its section finds the right one after a rebuild.
+  for (Component* component = &target; pending_prompt_focus_section_.isEmpty() && component != nullptr;
+       component = component->getParentComponent())
+    pending_prompt_focus_section_ = component->getProperties()["SectionName"].toString();
 }
 
 void SynthEditor::returnFocusFromPrompt(bool rebuild, const String& fallbackParameterId) {
@@ -14194,22 +15551,46 @@ void SynthEditor::returnFocusFromPrompt(bool rebuild, const String& fallbackPara
   if (target != nullptr && !rows_container_.isParentOf(target.getComponent()))
     persistent = target.getComponent();
 
-  if (rebuild)
+  if (rebuild) {
     showAllSections(false);
+  }
   else if (target != nullptr && target->isShowing()) {
-    target->grabKeyboardFocus();
-    return;
+    persistent = target.getComponent();
+    // VoiceOver in a plugin host does not follow focus back to the element it
+    // was on before the prompt opened, but does follow it to a new one (as
+    // after a rebuild), so give the control a new accessibility element.
+    target->invalidateAccessibilityHandler();
   }
 
-  // A rebuild, or one while the prompt was open, replaced the control: find
-  // the new one, or else the row the prompt changed.
-  if (restoreFocusAfterRebuild(parameter_id, persistent.getComponent(), title, section))
+  // The control, or after a rebuild (a new route, or one while the prompt was
+  // open) its replacement, or else the row the prompt changed. The caller
+  // hides the field next, and hiding the field the screen reader is on can
+  // send the reader to the top of the window, so move it onto the control
+  // again once things settle.
+  if (restoreFocusAfterRebuild(parameter_id, persistent.getComponent(), title, section, true))
     return;
   if (fallbackParameterId.isNotEmpty() && fallbackParameterId != parameter_id)
-    restoreFocusAfterRebuild(fallbackParameterId, nullptr, {}, sectionForParameter(fallbackParameterId));
+    restoreFocusAfterRebuild(fallbackParameterId, nullptr, {}, sectionForParameter(fallbackParameterId), true);
 }
 
 void SynthEditor::hideInlineTextPrompt() {
+  // Focus has just gone back to the control, but the screen reader is still on
+  // the field and follows only once it catches up. Taking the field away before
+  // then leaves VoiceOver on an element that no longer exists, and in a plugin
+  // host it stays there, saying nothing, until the user moves it from the top
+  // of the window. So the field goes once the reader has moved.
+  const int generation = ++inline_prompt_hide_generation_;
+  Component::SafePointer<SynthEditor> safe_this(this);
+  Timer::callAfterDelay(kInlinePromptHideDelayMs, [safe_this, generation] {
+    if (safe_this != nullptr && safe_this->inline_prompt_hide_generation_ == generation)
+      safe_this->hideInlineTextPromptNow();
+  });
+}
+
+void SynthEditor::hideInlineTextPromptNow() {
+  // A new prompt opened meanwhile.
+  if (modulation_amount_prompt_visible_ || parameter_value_prompt_visible_)
+    return;
   modulation_amount_prompt_.setVisible(false);
   modulation_amount_editor_.setVisible(false);
   modulation_amount_ok_.setVisible(false);
@@ -14232,6 +15613,9 @@ void SynthEditor::applyInitialModulationAmount() {
   const float amount = modulationAmountFromPeakText(destination_id, modulation_amount_editor_.getText());
   const int connection = synth_.getConnectionIndex(source_id.toStdString(), destination_id.toStdString());
   if (connection >= 0) {
+    // Joins the step that made the route.
+    synth_.undoHistory().describeNextStep(modulationUndoDescription(source_id, destination_id, rebuild_modulation_slots),
+                                          "modulation " + source_id + " " + destination_id);
     setParameterEngineValue("modulation_" + String(connection + 1) + "_amount", amount);
     refreshVisibleModulationLabels();
   }
@@ -14314,15 +15698,29 @@ void SynthEditor::applyParameterValue() {
   const String custom_title = pending_custom_value_title_;
   if (parameter_id.isEmpty() && pending_custom_value_apply_) {
     auto apply = std::move(pending_custom_value_apply_);
-    apply(modulation_amount_editor_.getText());
+    const bool confirmation = confirmation_prompt_visible_;
+    const String typed = modulation_amount_editor_.getText();
+    {
+      // What the action says (a preset renamed or moved to Trash)
+      // waits until focus is back on the control: the screen reader reads the
+      // control then, which would cut the message short.
+      const ScopedAnnouncementHold hold;
+      {
+        const ScopedValueSetter<bool> applying(inline_prompt_applying_, true);
+        apply(typed);
+      }
 
-    parameter_value_prompt_visible_ = false;
-    pending_custom_value_title_.clear();
-    returnFocusFromPrompt(false, {});
-    hideInlineTextPrompt();
+      parameter_value_prompt_visible_ = false;
+      pending_custom_value_title_.clear();
+      endConfirmationPrompt();
+      returnFocusFromPrompt(false, {});
+      hideInlineTextPrompt();
+    }
 
-    postPluginAnnouncement(custom_title + " " + modulation_amount_editor_.getText(),
-                                           AccessibilityHandler::AnnouncementPriority::high);
+    // A question has nothing typed to repeat, and a rename says itself
+    // whether it worked.
+    if (!confirmation && custom_title != "Preset name")
+      postPluginAnnouncement(custom_title + " " + typed, AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
 
@@ -14453,6 +15851,7 @@ bool SynthEditor::moveEffectInSection(const String& sectionName, const String& e
   std::swap(order[selected], order[next]);
   const String moved = effectName(order[next]);
   const String parameter_id = focusedParameterId();
+  synth_.undoHistory().describeNextStep("move " + moved);
   writeEffectChainOrder(sectionName, order);
   scheduleEffectChainRebuild(sectionName, focusedTitle, parameter_id);
   postPluginAnnouncement(moved + " moved to position " + String(next + 1),
@@ -14511,14 +15910,21 @@ bool SynthEditor::handleMacroShortcut(const String& parameterId, const KeyPress&
 void SynthEditor::cancelInlineTextPrompt() {
   if (parameter_value_prompt_visible_) {
     parameter_value_prompt_visible_ = false;
+    const bool confirmation = confirmation_prompt_visible_;
+    const String cancel_message = confirmation_cancel_message_;
+    endConfirmationPrompt();
     const String parameter_id = pending_parameter_value_id_;
     pending_parameter_value_id_.clear();
     pending_custom_value_title_.clear();
     pending_custom_value_apply_ = nullptr;
     returnFocusFromPrompt(false, parameter_id);
     hideInlineTextPrompt();
-    postPluginAnnouncement("Value entry cancelled",
-                                           AccessibilityHandler::AnnouncementPriority::medium);
+    // A question answered No says what was kept, whatever the speech categories.
+    if (confirmation)
+      postPresetActionAnnouncement(cancel_message.isNotEmpty() ? cancel_message : String("Cancelled"),
+                                   AccessibilityHandler::AnnouncementPriority::medium);
+    else
+      postPluginAnnouncement("Value entry cancelled", AccessibilityHandler::AnnouncementPriority::medium);
     return;
   }
 
@@ -14764,7 +16170,7 @@ void SynthEditor::addModulationRemapPoint() {
 
   generator->addMiddlePoint(insertion_index);
   generator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged("settings/modulations");
   modulation_remap_point_index_ = insertion_index;
   finishModulationRemapEdit("Added " + modulationRemapPointDescription(insertion_index));
 }
@@ -14780,7 +16186,7 @@ void SynthEditor::deleteModulationRemapPoint() {
 
   generator->removePoint(point_index);
   generator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged("settings/modulations");
   modulation_remap_point_index_ = jmin(point_index, generator->getNumPoints() - 1);
   finishModulationRemapEdit("Deleted point. " + modulationRemapPointDescription(modulation_remap_point_index_));
 }
@@ -14798,7 +16204,7 @@ void SynthEditor::moveModulationRemapPointInput(float delta) {
                        generator->getPoint(point_index + 1).first, point.first + delta);
   generator->setPoint(point_index, point);
   generator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged("settings/modulations");
   finishModulationRemapEdit("Input " + compactFloat(point.first * 100.0f, 1) + "%");
 }
 
@@ -14813,7 +16219,7 @@ void SynthEditor::moveModulationRemapPointOutput(float delta) {
   point.second = 1.0f - output;
   generator->setPoint(point_index, point);
   generator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged("settings/modulations");
   finishModulationRemapEdit("Output " + compactFloat(output * 100.0f, 1) + "%");
 }
 
@@ -14827,7 +16233,7 @@ void SynthEditor::setModulationRemapCurve(int curve) {
   generator->setSmooth(smoothForCurveIndex(curve));
   generator->setPower(point_index, powerForCurveIndex(curve));
   generator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged("settings/modulations");
   finishModulationRemapEdit(curveNameForIndex(curve));
 }
 
@@ -14944,6 +16350,25 @@ void SynthEditor::refreshSampleNameLabel(int target) {
   }
 }
 
+void SynthEditor::refreshOscillatorHeaderTitles() {
+  // What refreshWavetableNameLabel and refreshSampleNameLabel do for every
+  // oscillator, in one pass over the headers.
+  for (auto& component : section_headers_) {
+    auto* header = dynamic_cast<AccessibleSectionHeader*>(component.get());
+    if (header == nullptr)
+      continue;
+    const String section_name = header->getProperties()["SectionName"].toString();
+    if (!section_name.startsWith("Oscillator "))
+      continue;
+    const int oscillator = section_name.getTrailingIntValue() - 1;
+    if (!isPositiveAndBelow(oscillator, vital::kNumOscillators) || section_name != "Oscillator " + String(oscillator + 1))
+      continue;
+    if (synth_.getWavetableCreator(oscillator) != nullptr ||
+        vital::source_types::describe(sourceSlotType(oscillator)).uses_sample)
+      header->setHeaderTitle(sourceStatusTitleForSection(section_name));
+  }
+}
+
 String SynthEditor::sourceStatusTitleForSection(const String& section_name) const {
   String title = accessibleSectionTitle(section_name);
   const int oscillator = oscillatorIndexForSectionName(section_name);
@@ -14991,8 +16416,8 @@ void SynthEditor::chooseWavetableFile(int audioLoadStyle) {
     return;
   wavetable_chooser_ = std::make_unique<FileChooser>("Load wavetable or audio file",
                                                      File(), vital::kWavetableExtensionsList);
-  wavetable_chooser_->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
-                                  [this, audioLoadStyle](const FileChooser& chooser) {
+  launchFileChooser(*wavetable_chooser_, FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
+                                         [this, audioLoadStyle](const FileChooser& chooser) {
     const auto file = chooser.getResult();
     if (file.existsAsFile())
       loadWavetableFile(file, audioLoadStyle);
@@ -15048,7 +16473,7 @@ bool SynthEditor::loadWavetableIntoCreator(WavetableCreator& creator, const File
     }
     creator.setFileLoaded(file.getFullPathName().toStdString());
     creator.render();
-    synth_.markStateChanged();
+    synth_.markStateChanged(wavetableUndoBlock(&creator));
     return true;
   }
   catch (const std::exception& e) {
@@ -15086,8 +16511,7 @@ void SynthEditor::loadWavetableFile(const File& file, int audioLoadStyle) {
     }
   }
   catch (const std::exception& error) {
-    NativeMessageBox::showMessageBoxAsync(MessageBoxIconType::WarningIcon,
-                                          "Unable to load wavetable", error.what());
+    showWarningBox("Unable to load wavetable", error.what());
     postPluginAnnouncement("Unable to load wavetable",
                                              AccessibilityHandler::AnnouncementPriority::high);
   }
@@ -15146,7 +16570,7 @@ void SynthEditor::synthesizePresetToWavetable(int oscillator) {
       if (file_source != nullptr) {
         file_source->setWindowSize(sample_rate / vital::utils::midiNoteToFrequency(kCaptureNote));
         creator->render();
-        safe_this->synth_.markStateChanged();
+        safe_this->synth_.markStateChanged(safe_this->wavetableUndoBlock(creator));
       }
 
       auto& state = safe_this->wavetable_keyboard_state_[oscillator];
@@ -15188,9 +16612,9 @@ void SynthEditor::saveWavetableFile(int oscillator) {
   wavetable_chooser_ = std::make_unique<FileChooser>("Export Atlas wavetable",
                                                      LoadSave::getUserWavetableDirectory().getChildFile(name),
                                                      String("*.") + vital::kWavetableExtension);
-  wavetable_chooser_->launchAsync(FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles |
-                                      FileBrowserComponent::warnAboutOverwriting,
-                                  [this, oscillator](const FileChooser& chooser) {
+  launchFileChooser(*wavetable_chooser_, FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles |
+                                             FileBrowserComponent::warnAboutOverwriting,
+                                         [this, oscillator](const FileChooser& chooser) {
     const File file = chooser.getResult();
     if (file != File()) {
       if (auto* creator = synth_.getWavetableCreator(oscillator)) {
@@ -15200,8 +16624,8 @@ void SynthEditor::saveWavetableFile(int oscillator) {
           postPluginAnnouncement("Exported wavetable " + destination.getFileNameWithoutExtension(),
                                                  AccessibilityHandler::AnnouncementPriority::high);
         else
-          NativeMessageBox::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Unable to export wavetable",
-                                                "The wavetable file could not be written.");
+          showWarningBox("Unable to export wavetable",
+                         "The wavetable file could not be written.");
       }
     }
     wavetable_chooser_.reset();
@@ -15220,9 +16644,9 @@ void SynthEditor::exportWavetableWav(int oscillator) {
   wavetable_chooser_ = std::make_unique<FileChooser>("Export wavetable as WAV",
                                                      LoadSave::getUserWavetableDirectory().getChildFile(name + ".wav"),
                                                      "*.wav");
-  wavetable_chooser_->launchAsync(FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles |
-                                      FileBrowserComponent::warnAboutOverwriting,
-                                  [this, oscillator](const FileChooser& chooser) {
+  launchFileChooser(*wavetable_chooser_, FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles |
+                                             FileBrowserComponent::warnAboutOverwriting,
+                                         [this, oscillator](const FileChooser& chooser) {
     const File file = chooser.getResult().withFileExtension("wav");
     wavetable_chooser_.reset();
     auto* target = synth_.getWavetableCreator(oscillator);
@@ -15242,8 +16666,8 @@ void SynthEditor::exportWavetableWav(int oscillator) {
     std::unique_ptr<AudioFormatWriter> writer(stream != nullptr ?
         format.createWriterFor(stream.get(), kSampleRate, 1, 16, metadata, 0) : nullptr);
     if (writer == nullptr) {
-      NativeMessageBox::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Unable to export wavetable",
-                                            "The WAV file could not be written.");
+      showWarningBox("Unable to export wavetable",
+                     "The WAV file could not be written.");
       return;
     }
     stream.release();   // the writer owns it now
@@ -15316,6 +16740,7 @@ void SynthEditor::addFilterTableControlsGroup(const String& filter_prefix, Compo
   add_button("Reset wavetable", "Restore the default low-pass wavetable in " + section_name,
              [this, filter_prefix, section_name] {
                synth_.resetFilterTable(filter_prefix.toStdString());
+               synth_.markStateChanged("settings/filter_tables");
                postPluginAnnouncement("Default low-pass wavetable restored in " + section_name,
                                       AccessibilityHandler::AnnouncementPriority::high);
                refreshFilterTableControls(filter_prefix);
@@ -15328,8 +16753,8 @@ void SynthEditor::addFilterTableControlsGroup(const String& filter_prefix, Compo
 void SynthEditor::chooseFilterTableFile(const String& filter_prefix) {
   wavetable_chooser_ = std::make_unique<FileChooser>("Load a wavetable or audio file into the filter",
                                                      File(), vital::kWavetableExtensionsList);
-  wavetable_chooser_->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
-                                  [this, filter_prefix](const FileChooser& chooser) {
+  launchFileChooser(*wavetable_chooser_, FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
+                                         [this, filter_prefix](const FileChooser& chooser) {
     const auto file = chooser.getResult();
     if (file.existsAsFile())
       loadFilterTableFile(filter_prefix, file);
@@ -16261,7 +17686,7 @@ void SynthEditor::adjustWavetableHarmonicLevel(int oscillator, float deltaPercen
     wave_frame->toFrequencyDomain();
   }
   creator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(wavetableUndoBlock(oscillator));
   postWavetableEditorAnnouncement(wavetableHarmonicStatusText(oscillator, true, false) +
                                       (targets.size() > 1 ? ", " + String(targets.size()) + " frames" : ""),
                                   AccessibilityHandler::AnnouncementPriority::high);
@@ -16288,7 +17713,7 @@ void SynthEditor::adjustWavetableHarmonicPhase(int oscillator, float deltaDegree
     wave_frame->toFrequencyDomain();
   }
   creator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(wavetableUndoBlock(oscillator));
   postWavetableEditorAnnouncement(wavetableHarmonicStatusText(oscillator, false, true) +
                                       (targets.size() > 1 ? ", " + String(targets.size()) + " frames" : ""),
                                   AccessibilityHandler::AnnouncementPriority::high);
@@ -16348,7 +17773,7 @@ void SynthEditor::pasteWavetableFrames(int oscillator) {
     }
   }
   creator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(wavetableUndoBlock(oscillator));
   postWavetableEditorAnnouncement("Pasted into " + String(targets.size()) + " wavetable frame" +
                                   (targets.size() == 1 ? String() : String("s")),
                                   AccessibilityHandler::AnnouncementPriority::high);
@@ -16385,7 +17810,7 @@ void SynthEditor::addWavetableFrame(int oscillator) {
   state.frame = source->indexOf(inserted);
   state.selected_frames.clear();
   creator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(wavetableUndoBlock(oscillator));
   postWavetableEditorAnnouncement("Frame added, " + wavetableFrameStatusText(oscillator),
                                   AccessibilityHandler::AnnouncementPriority::high);
 }
@@ -16412,7 +17837,7 @@ void SynthEditor::deleteWavetableFrames(int oscillator) {
   state.frame = jlimit(0, source->numFrames() - 1, next_cursor);
   state.selected_frames.clear();
   creator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(wavetableUndoBlock(oscillator));
   postWavetableEditorAnnouncement("Deleted " + String(targets.size()) + " wavetable frame" +
                                   (targets.size() == 1 ? String() : String("s")) + ", " +
                                   wavetableFrameStatusText(oscillator),
@@ -16445,7 +17870,7 @@ void SynthEditor::setWavetableFramePosition(int oscillator, int frame, int posit
   source->reposition(keyframe);
   wavetable_keyboard_state_[oscillator].frame = source->indexOf(keyframe);
   creator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(wavetableUndoBlock(oscillator));
 }
 
 void SynthEditor::clearWavetableDc(int oscillator) {
@@ -16463,7 +17888,7 @@ void SynthEditor::clearWavetableDc(int oscillator) {
     wave_frame->toFrequencyDomain();
   }
   creator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(wavetableUndoBlock(oscillator));
   postWavetableEditorAnnouncement("Removed DC offset from " + String(targets.size()) + " wavetable frame" +
                                   (targets.size() == 1 ? String() : String("s")),
                                   AccessibilityHandler::AnnouncementPriority::high);
@@ -16504,7 +17929,7 @@ void SynthEditor::rebuildWavetableEditor(int oscillator, const String& focus_tit
     if (safe_this == nullptr)
       return;
     safe_this->showAllSections(false);
-    safe_this->restoreFocusAfterRebuild({}, nullptr, focus_title, section);
+    safe_this->restoreFocusAfterRebuild({}, nullptr, focus_title, section, true);
   });
 }
 
@@ -16520,7 +17945,7 @@ void SynthEditor::addWavetableModifier(int oscillator, int modifier_type) {
   if (component == nullptr)
     return;
   creator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(wavetableUndoBlock(oscillator));
   const int component_index = group->numComponents() - 1;
   const String name = atlas::wavetable_edit::componentName(component);
   postWavetableEditorAnnouncement(name + " added to layer " + String(layer + 1), AccessibilityHandler::AnnouncementPriority::high);
@@ -16537,7 +17962,7 @@ void SynthEditor::removeWavetableModifier(int oscillator, int component_index) {
   creator->getGroup(layer)->removeComponent(component_index);
   wavetable_keyboard_state_[oscillator].keyframes.clear();
   creator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(wavetableUndoBlock(oscillator));
   postWavetableEditorAnnouncement(name + " removed", AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, "Add modifier");
 }
@@ -16572,7 +17997,7 @@ void SynthEditor::moveWavetableModifier(int oscillator, int component_index, int
   auto& keyframes = wavetable_keyboard_state_[oscillator].keyframes;
   std::swap(keyframes[component_index], keyframes[destination]);
   creator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(wavetableUndoBlock(oscillator));
   postWavetableEditorAnnouncement(name + (direction < 0 ? " moved up" : " moved down"), AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, name + " " + String(destination) + " keyframe interpolation");
 }
@@ -16638,8 +18063,8 @@ void SynthEditor::addWavetableLayer(int oscillator, int sourceType) {
     // An audio layer needs audio: ask for the file first.
     wavetable_chooser_ = std::make_unique<FileChooser>("Add an audio file layer", LoadSave::getUserWavetableDirectory(),
                                                        "*.wav;*.flac;*.aif;*.aiff");
-    wavetable_chooser_->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
-                                    [this, oscillator](const FileChooser& chooser) {
+    launchFileChooser(*wavetable_chooser_, FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
+                                           [this, oscillator](const FileChooser& chooser) {
       const File file = chooser.getResult();
       wavetable_chooser_.reset();
       if (file.existsAsFile())
@@ -16650,7 +18075,7 @@ void SynthEditor::addWavetableLayer(int oscillator, int sourceType) {
   if (atlas::wavetable_edit::addLayer(*creator, sourceType) == nullptr)
     return;
   creator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(wavetableUndoBlock(oscillator));
   auto& state = wavetable_keyboard_state_[oscillator];
   state.layer = creator->numGroups() - 1;
   state.frame = 0;
@@ -16685,7 +18110,7 @@ void SynthEditor::addWavetableAudioLayer(int oscillator, const File& file) {
     return;
   atlas::wavetable_edit::loadAudioLayer(group->getComponent(0), buffer.getReadPointer(0), buffer.getNumSamples(), sample_rate);
   creator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(wavetableUndoBlock(oscillator));
   auto& state = wavetable_keyboard_state_[oscillator];
   state.layer = creator->numGroups() - 1;
   state.keyframes.clear();
@@ -16697,8 +18122,8 @@ void SynthEditor::addWavetableAudioLayer(int oscillator, const File& file) {
 void SynthEditor::chooseWavetableLayerAudio(int oscillator) {
   wavetable_chooser_ = std::make_unique<FileChooser>("Replace the layer's audio", LoadSave::getUserWavetableDirectory(),
                                                      "*.wav;*.flac;*.aif;*.aiff");
-  wavetable_chooser_->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
-                                  [this, oscillator](const FileChooser& chooser) {
+  launchFileChooser(*wavetable_chooser_, FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
+                                         [this, oscillator](const FileChooser& chooser) {
     const File file = chooser.getResult();
     wavetable_chooser_.reset();
     if (file.existsAsFile())
@@ -16732,7 +18157,7 @@ void SynthEditor::removeWavetableLayer(int oscillator) {
     return;
   }
   creator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(wavetableUndoBlock(oscillator));
   state.layer = jlimit(0, creator->numGroups() - 1, removed);
   state.frame = 0;
   state.selected_frames.clear();
@@ -16750,7 +18175,7 @@ void SynthEditor::moveWavetableLayer(int oscillator, int direction) {
     return;
   state.layer += direction < 0 ? -1 : 1;
   creator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(wavetableUndoBlock(oscillator));
   postWavetableEditorAnnouncement("Layer moved to position " + String(state.layer + 1), AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, direction < 0 ? "Move layer earlier" : "Move layer later");
 }
@@ -17016,7 +18441,7 @@ void SynthEditor::setWavetableEditorVisible(int oscillator, bool visible) {
       return;
 
     safe_this->showAllSections(false);
-    safe_this->restoreFocusAfterRebuild({}, nullptr, restore_title, section);
+    safe_this->restoreFocusAfterRebuild({}, nullptr, restore_title, section, true);
 
     postWavetableEditorAnnouncement(visible ? "Wavetable editor shown" : "Wavetable editor hidden",
                                     AccessibilityHandler::AnnouncementPriority::medium);
@@ -17057,7 +18482,7 @@ void SynthEditor::applyWavetableHarmonicEdit(int oscillator, int frame, bool all
     wave_frame->toFrequencyDomain();
   }
   creator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(wavetableUndoBlock(oscillator));
 
   postWavetableEditorAnnouncement("Set harmonic " + String(harmonic) +
                                   (targets.size() == 1 ? " on frame " + String(targets.front() + 1) :
@@ -17093,7 +18518,7 @@ void SynthEditor::applyWavetableStartingShape(int oscillator, int frame, bool al
   for (int index : targets)
     source->getKeyframe(index)->wave_frame()->copy(starting_frame);
   creator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(wavetableUndoBlock(oscillator));
 
   static const char* const kShapeNames[] = {
     "Sine", "Saturated sine", "Triangle", "Square", "Pulse 25 percent", "Saw"
@@ -17133,7 +18558,7 @@ void SynthEditor::clearWavetableHarmonic(int oscillator, int frame, bool allFram
     wave_frame->toFrequencyDomain();
   }
   creator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(wavetableUndoBlock(oscillator));
 
   postWavetableEditorAnnouncement("Cleared harmonic " + String(harmonic) +
                                   (targets.size() == 1 ? " on frame " + String(targets.front() + 1) :
@@ -17168,7 +18593,7 @@ void SynthEditor::normalizeWavetableFrame(int oscillator, int frame, bool allFra
     wave_frame->toFrequencyDomain();
   }
   creator->render();
-  synth_.markStateChanged();
+  synth_.markStateChanged(wavetableUndoBlock(oscillator));
 
   postWavetableEditorAnnouncement(targets.size() == 1 ? "Normalized wavetable frame " + String(targets.front() + 1) :
                                                         "Normalized " + String(static_cast<int>(targets.size())) +
@@ -17261,7 +18686,10 @@ void SynthEditor::showWavetableActionsMenu(int oscillator, Component& target) {
   menu.addSeparator();
   menu.addItem(kRename, "Rename wavetable");
   menu.addItem(kReset, "Reset wavetable");
-  Component::SafePointer<Component> target_pointer(&target);
+  // The menu opens at the group heading but the button keeps the focus
+  // (menus never take it), and the rename prompt goes back to the button.
+  Component* focused = Component::getCurrentlyFocusedComponent();
+  Component::SafePointer<Component> target_pointer(focused != nullptr && target.isParentOf(focused) ? focused : &target);
   showAccessibleMenuAsync(menu, PopupMenu::Options().withTargetComponent(&target),
                      [this, oscillator, target_pointer](int result) {
     switch (result) {
@@ -17286,6 +18714,7 @@ void SynthEditor::showWavetableActionsMenu(int oscillator, Component& target) {
           if (renamed == nullptr || name.isEmpty())
             return;
           renamed->setName(name.toStdString());
+          synth_.markStateChanged(wavetableUndoBlock(oscillator));
           refreshWavetableNameLabel(oscillator);
           postPluginAnnouncement("Wavetable renamed " + name, AccessibilityHandler::AnnouncementPriority::high);
         });
@@ -17295,7 +18724,7 @@ void SynthEditor::showWavetableActionsMenu(int oscillator, Component& target) {
         if (auto* creator = synth_.getWavetableCreator(oscillator)) {
           creator->loadDefaultCreator();
           creator->render();
-          synth_.markStateChanged();
+          synth_.markStateChanged(wavetableUndoBlock(oscillator));
           refreshWavetableNameLabel(oscillator);
           wavetable_keyboard_state_[oscillator] = {};
           if (wavetable_editor_visible_[oscillator])
@@ -17659,7 +19088,13 @@ void SynthEditor::addMultiSampleControlsGroup(int oscillator, Component& parent,
         return;
       PopupMenu menu = createInstrumentPresetMenu(*presets, safe_combo->getSelectedId() - 1);
       showAccessibleMenuAsync(menu, PopupMenu::Options().withTargetComponent(safe_combo.getComponent()), [safe_combo](int result) {
-        if (safe_combo != nullptr && result > 0)
+        if (safe_combo == nullptr)
+          return;
+        // Return opened the menu through JUCE's showPopupIfNotActive, which
+        // counts the popup as open until hidePopup: without this the combo
+        // reads "expanded" and Return never opens the menu again.
+        safe_combo->hidePopup();
+        if (result > 0)
           safe_combo->setSelectedId(result, sendNotificationSync);
       });
     };
@@ -17697,6 +19132,142 @@ void SynthEditor::addMultiSampleControlsGroup(int oscillator, Component& parent,
     append_rows(*group_ptr, group_y, width);
   group_ptr->setBounds(x, y, width, group_y + 2);
   y += group_y + 10;
+}
+
+void SynthEditor::addSpeechControlsGroup(int oscillator, Component& parent, int& y, int x, int width,
+                                         int& focus_order, const String& section_name,
+                                         const GroupRowAppender& append_rows) {
+  auto group = makeSectionHeader("Speech controls", groupRank("Oscillators"), false, section_name + " speech controls");
+  auto* group_ptr = group.get();
+  group_ptr->setDescription("The words " + section_name + " sings and the espeak-ng voice that sings them");
+  group_ptr->setExplicitFocusOrder(focus_order++);
+  parent.addAndMakeVisible(group_ptr);
+  if (auto* accessible_parent = dynamic_cast<AccessibleSectionHeader*>(&parent))
+    accessible_parent->addAccessibleChild(group_ptr);
+  row_focus_order_.push_back(group_ptr);
+  section_headers_.push_back(std::move(group));
+
+  int group_y = group_ptr->headerHeight() + 8;
+  auto* manager = synth_.getSpeechManager();
+  auto editor = std::make_unique<AccessibleTextEditor>();
+  auto* editor_ptr = editor.get();
+  editor_ptr->setTitle(String(oscillator + 1) + " Text to sing");
+  editor_ptr->setDescription(speechStatusDescription(oscillator));
+  editor_ptr->setHelpText("Type the words, then press Enter. Each note sings the next syllable, and the notes of a "
+                          "chord sing one syllable together. Escape restores the words.");
+  editor_ptr->setTextToShowWhenEmpty("Type the words to sing", Colours::grey);
+  editor_ptr->setMultiLine(false);
+  editor_ptr->setReturnKeyStartsNewLine(false);
+  editor_ptr->setInputRestrictions(vital::speech::Manager::kMaxTextLength);
+  editor_ptr->setWantsKeyboardFocus(true);
+  if (manager != nullptr)
+    editor_ptr->setText(String::fromUTF8(manager->text(oscillator).c_str()), dontSendNotification);
+  editor_ptr->getProperties().set("SpeechText", oscillator);
+  Component::SafePointer<TextEditor> safe_editor(editor_ptr);
+  editor_ptr->onReturnKey = [this, oscillator, safe_editor] {
+    if (safe_editor != nullptr)
+      commitSpeechText(oscillator, safe_editor->getText());
+  };
+  editor_ptr->onFocusLost = editor_ptr->onReturnKey;
+  editor_ptr->onEscapeKey = [this, oscillator, safe_editor] {
+    auto* speech = synth_.getSpeechManager();
+    if (safe_editor == nullptr || speech == nullptr)
+      return;
+    safe_editor->setText(String::fromUTF8(speech->text(oscillator).c_str()), dontSendNotification);
+    postPluginAnnouncement("Words restored", AccessibilityHandler::AnnouncementPriority::medium);
+  };
+  editor_ptr->setExplicitFocusOrder(focus_order++);
+  editor_ptr->setBounds(10, group_y, jmax(200, width - 20), 38);
+  group_ptr->addAndMakeVisible(editor_ptr);
+  group_ptr->addAccessibleChild(editor_ptr);
+  row_focus_order_.push_back(editor_ptr);
+  section_headers_.push_back(std::move(editor));
+  group_y += 44;
+
+  if (append_rows)
+    append_rows(*group_ptr, group_y, width);
+  group_ptr->setBounds(x, y, width, group_y + 2);
+  y += group_y + 10;
+}
+
+void SynthEditor::commitSpeechText(int oscillator, const String& text) {
+  auto* manager = synth_.getSpeechManager();
+  if (manager == nullptr || !isPositiveAndBelow(oscillator, vital::kNumOscillators))
+    return;
+  const std::string words = text.trim().toStdString();
+  if (words == manager->text(oscillator))
+    return;
+  manager->setText(oscillator, words);
+  synth_.markStateChanged();
+  if (words.empty()) {
+    speech_announcements_[static_cast<size_t>(oscillator)].announce = false;
+    postPluginAnnouncement("Oscillator " + String(oscillator + 1) + " words cleared",
+                           AccessibilityHandler::AnnouncementPriority::medium);
+  }
+  else {
+    // The render finishes in a moment; refreshSpeechStatus reports it.
+    speech_announcements_[static_cast<size_t>(oscillator)].announce = true;
+  }
+}
+
+String SynthEditor::speechStatusDescription(int oscillator) {
+  auto* manager = synth_.getSpeechManager();
+  const String base = "Words Oscillator " + String(oscillator + 1) + " sings";
+  if (manager == nullptr)
+    return base;
+  const auto status = manager->status(oscillator);
+  switch (status.state) {
+    case vital::speech::SlotStatus::kRendering:
+      return base + ", preparing the voice";
+    case vital::speech::SlotStatus::kReady:
+      return base + ", " + String(status.syllables) + (status.syllables == 1 ? " syllable" : " syllables") +
+             " in " + String(status.words) + (status.words == 1 ? " word" : " words");
+    case vital::speech::SlotStatus::kFailed:
+      return base + ", " + String::fromUTF8(status.error.c_str());
+    case vital::speech::SlotStatus::kEmpty:
+    default:
+      return base;
+  }
+}
+
+void SynthEditor::refreshSpeechStatus() {
+  auto* manager = synth_.getSpeechManager();
+  if (manager == nullptr)
+    return;
+  for (int oscillator = 0; oscillator < vital::kNumOscillators; ++oscillator) {
+    const auto status = manager->status(oscillator);
+    auto& announced = speech_announcements_[static_cast<size_t>(oscillator)];
+    if (status.revision == announced.revision)
+      continue;
+    announced.revision = status.revision;
+
+    const String description = speechStatusDescription(oscillator);
+    const String text = String::fromUTF8(manager->text(oscillator).c_str());
+    for (auto& component : section_headers_) {
+      auto* editor = dynamic_cast<TextEditor*>(component.get());
+      const var& property = component != nullptr ? component->getProperties()["SpeechText"] : var();
+      if (editor == nullptr || property.isVoid() || static_cast<int>(property) != oscillator)
+        continue;
+      editor->setDescription(description);
+      // A preset or the host changed the words: show them, unless the user is typing.
+      if (!editor->hasKeyboardFocus(true) && editor->getText() != text)
+        editor->setText(text, dontSendNotification);
+    }
+
+    if (!announced.announce || status.state == vital::speech::SlotStatus::kRendering)
+      continue;
+    announced.announce = false;
+    const String prefix = "Oscillator " + String(oscillator + 1);
+    if (status.state == vital::speech::SlotStatus::kReady) {
+      postPluginAnnouncement(prefix + " sings " + String(status.syllables) +
+                                 (status.syllables == 1 ? " syllable" : " syllables"),
+                             AccessibilityHandler::AnnouncementPriority::medium);
+    }
+    else if (status.state == vital::speech::SlotStatus::kFailed) {
+      postPluginAnnouncement(prefix + " cannot sing the words: " + String::fromUTF8(status.error.c_str()),
+                             AccessibilityHandler::AnnouncementPriority::high);
+    }
+  }
 }
 
 namespace {
@@ -17876,8 +19447,8 @@ void SynthEditor::chooseInstrumentFile(int oscillator) {
   }
   instrument_chooser_ = std::make_unique<FileChooser>("Load instrument for Oscillator " + String(oscillator + 1),
                                                       start, "*.sfz;*.dspreset;*.sf2;*.SFZ;*.DSPRESET;*.SF2");
-  instrument_chooser_->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
-                                   [this, oscillator](const FileChooser& chooser) {
+  launchFileChooser(*instrument_chooser_, FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
+                                          [this, oscillator](const FileChooser& chooser) {
     const File file = chooser.getResult();
     instrument_chooser_.reset();
     if (!file.existsAsFile())
@@ -17915,8 +19486,8 @@ void SynthEditor::openInstrumentInTextEditor(int oscillator) {
 #endif
   text_editor_process_ = std::make_unique<ChildProcess>();
   if (!text_editor_process_->start(command, 0)) {
-    NativeMessageBox::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Unable to open the " + format + " file",
-                                          "No text editor could be started for " + file.getFullPathName());
+    showWarningBox("Unable to open the " + format + " file",
+                   "No text editor could be started for " + file.getFullPathName());
     postPluginAnnouncement("Unable to open the " + format + " instrument file", AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
@@ -17968,7 +19539,7 @@ void SynthEditor::clearInstrument(int oscillator) {
     if (safe_this == nullptr)
       return;
     safe_this->showAllSections(false);
-    safe_this->restoreFocusAfterRebuild({}, nullptr, "Clear instrument", section_name);
+    safe_this->restoreFocusAfterRebuild({}, nullptr, "Clear instrument", section_name, true);
     postPluginAnnouncement(announcement, AccessibilityHandler::AnnouncementPriority::high);
   });
 }
@@ -18042,7 +19613,7 @@ void SynthEditor::refreshMultiSampleStatus() {
     else if (status.state == vital::multisample::SlotStatus::kFailed &&
              previous_state == vital::multisample::SlotStatus::kLoading) {
       const String error = String::fromUTF8(status.error.c_str());
-      NativeMessageBox::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Unable to load instrument", error);
+      showWarningBox("Unable to load instrument", error);
       postPluginAnnouncement(prefix + " failed to load. " + error, AccessibilityHandler::AnnouncementPriority::high);
     }
   }
@@ -18054,8 +19625,8 @@ void SynthEditor::chooseSampleFile(int sample_target) {
   const File current_file(sample != nullptr ? sample->getLastBrowsedFile() : std::string());
   sample_chooser_ = std::make_unique<FileChooser>(title,
                                                   current_file, vital::kSampleExtensionsList);
-  sample_chooser_->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
-                               [this, sample_target](const FileChooser& chooser) {
+  launchFileChooser(*sample_chooser_, FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
+                                      [this, sample_target](const FileChooser& chooser) {
     const auto file = chooser.getResult();
     if (file.existsAsFile())
       loadSampleFile(file, sample_target);
@@ -18108,8 +19679,7 @@ void SynthEditor::loadSampleFile(const File& file, int sample_target) {
   }
   catch (const std::exception& error) {
     synth_.pauseProcessing(false);
-    NativeMessageBox::showMessageBoxAsync(MessageBoxIconType::WarningIcon,
-                                          "Unable to load sample", error.what());
+    showWarningBox("Unable to load sample", error.what());
     postPluginAnnouncement("Unable to load sample",
                                            AccessibilityHandler::AnnouncementPriority::high);
   }
@@ -18179,8 +19749,8 @@ void SynthEditor::refreshIrBrowserCache() {
 void SynthEditor::chooseConvolutionIrFile(const String& modulePrefix) {
   ir_chooser_ = std::make_unique<FileChooser>("Load impulse response",
                                               LoadSave::getUserIrDirectory(), vital::kIrExtensionsList);
-  ir_chooser_->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
-                           [this, modulePrefix](const FileChooser& chooser) {
+  launchFileChooser(*ir_chooser_, FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
+                                  [this, modulePrefix](const FileChooser& chooser) {
     const File file = chooser.getResult();
     if (file.existsAsFile())
       loadConvolutionIrFile(modulePrefix, file);
@@ -18240,8 +19810,8 @@ void SynthEditor::refreshConvolutionIrLoads() {
       postPluginAnnouncement("Loaded impulse response " + String(module->irName()),
                              AccessibilityHandler::AnnouncementPriority::high);
     else if (status.request == it->second && status.result == Result::failed) {
-      NativeMessageBox::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Unable to load impulse response",
-                                            "The selected file is not a supported impulse response. The previous impulse response is unchanged.");
+      showWarningBox("Unable to load impulse response",
+                     "The selected file is not a supported impulse response. The previous impulse response is unchanged.");
       postPluginAnnouncement("Unable to load impulse response. The previous impulse response is unchanged.",
                              AccessibilityHandler::AnnouncementPriority::high);
     }
@@ -18335,9 +19905,9 @@ void SynthEditor::saveConvolutionIrFile(const String& modulePrefix) {
   File start_file = LoadSave::getUserIrDirectory().getChildFile(name + "." + String(vital::kIrExtension));
   ir_chooser_ = std::make_unique<FileChooser>("Save impulse response", start_file,
                                               String("*.") + String(vital::kIrExtension));
-  ir_chooser_->launchAsync(FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles |
-                           FileBrowserComponent::warnAboutOverwriting,
-                           [this, modulePrefix](const FileChooser& chooser) {
+  launchFileChooser(*ir_chooser_, FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles |
+                                  FileBrowserComponent::warnAboutOverwriting,
+                                  [this, modulePrefix](const FileChooser& chooser) {
     const File file = chooser.getResult();
     if (file != File()) {
       auto* module = convolutionModuleForPrefix(modulePrefix);
@@ -18362,8 +19932,8 @@ void SynthEditor::chooseLfoPresetFile(int lfoIndex) {
 
   lfo_chooser_ = std::make_unique<FileChooser>("Import Atlas LFO preset",
                                                LoadSave::getUserLfoDirectory(), vital::kLfoExtensionsList);
-  lfo_chooser_->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
-                            [this, lfoIndex](const FileChooser& chooser) {
+  launchFileChooser(*lfo_chooser_, FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
+                                   [this, lfoIndex](const FileChooser& chooser) {
     const File file = chooser.getResult();
     if (file.existsAsFile())
       loadLfoPresetFile(lfoIndex, file);
@@ -18377,8 +19947,8 @@ void SynthEditor::loadLfoPresetFile(int lfoIndex, const File& file) {
 
   json data = json::parse(file.loadFileAsString().toStdString(), nullptr, false);
   if (data.is_discarded() || !LineGenerator::isValidJson(data)) {
-    NativeMessageBox::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Unable to import LFO preset",
-                                          "The selected file is not a valid Atlas LFO preset.");
+    showWarningBox("Unable to import LFO preset",
+                   "The selected file is not a valid Atlas LFO preset.");
     postPluginAnnouncement("Unable to import LFO preset", AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
@@ -18388,8 +19958,8 @@ void SynthEditor::loadLfoPresetFile(int lfoIndex, const File& file) {
       generator->jsonToState(data);
     }
     catch (const json::exception&) {
-      NativeMessageBox::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Unable to import LFO preset",
-                                            "The selected file is not a valid Atlas LFO preset.");
+      showWarningBox("Unable to import LFO preset",
+                     "The selected file is not a valid Atlas LFO preset.");
       postPluginAnnouncement("Unable to import LFO preset", AccessibilityHandler::AnnouncementPriority::high);
       return;
     }
@@ -18425,9 +19995,9 @@ void SynthEditor::saveLfoPresetFile(int lfoIndex) {
   lfo_chooser_ = std::make_unique<FileChooser>("Save Atlas LFO preset",
                                                LoadSave::getUserLfoDirectory().getChildFile(name),
                                                String("*.") + vital::kLfoExtension);
-  lfo_chooser_->launchAsync(FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles |
-                                FileBrowserComponent::warnAboutOverwriting,
-                            [this, lfoIndex](const FileChooser& chooser) {
+  launchFileChooser(*lfo_chooser_, FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles |
+                                       FileBrowserComponent::warnAboutOverwriting,
+                                   [this, lfoIndex](const FileChooser& chooser) {
     const File file = chooser.getResult();
     if (file != File()) {
       if (auto* generator = lfoGeneratorForIndex(lfoIndex)) {
@@ -18437,8 +20007,8 @@ void SynthEditor::saveLfoPresetFile(int lfoIndex) {
           postPluginAnnouncement("Saved LFO preset " + destination.getFileNameWithoutExtension(),
                                                  AccessibilityHandler::AnnouncementPriority::high);
         else
-          NativeMessageBox::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Unable to save LFO preset",
-                                                "The LFO preset could not be written.");
+          showWarningBox("Unable to save LFO preset",
+                         "The LFO preset could not be written.");
       }
     }
     lfo_chooser_.reset();
@@ -18459,7 +20029,7 @@ void SynthEditor::chooseFxBusPresetFile(const String& sectionName, bool save) {
   Component::SafePointer<SynthEditor> safe_this(this);
   const int flags = FileBrowserComponent::canSelectFiles | (save ? FileBrowserComponent::saveMode |
       FileBrowserComponent::warnAboutOverwriting : FileBrowserComponent::openMode);
-  fx_bus_chooser_->launchAsync(flags, [safe_this, sectionName, bus, bus_name, preset, save](const FileChooser& chooser) {
+  launchFileChooser(*fx_bus_chooser_, flags, [safe_this, sectionName, bus, bus_name, preset, save](const FileChooser& chooser) {
     if (safe_this == nullptr)
       return;
     const File file = chooser.getResult();
@@ -18483,7 +20053,7 @@ void SynthEditor::chooseFxBusPresetFile(const String& sectionName, bool save) {
             file.getFileNameWithoutExtension(), AccessibilityHandler::AnnouncementPriority::high);
       else {
         const String title = save ? "Unable to save FX bus preset" : "Unable to load FX bus preset";
-        NativeMessageBox::showMessageBoxAsync(MessageBoxIconType::WarningIcon, title, error);
+        safe_this->showWarningBox(title, error);
         postPluginAnnouncement(title, AccessibilityHandler::AnnouncementPriority::high);
       }
     }
@@ -18498,8 +20068,8 @@ void SynthEditor::chooseEffectPresetFile(const String& sectionName) {
   fx_chooser_ = std::make_unique<FileChooser>("Import Atlas FX preset",
                                               LoadSave::getUserFxDirectory(),
                                               String("*.") + vital::kFxExtension);
-  fx_chooser_->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
-                           [this, sectionName](const FileChooser& chooser) {
+  launchFileChooser(*fx_chooser_, FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
+                                  [this, sectionName](const FileChooser& chooser) {
     const File file = chooser.getResult();
     if (file.existsAsFile())
       loadEffectPresetFile(sectionName, file);
@@ -18514,22 +20084,23 @@ void SynthEditor::loadEffectPresetFile(const String& sectionName, const File& fi
 
   json data = json::parse(file.loadFileAsString().toStdString(), nullptr, false);
   if (data.is_discarded() || !data.count("parameters") || !data["parameters"].is_object()) {
-    NativeMessageBox::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Unable to import FX preset",
-                                          "The selected file is not a valid Atlas FX preset.");
+    showWarningBox("Unable to import FX preset",
+                   "The selected file is not a valid Atlas FX preset.");
     postPluginAnnouncement("Unable to import FX preset", AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
 
   if (data.count("effect") && data["effect"].is_string() &&
       String(data["effect"].get<std::string>()) != effect_id) {
-    NativeMessageBox::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Wrong FX preset type",
-                                          "This preset was saved for " +
-                                          effectPresetDisplayName(String(data["effect"].get<std::string>())) +
-                                          ", not " + accessibleSectionTitle(sectionName) + ".");
+    showWarningBox("Wrong FX preset type",
+                   "This preset was saved for " +
+                   effectPresetDisplayName(String(data["effect"].get<std::string>())) +
+                   ", not " + accessibleSectionTitle(sectionName) + ".");
     return;
   }
 
   const String chain_prefix = effectChainPrefixForSection(sectionName);
+  synth_.undoHistory().describeNextStep("load FX preset " + file.getFileNameWithoutExtension());
   int changed = 0;
   for (auto it = data["parameters"].begin(); it != data["parameters"].end(); ++it) {
     if (!it.value().is_number())
@@ -18583,9 +20154,9 @@ void SynthEditor::saveEffectPresetFile(const String& sectionName) {
   fx_chooser_ = std::make_unique<FileChooser>("Save Atlas FX preset",
                                               LoadSave::getUserFxDirectory().getChildFile(name),
                                               String("*.") + vital::kFxExtension);
-  fx_chooser_->launchAsync(FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles |
-                               FileBrowserComponent::warnAboutOverwriting,
-                           [this, effect_id, sectionName, parameters](const FileChooser& chooser) {
+  launchFileChooser(*fx_chooser_, FileBrowserComponent::saveMode | FileBrowserComponent::canSelectFiles |
+                                      FileBrowserComponent::warnAboutOverwriting,
+                                  [this, effect_id, sectionName, parameters](const FileChooser& chooser) {
     const File file = chooser.getResult();
     if (file != File()) {
       json data;
@@ -18600,8 +20171,8 @@ void SynthEditor::saveEffectPresetFile(const String& sectionName) {
         postPluginAnnouncement("Saved FX preset " + destination.getFileNameWithoutExtension(),
                                                AccessibilityHandler::AnnouncementPriority::high);
       else
-        NativeMessageBox::showMessageBoxAsync(MessageBoxIconType::WarningIcon, "Unable to save FX preset",
-                                              "The FX preset could not be written.");
+        showWarningBox("Unable to save FX preset",
+                       "The FX preset could not be written.");
     }
     fx_chooser_.reset();
   });
@@ -18618,13 +20189,14 @@ void SynthEditor::moveToSection(int direction) {
     current = 0;
   const String next = section_names_[(current + direction + count) % count];
   // Back onto an effects chain, the step before the element after it is the
-  // chain's last slot.
-  if (kSectionKeysStepThroughEffectSlots && direction < 0 && isEffectChainSection(next)) {
-    const int slots = static_cast<int>(activeEffectSlots(next).size());
-    if (slots > 0) {
-      selectSectionByName(next, false);
-      if (focusEffectSlotHeader(next, slots - 1))
-        return;
+  // chain's last stop: its last slot, or the last grouping inside it.
+  if (kSectionKeysStepThroughEffectSlots && direction < 0 && isEffectChainSection(next) &&
+      !activeEffectSlots(next).empty()) {
+    selectSectionByName(next, false);
+    const auto stops = effectChainStops(next);
+    if (!stops.empty()) {
+      focusEffectChainStop(*stops.back());
+      return;
     }
   }
   selectSectionByName(next, true);
@@ -18636,12 +20208,14 @@ bool SynthEditor::moveThroughEffectSlots(int direction) {
   // Bus 1 to 3).
   String section, section_key, group;
   int slot = -1;
+  Component* slot_header = nullptr;
   for (auto* component = Component::getCurrentlyFocusedComponent();
        component != nullptr && component != &rows_container_; component = component->getParentComponent()) {
     const auto& properties = component->getProperties();
     if (properties.contains("FxSlot")) {
       section = properties["SectionName"].toString();
       slot = static_cast<int>(properties["FxSlot"]);
+      slot_header = component;
       break;
     }
     if (section_key.isEmpty())
@@ -18669,15 +20243,91 @@ bool SynthEditor::moveThroughEffectSlots(int direction) {
   if (found == slots.end())
     return direction > 0 && focusEffectSlotHeader(section, 0);
 
-  const int next = static_cast<int>(std::distance(slots.begin(), found)) + direction;
-  if (next >= static_cast<int>(slots.size()))
+  // The stop the focus is at: the last of its slot's stops that Tab reaches
+  // at or before the focused control. That is the grouping a control sits
+  // in, or the one it follows (Glitch Delay's Tap view row comes after the
+  // Global groups, Convolution Reverb's Mix after its impulse response
+  // group), else the slot itself.
+  const auto stops = effectChainStops(section);
+  const auto tab_position = [this](const Component* component) {
+    const auto found_at = std::find(row_focus_order_.begin(), row_focus_order_.end(), component);
+    return found_at == row_focus_order_.end() ? -1 : static_cast<int>(std::distance(row_focus_order_.begin(), found_at));
+  };
+  int focus_position = -1;
+  for (auto* component = Component::getCurrentlyFocusedComponent(); component != nullptr && focus_position < 0;
+       component = component->getParentComponent())
+    focus_position = tab_position(component);
+  Component* current = slot_header;
+  for (auto* stop : stops) {
+    if (stop != slot_header && !slot_header->isParentOf(stop))
+      continue;
+    const int stop_position = tab_position(stop);
+    if (stop_position >= 0 && stop_position <= focus_position)
+      current = stop;
+  }
+  const auto at = std::find(stops.begin(), stops.end(), current);
+  int next = 0;
+  if (at != stops.end()) {
+    next = static_cast<int>(std::distance(stops.begin(), at)) + direction;
+  }
+  else {
+    // Its slot is not showing as a stop: by slot position.
+    const auto slot_stop = std::find(stops.begin(), stops.end(), slot_header);
+    if (slot_stop == stops.end()) {
+      const int position = static_cast<int>(std::distance(slots.begin(), found)) + direction;
+      if (position >= static_cast<int>(slots.size()))
+        return false;
+      if (position >= 0)
+        return focusEffectSlotHeader(section, position);
+      selectSectionByName(section, true);
+      return true;
+    }
+    next = static_cast<int>(std::distance(stops.begin(), slot_stop)) + direction;
+  }
+  if (next >= static_cast<int>(stops.size()))
     return false;
-  if (next >= 0)
-    return focusEffectSlotHeader(section, next);
+  if (next >= 0) {
+    focusEffectChainStop(*stops[static_cast<size_t>(next)]);
+    return true;
+  }
   // Back from the first slot to the chain itself, as period from the element
   // before it arrives.
   selectSectionByName(section, true);
   return true;
+}
+
+std::vector<Component*> SynthEditor::effectChainStops(const String& sectionName) const {
+  std::vector<Component*> stops;
+  for (const int slot : activeEffectSlots(sectionName)) {
+    Component* slot_header = nullptr;
+    for (auto* component : row_focus_order_) {
+      if (component == nullptr || !component->isShowing())
+        continue;
+      const auto& properties = component->getProperties();
+      if (properties.contains("FxSlot") && static_cast<int>(properties["FxSlot"]) == slot &&
+          properties["SectionName"].toString() == sectionName) {
+        slot_header = component;
+        break;
+      }
+    }
+    if (slot_header == nullptr)
+      continue;
+    stops.push_back(slot_header);
+    if (!kSectionKeysStepThroughEffectGroups)
+      continue;
+    // Its groupings in the order Tab reaches them, outer before inner.
+    for (auto* component : row_focus_order_) {
+      if (component != nullptr && component->isShowing() && slot_header->isParentOf(component) &&
+          dynamic_cast<AccessibleSectionHeader*>(component) != nullptr)
+        stops.push_back(component);
+    }
+  }
+  return stops;
+}
+
+void SynthEditor::focusEffectChainStop(Component& stop) {
+  ensureComponentVisible(&stop);
+  stop.grabKeyboardFocus();
 }
 
 bool SynthEditor::focusEffectSlotHeader(const String& sectionName, int position) {
@@ -18895,6 +20545,15 @@ void SynthEditor::allQwertyNotesOff() {
 }
 
 bool SynthEditor::keyStateChanged(bool isKeyDown) {
+  // On Windows a key whose key-down nobody claims goes to the host before
+  // its keyPressed arrives (Space would start REAPER's playback); a question
+  // keeps every key (see keyPressed).
+  if (isConfirmationButtonFocused())
+    return true;
+  // Command Z and Command Y are Atlas's undo and redo (keyPressed): the host
+  // must not get their key-down too, or REAPER would undo its own last action.
+  if (isKeyDown && isUndoRedoChordDown())
+    return true;
   if (!isQwertyKeyboardActive())
     return false;
 
@@ -18922,10 +20581,43 @@ bool SynthEditor::keyPressed(const KeyPress& key) {
     cancelInlineTextPrompt();
     return true;
   }
-  // Escape on the save form's Save or Cancel button closes it, as in its text boxes.
-  if (save_patch_dialog_visible_ && key.getKeyCode() == KeyPress::escapeKey &&
-      (save_patch_ok_.hasKeyboardFocus(false) || save_patch_cancel_.hasKeyboardFocus(false))) {
+  // A question's buttons keep the keyboard, as the native box they replace
+  // did: Space presses one, the arrows move between them and Tab leaves; no
+  // other key may reach the host (REAPER plays on Space) or Atlas's own
+  // shortcuts while the question waits.
+  if (isConfirmationButtonFocused()) {
+    const int code = key.getKeyCode();
+    if (code == KeyPress::tabKey)
+      return false;
+    if (code == KeyPress::spaceKey) {
+      if (modulation_amount_ok_.hasKeyboardFocus(false))
+        modulation_amount_ok_.triggerClick();
+      else
+        modulation_amount_cancel_.triggerClick();
+    }
+    else if (code == KeyPress::leftKey || code == KeyPress::rightKey || code == KeyPress::upKey ||
+             code == KeyPress::downKey) {
+      auto& other = modulation_amount_ok_.hasKeyboardFocus(false) ? modulation_amount_cancel_ : modulation_amount_ok_;
+      other.grabKeyboardFocus();
+    }
+    return true;
+  }
+  // Escape closes the save form wherever the focus is, as in its text boxes:
+  // after Tab has left the form the key would otherwise go to the host.
+  if (save_patch_dialog_visible_ && key.getKeyCode() == KeyPress::escapeKey) {
     hideSavePresetDialog();
+    return true;
+  }
+  if (const int direction = undoRedoDirection(key); direction != 0) {
+    // A text box undoes its own typing; one with nothing left to undo passes
+    // the key on, and the patch must not change while the user types.
+    if (dynamic_cast<TextEditor*>(Component::getCurrentlyFocusedComponent()) != nullptr)
+      return true;
+    // A prompt or the save form is waiting on the patch as it is.
+    if (modulation_amount_prompt_visible_ || parameter_value_prompt_visible_ || save_patch_dialog_visible_)
+      postUndoAnnouncement(direction > 0 ? "Close the prompt to redo" : "Close the prompt to undo");
+    else
+      undoOrRedo(direction > 0);
     return true;
   }
   {
@@ -18998,12 +20690,16 @@ bool SynthEditor::keyPressed(const KeyPress& key) {
 }
 
 void SynthEditor::timerCallback() {
+  // A rebuild below may move the screen reader back onto its control after a
+  // delay; what the status refreshes announce first waits for that move.
+  const ScopedAnnouncementHold hold;
   // keyStateChanged ignores releases while a text field has focus; release
   // virtual-keyboard notes then instead of leaving them stuck.
   if (!qwerty_notes_down_.empty() && !isQwertyKeyboardActive())
     allQwertyNotesOff();
   refreshConvolutionIrLoads();
   refreshMultiSampleStatus();
+  refreshSpeechStatus();
   if (cpu_meter_ != nullptr && cpu_meter_->isShowing())
     cpu_meter_->refresh();
   synth_.dispatchPendingGuiUpdates(*this);
@@ -19038,12 +20734,7 @@ void SynthEditor::timerCallback() {
     row->refresh();
   refreshFxBusToggles();
   refreshEffectChainSummaries();
-  for (int oscillator = 0; oscillator < vital::kNumOscillators; ++oscillator)
-    refreshWavetableNameLabel(oscillator);
-  for (int slot = 0; slot < vital::kNumOscillators; ++slot) {
-    if (vital::source_types::describe(sourceSlotType(slot)).uses_sample)
-      refreshSampleNameLabel(slot);
-  }
+  refreshOscillatorHeaderTitles();
 }
 
 void SynthEditor::updateFullGui() {
@@ -19051,7 +20742,11 @@ void SynthEditor::updateFullGui() {
   // effects in every slot and the oscillator types. Rebuild the section
   // parameter lists too, not just the view: otherwise an effect slot whose type
   // changed shows up as an empty group until the editor is reopened.
-  rebuildSectionsAfterEffectOrderChange(last_section_name_);
+  // Focus stays in the section of the focused control: last_section_name_ is
+  // the one last reached by a section key, not where Tab or the arrows went
+  // since, and the same button sits in every LFO, bus and modulation slot.
+  const String focused_section = focusedSectionKey();
+  rebuildSectionsAfterEffectOrderChange(focused_section.isNotEmpty() ? focused_section : last_section_name_);
   timerCallback();
   synth_.updateHostDisplay();
 }

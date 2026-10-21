@@ -131,11 +131,28 @@ namespace vital {
     poly_float* bus2_output = output(kBus2Out)->buffer;
     poly_float* bus3_output = output(kBus3Out)->buffer;
     poly_float* direct_output = output(kDirectOut)->buffer;
-    utils::zeroBuffer(main_output, num_samples);
-    utils::zeroBuffer(bus1_output, num_samples);
-    utils::zeroBuffer(bus2_output, num_samples);
-    utils::zeroBuffer(bus3_output, num_samples);
-    utils::zeroBuffer(direct_output, num_samples);
+    auto outputFor = [](int destination) {
+      if (destination == constants::kBus1) return kBus1Out;
+      if (destination == constants::kBus2) return kBus2Out;
+      if (destination == constants::kBus3) return kBus3Out;
+      if (destination == constants::kDirectOut) return kDirectOut;
+      return kMainOut;
+    };
+    // Clear only the outputs routed to this block, and the ones routed to last
+    // block (whole, as a later, longer block reads past this one's samples).
+    unsigned written = 0;
+    if (routing != FilterRouting::kSerialForward)
+      written |= 1u << outputFor(filter_1_destination_->value());
+    if (routing != FilterRouting::kSerialBackward)
+      written |= 1u << outputFor(filter_2_destination_->value());
+    for (int index : { kMainOut, kBus1Out, kBus2Out, kBus3Out, kDirectOut }) {
+      const unsigned bit = 1u << index;
+      if (written & bit)
+        utils::zeroBuffer(output(index)->buffer, num_samples);
+      else if (written_outputs_ & bit)
+        utils::zeroBuffer(output(index)->buffer, output(index)->buffer_size);
+    }
+    written_outputs_ = written;
 
     auto route = [this, num_samples, main_output, bus1_output, bus2_output, bus3_output, direct_output](
                      const poly_float* source, int destination, bool envelope_before) {

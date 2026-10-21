@@ -49,6 +49,9 @@ namespace vital {
 namespace multisample {
   class Manager;
 }
+namespace speech {
+  class Manager;
+}
 }
 
 class SynthBase : public MidiManager::Listener {
@@ -109,6 +112,8 @@ class SynthBase : public MidiManager::Listener {
     // The container preset being read, while its state is applied (its
     // instruments' files are inside it).
     const File& multiSampleContainer() const { return multisample_container_; }
+    // Renders each Speech oscillator slot's text with espeak-ng.
+    vital::speech::Manager* getSpeechManager() { return speech_manager_.get(); }
     // Builds the engine for each oscillator slot's selected type and drops
     // modulation routes into parameters of the types it left. Message thread;
     // callers pause processing around it.
@@ -123,6 +128,8 @@ class SynthBase : public MidiManager::Listener {
     // lock held.
     void prepareSelectedEffects();
     static bool isSourceTypeControl(const std::string& name);
+    // Sets a Speech slot's control back to 0 and tells the host and editor.
+    void resetSpeechControl(const std::string& name);
     // An effect slot's type ("fx_slot_3_type", "bus_1_fx_slot_3_type").
     static bool isEffectSlotTypeControl(const std::string& name);
     LineGenerator* getLfoSource(int index);
@@ -279,10 +286,14 @@ class SynthBase : public MidiManager::Listener {
     // Declared after the engine so it is destroyed first.
     std::unique_ptr<vital::multisample::Manager> multisample_manager_;
     File multisample_container_;
+    std::unique_ptr<vital::speech::Manager> speech_manager_;
     std::unique_ptr<MidiManager> midi_manager_;
     std::unique_ptr<MidiKeyboardState> keyboard_state_;
     std::array<std::array<AtlasArpeggiator, 8>, vital::kNumArpeggiators> arpeggiators_;
     std::array<std::array<vital::Value*, 21>, vital::kNumArpeggiators> arpeggiator_controls_ {};
+    // For the controls modulation can reach (time mode and the rates), the
+    // value the engine's modulation gives them; null for the others.
+    std::array<std::array<const vital::Output*, 21>, vital::kNumArpeggiators> arpeggiator_modulations_ {};
     // What routes a played key to each oscillator slot's arpeggiators: the
     // slot's switch and key and velocity zones, and each arp's destination
     // switch for it. Looked up once, as the audio thread reads them per note.
@@ -309,6 +320,10 @@ class SynthBase : public MidiManager::Listener {
     uint32_t scheduled_midi_sequence_ = 0;
     uint64_t scheduled_midi_overflow_count_ = 0;
     bool arpeggiators_were_enabled_ = false;
+    // The host's loop in quarter notes, for the Speech slots to follow the
+    // song across it; the end is not after the start when it does not loop.
+    double song_loop_start_ = 0.0;
+    double song_loop_end_ = 0.0;
 
     std::unique_ptr<WavetableCreator> wavetable_creators_[vital::kNumOscillators];
     bool wavetable_render_pending_[vital::kNumOscillators] = {};

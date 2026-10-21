@@ -78,6 +78,10 @@ namespace {
     if (show != nullptr && show->onClick)
       show->onClick();
     pumpUntil([&] { return editorSection(editor, "Oscillator 1 wavetable editor") != nullptr; });
+    // Showing the editor rebuilt the rows, and the editor holds what it says
+    // until it has moved the screen reader back onto its control
+    // (kScreenReaderRefocusDelayMs). Wait for that, so each key below speaks at once.
+    pumpUntil([&] { return spoken.messages.joinIntoString(" ").contains("Wavetable editor shown"); });
     auto* wavetable_section = editorSection(editor, "Oscillator 1 wavetable editor");
     Component::SafePointer<Component> wavetable(
         wavetable_section != nullptr ? titled(*wavetable_section, "Wavetable keyboard editor") : nullptr);

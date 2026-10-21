@@ -9,6 +9,15 @@ Fetched by default, needed to build Atlas:
 
 - `JUCE8/`: JUCE 8.0.14 (https://github.com/juce-framework/JUCE), used under
   the AGPLv3 (see `JUCE8/LICENSE.md`). Atlas is GPLv3, which the AGPL allows.
+  CMake applies the patches in `patches/juce8-*.patch` to the submodule's
+  working tree when it configures (`.gitmodules` ignores the changes they
+  leave there):
+  - `juce8-mac-idle-vblank.patch`: on macOS JUCE 8 wakes the message thread
+    on every display refresh (60 or 120 times a second) for as long as a
+    window is open, even when nothing needs drawing. The patch skips that
+    wake-up while the window has no pending repaint and no `VBlankListener`;
+    a repaint or a new listener starts it again. With Atlas's editor open
+    and idle this saved about two points of one core.
 - `nlohmann_json/`: nlohmann json 3.1.2 (MIT), from the release-tracking
   repository https://github.com/ArthurSonzogni/nlohmann_json_cmake_fetchcontent,
   which carries only the released header (`include/nlohmann/json.hpp`, the
@@ -17,6 +26,19 @@ Fetched by default, needed to build Atlas:
   https://github.com/cameron314/concurrentqueue at 0bc97ad (June 2016).
 - `kissfft/`: KISS FFT (BSD-3), https://github.com/mborgerding/kissfft at
   760cb7e (October 2018). Atlas uses its header-only C++ class, `kissfft.hh`.
+- `espeak-ng/`: eSpeak NG 1.53.0 development (GPL v3 or later; ucd-tools and
+  NV Speech Player inside it are GPL v3 or later too, its Unicode tables are
+  under the Unicode licence in `COPYING.UCD`), https://github.com/espeak-ng/espeak-ng
+  at ba90c8e (September 2026), unchanged. CMake builds its static library and
+  the `espeak-ng` program, which compiles the phoneme data, intonations and
+  every language's dictionary into `build/espeak-ng/espeak-ng-data`; the
+  bundles carry that folder in `Resources/espeak-ng-data`. MBROLA, libsonic,
+  libpcaudio and the async API are off. The Speech oscillator type uses it;
+  see `src/common/speech/README.atlas.md`.
+- `opus/`: Opus 1.5.2 plus 16 commits (BSD-3, https://github.com/xiph/opus
+  at 5854a9f, the commit Maim pins), unchanged, built as a static library by
+  its own CMake with no programs, tests, DRED or OSCE. The Maim effect's Opus
+  encoder.
 
 Opt-in, only for reference tests. `git submodule update --init` skips these;
 fetch one with `git submodule update --init --checkout <path>`, and CMake uses
@@ -61,6 +83,16 @@ Kept in this repository:
   client Atlas speaks through NVDA with; see `nvda_controller/README.atlas.md`.
 - `licenses/WolfShaper.LICENSE`: Atlas's Waveshaper adapts Wolf Shaper by
   Patrick Desaulniers (GPL v3 or later).
+- `maim/`: the two MP3 encoders of Maim by Arden Butterfield
+  (https://github.com/ArdenButterfield/Maim at 985ed20, GPL v3), as Maim
+  circuit bends them: `lame/` is libmp3lame 3.99.5 with mpglib's decoder
+  (LGPL 2 or later) and `blade/` BladeEnc 0.94.2 (LGPL 2.1 or later), each
+  with Maim's `*_bends` API. Atlas adds `lame/atlas_config/config.h` in place
+  of configure's, the wrapper headers in `include/`, and a per-encoder random
+  generator for the Error bend; see `src/synthesis/effects/maim/README.atlas.md`.
+- `gsm/`: libgsm 1.0 patchlevel 22 by Jutta Degener and Carsten Bormann
+  (https://www.quut.com/gsm/, their own permissive licence in `COPYRIGHT`),
+  unchanged, without the toast program. The Maim effect's GSM encoder.
 - `pffft/`: PFFFT by Julien Pommier (FFTPACK licence, BSD style), unchanged
   from https://bitbucket.org/jpommier/pffft. The oscillators' FFT
   (`vital::FourierTransform`) uses it on Windows, where JUCE has only a scalar
