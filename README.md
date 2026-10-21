@@ -130,10 +130,10 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release --parallel 4
 ```
 
-Compiled binaries are located in `build/Atlas_artefacts/Release`:
+Compiled binaries are located in `build/Atlas_artefacts/Release`, one folder per format (`VST3/Atlas.vst3`, and on macOS `AU/Atlas.component`):
 
-- **macOS**: Copy `Atlas.vst3` to `~/Library/Audio/Plug-Ins/VST3` and `Atlas.component` to `~/Library/Audio/Plug-Ins/Components` (or run `installer/macos/build_pkg.sh` to generate an installer package).
-- **Windows**: Copy the entire `Atlas.vst3` folder (including its internal asset bundle for the Tape effect) to `C:\Program Files\Common Files\VST3` (or compile `installer/windows/Atlas.iss` using Inno Setup).
+- **macOS**: Copy `VST3/Atlas.vst3` to `~/Library/Audio/Plug-Ins/VST3` and `AU/Atlas.component` to `~/Library/Audio/Plug-Ins/Components` (or run `installer/macos/build_pkg.sh` to generate an installer package).
+- **Windows**: Copy the entire `VST3/Atlas.vst3` folder (including its internal asset bundle for the Tape effect) to `C:\Program Files\Common Files\VST3` (or compile `installer/windows/Atlas.iss` using Inno Setup).
 
 Atlas stores user presets, wavetables, samples, and effect chains in
 `Documents/Blind Producers Plugins/Atlas`.
