@@ -5104,12 +5104,22 @@ namespace {
     }
     if (bridge != nullptr && analogue_control && interval == 0.0 &&
         bridge->getDetails().value_scale != vital::ValueDetails::kExponential) {
-      // Keys move in display units: one percent, degree or millisecond.
+      // Keys move in display units: one percent, degree or millisecond. The
+      // compressor's attack and release are stored as the cube root of their
+      // milliseconds and step by 10 and 50 ms of the seconds they read in.
       const auto& details = bridge->getDetails();
       const double minimum = details.min, span = details.max - minimum, scale = details.display_multiply;
-      slider.toAdjustmentValue = [minimum, span, scale](double v) { return (minimum + span * v) * scale; };
-      slider.fromAdjustmentValue = [minimum, span, scale](double v) { return (v / scale - minimum) / span; };
-      slider.adjustmentStep = [] { return 1.0; };
+      const bool cubic = details.value_scale == vital::ValueDetails::kCubic;
+      slider.toAdjustmentValue = [minimum, span, scale, cubic](double v) {
+        const double stored = minimum + span * v;
+        return (cubic ? stored * stored * stored : stored) * scale;
+      };
+      slider.fromAdjustmentValue = [minimum, span, scale, cubic](double display) {
+        const double value = display / scale;
+        return ((cubic ? std::cbrt(jmax(0.0, value)) : value) - minimum) / span;
+      };
+      const double step = !cubic ? 1.0 : parameter_id.endsWith("_release") ? 0.05 : 0.01;
+      slider.adjustmentStep = [step] { return step; };
     }
     if (bridge != nullptr && trance_control && interval == 0.0) {
       const auto& details = bridge->getDetails();
