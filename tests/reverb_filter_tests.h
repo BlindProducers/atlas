@@ -462,7 +462,7 @@ void testIdleLanes() {
       const int n = position + i;
       const double voice = .2 * std::sin(n * .05) + .1 * std::sin(n * .31);
       const double later = n < quiet ? 0.0 : .15 * std::sin(n * .07);
-      alignas(16) const double cutoffs[4] { 900, 900, n < quiet ? 900 : 300, n < quiet ? 900 : 300 };
+      alignas(16) const double cutoffs[4] { 900, 900, n < quiet ? 900.0 : 300.0, n < quiet ? 900.0 : 300.0 };
       alignas(16) const double silent[4] { voice, -voice, later, later * .5 };
       alignas(16) double signed_zero[4] { voice, -voice, n < quiet ? -0.0 : later, n < quiet ? -0.0 : later * .5 };
       alignas(16) double a[4], b[4], c[4];
