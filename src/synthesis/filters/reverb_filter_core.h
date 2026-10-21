@@ -39,15 +39,19 @@ private:
   std::unique_ptr<float[]> memory_;
   int capacity_ = 0, main_size_ = 0, ap_size_ = 0, low_size_ = 0;
   int ap_base_ = 0, low_base_ = 0, valid_ = 0;
-  int fdn_pos_ = 0, ap_pos_ = 0, low_pos_ = 0, fir_pos_ = 0;
+  int fdn_pos_ = 0, ap_pos_ = 0, low_pos_ = 0;
+  // The FIR's write position: the sub-sample phase and, within that phase's
+  // ring, the newest host sample.
+  int fir_phase_ = 0, fir_newest_ = 0;
   std::array<double, 16> gains_ {}, gain_steps_ {};
   // Each sub-sample phase has its own feedback low-pass state. Together with
   // host-grid delays, this extends the original transfer function to the
   // oversampled stream without changing its decay or adding buffering latency.
   std::array<std::array<double, 16>, kMaximumOversampling> damping_ {};
-  // The FIR's input history and its blended kernel, reserved with the delay
-  // memory (about 27 KB per channel, so voices without Reverb don't carry
-  // them); valid_ guards reads.
+  // The FIR's input history, one ring of kFirTaps per sub-sample phase, and
+  // its blended kernel stored last tap first, reserved with the delay memory
+  // (about 27 KB per channel, so voices without Reverb don't carry them);
+  // valid_ guards reads.
   std::unique_ptr<double[]> history_;
   std::unique_ptr<double[]> fir_coefficients_;
   CutoffTerms terms_;
