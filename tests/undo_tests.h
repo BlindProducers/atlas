@@ -442,7 +442,119 @@ namespace {
            "a pause starts a new step, got " + std::to_string(synth.undoHistory().numUndoSteps()));
   }
 
+  // The Toolbar, the editor's first group: Settings, then Undo and Redo named
+  // after the change they would undo or redo, then Show preset browser, on by
+  // default, which leaves only the summary and Preset menu in Presets when
+  // off. Its controls keep the focus through the rebuilds they cause.
+  void testToolbar() {
+    SpokenMessages spoken;
+    SynthPlugin synth;
+    {
+      UndoTestEditor screen(synth);
+      SynthEditor& editor = screen.editor;
+      auto* toolbar = titled(editor, "Toolbar");
+      expect(toolbar != nullptr && toolbar->getParentComponent() == &editor,
+             "the Toolbar sits in the window, above the scrolling groups");
+      if (toolbar == nullptr)
+        return;
+
+      const auto& keys = editor.getKeyboardFocusOrder();
+      StringArray key_titles;
+      for (size_t i = 0; i < std::min<size_t>(keys.size(), 6); ++i)
+        key_titles.add(keys[i]->getTitle());
+      expect(key_titles.size() == 6 && key_titles[0] == "Toolbar" && key_titles[1] == "Settings" &&
+                 key_titles[2] == "Nothing to undo" && key_titles[3] == "Nothing to redo" &&
+                 key_titles[4] == "Show preset browser" && key_titles[5] == "Presets",
+             "Tab starts in the Toolbar, then Presets: " + key_titles.joinIntoString(" | ").toStdString());
+      expect(!editor.getAccessibleFocusOrder().empty() && editor.getAccessibleFocusOrder().front() == toolbar,
+             "a screen reader finds the Toolbar first among the window's groups");
+      StringArray inside;
+      if (auto* handler = toolbar->getAccessibilityHandler()) {
+        expect(handler->getRole() == AccessibilityRole::group, "the Toolbar is a group");
+        for (auto* child : handler->getChildren())
+          inside.add(child->getTitle());
+      }
+      expect(inside.joinIntoString(" | ") == "Settings | Nothing to undo | Nothing to redo | Show preset browser",
+             "the Toolbar holds its four controls: " + inside.joinIntoString(" | ").toStdString());
+
+      auto* undo = dynamic_cast<Button*>(keys[2]);
+      auto* redo = dynamic_cast<Button*>(keys[3]);
+      auto* toggle = dynamic_cast<Button*>(keys[4]);
+      if (undo == nullptr || redo == nullptr || toggle == nullptr)
+        return;
+
+      // Undo names the change once it is a step; the timer's refresh leaves
+      // quick presses one step.
+      const std::string id = "filter_1_cutoff";
+      const float before = controlValue(synth, id);
+      expect(screen.nudge(id) && screen.nudge(id), "the editor has a Filter 1 Cutoff row");
+      const float after = controlValue(synth, id);
+      pumpUntil([&] { return undo->getTitle() != "Nothing to undo"; });
+      expect(synth.undoHistory().numUndoSteps() == 1,
+             "two quick presses stay one step, got " + std::to_string(synth.undoHistory().numUndoSteps()));
+      expect(undo->getTitle() == "Undo " + String(vital::Parameters::getDisplayName(id)) &&
+                 undo->getButtonText() == undo->getTitle() && redo->getTitle() == "Nothing to redo",
+             "Undo names the change: " + undo->getTitle().toStdString());
+
+      undo->grabKeyboardFocus();
+      spoken.messages.clear();
+      undo->triggerClick();
+      pumpEditorEvents();
+      close(controlValue(synth, id), before, "the toolbar's Undo puts Filter 1 Cutoff back");
+      expect(heard(spoken, "Undo"), "and says what it undid, heard: " + heardText(spoken));
+      expect(undo->getTitle() == "Nothing to undo" && redo->getTitle().startsWith("Redo "),
+             "the buttons follow the history: " + undo->getTitle().toStdString() + " | " +
+                 redo->getTitle().toStdString());
+      expect(undo->hasKeyboardFocus(false), "Undo keeps the focus");
+      redo->triggerClick();
+      pumpEditorEvents();
+      close(controlValue(synth, id), after, "the toolbar's Redo puts the change back");
+
+      // Show preset browser: on by default.
+      auto presetTitles = [&] {
+        StringArray titles;
+        if (auto* presets = titled(editor, "Presets"))
+          for (auto* child : presets->getChildren())
+            titles.add(child->getTitle());
+        return titles;
+      };
+      expect(toggle->getToggleState() && editor.isPresetBrowserShown() &&
+                 presetTitles().contains("Preset results table") && presetTitles().contains("Preset search"),
+             "Show preset browser is on, and Presets has the browser");
+      toggle->grabKeyboardFocus();
+      toggle->triggerClick();
+      pumpEditorEvents();
+      StringArray hidden = presetTitles();
+      expect(!toggle->getToggleState() && !editor.isPresetBrowserShown(), "Show preset browser turns off");
+      expect(hidden.contains("Preset summary") && hidden.contains("Preset menu"),
+             "Presets keeps its summary and Preset menu: " + hidden.joinIntoString(", ").toStdString());
+      for (const auto* title : { "Preset search", "Collection", "Library", "Bank", "Category", "Tags",
+                                 "Preset results table", "Selected preset details", "Autoload preset when scrolling" })
+        expect(!hidden.contains(title), std::string("the hidden browser leaves out ") + title);
+      bool table_in_order = false;
+      for (auto* component : editor.getKeyboardFocusOrder())
+        table_in_order |= component->getTitle() == "Preset results table";
+      expect(!table_in_order, "Tab skips the hidden browser");
+      expect(toggle->hasKeyboardFocus(false), "the toggle keeps the focus");
+      toggle->triggerClick();
+      pumpEditorEvents();
+      expect(editor.isPresetBrowserShown() && presetTitles().contains("Preset results table"),
+             "turned on again, the browser is back");
+      toggle->triggerClick();
+      pumpEditorEvents();
+    }
+    // The instance remembers; another starts with the browser shown.
+    SynthEditor reopened(synth);
+    auto* toggle = dynamic_cast<Button*>(titled(reopened, "Show preset browser"));
+    expect(!reopened.isPresetBrowserShown() && toggle != nullptr && !toggle->getToggleState(),
+           "reopening the window keeps the browser hidden");
+    SynthPlugin other;
+    SynthEditor fresh(other);
+    expect(fresh.isPresetBrowserShown(), "another instance shows the browser");
+  }
+
   int runUndoTests() {
+    testToolbar();
     testUndoMovesAValueBack();
     testUndoKeepsEachControlsChangeApart();
     testHostAutomationIsNotAStep();

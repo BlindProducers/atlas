@@ -146,6 +146,7 @@ class SynthPlugin : public SynthBase, public AudioProcessor, public ValueBridge:
       String preset_category;
       String preset_tag;
       String preset_collection;   // All presets, Favourites, Community presets or Community banks
+      bool preset_browser_shown = true;   // the toolbar's Show preset browser
     };
     EditorMemory& getEditorMemory() { return editor_memory_; }
 

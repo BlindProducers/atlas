@@ -121,6 +121,10 @@ class UndoHistory : private AsyncUpdater, private Timer {
     Outcome redo();
     bool isApplying() const { return applying_; }
     size_t numUndoSteps() const { return undo_.size(); }
+    // A change is waiting to become a step (message thread). The descriptions
+    // above make it one at once, which would split a held key's changes into
+    // several steps, so the editor's toolbar reads them only when this is false.
+    bool hasPendingEdits() const { return pending_; }
     size_t numRedoSteps() const { return redo_.size(); }
 
   private:

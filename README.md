@@ -17,8 +17,10 @@ shown, such as an oscillator's Type or a filter's Model, are menus: the arrow ke
 step through the choices, and Enter or Space opens the list. Focus stays on the menu
 when the controls around it change.
 Shift M opens a control's context menu to add modulation, MIDI learn or reset it.
-Comma and period jump between sections. The Settings button, first in the window, opens
-Settings: the version and links to this repository, undo and redo, tuning, the MIDI learn
+Comma and period jump between sections. The Toolbar, the first group in the window, holds
+the Settings button, Undo and Redo, each named after the change it would undo or redo, and
+Show preset browser, which hides the preset search, filters and results when you don't need
+them. Settings holds the version and links to this repository, tuning, the MIDI learn
 mappings, the accessibility settings, the community library and the keyboard help, each a
 group a screen reader enters. The Preset menu saves,
 initialises, imports and exports patches and banks, and the preset browser searches

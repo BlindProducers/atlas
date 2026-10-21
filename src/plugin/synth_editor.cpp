@@ -6550,7 +6550,8 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
     last_preset_bank_(synth.getEditorMemory().preset_bank),
     last_preset_category_(synth.getEditorMemory().preset_category),
     last_preset_tag_(synth.getEditorMemory().preset_tag),
-    last_preset_collection_(synth.getEditorMemory().preset_collection) {
+    last_preset_collection_(synth.getEditorMemory().preset_collection),
+    preset_browser_shown_(synth.getEditorMemory().preset_browser_shown) {
   // A new instance's preset browser starts unfiltered.
   if (last_preset_library_.isEmpty()) last_preset_library_ = kAllLibraries;
   if (last_preset_bank_.isEmpty()) last_preset_bank_ = kAllBanks;
@@ -6567,12 +6568,45 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   title_.setColour(Label::textColourId, Colours::white);
   addAndMakeVisible(title_);
 
+  // The Toolbar, the first group: Settings, Undo, Redo and Show preset browser.
+  toolbar_ = std::make_unique<AccessibleSectionHeader>("Toolbar", -1, true);
+  addAndMakeVisible(*toolbar_);
+
   settings_button_.setTitle("Settings");
-  settings_button_.setHelpText("Opens Settings: plugin info, undo and redo, tuning, MIDI learn mappings, "
+  settings_button_.setHelpText("Opens Settings: plugin info, tuning, MIDI learn mappings, "
                                "accessibility, the community browser and the keyboard help");
   settings_button_.setWantsKeyboardFocus(true);
   settings_button_.onClick = [this] { showSettings(); };
-  addAndMakeVisible(settings_button_);
+
+  // Undo and Redo, named after what they would do. The keys do the same
+  // anywhere in Atlas, but some hosts keep them for themselves.
+  const String command_key = atlas::keys::commandName();
+  undo_button_.setHelpText(command_key + " Z anywhere in Atlas undoes as well");
+  undo_button_.setWantsKeyboardFocus(true);
+  undo_button_.onClick = [this] {
+    undoOrRedo(false);
+    updateToolbarUndoButtons(true);
+  };
+  redo_button_.setHelpText("Shift " + command_key + " Z anywhere in Atlas redoes as well");
+  redo_button_.setWantsKeyboardFocus(true);
+  redo_button_.onClick = [this] {
+    undoOrRedo(true);
+    updateToolbarUndoButtons(true);
+  };
+
+  // On by default; each instance remembers its own (SynthPlugin::EditorMemory).
+  preset_browser_toggle_.setTitle("Show preset browser");
+  preset_browser_toggle_.setHelpText("Shows the preset search, filters, results and details in the Presets group. "
+                                     "The preset summary and Preset menu stay either way");
+  preset_browser_toggle_.setWantsKeyboardFocus(true);
+  preset_browser_toggle_.setToggleState(preset_browser_shown_, dontSendNotification);
+  preset_browser_toggle_.onClick = [this] { setPresetBrowserShown(preset_browser_toggle_.getToggleState()); };
+
+  for (Component* control : { static_cast<Component*>(&settings_button_), static_cast<Component*>(&undo_button_),
+                              static_cast<Component*>(&redo_button_), static_cast<Component*>(&preset_browser_toggle_) }) {
+    toolbar_->addAndMakeVisible(control);
+    toolbar_->addAccessibleChild(control);
+  }
 
   preset_summary_.setTitle("Preset summary");
   preset_summary_.setDescription("Current preset and Atlas resources path");
@@ -7046,6 +7080,7 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   // What the user changes from now on can be undone. A history recorded while
   // the editor was closed before stays.
   synth_.undoHistory().ensureBaseline();
+  updateToolbarUndoButtons(false);
   startTimerHz(20);
 }
 
@@ -7099,8 +7134,14 @@ void SynthEditor::paint(Graphics& graphics) {
 void SynthEditor::resized() {
   auto bounds = getLocalBounds().reduced(16);
   title_.setBounds(bounds.removeFromTop(40));
-  auto navigation = bounds.removeFromTop(38);
-  settings_button_.setBounds(navigation.removeFromLeft(120).reduced(3));
+  // The Toolbar: its heading on the left, its controls in one row beside it.
+  toolbar_->setBounds(bounds.removeFromTop(46));
+  auto toolbar_row = toolbar_->getLocalBounds().reduced(0, 4);
+  toolbar_row.removeFromLeft(110);
+  settings_button_.setBounds(toolbar_row.removeFromLeft(110).reduced(3));
+  preset_browser_toggle_.setBounds(toolbar_row.removeFromRight(210).reduced(3));
+  undo_button_.setBounds(toolbar_row.removeFromLeft(toolbar_row.getWidth() / 2).reduced(3));
+  redo_button_.setBounds(toolbar_row.reduced(3));
   if (modulation_amount_prompt_visible_ || parameter_value_prompt_visible_) {
     bounds.removeFromTop(8);
     modulation_amount_prompt_.setBounds(bounds.removeFromTop(34));
@@ -9121,38 +9162,45 @@ void SynthEditor::showAllSections(bool announce) {
 
       const int available_width = jmax(620, width - 32);
       preset_menu_.setBounds(16, group_y, 150, 38);
-      preset_search_.setBounds(172, group_y, available_width - 156, 38);
       group_ptr->addAndMakeVisible(preset_menu_);
-      group_ptr->addAndMakeVisible(preset_search_);
       group_ptr->addAccessibleChild(&preset_menu_);
-      group_ptr->addAccessibleChild(&preset_search_);
       row_focus_order_.push_back(&preset_menu_);
-      row_focus_order_.push_back(&preset_search_);
-      group_y += 42;
-      std::array<PresetTableListBox*, 5> facet_tables {
-        &preset_collection_table_, &preset_library_table_, &preset_bank_table_,
-        &preset_category_table_, &preset_tag_table_
-      };
-      const int facet_width = available_width / static_cast<int>(facet_tables.size());
-      int facet_x = 16;
-      for (int index = 0; index < static_cast<int>(facet_tables.size()); ++index) {
-        auto* table = facet_tables[static_cast<size_t>(index)];
-        const int table_width = index == static_cast<int>(facet_tables.size()) - 1
-                                  ? 16 + available_width - facet_x : facet_width;
-        table->setBounds(facet_x, group_y, table_width, 100);
-        group_ptr->addAndMakeVisible(table);
-        group_ptr->addAccessibleChild(table);
-        row_focus_order_.push_back(table);
-        facet_x += facet_width;
+      if (!preset_browser_shown_) {
+        // The toolbar's Show preset browser is off: the summary and the
+        // Preset menu stay, the browser itself is left out.
+        group_y += 42;
       }
-      group_y += 104;
-      preset_table_.setBounds(16, group_y, available_width, 220);
-      group_ptr->addAndMakeVisible(preset_table_);
-      group_ptr->addAccessibleChild(&preset_table_);
-      row_focus_order_.push_back(&preset_table_);
-      group_y += 224;
-      addPresetControl(preset_details_, 42);
-      addPresetControl(preset_preview_);
+      else {
+        preset_search_.setBounds(172, group_y, available_width - 156, 38);
+        group_ptr->addAndMakeVisible(preset_search_);
+        group_ptr->addAccessibleChild(&preset_search_);
+        row_focus_order_.push_back(&preset_search_);
+        group_y += 42;
+        std::array<PresetTableListBox*, 5> facet_tables {
+          &preset_collection_table_, &preset_library_table_, &preset_bank_table_,
+          &preset_category_table_, &preset_tag_table_
+        };
+        const int facet_width = available_width / static_cast<int>(facet_tables.size());
+        int facet_x = 16;
+        for (int index = 0; index < static_cast<int>(facet_tables.size()); ++index) {
+          auto* table = facet_tables[static_cast<size_t>(index)];
+          const int table_width = index == static_cast<int>(facet_tables.size()) - 1
+                                    ? 16 + available_width - facet_x : facet_width;
+          table->setBounds(facet_x, group_y, table_width, 100);
+          group_ptr->addAndMakeVisible(table);
+          group_ptr->addAccessibleChild(table);
+          row_focus_order_.push_back(table);
+          facet_x += facet_width;
+        }
+        group_y += 104;
+        preset_table_.setBounds(16, group_y, available_width, 220);
+        group_ptr->addAndMakeVisible(preset_table_);
+        group_ptr->addAccessibleChild(&preset_table_);
+        row_focus_order_.push_back(&preset_table_);
+        group_y += 224;
+        addPresetControl(preset_details_, 42);
+        addPresetControl(preset_preview_);
+      }
     }
 
     for (const auto& section_name : found->second) {
@@ -9773,17 +9821,6 @@ class AtlasSettingsContent : public Component, private FocusChangeListener {
       addLink(source_, "Source code", kRepositoryUrl);
       addLink(releases_, "Releases", String(kRepositoryUrl) + "/releases");
 
-      // Undo and redo, named after what they would do. The keys do the same
-      // anywhere in Atlas, but some hosts keep them for themselves.
-      inner_.addAndMakeVisible(history_);
-      const String command = atlas::keys::commandName();
-      configureButton(undo_, "Undo", command + " Z anywhere in Atlas undoes as well");
-      undo_.onClick = [this] { undoOrRedo(false); };
-      configureButton(redo_, "Redo", "Shift " + command + " Z anywhere in Atlas redoes as well");
-      redo_.onClick = [this] { undoOrRedo(true); };
-      history_.addAndMakeVisible(undo_);
-      history_.addAndMakeVisible(redo_);
-
       // Tuning.
       inner_.addAndMakeVisible(tuning_);
       tuning_name_.setTitle("Current tuning");
@@ -9912,7 +9949,6 @@ class AtlasSettingsContent : public Component, private FocusChangeListener {
       help_text_.onEscapeKey = [this] { closeWindow(); };
       keyboard_help_.addAndMakeVisible(help_text_);
 
-      updateUndoButtons();
       updateTuning();
       updateMappings();
       updateCommunityControls();
@@ -10005,23 +10041,6 @@ class AtlasSettingsContent : public Component, private FocusChangeListener {
           window->toFront(true);
         safe_target->grabKeyboardFocus();
       });
-    }
-
-    // Undo and redo. The editor keeps the focus here when it rebuilds its rows.
-    void undoOrRedo(bool redo) {
-      if (editor_ != nullptr)
-        editor_->undoOrRedo(redo);
-      updateUndoButtons();
-    }
-
-    void updateUndoButtons() {
-      if (editor_ == nullptr)
-        return;
-      auto& history = editor_->synth_.undoHistory();
-      const String undo = history.undoDescription();
-      const String redo = history.redoDescription();
-      configureButton(undo_, undo.isEmpty() ? String("Nothing to undo") : "Undo " + undo, undo_.getHelpText());
-      configureButton(redo_, redo.isEmpty() ? String("Nothing to redo") : "Redo " + redo, redo_.getHelpText());
     }
 
     // Tuning.
@@ -10304,7 +10323,6 @@ class AtlasSettingsContent : public Component, private FocusChangeListener {
         y += group.getHeight() + kMargin;
       };
       placeGroup(info_, { &version_, &issue_, &source_, &releases_ });
-      placeGroup(history_, { &undo_, &redo_ });
       placeGroup(tuning_, { &tuning_name_, &load_tuning_, &clear_tuning_ });
       std::vector<Component*> midi_rows { &midi_status_ };
       for (auto& button : mapping_buttons_)
@@ -10330,7 +10348,6 @@ class AtlasSettingsContent : public Component, private FocusChangeListener {
     SettingsViewport viewport_;
     SettingsLayout inner_;
     SettingsGroup info_ { "Plugin info" };
-    SettingsGroup history_ { "Undo and redo" };
     SettingsGroup tuning_ { "Tuning" };
     SettingsGroup midi_ { "MIDI learn mappings" };
     SettingsGroup accessibility_ { "Accessibility" };
@@ -10338,7 +10355,6 @@ class AtlasSettingsContent : public Component, private FocusChangeListener {
     SettingsGroup keyboard_help_ { "Keyboard help" };
     SettingsText version_;
     AccessibleTextButton issue_, source_, releases_;
-    AccessibleTextButton undo_, redo_;
     SettingsText tuning_name_;
     AccessibleTextButton load_tuning_, clear_tuning_;
     std::unique_ptr<FileChooser> tuning_chooser_;
@@ -10534,6 +10550,31 @@ void SynthEditor::showSettings() {
   }
 }
 
+void SynthEditor::updateToolbarUndoButtons(bool evenIfPending) {
+  auto& history = synth_.undoHistory();
+  if (!evenIfPending && history.hasPendingEdits())
+    return;
+  const String undo = history.undoDescription();
+  const String redo = history.redoDescription();
+  auto name = [](Button& button, const String& text) {
+    if (button.getButtonText() == text)
+      return;
+    button.setButtonText(text);
+    button.setTitle(text);
+  };
+  name(undo_button_, undo.isEmpty() ? String("Nothing to undo") : "Undo " + undo);
+  name(redo_button_, redo.isEmpty() ? String("Nothing to redo") : "Redo " + redo);
+}
+
+void SynthEditor::setPresetBrowserShown(bool shown) {
+  preset_browser_toggle_.setToggleState(shown, dontSendNotification);
+  if (preset_browser_shown_ == shown)
+    return;
+  preset_browser_shown_ = shown;
+  // The toggle sits outside the rows, so it keeps the focus through the rebuild.
+  showAllSections(false);
+}
+
 void SynthEditor::setCommunityBrowserShown(bool shown) {
   atlas::community::setBrowserShown(shown);
   if (!shown) {
@@ -10591,7 +10632,7 @@ String SynthEditor::keyboardHelpText() {
       "Most single-letter shortcuts work when a parameter or the editor has focus, but not while a "
       "text field is focused.\n"
       "\n"
-      "Undo and redo (anywhere in Atlas; Settings has them too, for a host that keeps {Cmd}+Z)\n"
+      "Undo and redo (anywhere in Atlas; the toolbar's Undo and Redo do the same, for a host that keeps {Cmd}+Z)\n"
       "  {Cmd}+Z - Undo the last change: a value, a preset load, Initialize patch, Save patch as default, "
       "an effect added, removed or moved, a modulation route, or an LFO or wavetable edit\n"
       "  Shift+{Cmd}+Z or {Cmd}+Y - Redo\n"
@@ -10739,8 +10780,14 @@ String SynthEditor::keyboardHelpText() {
       "  Delete - Ask before moving the selected editable user preset to Trash\n"
       "  Esc - Close the browser\n"
       "\n"
-      "Settings (the Settings button at the top of Atlas)\n"
-      "  Tab / Shift+Tab - Move through the controls of every group: Plugin info, Undo and redo, Tuning, "
+      "Toolbar (the first group in Atlas, before Presets)\n"
+      "  Settings - Open Settings\n"
+      "  Undo / Redo - Undo or redo the last change; each button names the change\n"
+      "  Show preset browser - Show or hide the preset search, filters, results and details. "
+      "The preset summary and Preset menu stay\n"
+      "\n"
+      "Settings (the Settings button in the toolbar)\n"
+      "  Tab / Shift+Tab - Move through the controls of every group: Plugin info, Tuning, "
       "MIDI learn mappings, Accessibility, Online community browser and Keyboard help\n"
       "  A screen reader presents each group with its controls inside it\n"
       "  Escape - Close Settings\n";
@@ -10859,8 +10906,13 @@ String SynthEditor::undoAnnouncement(const UndoHistory::Outcome& outcome, bool r
 void SynthEditor::rebuildFocusOrder() {
   focus_order_.clear();
   accessibility_focus_order_.clear();
-  focus_order_.push_back(&settings_button_);
-  accessibility_focus_order_.push_back(&settings_button_);
+  // The Toolbar first, before any prompt and every group. A screen reader
+  // enters it as a group; Tab runs through its controls.
+  focus_order_.push_back(toolbar_.get());
+  for (Component* control : { static_cast<Component*>(&settings_button_), static_cast<Component*>(&undo_button_),
+                              static_cast<Component*>(&redo_button_), static_cast<Component*>(&preset_browser_toggle_) })
+    focus_order_.push_back(control);
+  accessibility_focus_order_.push_back(toolbar_.get());
   if (modulation_amount_prompt_visible_ || parameter_value_prompt_visible_) {
     if (!confirmation_prompt_visible_) {
       focus_order_.push_back(&modulation_amount_editor_);
@@ -11126,16 +11178,16 @@ String SynthEditor::modulationControlTitle(const String& parameterId) const {
 
 void SynthEditor::showPresetControls() {
   preset_summary_.setVisible(true);
-  preset_details_.setVisible(true);
   preset_menu_.setVisible(true);
-  preset_search_.setVisible(true);
-  preset_collection_table_.setVisible(true);
-  preset_library_table_.setVisible(true);
-  preset_bank_table_.setVisible(true);
-  preset_category_table_.setVisible(true);
-  preset_tag_table_.setVisible(true);
-  preset_table_.setVisible(true);
-  preset_preview_.setVisible(true);
+  // The browser itself follows the toolbar's Show preset browser.
+  for (Component* control : { static_cast<Component*>(&preset_details_), static_cast<Component*>(&preset_search_),
+                              static_cast<Component*>(&preset_collection_table_),
+                              static_cast<Component*>(&preset_library_table_),
+                              static_cast<Component*>(&preset_bank_table_),
+                              static_cast<Component*>(&preset_category_table_),
+                              static_cast<Component*>(&preset_tag_table_), static_cast<Component*>(&preset_table_),
+                              static_cast<Component*>(&preset_preview_) })
+    control->setVisible(preset_browser_shown_);
   updatePresetSummary();
   resized();
   // VoiceOver can enter the tables without triggering their keyboard focus callbacks.
@@ -23840,6 +23892,7 @@ void SynthEditor::timerCallback() {
   if (cpu_meter_ != nullptr && cpu_meter_->isShowing())
     cpu_meter_->refresh();
   synth_.dispatchPendingGuiUpdates(*this);
+  updateToolbarUndoButtons(false);
   // Slot rows depend on these choices (Dimension Expander mode, Resonator model).
   // A queued rebuild re-reads every slot, and a swap in progress makes these
   // keys (physical slot ids) look changed, so wait for it rather than queue a

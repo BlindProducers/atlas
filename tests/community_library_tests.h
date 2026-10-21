@@ -1727,7 +1727,7 @@ namespace {
 
   Component* titledIn(Component& parent, const String& title) { return titled(parent, title); }
 
-  // The Settings button opens Settings: Plugin info, Undo and redo, Tuning,
+  // The toolbar's Settings button opens Settings: Plugin info, Tuning,
   // MIDI learn mappings, Accessibility, Online community browser and Keyboard
   // help, each a group a screen reader enters, none of them flat in the
   // window. The browser can be hidden, which takes it out of the preset
@@ -1774,24 +1774,16 @@ namespace {
     expect(editor.getTitle() == "Atlas" && editor.getDescription().isEmpty(),
            "the editor's name is Atlas alone, description: " + editor.getDescription().toStdString());
 
-    // A change to undo, for the Undo and redo group.
-    const std::string cutoff_id = "filter_1_cutoff";
-    const float cutoff_before = controlValue(synth, cutoff_id);
-    if (auto* cutoff = editor.controlForParameter(String(cutoff_id)))
-      cutoff->keyPressed(KeyPress(KeyPress::upKey));
-    pumpEditorEvents();
-    const float cutoff_after = controlValue(synth, cutoff_id);
-    expect(cutoff_after != cutoff_before, "the arrow moves Filter 1 Cutoff");
-
-    // The Settings button, first in the window, opens Settings at once: no menu.
+    // The Settings button, first in the Toolbar, opens Settings at once: no menu.
     Button* settings_button = nullptr;
     for (auto* component : editor.getKeyboardFocusOrder())
       if (auto* button = dynamic_cast<Button*>(component); button != nullptr && button->getTitle() == "Settings")
         settings_button = button;
+    const auto& keyboard_order = editor.getKeyboardFocusOrder();
     expect(settings_button != nullptr && settings_button->getButtonText() == "Settings" &&
-               settings_button->getDescription().isEmpty() && !editor.getKeyboardFocusOrder().empty() &&
-               editor.getKeyboardFocusOrder().front() == settings_button,
-           "the editor starts with the Settings button");
+               settings_button->getDescription().isEmpty() && keyboard_order.size() > 1 &&
+               keyboard_order[0]->getTitle() == "Toolbar" && keyboard_order[1] == settings_button,
+           "the editor starts with the Toolbar, the Settings button first in it");
     if (settings_button != nullptr)
       settings_button->triggerClick();
     pumpUntil([&] { return editor.settingsWindowForTesting() != nullptr; }, 5000);
@@ -1816,7 +1808,6 @@ namespace {
     const StringArray window_children = childTitles(window->getAccessibilityHandler());
     const std::pair<const char*, const char*> groups[] = {
       { "Plugin info", "Report an issue on GitHub" },
-      { "Undo and redo", nullptr },
       { "Tuning", "Load tuning file..." },
       { "MIDI learn mappings", nullptr },
       { "Accessibility", "Other announcements" },
@@ -1841,36 +1832,10 @@ namespace {
                std::string("VoiceOver finds ") + control + " inside " + title);
 #endif
     }
+    expect(!window_children.contains("Undo and redo") && titledIn(*content, "Undo and redo") == nullptr,
+           "Undo and Redo are in the toolbar, not in Settings");
     expect(!window_children.contains("Atlas settings"),
            "the window's layout is no element of its own: " + window_children.joinIntoString(", ").toStdString());
-
-    // Undo and redo, named after what they would do.
-    std::vector<Button*> history;
-    if (auto* group = titledIn(*content, "Undo and redo"))
-      for (auto* child : group->getChildren())
-        if (auto* button = dynamic_cast<Button*>(child))
-          history.push_back(button);
-    auto historyTitles = [&] {
-      StringArray titles;
-      for (auto* button : history)
-        titles.add(button->getTitle());
-      return titles.joinIntoString(" | ").toStdString();
-    };
-    expect(history.size() == 2 && history[0]->getTitle().startsWith("Undo ") &&
-               history[1]->getTitle() == "Nothing to redo",
-           "Undo names the change, Redo has nothing yet: " + historyTitles());
-    if (history.size() == 2) {
-      spoken.messages.clear();
-      history[0]->onClick();
-      pumpEditorEvents();
-      close(controlValue(synth, cutoff_id), cutoff_before, "Undo in Settings puts Filter 1 Cutoff back");
-      expect(said("Undo"), "and says what it undid: " + heard());
-      expect(history[0]->getTitle() == "Nothing to undo" && history[1]->getTitle().startsWith("Redo "),
-             "the buttons follow the history: " + historyTitles());
-      history[1]->onClick();
-      pumpEditorEvents();
-      close(controlValue(synth, cutoff_id), cutoff_after, "Redo in Settings puts the change back");
-    }
 
     // Tuning: the standard one, with nothing to clear.
     auto* tuning_name = dynamic_cast<Label*>(titledIn(*content, "Current tuning"));
@@ -2128,7 +2093,7 @@ namespace {
 
     // The keyboard help, whose text box hands Escape to the window: it closes.
     auto* help = content != nullptr ? dynamic_cast<TextEditor*>(titledIn(*content, "Keyboard shortcuts")) : nullptr;
-    expect(help != nullptr && help->getText().contains("Settings has them too") &&
+    expect(help != nullptr && help->getText().contains("the toolbar's Undo and Redo do the same") &&
                help->getText().contains("Escape - Close Settings") && !help->getText().contains("Editor menu"),
            "the keyboard help is in Settings and names it");
     if (help != nullptr) {

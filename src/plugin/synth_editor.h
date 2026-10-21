@@ -452,6 +452,7 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     }
     // The Settings window, if open (the Settings button opens it).
     DialogWindow* settingsWindowForTesting() const { return settings_window_.getComponent(); }
+    bool isPresetBrowserShown() const { return preset_browser_shown_; }
     // "2.0.0 beta 2": the version and, for a pre-release, the beta the
     // release workflow builds (ATLAS_PRERELEASE in .github/workflows/release.yml).
     static String versionText();
@@ -627,10 +628,16 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     std::vector<Component*> effectChainStops(const String& sectionName) const;
     void focusEffectChainStop(Component& stop);
     void armOrCancelMidiLearn(const String& parameterId);
-    // The Settings window, which the Settings button opens: Plugin info, Undo
-    // and redo, Tuning, MIDI learn mappings, Accessibility, Online community
+    // The Settings window, which the toolbar's Settings button opens: Plugin
+    // info, Tuning, MIDI learn mappings, Accessibility, Online community
     // browser and Keyboard help, each a group a screen reader enters.
     void showSettings();
+    // The toolbar's Undo and Redo name the change they would undo or redo.
+    // With `evenIfPending` false (the timer) they wait while a change is still
+    // becoming a step, since describing the history would end it early.
+    void updateToolbarUndoButtons(bool evenIfPending);
+    // Shows or hides the preset browser in the Presets group, for this instance.
+    void setPresetBrowserShown(bool shown);
     // Shows or hides the community library in the preset browser and the
     // Preset menu, for every editor from now on (community_library.h).
     void setCommunityBrowserShown(bool shown);
@@ -1218,10 +1225,21 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     String& last_preset_category_;
     String& last_preset_tag_;
     String& last_preset_collection_;
+    // Whether the Presets group shows the preset browser (search, filters,
+    // results, details and autoload) or only the summary and Preset menu.
+    bool& preset_browser_shown_;
     void addCpuMeter(Component& parent, int x, int& y, int width, int& focusOrder);
     std::unique_ptr<CpuUsageMeter> cpu_meter_;
     Label title_;
     TextButton settings_button_ { "Settings" };
+    // Named after what they would do (updateToolbarUndoButtons).
+    AccessibleTextButton undo_button_ { "Undo" };
+    AccessibleTextButton redo_button_ { "Redo" };
+    SpokenToggleButton preset_browser_toggle_ { "Show preset browser" };
+    // The Toolbar group, before every other group: Settings, Undo, Redo and
+    // Show preset browser. Built once and kept outside the scrolling rows, so
+    // its controls keep the focus through every rebuild.
+    std::unique_ptr<AccessibleSectionHeader> toolbar_;
     // The group that number keys 1 to 9 choose an element from.
     String current_group_;
     Label preset_summary_;
