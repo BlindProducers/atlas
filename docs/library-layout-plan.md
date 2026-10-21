@@ -91,7 +91,7 @@ On the user's Mac, a rehearsal on a copy of the library's tree made 81 moves wit
 - `AtlasMacroTests --library-layout`: paths, the folders a library lists, migration from both older layouts, stray banks, bank and pack archives written and imported, and the preset Browse lists, with FX presets filtered by effect, loaded into a slot, and stepped with Previous and Next.
 - `AtlasMultiSampleTests --bank`: instruments placed on save, shared by a library's banks, found by reference and by hash, unpacked from a container, and exported and imported with their bank.
 - `AtlasMacroTests --community-library`: the download and bank landing paths.
-- `AtlasMacroTests --library-migration <folder> <layout> [default bank]`: by hand, migrates a copy of a real Atlas folder and prints the log.
+- `AtlasMacroTests --library-migration <folder> <layout> [default bank] [favourites]`: by hand, migrates a copy of a real Atlas folder and prints the log; given a favourites file pointing into the copy, it lists every favourite left without its preset.
 - Test binaries never reorganise a real library: the migration and the scan's filing run only when a host loaded the plugin.
 
 ## Risks

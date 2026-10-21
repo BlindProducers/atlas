@@ -124,6 +124,9 @@ namespace {
 #else
   constexpr bool kSectionKeysStepThroughEffectGroups = false;
 #endif
+  // Set on a grouping inside a slot that those steps pass by: the slot's FX
+  // presets group, which every slot has whatever its effect.
+  constexpr const char* kNotAnEffectStepProperty = "NotAnEffectStep";
   // Whether a step to a bus's effects chain (comma, period, a number key)
   // lands on its Bus heading, as Ctrl 1 to 3 do, and says the bus ("Bus 2").
   // Otherwise it lands on the chain's Bus controls and says "Chain and
@@ -17386,8 +17389,9 @@ void SynthEditor::addEffectSlotGroups(const String& sectionName, Component& pare
     // Presets for this slot's effect, as the IR group offers impulse responses.
     {
       const String effect_name = effectName(type - 1);
-      addButtonGroup("FX presets", sectionName + " slot " + String(slot + 1) + " presets", *slot_ptr, 10, slot_y,
-                     jmax(600, width - 20), focusOrder, groupRank(sectionName), {
+      auto* presets_group = addButtonGroup("FX presets", sectionName + " slot " + String(slot + 1) + " presets",
+                                           *slot_ptr, 10, slot_y, jmax(600, width - 20), focusOrder,
+                                           groupRank(sectionName), {
         { "Browse FX presets", "Choose a " + effect_name + " preset from the FX Presets folders",
           [this, sectionName, slot](Component& button) { showEffectPresetBrowserMenu(sectionName, slot, button); } },
         { "Previous FX preset", "Load the previous " + effect_name + " preset",
@@ -17399,6 +17403,9 @@ void SynthEditor::addEffectSlotGroups(const String& sectionName, Component& pare
         { "Save FX preset", "Save this " + effect_name + "'s settings as an FX preset",
           [this, sectionName, slot](Component&) { saveEffectPresetFromSlot(sectionName, slot); } },
       });
+      // A tool every slot has, not one of its effect's groupings: comma and
+      // period pass it by on Windows (effectChainStops), and Tab reaches it.
+      presets_group->getProperties().set(kNotAnEffectStepProperty, true);
     }
 
     if (type - 1 == vital::constants::kConvolutionReverb) {
@@ -23501,7 +23508,8 @@ std::vector<Component*> SynthEditor::effectChainStops(const String& sectionName)
     // Its groupings in the order Tab reaches them, outer before inner.
     for (auto* component : row_focus_order_) {
       if (component != nullptr && component->isShowing() && slot_header->isParentOf(component) &&
-          dynamic_cast<AccessibleSectionHeader*>(component) != nullptr)
+          dynamic_cast<AccessibleSectionHeader*>(component) != nullptr &&
+          !component->getProperties().contains(kNotAnEffectStepProperty))
         stops.push_back(component);
     }
   }

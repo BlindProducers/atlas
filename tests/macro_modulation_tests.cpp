@@ -1000,8 +1000,11 @@ int main(int argc, char** argv) {
     return 0;
   }
   // By hand, not in ctest: migrates a copy of an Atlas folder as if its
-  // config said `layout` and `default_bank`, and prints the log.
-  //   AtlasMacroTests --library-migration <folder> <layout> [default bank]
+  // config said `layout` and `default_bank`, and prints the log. A
+  // favourites file (its paths already pointing into the copy) is rewritten
+  // as the user's would be, and every favourite that misses its preset after
+  // the moves is listed; an empty default bank leaves the config without one.
+  //   AtlasMacroTests --library-migration <folder> <layout> [default bank] [favourites]
   if (argc > 3 && String(argv[1]) == "--library-migration") {
     const File folder { String(argv[2]) };
     TemporaryFile config { ".config" };
@@ -1009,8 +1012,11 @@ int main(int argc, char** argv) {
     json contents = json::object();
     contents["data_directory"] = folder.getFullPathName().toStdString();
     contents["library_layout"] = String(argv[3]).getIntValue();
-    if (argc > 4)
+    if (argc > 4 && String(argv[4]).isNotEmpty())
       contents["default_bank"] = String(argv[4]).toStdString();
+    const File start_favourites = argc > 5 ? File(String(argv[5])) : File();
+    if (start_favourites.existsAsFile())
+      favourites.getFile().replaceWithText(start_favourites.loadFileAsString());
     config.getFile().replaceWithText(contents.dump());
     LoadSave::setConfigFileForTesting(config.getFile());
     LoadSave::setFavoritesFileForTesting(favourites.getFile());
@@ -1025,9 +1031,21 @@ int main(int argc, char** argv) {
       std::cout << "  " << line << "\n";
     for (const auto& problem : report.problems)
       std::cout << "  Problem: " << problem << "\n";
+    int missing = 0;
+    if (start_favourites.existsAsFile()) {
+      const json after = LoadSave::getFavoritesJson();
+      for (const auto& entry : after.items()) {
+        if (!File(String(entry.key())).existsAsFile()) {
+          ++missing;
+          std::cout << "  Favourite without its preset: " << entry.key() << "\n";
+        }
+      }
+      std::cout << after.size() << " favourites, " << report.favourites << " rewritten, " << missing
+                << " without their preset\n";
+    }
     LoadSave::setConfigFileForTesting({});
     LoadSave::setFavoritesFileForTesting({});
-    return report.problems.isEmpty() ? 0 : 1;
+    return report.problems.isEmpty() && missing == 0 ? 0 : 1;
   }
   if (argc > 1 && String(argv[1]) == "--library-layout") {
     testLocateFindsLibraryBankKindAndCategory();
@@ -1035,6 +1053,9 @@ int main(int argc, char** argv) {
     testMigrationFromTheFirstLayout();
     testMigrationFromTheSecondLayout();
     testStrayBankIsAdopted();
+#if JUCE_WINDOWS
+    testWindowsNamesAndCase();
+#endif
     testBankArchivesRoundTrip();
     testPresetBrowsersFilterAndLoad();
     if (failures == 0)

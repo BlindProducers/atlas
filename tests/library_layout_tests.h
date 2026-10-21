@@ -56,6 +56,12 @@ namespace {
     return file.getParentDirectory().createDirectory() && file.replaceWithText(text);
   }
 
+  // Migration.txt, its paths read with slashes: Windows writes them with
+  // backslashes, as it shows every path.
+  String migrationLog(const File& data) {
+    return lib::migrationLogFile(data).loadFileAsString().replaceCharacter('\\', '/');
+  }
+
   // Checks that each path exists, or with a leading '!' that it does not.
   void expectLayout(const File& data, const StringArray& paths, const std::string& when) {
     for (const auto& path : paths) {
@@ -247,7 +253,7 @@ namespace {
       "Notes/readme.txt", "packs.json"
     }, "after migrating the first layout");
     expect(lib::migrationLogFile(data).existsAsFile() &&
-               lib::migrationLogFile(data).loadFileAsString().contains("Moved User/Presets/IDK to User/Banks/IDK"),
+               migrationLog(data).contains("Moved User/Presets/IDK to User/Banks/IDK"),
            "Migration.txt lists the moves");
 
     const json rewritten = LoadSave::getFavoritesJson();
@@ -328,7 +334,7 @@ namespace {
     expect(LoadSave::getFavoritesJson().count(
                data.getChildFile("User/Banks/JayLadder/a.atp").getFullPathName().toStdString()) == 1,
            "the favourite follows its preset");
-    expect(lib::migrationLogFile(data).loadFileAsString().contains("Moved User/Serum/Wavetables to User/Wavetables/Serum"),
+    expect(migrationLog(data).contains("Moved User/Serum/Wavetables to User/Wavetables/Serum"),
            "the log appends to the earlier one");
     expect(lib::bankNames(lib::Library::kUser, data) == StringArray { "IDK", "JayLadder" },
            "the packs are no banks: " + lib::bankNames(lib::Library::kUser, data).joinIntoString(", ").toStdString());
@@ -357,10 +363,79 @@ namespace {
                data.getChildFile("Third Party/Banks/Dropped/d.atp").getFullPathName().toStdString()) == 1,
            "its favourite followed it");
     expect(lib::adoptStrayBanks(data).empty(), "a second look finds nothing");
-    expect(lib::movedPath("/a/b/c.atp", { { File("/a/b"), File("/x/y") }, { File("/a"), File("/z") } }) == "/x/y/c.atp" &&
-               lib::movedPath("/a/other.atp", { { File("/a/b"), File("/x/y") } }) == "/a/other.atp",
+    // Absolute paths on every platform: "/a" is none on Windows.
+    const File a = data.getChildFile("a"), x = data.getChildFile("x"), z = data.getChildFile("z");
+    expect(lib::movedPath(a.getChildFile("b/c.atp").getFullPathName(), { { a.getChildFile("b"), x.getChildFile("y") },
+                                                                          { a, z } }) ==
+                   x.getChildFile("y/c.atp").getFullPathName() &&
+               lib::movedPath(a.getChildFile("other.atp").getFullPathName(), { { a.getChildFile("b"), x.getChildFile("y") } }) ==
+                   a.getChildFile("other.atp").getFullPathName() &&
+               lib::movedPath(a.getChildFile("bb/c.atp").getFullPathName(), { { a.getChildFile("b"), x } }) ==
+                   a.getChildFile("bb/c.atp").getFullPathName(),
            "a path follows the longest moved folder it sits in");
+#if JUCE_WINDOWS
+    // Windows file names ignore case: a path written HAMO is in the folder Hamo.
+    expect(lib::movedPath(a.getChildFile("HAMO Bank/Bass.atp").getFullPathName(), { { a.getChildFile("Hamo Bank"), x } }) ==
+               x.getChildFile("Bass.atp").getFullPathName(),
+           "a path follows its folder whatever the case of its letters");
+#endif
   }
+
+#if JUCE_WINDOWS
+  // Windows refuses some names a Mac takes, and compares names without case.
+  // A bank typed as Aux is the folder Aux_, as a community download's folder
+  // would be (atlas::community::systemFileName). A favourite saved as
+  // ...\HAMO Speed Garage Bank\... while the folder reads Hamo Speed Garage
+  // Bank (Windows found the preset either way) follows its preset through
+  // the migration and is written as the folder reads.
+  void testWindowsNamesAndCase() {
+    expect(lib::legalName("Aux", "Bank") == "Aux_" && lib::legalName("nul.bank", "Bank") == "nul_.bank" &&
+               lib::legalName("COM1 sounds", "Bank") == "COM1 sounds" && lib::legalName("Lpt9", "Bank") == "Lpt9_",
+           "a device name gets an underscore, and only a device name: " + lib::legalName("Aux", "Bank").toStdString());
+    const String control = String::charToString(static_cast<juce_wchar>(1));
+    expect(lib::legalName("Two" + control + "Lines", "Bank") == "Two Lines" &&
+               lib::legalName(control + ".Hidden", "Bank") == "Hidden",
+           "control characters become spaces and the name stays visible: " +
+               lib::legalName(control + ".Hidden", "Bank").toStdString());
+
+    LayoutTestLibrary library;
+    if (!library.isolated())
+      return;
+    const File data = library.folder;
+    expect(lib::bankDirectory(lib::Library::kUser, "con", data) == data.getChildFile("User/Banks/con_") &&
+               lib::packDirectory(lib::Library::kUser, lib::Kind::kSamples, "PRN", data) ==
+                   data.getChildFile("User/Samples/PRN_"),
+           "banks and packs take the same names");
+    lib::setDefaultBankName("Aux");
+    expect(lib::defaultBankName() == "Aux_" && LoadSave::getUserPresetDirectory() == data.getChildFile("User/Banks/Aux_") &&
+               data.getChildFile("User/Banks/Aux_").isDirectory(),
+           "a default bank typed as Aux is saved into Aux_");
+
+    // The first layout, with favourites saved before the bank's folder was
+    // renamed to other capitals.
+    expect(writeLayoutPreset(data.getChildFile("User/Presets/Hamo Speed Garage Bank/Bass Alloy.atp"), "Hamo") &&
+               writeLayoutPreset(data.getChildFile("User/Presets/Hamo Speed Garage Bank/Pad Cloud.atp"), "Hamo") &&
+               writeLayoutPreset(data.getChildFile("User/Presets/loose.atp"), "Hamo"),
+           "a bank of presets and a loose one");
+    const String old_bank = data.getChildFile("User/Presets/HAMO Speed Garage Bank").getFullPathName();
+    json favourites = json::object();
+    favourites[(old_bank + "\\Bass Alloy.atp").toStdString()] = 1;
+    favourites[(old_bank + "\\Pad Cloud.atp").toStdString()] = 1;
+    favourites[data.getChildFile("USER/PRESETS/LOOSE.ATP").getFullPathName().toStdString()] = 1;
+    LoadSave::saveJsonToFavorites(favourites);
+    const lib::MigrationReport report = lib::migrate(data);
+    expect(report.ran && report.problems.isEmpty(), "the migration ran without problems");
+    expect(report.favourites == 3, "every favourite was rewritten: " + std::to_string(report.favourites));
+    const json rewritten = LoadSave::getFavoritesJson();
+    const String bank = data.getChildFile("User/Banks/Hamo Speed Garage Bank").getFullPathName();
+    expect(rewritten.size() == 3 && rewritten.count((bank + "\\Bass Alloy.atp").toStdString()) == 1 &&
+               rewritten.count((bank + "\\Pad Cloud.atp").toStdString()) == 1 &&
+               rewritten.count(data.getChildFile("User/Banks/Hamo/loose.atp").getFullPathName().toStdString()) == 1,
+           "each favourite names its preset's new place as the folders read: " + rewritten.dump());
+    for (const auto& entry : rewritten.items())
+      expect(File(String(entry.key())).existsAsFile(), "the favourite's preset is there: " + entry.key());
+  }
+#endif
 
   void testBankArchivesRoundTrip() {
     LayoutTestLibrary library;

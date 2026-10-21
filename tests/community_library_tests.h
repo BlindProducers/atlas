@@ -160,13 +160,14 @@ namespace {
     device.style_label = "Lead.";
     device.file_name = "nul.atp";
     const File device_file = atlas::community::localFile(device, data);
-    expect(device_file == community.getChildFile("aux_").getChildFile("Lead").getChildFile("nul_.atp"),
+    const File banks = community.getChildFile("Banks");
+    expect(device_file == banks.getChildFile("aux_").getChildFile("Lead").getChildFile("nul_.atp"),
            "device names get an underscore and a trailing dot goes: " + device_file.getFullPathName().toStdString());
     device.uploader = "COM1 sounds";
     device.style_label = "Lead";
     device.file_name = "Lpt9.Bass.atp";
     expect(atlas::community::localFile(device, data) ==
-               community.getChildFile("COM1 sounds").getChildFile("Lead").getChildFile("Lpt9_.Bass.atp"),
+               banks.getChildFile("COM1 sounds").getChildFile("Lead").getChildFile("Lpt9_.Bass.atp"),
            "only a name that is a device name changes: " +
                atlas::community::localFile(device, data).getFullPathName().toStdString());
     device.file_name = String("Two") + String::charToString('\t') + "Lines.atp";

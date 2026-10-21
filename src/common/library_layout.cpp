@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "library_layout.h"
+#include "community_library.h"
 #include "load_save.h"
 #include "multisample_container.h"
 #include "multisample_loader.h"
@@ -528,6 +529,10 @@ juce::String legalName(const juce::String& name, const juce::String& fallback) {
   while (legal.contains(".."))
     legal = legal.replace("..", ".");
   legal = legal.trimCharactersAtStart(". ").trimCharactersAtEnd(". ");
+  // As Windows takes a name: control characters become spaces and a device
+  // name (CON, AUX, NUL, COM1 and the like) gets an underscore, so a bank
+  // typed as "Aux" is the folder Aux_. Nothing changes elsewhere.
+  legal = atlas::community::systemFileName(legal).trimCharactersAtStart(". ").trimCharactersAtEnd(". ");
   return legal.isNotEmpty() ? legal : fallback;
 }
 
@@ -566,12 +571,25 @@ juce::File communityPreviewDirectory(const juce::File& data_directory) {
   return libraryDirectory(Library::kCommunity, data_directory).getChildFile(kCommunityPreviews);
 }
 
+namespace {
+  // Whether `path` is `folder` or below it. Windows compares file names
+  // without case, so a favourite saved as ...\HAMO Bank\x.atp is the preset
+  // in ...\Hamo Bank and must follow that folder when it moves.
+  bool isAtOrBelow(const juce::String& path, const juce::String& folder) {
+    const juce::String below = folder + juce::File::getSeparatorString();
+#if JUCE_WINDOWS
+    return path.equalsIgnoreCase(folder) || path.startsWithIgnoreCase(below);
+#else
+    return path == folder || path.startsWith(below);
+#endif
+  }
+}
+
 juce::String movedPath(const juce::String& path, const std::vector<Move>& moves) {
-  const juce::String separator = juce::File::getSeparatorString();
   const Move* best = nullptr;
   for (const auto& move : moves) {
     const juce::String from = move.from.getFullPathName();
-    if (path != from && !path.startsWith(from + separator))
+    if (!isAtOrBelow(path, from))
       continue;
     if (best == nullptr || from.length() > best->from.getFullPathName().length())
       best = &move;
