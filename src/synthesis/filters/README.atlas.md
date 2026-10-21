@@ -1,3 +1,29 @@
+# Reverb filter model
+
+`reverb_filter_core.cpp` runs the supplied Reference Fit JSFX
+(`tests/reverb_filter/reference.jsfx`, Atlas's own) for a voice pair's four
+lanes at once: two voices, left and right, each with its own cutoff,
+resonance, damping and history.
+
+- Every delay position holds the four lanes side by side, and the write
+  positions are shared. A lane reset (a new note) only forgets that lane's
+  history: every read is guarded by how many samples the lane has written
+  since, so where its ring starts makes no difference. Lanes whose cutoffs
+  agree read and write all four with one access.
+- The arithmetic stays in double precision, two lanes per SSE2/NEON register
+  (`framework/double_pair.h`), in the same order per lane as the scalar code,
+  so the output is bit-identical to running four scalar cores.
+- A pair of lanes whose input, delay reads and damping have been exactly zero
+  for longer than the longest delay (the empty half of a voice pair) skips its
+  arithmetic and writes zeros, waking to the history it would have had.
+- As a Filter FX (`setFxMode`), lanes 2-3 repeat lanes 0-1, so one pair runs
+  and is copied.
+
+`AtlasReverbFilterReferenceTests` compares every lane with the JSFX in EEL2,
+with the two pairs at different cutoffs and one pair reset halfway;
+`AtlasTimingTests --reverb-filter` checks that a skipped pair wakes exactly
+as one that ran, and that Filter FX equals the full core's lanes 0-1.
+
 # Scream filter model
 
 `scream_filter.cpp` is the Scream voice filter and Filter FX model. It adapts
