@@ -1,0 +1,155 @@
+diff --git a/modules/juce_dsp/frequency/juce_FFT.cpp b/modules/juce_dsp/frequency/juce_FFT.cpp
+index b1f14e272..249716ef2 100644
+--- a/modules/juce_dsp/frequency/juce_FFT.cpp
++++ b/modules/juce_dsp/frequency/juce_FFT.cpp
+@@ -32,6 +32,10 @@
+   ==============================================================================
+ */
+ 
++#if JUCE_DSP_USE_PFFFT
++ #include <pffft.h>
++#endif
++
+ namespace juce::dsp
+ {
+ 
+@@ -438,6 +442,139 @@ struct FFTFallback final : public FFT::Instance
+ 
+ FFT::EngineImpl<FFTFallback> fftFallback;
+ 
++//==============================================================================
++//==============================================================================
++#if JUCE_DSP_USE_PFFFT
++// Atlas: PFFFT (Atlas's third_party/pffft) ahead of every other engine, so
++// all platforms run the same FFT and Windows gets SIMD instead of the scalar
++// fallback. Results keep FFTFallback's layout and scaling: the forward real
++// transform unscaled with the negative frequencies mirrored, the inverse
++// scaled by 1/N with the buffer's second half cleared (as AppleFFT leaves it).
++// A real transform on a 16-byte-aligned buffer runs in place with the
++// buffer's second half as PFFFT's work area: no copy, lock or allocation, so
++// one instance can serve several threads. Other buffers and the complex
++// transform take scratch on the stack, or the heap above 256 KB as
++// FFTFallback does.
++struct PffftFFT final : public FFT::Instance
++{
++    static constexpr int priority = 20;
++
++    static PffftFFT* create (int order)
++    {
++        // PFFFT's real transform needs a multiple of 32 points.
++        return order >= 5 ? new PffftFFT (order) : nullptr;
++    }
++
++    explicit PffftFFT (int order)
++        : size (1 << order),
++          realSetup (pffft_new_setup (size, PFFFT_REAL)),
++          complexSetup (pffft_new_setup (size, PFFFT_COMPLEX))
++    {
++        jassert (realSetup != nullptr && complexSetup != nullptr);
++    }
++
++    ~PffftFFT() override
++    {
++        pffft_destroy_setup (realSetup);
++        pffft_destroy_setup (complexSetup);
++    }
++
++    void perform (const Complex<float>* input, Complex<float>* output, bool inverse) const noexcept override
++    {
++        const auto floats = 2 * (size_t) size;
++
++        withScratch (3 * floats, [&] (float* scratch)
++        {
++            auto* in = scratch;
++            auto* out = scratch + floats;
++            std::memcpy (in, input, floats * sizeof (float));
++            pffft_transform_ordered (complexSetup, in, out, out + floats, inverse ? PFFFT_BACKWARD : PFFFT_FORWARD);
++
++            if (inverse)
++                FloatVectorOperations::multiply (out, 1.0f / (float) size, (int) floats);
++
++            std::memcpy (output, out, floats * sizeof (float));
++        });
++    }
++
++    void performRealOnlyForwardTransform (float* d, bool) const noexcept override
++    {
++        transformReal (d, PFFFT_FORWARD);
++
++        // PFFFT keeps the Nyquist bin's real part where DC's imaginary part goes.
++        d[size] = d[1];
++        d[size + 1] = 0.0f;
++        d[1] = 0.0f;
++
++        for (int bin = size / 2 + 1; bin < size; ++bin)
++        {
++            d[2 * bin] = d[2 * (size - bin)];
++            d[2 * bin + 1] = -d[2 * (size - bin) + 1];
++        }
++    }
++
++    void performRealOnlyInverseTransform (float* d) const noexcept override
++    {
++        d[1] = d[size];
++        transformReal (d, PFFFT_BACKWARD);
++        FloatVectorOperations::multiply (d, 1.0f / (float) size, size);
++        FloatVectorOperations::clear (d + size, size);
++    }
++
++private:
++    static bool isAligned (const void* pointer) noexcept
++    {
++        return (reinterpret_cast<std::uintptr_t> (pointer) & 15) == 0;
++    }
++
++    // Transforms d[0, size) in place, PFFFT's ordered layout in and out.
++    void transformReal (float* d, pffft_direction_t direction) const noexcept
++    {
++        if (isAligned (d))
++        {
++            pffft_transform_ordered (realSetup, d, d, d + size, direction);
++            return;
++        }
++
++        withScratch (2 * (size_t) size, [&] (float* scratch)
++        {
++            std::memcpy (scratch, d, (size_t) size * sizeof (float));
++            pffft_transform_ordered (realSetup, scratch, scratch, scratch + size, direction);
++            std::memcpy (d, scratch, (size_t) size * sizeof (float));
++        });
++    }
++
++    template <typename Function>
++    static void withScratch (size_t numFloats, Function&& function) noexcept
++    {
++        const auto bytes = numFloats * sizeof (float) + 16;
++        const auto align = [] (void* memory)
++        {
++            const auto address = reinterpret_cast<std::uintptr_t> (memory);
++            return reinterpret_cast<float*> ((address + 15) & ~(std::uintptr_t) 15);
++        };
++
++        if (bytes < 256 * 1024)
++        {
++            JUCE_BEGIN_IGNORE_WARNINGS_MSVC (6255)
++            function (align (alloca (bytes)));
++            JUCE_END_IGNORE_WARNINGS_MSVC
++        }
++        else
++        {
++            HeapBlock<char> heapSpace (bytes);
++            function (align (heapSpace.getData()));
++        }
++    }
++
++    int size;
++    PFFFT_Setup* realSetup;
++    PFFFT_Setup* complexSetup;
++};
++
++FFT::EngineImpl<PffftFFT> pffftFFT;
++#endif
++
+ //==============================================================================
+ //==============================================================================
+ #if (JUCE_MAC || JUCE_IOS) && JUCE_USE_VDSP_FRAMEWORK

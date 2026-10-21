@@ -10,7 +10,7 @@ namespace atlas::glitch_delay
 {
 
 /** A real-input FFT. Astralay ran this on PFFFT; Atlas uses juce::dsp::FFT, as its other spectral
-    effects do (vDSP on macOS).
+    effects do, which Atlas's JUCE patch runs on PFFFT.
 
     Spectra are interleaved complex bins 0 to size / 2 inclusive, so a spectrum buffer needs
     size + 2 floats. The inverse is scaled, so forward then inverse returns the original signal.

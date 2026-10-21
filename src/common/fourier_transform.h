@@ -18,17 +18,13 @@
 
 #include "JuceHeader.h"
 
-// JUCE's FFT has a fast engine only on Apple platforms (vDSP); elsewhere its
-// scalar fallback took about a third of a wavetable voice's CPU. PFFFT
-// (third_party/pffft) replaces it on Windows. The CMake option ATLAS_USE_PFFFT
-// turns it on elsewhere too (it builds pffft.c and defines this for every
-// target, which must all agree).
+// PFFFT (third_party/pffft) is Atlas's FFT on every platform, so Windows and
+// macOS transform alike; on Windows JUCE's own FFT would be a scalar fallback
+// that took about a third of a wavetable voice's CPU. The CMake option
+// ATLAS_USE_PFFFT (on by default) builds pffft.c and defines this for every
+// target, which must all agree.
 #ifndef ATLAS_USE_PFFFT
-  #if JUCE_WINDOWS
-    #define ATLAS_USE_PFFFT 1
-  #else
-    #define ATLAS_USE_PFFFT 0
-  #endif
+  #define ATLAS_USE_PFFFT 1
 #endif
 
 #if ATLAS_USE_PFFFT

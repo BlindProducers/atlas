@@ -153,26 +153,20 @@ set(ATLAS_MAIM_SOURCES
   src/synthesis/effects/maim/resampler.cpp
   src/synthesis/modules/maim_module.cpp)
 
-# PFFFT replaces JUCE's scalar FFT fallback for the oscillators
-# (src/common/fourier_transform.h, third_party/pffft). On by default where JUCE
-# has no fast FFT engine; turning it on for macOS puts both on the same FFT.
-if(WIN32)
-  set(ATLAS_USE_PFFFT_DEFAULT ON)
-else()
-  set(ATLAS_USE_PFFFT_DEFAULT OFF)
-endif()
-option(ATLAS_USE_PFFFT "Use PFFFT for the oscillators' FFT" ${ATLAS_USE_PFFFT_DEFAULT})
+# PFFFT (third_party/pffft) is every FFT in Atlas on every platform: the
+# oscillators' (src/common/fourier_transform.h) and, through
+# third_party/patches/juce8-pffft-fft-engine.patch, every juce::dsp::FFT and
+# juce::dsp::Convolution. Windows and macOS then transform alike, and Windows
+# no longer runs JUCE's scalar fallback. The definitions are public so every
+# target built against Atlas compiles JUCE's FFT and fourier_transform.h the
+# same way (they must all agree).
+option(ATLAS_USE_PFFFT "Use PFFFT for every FFT" ON)
 if(ATLAS_USE_PFFFT)
   target_sources(Atlas PRIVATE third_party/pffft/pffft.c)
-endif()
-# fourier_transform.h chooses the platform default itself; only a different
-# choice needs the definition, on Atlas and every target built against it.
-if((ATLAS_USE_PFFFT AND NOT WIN32) OR (NOT ATLAS_USE_PFFFT AND WIN32))
-  if(ATLAS_USE_PFFFT)
-    target_compile_definitions(Atlas PUBLIC ATLAS_USE_PFFFT=1)
-  else()
-    target_compile_definitions(Atlas PUBLIC ATLAS_USE_PFFFT=0)
-  endif()
+  target_include_directories(Atlas PUBLIC third_party/pffft)
+  target_compile_definitions(Atlas PUBLIC ATLAS_USE_PFFFT=1 JUCE_DSP_USE_PFFFT=1)
+else()
+  target_compile_definitions(Atlas PUBLIC ATLAS_USE_PFFFT=0)
 endif()
 
 target_sources(Atlas PRIVATE

@@ -18,6 +18,13 @@ Fetched by default, needed to build Atlas:
     wake-up while the window has no pending repaint and no `VBlankListener`;
     a repaint or a new listener starts it again. With Atlas's editor open
     and idle this saved about two points of one core.
+  - `juce8-pffft-fft-engine.patch`: adds a `juce::dsp::FFT` engine on PFFFT
+    (`pffft/`) ahead of JUCE's others when `JUCE_DSP_USE_PFFFT` is set, which
+    the Atlas target does for every target built against it. Every
+    `juce::dsp::FFT` and `juce::dsp::Convolution` in Atlas then runs on
+    PFFFT, on Windows instead of JUCE's scalar fallback and on macOS instead
+    of vDSP, so both platforms transform alike. Results keep JUCE's layout and
+    scaling (see `pffft/README.atlas.md`).
 - `nlohmann_json/`: nlohmann json 3.1.2 (MIT), from the release-tracking
   repository https://github.com/ArthurSonzogni/nlohmann_json_cmake_fetchcontent,
   which carries only the released header (`include/nlohmann/json.hpp`, the
@@ -94,9 +101,10 @@ Kept in this repository:
   (https://www.quut.com/gsm/, their own permissive licence in `COPYRIGHT`),
   unchanged, without the toast program. The Maim effect's GSM encoder.
 - `pffft/`: PFFFT by Julien Pommier (FFTPACK licence, BSD style), unchanged
-  from https://bitbucket.org/jpommier/pffft. The oscillators' FFT
-  (`vital::FourierTransform`) uses it on Windows, where JUCE has only a scalar
-  fallback; see `pffft/README.atlas.md`.
+  from https://bitbucket.org/jpommier/pffft. Every FFT in Atlas uses it on
+  every platform: the oscillators' (`vital::FourierTransform`) and, through
+  `patches/juce8-pffft-fft-engine.patch`, every `juce::dsp::FFT` and
+  `juce::dsp::Convolution`; see `pffft/README.atlas.md`.
 
 The Suppressor and Spectral Compressor effects are Atlas's own code under
 `src/synthesis/effects`. The JSFX oracle inputs are in `tests/jsfx/fixtures`.
