@@ -28,6 +28,13 @@ namespace {
 #else
   constexpr bool kRightBracketOpensMenus = false;
 #endif
+  // Removing an effect slot focuses its neighbouring slot on Windows only; the
+  // Mac goes to the chain's Add effect button.
+#if JUCE_WINDOWS
+  constexpr bool kWindowsRemovalFocusesNeighbour = true;
+#else
+  constexpr bool kWindowsRemovalFocusesNeighbour = false;
+#endif
 
   void pumpEditorEvents() {
     MessageManager::getInstance()->runDispatchLoopUntil(150);
@@ -124,7 +131,10 @@ namespace {
         editor->ensureComponentVisible(header);
         header->grabKeyboardFocus();
         expect(header->hasKeyboardFocus(false), "Effect header receives real keyboard focus");
-        const String expected_title = key == KeyPress::backspaceKey ? "Add effect"
+        // Removing the first of the two slots: on Windows the focus goes to
+        // the slot that takes its place, on the Mac to Add effect.
+        const String removal_title = kWindowsRemovalFocusesNeighbour ? "Slot 1 (Utility)" : "Add effect";
+        const String expected_title = key == KeyPress::backspaceKey ? removal_title
             : "Slot " + String(key == ']' ? 2 : 1) + " (Delay)";
         Component::SafePointer<Component> old_header(header);
         FocusDeletionAudit audit(*editor);
@@ -134,7 +144,7 @@ namespace {
         expect(audit.stale_references == 0, "Destroyed controls must leave both focus lists before deletion");
         auto* focused = Component::getCurrentlyFocusedComponent();
         expect(focused && focused->getTitle() == expected_title,
-               "Focus returns to the moved effect or Add effect after removal");
+               "Focus returns to the moved effect, or after a removal to the next slot (Windows) or Add effect");
         for (bool keyboard : {false, true}) {
           auto traverser = keyboard ? editor->createKeyboardFocusTraverser() : editor->createFocusTraverser();
           const auto controls = traverser->getAllComponents(editor.get());
@@ -164,6 +174,79 @@ namespace {
       editor->ensureComponentVisible(control);
       control->grabKeyboardFocus();
     }
+    editor.reset();
+    pumpEditorEvents();
+  }
+
+  // Removing an effect slot keeps the user's place in the chain on Windows:
+  // the focus goes to the slot before the removed one (for the first slot, to
+  // the one that takes its place), whether Delete, Backspace or the slot's
+  // Remove item removed it, and to Add effect only once the chain is empty.
+  // On the Mac it goes to Add effect every time.
+  void testEffectRemovalFocus() {
+    SynthPlugin synth;
+    const int main_effects[] { vital::constants::kDelay, vital::constants::kUtility, vital::constants::kReverb,
+                               vital::constants::kChorus };
+    for (int i = 0; i < 4; ++i)
+      synth.parameterChanged("fx_slot_" + std::to_string(i + 1) + "_type", main_effects[i] + 1);
+    synth.parameterChanged("bus_2_fx_slot_1_type", vital::constants::kDelay + 1);
+    synth.parameterChanged("bus_2_fx_slot_2_type", vital::constants::kChorus + 1);
+    auto editor = std::make_unique<SynthEditor>(synth);
+    editor->updateFullGui();
+    editor->addToDesktop(0);
+    editor->setVisible(true);
+    editor->toFront(true);
+    pumpEditorEvents();
+
+    enum class By { kDelete, kBackspace, kMenu };
+    // Removes the effect in slot `slot` (its index, which the chain keeps
+    // while the positions after it move up) and checks where the focus lands.
+    auto remove = [&](const String& section, int slot, By by, const String& windows_target) {
+      const String expected = kWindowsRemovalFocusesNeighbour ? windows_target : String("Add effect");
+      const std::string where = "slot " + std::to_string(slot + 1) + " of " + section.toStdString();
+      auto* header = editorSection(*editor, section, slot);
+      expect(header != nullptr, where + " is in the chain");
+      if (header == nullptr)
+        return;
+      editor->ensureComponentVisible(header);
+      header->grabKeyboardFocus();
+      Component::SafePointer<Component> old_header(header);
+      if (by == By::kMenu) {
+        bool removed = false;
+        PopupMenu menu = editor->createEffectSlotContextMenu(section, slot, header->getTitle());
+        for (PopupMenu::MenuItemIterator it(menu); it.next() && !removed;) {
+          if (it.getItem().text.startsWith("Remove ") && it.getItem().action != nullptr) {
+            it.getItem().action();
+            removed = true;
+          }
+        }
+        expect(removed, "the menu of " + where + " removes it");
+      }
+      else {
+        const int key = by == By::kDelete ? KeyPress::deleteKey : KeyPress::backspaceKey;
+        expect(header->keyPressed(KeyPress(key)), "the key removes " + where);
+      }
+      pumpUntil([&] { return old_header == nullptr && Component::getCurrentlyFocusedComponent() != nullptr; });
+      auto* focused = Component::getCurrentlyFocusedComponent();
+      String focused_section;
+      for (auto* component = focused; component != nullptr && focused_section.isEmpty();
+           component = component->getParentComponent())
+        focused_section = component->getProperties()["SectionName"].toString();
+      expect(focused != nullptr && focused->getTitle() == expected && focused_section == section,
+             "removing " + where + " puts the focus on " + expected.toStdString() + " in that chain (it is on " +
+                 (focused != nullptr ? focused->getTitle().toStdString() : std::string("nothing")) + ")");
+    };
+
+    const String main_chain = "Chain and routing";
+    remove(main_chain, 3, By::kDelete, "Slot 3 (Reverb)");     // the last slot: back one
+    remove(main_chain, 1, By::kMenu, "Slot 1 (Delay)");        // a middle slot, by its menu
+    remove(main_chain, 0, By::kBackspace, "Slot 1 (Reverb)");  // the first: the slot after it moves up
+    remove(main_chain, 2, By::kDelete, "Add effect");          // the only slot left: the chain is empty
+    const String bus_chain = "Bus 2 - Chain and routing";
+    remove(bus_chain, 1, By::kBackspace, "Slot 1 (Delay)");
+    remove(bus_chain, 0, By::kMenu, "Add effect");
+    close(synth.getControls().at("fx_slot_3_type")->value(), 0, "every removed main chain slot is empty");
+    close(synth.getControls().at("bus_2_fx_slot_1_type")->value(), 0, "the bus's slots are removed from the bus");
     editor.reset();
     pumpEditorEvents();
   }

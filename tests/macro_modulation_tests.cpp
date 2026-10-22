@@ -809,6 +809,7 @@ int main(int argc, char** argv) {
     return runCredentialStoreTests();
   if (argc > 1 && String(argv[1]) == "--editor-rebuild-focus") {
     testEditorRebuildFocus();
+    testEffectRemovalFocus();
     if (failures == 0)
       std::cout << "Atlas editor rebuild focus tests passed\n";
     return failures == 0 ? 0 : 1;

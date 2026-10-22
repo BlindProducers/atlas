@@ -1033,6 +1033,9 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     // keyed by the slot prefixes along with a swapped pair of slots.
     void swapEffectSlotModuleState(const String& firstPrefix, const String& secondPrefix);
     void clearEffectSlot(const String& sectionName, int slot);
+    // Removes a slot. The focus then goes to the slot before it (or after it,
+    // for the first) on Windows, and to focusedTitle on the Mac or once the
+    // chain is empty.
     void removeEffectSlot(const String& sectionName, int slot, const String& focusedTitle);
     void replaceEffectSlot(const String& sectionName, int slot, int effect);
     void showEffectSlotContextMenu(const String& sectionName, int slot, Component& target);

@@ -127,6 +127,17 @@ namespace {
   // Set on a grouping inside a slot that those steps pass by: the slot's FX
   // presets group, which every slot has whatever its effect.
   constexpr const char* kNotAnEffectStepProperty = "NotAnEffectStep";
+  // Whether removing an effect slot (Delete, Backspace or the slot's Remove
+  // item) puts the focus on the slot before it, or for the first slot on the
+  // one that takes its place, so the user stays where they were in the chain
+  // (SynthEditor::removeEffectSlot). The chain's Add effect button, before
+  // its first slot, is where it goes once the chain is empty, and where it
+  // always goes on the Mac. Asked for on Windows.
+#if JUCE_WINDOWS
+  constexpr bool kRemovedSlotFocusesItsNeighbour = true;
+#else
+  constexpr bool kRemovedSlotFocusesItsNeighbour = false;
+#endif
   // Whether a step to a bus's effects chain (comma, period, a number key)
   // lands on its Bus heading, as Ctrl 1 to 3 do, and says the bus ("Bus 2").
   // Otherwise it lands on the chain's Bus controls and says "Chain and
@@ -16676,13 +16687,25 @@ void SynthEditor::removeEffectSlot(const String& sectionName, int slot, const St
     return;
 
   const auto slots = activeEffectSlots(sectionName);
-  if (std::find(slots.begin(), slots.end(), slot) == slots.end())
+  const auto found = std::find(slots.begin(), slots.end(), slot);
+  if (found == slots.end())
     return;
+
+  // Its neighbour's heading as the rebuilt chain titles it: the slot before
+  // keeps its number, and the one after the first becomes Slot 1.
+  String focus_title = focusedTitle;
+  if (kRemovedSlotFocusesItsNeighbour && slots.size() > 1) {
+    const int position = static_cast<int>(std::distance(slots.begin(), found));
+    const int neighbour = position > 0 ? position - 1 : 1;
+    const int type = effectSlotType(sectionName, slots[static_cast<size_t>(neighbour)]);
+    if (type > 0)
+      focus_title = "Slot " + String(position > 0 ? position : 1) + " (" + effectName(type - 1) + ")";
+  }
 
   const String removed = effectSlotTitle(sectionName, slot);
   synth_.undoHistory().describeNextStep("remove " + effectName(effectSlotType(sectionName, slot) - 1));
   clearEffectSlot(sectionName, slot);
-  scheduleEffectChainRebuild(sectionName, focusedTitle);
+  scheduleEffectChainRebuild(sectionName, focus_title);
   postPluginAnnouncement("Removed " + removed, AccessibilityHandler::AnnouncementPriority::high);
 }
 
