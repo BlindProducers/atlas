@@ -266,6 +266,7 @@ namespace vital {
         speech->useInput(input(kReset), SpeechModule::kReset);
         speech->useInput(input(kRetrigger), SpeechModule::kRetrigger);
         speech->useInput(input(kMidi), SpeechModule::kMidi);
+        speech->useInput(input(kActiveVoices), SpeechModule::kActiveVoices);
         speech->useOutput(output(kRaw), SpeechModule::kRaw);
         speech->useOutput(output(kLevelled), SpeechModule::kLevelled);
         speech->useOutput(output(kHold), SpeechModule::kHold);

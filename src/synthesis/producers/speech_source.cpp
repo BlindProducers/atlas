@@ -281,6 +281,7 @@ namespace vital {
     const float sample_rate = getSampleRate();
     const poly_float note_input = input(kMidi)->at(0) + input(kTranspose)->at(0) + input(kTune)->at(0);
     const poly_mask reset_mask = getResetMask(kReset);
+    const poly_mask freed_mask = poly_float::lessThan(input(kActiveVoices)->at(0), 0.5f);
     const Output* events = input(kRetrigger)->source;
     const bool own_envelope = static_cast<int>(input(kAmpEnvMode)->at(0)[0] + 0.5f) == kVoiceEnvelope;
     const int split = utils::iclamp(static_cast<int>(input(kSplit)->at(0)[0] + 0.5f), 0, speech::kNumSplits - 1);
@@ -306,7 +307,7 @@ namespace vital {
     for (int voice = 0; voice < kVoicesPerProcessor; ++voice) {
       const int lane = 2 * voice;
       VoiceState& state = voices_[static_cast<size_t>(voice)];
-      if (reset_mask[lane]) {
+      if (reset_mask[lane] || freed_mask[lane]) {
         state.num_grains = 0;
         state.syllable = -1;
         state.singing = false;

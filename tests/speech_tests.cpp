@@ -723,6 +723,28 @@ namespace {
     }
     expect(voice_tail > 1.0e-3, "Voice sings the final consonant after release (" + std::to_string(voice_tail) + ")");
     expect(envelope_tail < voice_tail * 0.1, "Envelope 1 with no release cuts it (" + std::to_string(envelope_tail) + ")");
+
+    // Env 1 frees a voice in the middle of its phrase. Back in Voice mode,
+    // the next note takes the other voice of the same pair, and the freed
+    // one must not sing the rest of its phrase beside it. The next note is
+    // all but silent (velocity tracking, the lowest velocity), so anything
+    // heard is the freed voice.
+    {
+      SynthPlugin plugin;
+      preparePlayback(plugin, "one two three four five six seven eight");
+      setControl(plugin, "osc_1_speech_split", static_cast<float>(vital::speech::kSplitPhrase));
+      setControl(plugin, "osc_1_speech_speed", 0.0f);
+      setControl(plugin, "velocity_track", 1.0f);
+      setControl(plugin, "osc_1_speech_amp_env", 1.0f);
+      render(plugin, held + kRate / 4, { { 0, juce::MidiMessage::noteOn(1, 60, 1.0f) },
+                                        { held, juce::MidiMessage::noteOff(1, 60) } });
+      expect(plugin.getEngine()->getNumActiveVoices() == 0, "Envelope 1 frees the voice mid-phrase");
+      setControl(plugin, "osc_1_speech_amp_env", 0.0f);
+      const auto audio = render(plugin, held, { { 0, juce::MidiMessage::noteOn(1, 64, 1.0f / 127.0f) } });
+      expect(finite(audio), "the note after the mode change is finite");
+      const double stale = rms(audio, held / 4, held);
+      expect(stale < 1.0e-4, "a voice Envelope 1 freed stays silent in Voice mode (" + std::to_string(stale) + ")");
+    }
     return finish("envelope");
   }
 

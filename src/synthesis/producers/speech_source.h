@@ -35,7 +35,9 @@ namespace vital {
   // voice open until its last consonant ends; with Envelope 1 the slot
   // follows Env 1 like the wavetable oscillators. A voice the voice handler
   // kills (to free it for a new note) fades out over kVoiceKillTime instead
-  // of singing on.
+  // of singing on. A voice the handler has freed drops its syllable: Env 1
+  // can free one in the middle of it, and in Voice mode the rest would sing
+  // at full level whenever the other voice of its pair plays.
   //
   // Slot FM bends the note's pitch at audio rate: it scales how fast grains
   // are laid, never how fast the syllable is read, so the formants and the
@@ -72,6 +74,9 @@ namespace vital {
         // syllable carries on at the new pitch.
         kRetrigger,
         kMidi,
+        // 1 in the lanes of voices the voice handler is playing. A freed
+        // voice still runs beside the other voice of its pair.
+        kActiveVoices,
         kAmpEnvMode,
         kLevel,
         kPan,

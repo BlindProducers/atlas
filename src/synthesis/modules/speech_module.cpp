@@ -32,6 +32,7 @@ namespace vital {
     source_->useInput(input(kReset), SpeechSource::kReset);
     source_->useInput(input(kRetrigger), SpeechSource::kRetrigger);
     source_->useInput(input(kMidi), SpeechSource::kMidi);
+    source_->useInput(input(kActiveVoices), SpeechSource::kActiveVoices);
     source_->plug(amp_env, SpeechSource::kAmpEnvMode);
     source_->plug(level, SpeechSource::kLevel);
     source_->plug(pan, SpeechSource::kPan);

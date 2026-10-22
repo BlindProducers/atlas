@@ -24,6 +24,7 @@ namespace vital {
         // Note-ons except mono legato transitions, and note-offs.
         kRetrigger,
         kMidi,
+        kActiveVoices,
         kNumInputs
       };
 

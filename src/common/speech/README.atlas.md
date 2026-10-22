@@ -169,7 +169,8 @@ vowel), `--tuning` (Transpose and Tune), `--slot-modulation` (FM and RM),
 (intonation, middle C at the voice's pitch, an octave up, playing through),
 `--voice-controls` (formant, breath, speed and vibrato, and their reset on
 a new variant), `--envelope` (Voice sings the final consonant after release,
-Envelope 1 with no release cuts it), `--voice-kill` (a voice stolen for a
+Envelope 1 with no release cuts it, and a voice Envelope 1 freed mid-phrase
+stays silent beside the other voice of its pair in Voice mode), `--voice-kill` (a voice stolen for a
 new note fades out instead of singing the rest of its phrase), `--legato` (a mono legato note keeps
 its syllable, without Legato each note takes the next), `--sequence` (which
 syllable each note takes, chords, rewinding, phrase changes), `--transport`
