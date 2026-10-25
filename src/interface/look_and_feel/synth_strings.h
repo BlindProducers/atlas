@@ -962,6 +962,7 @@ namespace strings {
     "Sustain Env",
     "Loop Point",
     "Loop Hold",
+    "Free",
   };
 
   const std::string kSyncNames[] = {
@@ -971,6 +972,13 @@ namespace strings {
     "Sustain Envelope",
     "Loop Point",
     "Loop Hold",
+    "Free Running",
+  };
+
+  const std::string kRandomSyncNames[] = {
+    "Trigger",
+    "Sync",
+    "Free Running",
   };
 
   const std::string kRandomShortNames[] = {

@@ -51,6 +51,7 @@ namespace vital {
       void noteOff(int note, mono_float lift, int sample, int channel) override;
       bool shouldAccumulate(Output* output) override;
       void correctToTime(double seconds) override;
+      void advanceFreeClocks(int num_samples);
       void disableUnnecessaryModSources();
       void disableModSource(const std::string& source);
 

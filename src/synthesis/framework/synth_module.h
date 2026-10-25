@@ -154,6 +154,9 @@ namespace vital {
       virtual output_map getMonoModulations();
       virtual output_map getPolyModulations();
       virtual void correctToTime(double seconds) { }
+      // A modulation source that keeps running with no voice playing (a
+      // free-running LFO), so the engine processes it while idle.
+      virtual bool runsFreely() const { return false; }
       // Algorithmic delay at this module's effective (possibly oversampled) rate.
       virtual int getLatencySamples() const { return 0; }
       void enableOwnedProcessors(bool enable);

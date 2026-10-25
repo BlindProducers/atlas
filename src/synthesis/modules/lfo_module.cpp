@@ -66,6 +66,14 @@ namespace vital {
     lfo_->correctToTime(seconds);
   }
 
+  void LfoModule::advanceFreeClock(int num_samples) {
+    lfo_->advanceFreeClock(num_samples);
+  }
+
+  bool LfoModule::runsFreely() const {
+    return lfo_->runsFreely();
+  }
+
   void LfoModule::setControlRate(bool control_rate) {
     Processor::setControlRate(control_rate);
     lfo_->setControlRate(control_rate);

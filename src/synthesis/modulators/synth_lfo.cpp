@@ -31,7 +31,20 @@ namespace vital {
   } // namespace
 
   SynthLfo::SynthLfo(LineGenerator* source) : Processor(kNumInputs, kNumOutputs), source_(source),
-      sync_seconds_(std::make_shared<double>(0.0)) { }
+      sync_seconds_(std::make_shared<double>(0.0)), free_clock_(std::make_shared<FreeClock>()) { }
+
+  void SynthLfo::catchUpFreeClock() {
+    FreeClock& clock = *free_clock_;
+    if (!clock.started || clock.time != clock.now) {
+      if (clock.started) {
+        const double elapsed = static_cast<double>(clock.now - clock.time) / getSampleRate();
+        clock.phase = std::fmod(clock.phase + elapsed * clock.frequency, 2.0);
+      }
+      clock.time = clock.now;
+      clock.started = true;
+    }
+    phase_clock_.fill(clock.phase);
+  }
 
   poly_float SynthLfo::applySwingToPhase(poly_float phase, bool preserve_end) const {
     if (preserve_end)
@@ -86,6 +99,8 @@ namespace vital {
       state_.delay_time_passed.set(lane, 0.0f);
       state_.fade_amplitude.set(lane, 0.0f);
       state_.smooth_value.set(lane, 0.0f);
+      if (sync_type == kFreeRunning)
+        continue;
       if (sync_type == kSync) {
         const double event_seconds = *sync_seconds_ + static_cast<double>(sample) / getSampleRate();
         phase_clock_[lane] = event_seconds * static_cast<double>(frequency[lane]);
@@ -99,7 +114,7 @@ namespace vital {
     double& clock = phase_clock_[lane];
     clock += std::max(0.0, delta);
 
-    if (sync_type == kTrigger || sync_type == kSync) {
+    if (sync_type == kTrigger || sync_type == kSync || sync_type == kFreeRunning) {
       clock = std::fmod(clock, 2.0);
       if (clock < 0.0)
         clock += 2.0;
@@ -138,7 +153,10 @@ namespace vital {
     const poly_int trigger_offset = input(kNoteTrigger)->source->trigger_offset;
     const float tick_time = 1.0f / getSampleRate();
     const bool smooth_mode = input(kSmoothMode)->at(0)[0] >= 0.5f;
-    const bool preserve_end = sync_type != kTrigger && sync_type != kSync;
+    const bool free_running = sync_type == kFreeRunning;
+    const bool preserve_end = sync_type != kTrigger && sync_type != kSync && !free_running;
+    if (free_running)
+      catchUpFreeClock();
     poly_float last_result = state_.smooth_value;
     poly_float last_phase = 0.0f;
     poly_float last_frequency = 0.0f;
@@ -173,7 +191,7 @@ namespace vital {
         }
 
         double phase = phase_clock_[lane];
-        if (sync_type == kTrigger || sync_type == kSync)
+        if (sync_type == kTrigger || sync_type == kSync || free_running)
           phase += finiteOr(phase_control[lane], 0.0f);
         else if (sync_type == kEnvelope)
           phase = std::min(phase + static_cast<double>(finiteOr(phase_control[lane], 0.0f)), 1.0);
@@ -205,7 +223,9 @@ namespace vital {
         result.set(lane, utils::clamp(finiteOr(current, 0.0f), -1.0f, 1.0f));
 
         state_.delay_time_passed.set(lane, state_.delay_time_passed[lane] + tick_time);
-        if (past_delay_mask[lane] && sync_type != kSync) {
+        // A free-running phase moves on through a voice's delay, as it does
+        // between notes.
+        if ((past_delay_mask[lane] || free_running) && sync_type != kSync) {
           const bool held = held_mask_[lane] != 0;
           advanceClock(lane, sync_type, frequency[lane] * tick_time,
                        finiteOr(phase_control[lane], 0.0f), held);
@@ -220,6 +240,9 @@ namespace vital {
       last_frequency = frequency;
       state_.phase = phase_control;
     }
+
+    if (free_running)
+      free_clock_->frequency = last_frequency[0];
 
     if (isControlRate())
       output(kValue)->buffer[0] = last_result;

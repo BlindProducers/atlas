@@ -629,6 +629,14 @@ namespace vital {
     producers_->correctToTime(seconds);
   }
 
+  // Free-running LFOs and random modulators keep time whether or not a voice sounds.
+  void SynthVoiceHandler::advanceFreeClocks(int num_samples) {
+    for (int i = 0; i < kNumLfos; ++i)
+      lfos_[i]->advanceFreeClock(num_samples);
+    for (int i = 0; i < kNumRandomLfos; ++i)
+      random_lfos_[i]->advanceFreeClock(num_samples);
+  }
+
   void SynthVoiceHandler::disableUnnecessaryModSources() {
     for (int i = 0; i < kNumLfos; ++i)
       lfos_[i]->enable(false);

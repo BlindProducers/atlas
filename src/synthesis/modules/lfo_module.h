@@ -45,6 +45,8 @@ namespace vital {
       void init() override;
       virtual Processor* clone() const override { return new LfoModule(*this); }
       void correctToTime(double seconds) override;
+      void advanceFreeClock(int num_samples);
+      bool runsFreely() const override;
       void setControlRate(bool control_rate) override;
 
     protected:

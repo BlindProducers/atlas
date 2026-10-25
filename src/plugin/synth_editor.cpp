@@ -42,6 +42,7 @@
 #include "sample_source.h"
 #include "source_types.h"
 #include "braids_engine.h"
+#include "random_lfo.h"
 #include "synth_lfo.h"
 #include "synth_oscillator.h"
 #include "synth_strings.h"
@@ -3733,7 +3734,7 @@ namespace {
       if (suffix == "frequency") return "Set the free-running LFO rate.";
       if (suffix == "tempo") return "Choose the tempo-synced LFO rate.";
       if (suffix == "sync") return "Choose seconds, tempo, dotted, triplet, or keytracked timing.";
-      if (suffix == "sync_type") return "Choose whether the LFO follows host transport or retriggers freely.";
+      if (suffix == "sync_type") return "Choose whether the LFO restarts with each note, follows host transport, runs once as an envelope, or runs freely across notes.";
       if (suffix == "phase") return "Set where the LFO cycle starts.";
       if (suffix == "delay_time") return "Delay the LFO after note start.";
       if (suffix == "fade_time") return "Fade the LFO modulation in after note start, including when smoothing is enabled.";
@@ -3752,7 +3753,7 @@ namespace {
       if (suffix == "rate_x10") return "Multiply this random modulation rate by ten.";
       if (suffix == "sync") return "Choose seconds, tempo, dotted, triplet, or keytracked timing.";
       if (suffix == "tempo") return "Choose the tempo-synced random modulation rate.";
-      if (suffix == "sync_type") return "Choose whether random modulation follows host transport.";
+      if (suffix == "sync_type") return "Choose whether random modulation restarts with each note, follows host transport, or runs freely across notes.";
       if (suffix == "stereo") return "Choose whether left and right channels share or split random values.";
       if (suffix == "keytrack_transpose") return "Transpose the keytracked random rate.";
       if (suffix == "keytrack_tune") return "Fine tune the keytracked random rate.";
@@ -7743,10 +7744,13 @@ std::unique_ptr<AccessibleParameterRow> SynthEditor::buildAccessibleParameterRow
       return std::make_unique<AccessibleParameterRow>(parameter, "Tempo");
     if (suffix == "sync_type")
       return std::make_unique<AccessibleParameterRow>(
-          parameter, "Transport sync",
-          [](double value) { return value >= 0.5 ? "Host synced" : "Free running"; }, 1.0, 0.0,
+          parameter, "Sync type",
+          [](double value) {
+            const int mode = juce::jlimit(0, vital::RandomLfo::kNumSyncModes - 1, juce::roundToInt(value));
+            return String(strings::kRandomSyncNames[mode]);
+          }, 1.0, 0.0,
           String(), String(),
-          "Choose whether the random LFO follows host transport sync or runs freely", true);
+          "Choose whether the random LFO restarts with each note, follows host transport sync, or runs freely across notes", true);
     if (suffix == "stereo")
       return std::make_unique<AccessibleParameterRow>(
           parameter, "Stereo mode",

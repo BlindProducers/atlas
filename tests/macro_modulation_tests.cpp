@@ -7,6 +7,8 @@
 #include "value_bridge.h"
 #include "sample_source.h"
 #include "source_types.h"
+#include "random_lfo.h"
+#include "synth_lfo.h"
 #include "synth_strings.h"
 #include "file_source.h"
 #include "line_generator.h"
@@ -201,6 +203,72 @@ namespace {
     lfoPitchCurves(1, false, { 0.37, 0.61 }, 0.6, &origin);
     expect(std::abs(origin - 0.37) < 0.01,
            "a note played while another sounds joins the running clock instead of restarting it");
+  }
+
+  // Free Running keeps one LFO phase through every note and the gaps between
+  // them, transport or not: notes two cycles apart hear the same curve, notes
+  // two and a half apart hear it half a cycle out.
+  void testFreeRunningLfoJoinsNotesWherever() {
+    for (bool playing : { false, true }) {
+      const std::string transport = playing ? " with the transport running" : " with the transport stopped";
+      auto whole = lfoPitchCurves(vital::SynthLfo::kFreeRunning, playing, { 0.37, 1.37 }, 0.45);
+      expect(curveDifference(whole[0], whole[1]) < 0.3,
+             "a free-running LFO is where it would be two cycles on" + transport);
+      auto half = lfoPitchCurves(vital::SynthLfo::kFreeRunning, playing, { 0.37, 1.62 }, 0.45);
+      expect(curveDifference(half[0], half[1]) > 4.0,
+             "a free-running LFO does not restart with a note" + transport);
+    }
+  }
+
+  // An LFO or random source on an effect keeps moving after the last voice
+  // has released when it runs freely; Trigger holds its last value.
+  void testFreeRunningSourcesOutliveTheirVoices() {
+    for (const std::string source : { "lfo_1", "random_1" }) {
+      for (bool free_running : { false, true }) {
+        SynthPlugin synth;
+        prepare(synth);
+        auto& controls = synth.getControls();
+        controls.at("env_1_release")->set(0.05f);
+        controls.at(source + "_frequency")->set(2.0f);
+        controls.at(source + "_sync")->set(0.0f);   // seconds
+        const float mode = source == "lfo_1" ? float(vital::SynthLfo::kFreeRunning)
+                                             : float(vital::RandomLfo::kFreeRunning);
+        controls.at(source + "_sync_type")->set(free_running ? mode : 0.0f);
+        auto* route = connect(synth, source, "delay_dry_wet");
+        expect(route != nullptr, "connect " + source + " to an effect");
+        if (route == nullptr)
+          continue;
+
+        MidiBuffer on;
+        on.addEvent(MidiMessage::noteOn(1, 60, 0.8f), 0);
+        renderMidi(synth, on);
+        for (int block = 0; block < 40; ++block) {
+          MidiBuffer none;
+          renderMidi(synth, none);
+        }
+        MidiBuffer off;
+        off.addEvent(MidiMessage::noteOff(1, 60), 0);
+        renderMidi(synth, off);
+        for (int block = 0; block < 75; ++block) {
+          MidiBuffer none;
+          renderMidi(synth, none);
+        }
+        expect(synth.getEngine()->getNumActiveVoices() == 0, source + ": the voice has released");
+
+        float lowest = 1.0e9f, highest = -1.0e9f;
+        for (int block = 0; block < 375; ++block) {
+          MidiBuffer none;
+          renderMidi(synth, none);
+          const float value = route->modulation_processor->output()->buffer[0][0];
+          lowest = std::min(lowest, value);
+          highest = std::max(highest, value);
+        }
+        if (free_running)
+          expect(highest - lowest > 0.2f, source + ": a free-running source keeps moving after its voice ends");
+        else
+          expect(highest - lowest < 1.0e-4f, source + ": a triggered source holds after its voice ends");
+      }
+    }
   }
 
   // As in a preset made on a Mac: LFO 5 holds 0.5, then 1, then 0 across two
@@ -1161,6 +1229,8 @@ int main(int argc, char** argv) {
   testArpeggiatorTailsKeepTheirSlot();
   testGranularGridFollowsPluginClock();
   testSyncedLfoNotesWithTransportStoppedAndPlaying();
+  testFreeRunningLfoJoinsNotesWherever();
+  testFreeRunningSourcesOutliveTheirVoices();
   testLfoTempoModulatedByAnotherLfo();
   if (failures == 0)
     std::cout << "Atlas macro tests passed\n";

@@ -558,6 +558,19 @@ namespace vital {
         // level, pitch, or another per-sample destination.
         const int modulation_samples = num_samples * modulation->getOversampleAmount();
         if (modulation->collapsesPolyphonicSource()) {
+          // A free-running source carries on without voices: run it as an
+          // envelope is below and take its first voice pair, which every
+          // voice shares. The source counts as a new owner, so the step from
+          // the last voice's value gets the usual handoff.
+          Processor* source_owner = modulation->input(ModulationConnectionProcessor::kModulationInput)->source->owner;
+          auto* source_module = dynamic_cast<SynthModule*>(source_owner);
+          if (source_module != nullptr && source_module->runsFreely()) {
+            if (refreshed_idle_sources_.insert(source_owner))
+              source_owner->process(num_samples * source_owner->getOversampleAmount());
+            modulation->process(modulation_samples);
+            modulation->collapseToVoice(constants::kFirstMask, modulation_samples, -1, source_owner);
+            continue;
+          }
           // The final active block has already latched the actual sounding
           // voice pair. Keep that value constant through an FX-only tail;
           // reprocessing stale SIMD lanes here causes note-to-note alternation.
@@ -574,6 +587,8 @@ namespace vital {
         }
       }
     }
+    // After the idle sources above, so they render the block voices would.
+    voice_handler_->advanceFreeClocks(num_samples * voice_handler_->getOversampleAmount());
 
     for (auto& status_source : data_->status_outputs)
       status_source.second->update();
