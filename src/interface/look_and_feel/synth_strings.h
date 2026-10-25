@@ -658,7 +658,8 @@ namespace strings {
     "openwurli_amp",
     "scanner_vibrato",
     "analoguecompressor",
-    "maim"
+    "maim",
+    "particles"
   };
 
   const std::string kEffectSlotTypeNames[] = {
@@ -703,7 +704,8 @@ namespace strings {
     "OpenWurli Amp",
     "Scanner Vibrato",
     "Analogue Compressor",
-    "Maim"
+    "Maim",
+    "Particles"
   };
 
   // Both tables are indexed by effect; a missing entry would read out of bounds.
@@ -767,6 +769,11 @@ namespace strings {
   const std::string kMaimLpcRateNames[] = { "2 kHz", "3 kHz", "4 kHz", "5 kHz", "6 kHz", "8 kHz", "11.025 kHz",
                                            "12 kHz", "16 kHz", "22.05 kHz" };
   const std::string kMaimLossModeNames[] = { "Drop", "Stick" };
+  // Particles' playback modes and qualities, in the order of atlas::particles::Mode and Quality.
+  const std::string kParticlesModeNames[] = { "Granular", "Pitch shifter and time stretcher", "Looping delay",
+                                             "Spectral" };
+  const std::string kParticlesQualityNames[] = { "16-bit stereo, 1 second", "16-bit mono, 2 seconds",
+                                                "8-bit stereo, 4 seconds", "8-bit mono, 7 seconds" };
   const std::string kAnalogueWahModelNames[] = { "Cry Baby", "V846", "Mu-Tron III" };
   const std::string kAnalogueWahModeNames[] = { "LP", "BP", "HP" };
   const std::string kAnalogueWahRangeNames[] = { "Lo", "Hi" };
@@ -1066,6 +1073,7 @@ namespace strings {
     "SCANNER VIBRATO",
     "ANALOGUE COMPRESSOR",
     "MAIM",
+    "PARTICLES",
   };
 
   const std::string kDestinationMenuNames[vital::constants::kNumDestinations] = {
@@ -1118,6 +1126,7 @@ namespace strings {
     "Scanner Vibrato",
     "Analogue Compressor",
     "Maim",
+    "Particles",
   };
 
   const std::string kBusDestinationNames[vital::constants::kNumBusDestinations] = {

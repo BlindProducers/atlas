@@ -183,6 +183,7 @@ namespace vital {
       kScannerVibrato,
       kAnalogueCompressor,
       kMaim,
+      kParticles,
       kNumEffects
     };
 

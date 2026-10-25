@@ -4,7 +4,7 @@ The Braids oscillator type runs the synthesis code of Mutable Instruments
 Braids (firmware 1.9) by Emilie Gillet. It is published under the MIT licence
 at https://github.com/pichenettes/eurorack (`braids/`), with its support
 library at https://github.com/pichenettes/stmlib. The licence text is in each
-file's header and in `LICENSE.stmlib`.
+file's header and in `../stmlib/LICENSE`.
 
 Copied from eurorack c25ff2b2226cf9f3f9be85a5ff01fbe05f5f72ed, with stmlib at
 the commit that tree pins, e3bd7c9cc00e4364166f9905c0509b6ffd0535ec:
@@ -13,7 +13,9 @@ the commit that tree pins, e3bd7c9cc00e4364166f9905c0509b6ffd0535ec:
   `resources`, `excitation.h`, `parameter_interpolation.h`, `settings.h` and
   `svf.h`. These are byte-identical to the originals, except the three headers
   named below.
-- `stmlib/`: `stmlib.h` (identical), `utils/dsp.h` and `utils/random.{h,cc}`.
+- `stmlib/` (now `../stmlib/stmlib/`, shared with the Particles effect, which
+  added the files it needs): `stmlib.h` (identical), `utils/dsp.h` and
+  `utils/random.{h,cc}`.
 
 Changes:
 

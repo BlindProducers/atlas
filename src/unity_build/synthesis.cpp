@@ -84,6 +84,7 @@
 #include "distortion_module.cpp"
 #include "flanger_module.cpp"
 #include "tremolo_pan_module.cpp"
+#include "particles_module.cpp"
 #include "trance_gate_module.cpp"
 #include "limiter_module.cpp"
 #include "phase_shift_module.cpp"

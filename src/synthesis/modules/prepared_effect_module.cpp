@@ -36,7 +36,7 @@ bool resetsInPlace(int type) {
     case constants::kAnalogueFlanger: case constants::kAnalogueEcho:
     case constants::kAnalogueRotary: case constants::kAnalogueSpring:
     case constants::kAnalogueWah: case constants::kSpectralBalance:
-    case constants::kGlitchDelay: case constants::kMaim: return false;
+    case constants::kGlitchDelay: case constants::kMaim: case constants::kParticles: return false;
     default: return true;
   }
 }

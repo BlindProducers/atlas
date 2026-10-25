@@ -25,6 +25,7 @@
 #include "analogue_wah_module.h"
 #include "analogue_compressor_module.h"
 #include "maim_module.h"
+#include "particles_module.h"
 #include "filter_fx_module.h"
 #include "spectral_balance_module.h"
 #include "glitch_delay_module.h"
@@ -226,6 +227,8 @@ namespace vital {
         return new AnalogueCompressorModule(module_prefix);
       case constants::kMaim:
         return new MaimModule(module_prefix);
+      case constants::kParticles:
+        return new ParticlesModule(note_monitor_, module_prefix);
       default:
         return nullptr;
     }
@@ -339,6 +342,9 @@ namespace vital {
       case constants::kConvolutionReverb:  // an impulse response's quiet start
         seconds = 2.0f;
         break;
+      case constants::kParticles:          // up to 7.4 s recorded, frozen or fed back
+        seconds = 9.0f;
+        break;
       default:
         break;
     }
@@ -354,6 +360,7 @@ namespace vital {
     // there; LatencyCompensatedSum clamps rather than overruns beyond it.
     static_assert(kMaxLatencySamples >= 2 * SpectralLockModule::kMaxSpectralLatencySamples);
     static_assert(kMaxLatencySamples >= 2 * MaimModule::kMaxLatencySamples);
+    static_assert(kMaxLatencySamples >= 2 * ParticlesModule::kMaxLatencySamples);
     int latency = 0;
     for (int slot = 0; slot < constants::kMaxEffectSlots; ++slot) {
       const int index = utils::iclamp(static_cast<int>(slot_types_[slot]->value() + 0.5f) - 1,

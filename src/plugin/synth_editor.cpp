@@ -1700,7 +1700,8 @@ namespace {
         "OpenWurli Amp",
         "Scanner Vibrato",
         "Analogue Compressor",
-        "Maim"
+        "Maim",
+        "Particles"
       };
       for (int envelope = 1; envelope <= vital::kNumEnvelopes; ++envelope)
         result.push_back("Envelope " + String(envelope));
@@ -1776,7 +1777,7 @@ namespace {
         section == "Analogue Rotary" || section == "Analogue Spring" ||
         section == "Analogue Wah" || section == "Spectral Balance" || section == "Glitch Delay" ||
         section == "OpenWurli Amp" || section == "Scanner Vibrato" || section == "Analogue Compressor" ||
-        section == "Maim")
+        section == "Maim" || section == "Particles")
       return "Effects";
     if (section == "Modulation routing")
       return "Modulation";
@@ -1953,6 +1954,9 @@ namespace {
                     "feedback", "butterfly_straight", "butterfly_crossed", "band_step", "band_invert", "window_step",
                     "band_shift", "band_reverse", "loss_period", "loss_width", "loss_jitter", "loss_mode", "drive",
                     "low_cut", "high_cut", "makeup" });
+    if (effect_id == "particles")
+      return rank({ "mode", "quality", "input_gain", "position", "size", "pitch", "density", "texture", "mix",
+                    "spread", "feedback", "reverb", "freeze", "trigger" });
     if (effect_id == "glitch_delay")
       return glitchDelayParameterRank(suffix);
     if (effect_id == "spectral_balance")
@@ -2690,7 +2694,7 @@ namespace {
         { "Analogue", { kAnalogueChorus, kAnalogueFlanger, kAnalogueEcho, kAnalogueRotary, kAnalogueSpring, kAnalogueWah,
                         kTape, kOpenWurliAmp, kScannerVibrato, kAnalogueCompressor } },
         { "Dynamics", { kCompressor, kLimiter, kSuppressor } },
-        { "Space", { kReverb, kConvolutionReverb, kDelay, kFloatyDelay, kGlitchDelay } },
+        { "Space", { kReverb, kConvolutionReverb, kDelay, kFloatyDelay, kGlitchDelay, kParticles } },
         { "Modulation", { kChorus, kFlanger, kPhaser, kTremoloPan, kDimensionExpander, kPhaseShift,
                           kFrequencyShifter, kTranceGate } },
         { "Distortion and character", { kDistortion, kWaveShaper, kErosion, kResonator, kMaim } },
@@ -2783,6 +2787,7 @@ namespace {
     if (rest.startsWith("scanner_vibrato_")) return "Scanner Vibrato";
     if (rest.startsWith("analoguecompressor_")) return "Analogue Compressor";
     if (rest.startsWith("maim_")) return "Maim";
+    if (rest.startsWith("particles_")) return "Particles";
     if (rest.startsWith("spectral_compressor_")) return "Spectral Compressor";
     if (rest.startsWith("spectral_gate_")) return "Spectral Gate";
     if (rest.startsWith("erosion_")) return "Erosion";
@@ -2936,6 +2941,7 @@ namespace {
     if (id.startsWith("scanner_vibrato_")) return "Scanner Vibrato";
     if (id.startsWith("analoguecompressor_")) return "Analogue Compressor";
     if (id.startsWith("maim_")) return "Maim";
+    if (id.startsWith("particles_")) return "Particles";
     if (id.startsWith("spectral_compressor_")) return "Spectral Compressor";
     if (id.startsWith("spectral_gate_")) return "Spectral Gate";
     if (const int arp = arpeggiatorForId(id); arp > 0) return "Arpeggiator " + String(arp);
@@ -3251,6 +3257,57 @@ namespace {
       return "A gentle low-pass filter after the codec, with its cutoff here.";
     return {};
   }
+  // Particles' controls mean different things in each mode, as on the module.
+  String particlesHelpText(const String& suffix) {
+    if (suffix == "mode")
+      return "Choose how the recorded sound is played. Granular sows overlapping grains from the buffer. Pitch "
+             "shifter and time stretcher plays it back continuously, splicing where the waveform matches. Looping "
+             "delay replays the buffer as a delay you can loop and pitch shift. Spectral freezes and reshapes the "
+             "sound's spectrum. Changing mode starts with an empty buffer.";
+    if (suffix == "quality")
+      return "Choose the recording's channels and resolution, which set how much sound the buffer holds: about 1 "
+             "second in 16-bit stereo, 2 in 16-bit mono, 4 in 8-bit stereo and 7 in 8-bit mono. The 8-bit settings "
+             "run at half the rate and sound grainier. Changing quality empties the buffer.";
+    if (suffix == "input_gain")
+      return "Set the level going into the 16-bit recording, from minus 18 to plus 6 dB. The input clips at full "
+             "scale, as the module's does.";
+    if (suffix == "position")
+      return "Choose where in the buffer grains are taken from. Higher settings reach further back in time. In "
+             "Looping delay mode it sets the delay time, or with Freeze on where the loop starts; in Spectral "
+             "mode, which recent spectrum is played.";
+    if (suffix == "size")
+      return "Set the grain size in Granular mode, from short and buzzy to long and smooth. In Pitch shifter mode "
+             "it sets the size of the splicing window. In Looping delay mode it sets the pitch shifter's window, "
+             "and with Freeze on the loop's length. In Spectral mode it warps the spectrum.";
+    if (suffix == "pitch")
+      return "Transpose the grains up or down by up to four octaves. In Looping delay mode it pitch shifts the "
+             "delayed sound.";
+    if (suffix == "density")
+      return "In Granular mode, how many grains play. Zero plays none; negative values sow them at a steady rate "
+             "and positive values at random, more of them further from zero. In Pitch shifter and Looping delay "
+             "modes it sets the amount of diffusion; in Spectral mode, how often the spectrum is refreshed.";
+    if (suffix == "texture")
+      return "In Granular mode, the grains' envelope: square at zero, then triangular, then smooth, adding "
+             "diffusion above 75 percent. In Pitch shifter and Looping delay modes, a filter: low pass below 50 "
+             "percent and high pass above. In Spectral mode, how coarsely the spectrum is quantized.";
+    if (suffix == "mix")
+      return "Blend the dry sound with the processed sound. 100 percent is the processed sound alone.";
+    if (suffix == "spread")
+      return "Place grains at random across the stereo field. Zero keeps them in the centre.";
+    if (suffix == "feedback")
+      return "Feed the processed sound back into the recording, for repeating, building textures. With Freeze on, "
+             "Feedback adds reverb instead.";
+    if (suffix == "reverb")
+      return "Add the built-in reverb to the processed sound.";
+    if (suffix == "freeze")
+      return "Stop recording, so the buffer holds what it has and the grains keep playing it. Modulation above "
+             "one half freezes it.";
+    if (suffix == "trigger")
+      return "Fire a single grain each time this rises through 50 percent, as a modulation source can. Every "
+             "note you play also fires one. With Density at zero, grains play only when triggered.";
+    return {};
+  }
+
 
   String glitchDelayHelpText(const String& suffix) {
     if (suffix == "on") return "Enable or bypass this effect.";
@@ -3961,6 +4018,11 @@ namespace {
       if (help.isNotEmpty())
         return help;
     }
+    if (const String particles_suffix = effectSuffix("particles_"); particles_suffix.isNotEmpty()) {
+      const String help = particlesHelpText(particles_suffix);
+      if (help.isNotEmpty())
+        return help;
+    }
     const String analogue_spring_suffix = effectSuffix("analoguespring_");
     if (analogue_spring_suffix.isNotEmpty()) {
       if (analogue_spring_suffix == "tank") return "Choose a Short, Medium or Long spring tank. Longer tanks ring longer.";
@@ -4048,7 +4110,7 @@ namespace {
       "eq_", "flanger_", "frequency_shifter_", "limiter_", "mid_side_eq_", "phase_shift_", "phaser_",
       "reverb_", "utility_", "waveshaper_", "spectral_gate_", "erosion_", "floaty_delay_", "spectral_compressor_", "scream_", "tremolo_pan_", "tape_", "defuse_", "suppressor_", "trance_gate_", "spectral_lock_", "resonator_",
       "analoguechorus_", "analogueflanger_", "analogueecho_", "analoguerotary_", "analoguespring_", "analoguewah_",
-      "spectral_balance_", "openwurli_amp_", "scanner_vibrato_", "analoguecompressor_", "maim_"
+      "spectral_balance_", "openwurli_amp_", "scanner_vibrato_", "analoguecompressor_", "maim_", "particles_"
     };
     for (const auto& prefix : effect_prefixes) {
       effect_suffix = effectSuffix(prefix);
@@ -5006,6 +5068,8 @@ namespace {
     const bool analogue_control = continuous && (parameter_id.startsWith("analogue") ||
                                                  parameter_id.contains("_analogue"));
     const bool maim_control = continuous && (parameter_id.startsWith("maim_") || parameter_id.contains("_maim_"));
+    const bool particles_control = continuous && (parameter_id.startsWith("particles_") ||
+                                                  parameter_id.contains("_particles_"));
     if (parameter_id == "release_velocity_glide_time") {
       slider.toAdjustmentValue = [](double value) { return value * 10.0; };
       slider.fromAdjustmentValue = [](double seconds) { return seconds / 10.0; };
@@ -5114,6 +5178,16 @@ namespace {
         return ((cubic ? std::cbrt(jmax(0.0, value)) : value) - minimum) / span;
       };
       const double step = cubic ? 0.05 : String(details.display_units).trim() == "dB" ? 0.5 : 1.0;
+      slider.adjustmentStep = [step] { return step; };
+    }
+    if (bridge != nullptr && particles_control && interval == 0.0 &&
+        bridge->getDetails().value_scale == vital::ValueDetails::kLinear) {
+      // Keys move in display units: one percent, one semitone or half a decibel.
+      const auto& details = bridge->getDetails();
+      const double minimum = details.min, span = details.max - minimum, scale = details.display_multiply;
+      slider.toAdjustmentValue = [minimum, span, scale](double v) { return (minimum + span * v) * scale; };
+      slider.fromAdjustmentValue = [minimum, span, scale](double v) { return (v / scale - minimum) / span; };
+      const double step = String(details.display_units).trim() == "dB" ? 0.5 : 1.0;
       slider.adjustmentStep = [step] { return step; };
     }
     if (bridge != nullptr && analogue_control && interval == 0.0 &&
@@ -5751,7 +5825,9 @@ class AccessibleParameterRow : public Component {
                                         parameter_id.endsWith("_speech_variant");
       // The Analogue Compressor's Mode keeps its rows, but reads best as a menu.
       const bool analogue_compressor_mode = parameter_id.endsWith("analoguecompressor_mode");
-      use_combo_control_ = row_switching_choice || speech_voice_control || analogue_compressor_mode ||
+      // So do Particles' Mode and Quality, whose names are long.
+      const bool particles_menu = parameter_id.endsWith("particles_mode") || parameter_id.endsWith("particles_quality");
+      use_combo_control_ = row_switching_choice || speech_voice_control || analogue_compressor_mode || particles_menu ||
                            (spectral_lock_control && (parameter_id.endsWith("_root") || parameter_id.endsWith("_scale")));
       const bool tape_control = parameter_id.startsWith("tape_") || parameter_id.contains("_tape_");
       const bool suppressor_control = parameter_id.startsWith("suppressor_") || parameter_id.contains("_suppressor_");
@@ -5764,6 +5840,7 @@ class AccessibleParameterRow : public Component {
       const bool resonator_control = parameter_id.startsWith("resonator_") || parameter_id.contains("_resonator_");
       const bool glitch_delay_control = parameter_id.startsWith("glitch_delay_") || parameter_id.contains("_glitch_delay_");
       const bool maim_control = parameter_id.startsWith("maim_") || parameter_id.contains("_maim_");
+      const bool particles_control = parameter_id.startsWith("particles_") || parameter_id.contains("_particles_");
       const auto accessible_name = accessibleName.isNotEmpty() ? accessibleName : (random_rate ? String("Rate") : name);
       const String parameter_description = accessibleDescription.isNotEmpty()
           ? accessibleDescription
@@ -5839,6 +5916,7 @@ class AccessibleParameterRow : public Component {
                                         : defuse_control ? "Use arrows to adjust, Shift arrows for finer changes, and Page keys for ten times the increment. Stages change by one, Frequency by 10 Hz, Resonance by 0.01, Spread by 0.1 octave, and Automation Precision by one percent. Enter types a value; Backspace restores the default. Home selects maximum and End minimum. Shift M opens the context menu."
                                         : tape_control ? "Use arrows to adjust, Shift arrows for finer changes, and Page keys for larger changes. Wow Rate uses 0.01 Hz, Flutter Rate 0.1 Hz, cutoffs 10 Hz, levels 0.1, Drive and percentages one percent. Enter types a value; Backspace restores the default. Home selects maximum and End minimum. Shift M opens the context menu."
                                         : maim_control ? "Use arrows for changes, Shift arrows for a tenth of the step, and Page keys for ten times the step. Percentages move one percent, Drive and Makeup half a decibel, Loss Period 50 milliseconds, the cutoffs 10 hertz, and lines, bands and steps one at a time. Home for maximum, End for minimum, Enter to type a value, Backspace to reset to default. Press Shift M for the context menu, Shift L for MIDI learn, and Shift C to clear MIDI learn."
+                                        : particles_control ? "Use arrows for changes, Shift arrows for a tenth of the step, and Page keys for ten times the step. Percentages move one percent, Pitch one semitone and Input Gain half a decibel. Home for maximum, End for minimum, Enter to type a value, Backspace to reset to default. Press Shift M for the context menu, Shift L for MIDI learn, and Shift C to clear MIDI learn."
                                         : glitch_delay_control ? "Use arrows for changes, Shift arrows for a tenth of the step, and Page keys for ten times the step. Tap times, Glide and tape times move 10 ms; Buffer and Smear Size 5 ms; slice and grain sizes 1 ms; High Cut 100 Hz; Low Cut and ring frequencies 10 Hz; pitch ranges one semitone; sweep speeds and formant shifts 0.1 semitone; FM ratios 0.05; FM index and rate reduction 0.1; densities one grain a second; Volume 0.5 dB and Output Gain 0.1 dB; percentages one percent. Home for maximum, End for minimum, Enter to type a value, Backspace to reset to default. Press Shift M for the context menu, Shift L for MIDI learn, and Shift C to clear MIDI learn."
                                         : resonator_control ? "Use arrows for changes, Shift arrows for finer changes, and Page keys for ten times the step. Tune moves one semitone; Decay, rates and Filter Frequency move in even ratio steps; percentages, degrees, cents and Glide milliseconds move by one; decibels, LFO Amount and Filter Bandwidth by 0.1; Ratio by 0.01. Named choices move one item at a time. Home for maximum, End for minimum, Enter to type a value, Backspace to reset to default. Press Shift M for the context menu, Shift L for MIDI learn, and Shift C to clear MIDI learn."
                                         : tremolo_control ? "Use arrows for changes, Shift arrows for finer changes, and Page keys for larger changes. Free Rate uses 0.1 Hz steps, Stereo Phase and Offset use one degree, Depth and Mix use one percent, and Smoothing uses 0.1 ms. Named choices move one item at a time. Home for maximum, End for minimum, Enter to type a value, Backspace to reset to default. Press Shift M for the context menu, Shift L for MIDI learn, and Shift C to clear MIDI learn."

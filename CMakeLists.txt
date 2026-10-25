@@ -153,6 +153,25 @@ set(ATLAS_MAIM_SOURCES
   src/synthesis/effects/maim/resampler.cpp
   src/synthesis/modules/maim_module.cpp)
 
+# The Particles effect runs Mutable Instruments' granular processor (MIT,
+# src/synthesis/effects/particles/clouds, unmodified) and the stmlib DSP it
+# needs. Like Braids it is firmware code: TEST is stmlib's host-build switch
+# (portable C in place of ARM assembly), and its 16.16 phase arithmetic wants
+# -fwrapv. Its floats round alike on arm64 and x64 only without fast-math or
+# FMA contraction, which the engine test's bit-exact comparison relies on.
+# _USE_MATH_DEFINES gives MSVC the M_PI stmlib's filters use.
+set(ATLAS_PARTICLES_SOURCES
+  src/synthesis/effects/particles/particles_engine.cpp
+  src/synthesis/effects/particles/clouds/resources.cc
+  src/synthesis/effects/particles/clouds/dsp/correlator.cc
+  src/synthesis/effects/particles/clouds/dsp/granular_processor.cc
+  src/synthesis/effects/particles/clouds/dsp/mu_law.cc
+  src/synthesis/effects/particles/clouds/dsp/pvoc/frame_transformation.cc
+  src/synthesis/effects/particles/clouds/dsp/pvoc/phase_vocoder.cc
+  src/synthesis/effects/particles/clouds/dsp/pvoc/stft.cc
+  src/synthesis/effects/stmlib/stmlib/dsp/atan.cc
+  src/synthesis/effects/stmlib/stmlib/dsp/units.cc)
+
 # PFFFT (third_party/pffft) is every FFT in Atlas on every platform: the
 # oscillators' (src/common/fourier_transform.h) and, through
 # third_party/patches/juce8-pffft-fft-engine.patch, every juce::dsp::FFT and
@@ -228,7 +247,10 @@ target_sources(Atlas PRIVATE
   src/synthesis/effects/braids/braids/digital_oscillator.cc
   src/synthesis/effects/braids/braids/macro_oscillator.cc
   src/synthesis/effects/braids/braids/resources.cc
-  src/synthesis/effects/braids/stmlib/utils/random.cc
+  src/synthesis/effects/stmlib/stmlib/utils/random.cc
+  # The Particles effect: Mutable Instruments' granular processor (MIT) with
+  # stmlib, built on its own like Braids.
+  ${ATLAS_PARTICLES_SOURCES}
   # OpenWurli (GPL-3.0): the Wurlitzer 200A model ported from Rust, in double
   # precision and checked sample for sample against the original.
   ${ATLAS_OPENWURLI_SOURCES}
@@ -290,10 +312,19 @@ set(ATLAS_BRAIDS_SOURCES
   src/synthesis/effects/braids/braids/digital_oscillator.cc
   src/synthesis/effects/braids/braids/macro_oscillator.cc
   src/synthesis/effects/braids/braids/resources.cc
-  src/synthesis/effects/braids/stmlib/utils/random.cc)
+  src/synthesis/effects/stmlib/stmlib/utils/random.cc)
 set_source_files_properties(${ATLAS_BRAIDS_SOURCES} PROPERTIES
   COMPILE_DEFINITIONS TEST
   COMPILE_OPTIONS "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-fwrapv;-w>")
+
+set_source_files_properties(${ATLAS_PARTICLES_SOURCES} PROPERTIES
+  COMPILE_DEFINITIONS "TEST;$<$<CXX_COMPILER_ID:MSVC>:_USE_MATH_DEFINES>"
+  INCLUDE_DIRECTORIES "${CMAKE_CURRENT_SOURCE_DIR}/src/synthesis/effects/particles"
+  COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:precise>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-fwrapv;-w;-ffp-contract=off;-fno-fast-math>")
+# The engine also reaches JUCE through zeroed_buffer.h; without JUCE's using
+# directive juce::Random and stmlib::Random stay apart.
+set_property(SOURCE src/synthesis/effects/particles/particles_engine.cpp APPEND PROPERTY
+  COMPILE_DEFINITIONS DONT_SET_USING_JUCE_NAMESPACE=1)
 
 # The Maim effect's codecs. Maim's circuit-bent LAME (libmp3lame 3.99.5 with
 # mpglib's decoder, LGPL 2.1 or later) and BladeEnc (LGPL 2.1 or later) are
@@ -429,6 +460,7 @@ target_include_directories(Atlas PRIVATE
   src/synthesis/effects
   src/synthesis/effects/braids
   src/synthesis/effects/openwurli
+  src/synthesis/effects/stmlib
   src/synthesis/filters
   src/synthesis/framework
   src/synthesis/lookups
@@ -872,7 +904,7 @@ if(ATLAS_BUILD_TIMING_TESTS)
   target_sources(AtlasBraidsTests PRIVATE tests/braids_tests.cpp)
   target_include_directories(AtlasBraidsTests PRIVATE
     src/common src/common/multisample src/common/wavetable src/plugin src/interface/look_and_feel
-    src/synthesis/framework src/synthesis/modules src/synthesis/effects src/synthesis/effects/braids
+    src/synthesis/framework src/synthesis/modules src/synthesis/effects src/synthesis/effects/braids src/synthesis/effects/stmlib
     src/synthesis/filters src/synthesis/producers src/synthesis/synth_engine
     src/synthesis/lookups src/synthesis/modulators src/synthesis/utilities third_party)
   target_compile_definitions(AtlasBraidsTests PRIVATE
@@ -882,6 +914,23 @@ if(ATLAS_BUILD_TIMING_TESTS)
     Atlas juce::juce_audio_utils juce::juce_dsp juce::juce_gui_extra juce::juce_recommended_config_flags)
   foreach(braids_test models pitch strike random-phase slot-modulation resampler parameters editor)
     add_test(NAME atlas_braids_${braids_test} COMMAND AtlasBraidsTests --${braids_test})
+  endforeach()
+
+  juce_add_console_app(AtlasParticlesTests PRODUCT_NAME "Atlas Particles Tests")
+  juce_generate_juce_header(AtlasParticlesTests)
+  target_sources(AtlasParticlesTests PRIVATE tests/particles_tests.cpp)
+  target_include_directories(AtlasParticlesTests PRIVATE
+    src/common src/common/multisample src/common/wavetable src/plugin src/interface/look_and_feel
+    src/synthesis/framework src/synthesis/modules src/synthesis/effects
+    src/synthesis/filters src/synthesis/producers src/synthesis/synth_engine
+    src/synthesis/lookups src/synthesis/modulators src/synthesis/utilities third_party)
+  target_compile_definitions(AtlasParticlesTests PRIVATE
+    VITAL_ACCESSIBLE_UI=1 HEADLESS=0 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_DSP_USE_SHARED_FFTW=0
+    JUCE_MODAL_LOOPS_PERMITTED=1)
+  target_link_libraries(AtlasParticlesTests PRIVATE
+    Atlas juce::juce_audio_utils juce::juce_dsp juce::juce_gui_extra juce::juce_recommended_config_flags)
+  foreach(particles_test engine latency modes trigger parameters editor)
+    add_test(NAME atlas_particles_${particles_test} COMMAND AtlasParticlesTests --${particles_test})
   endforeach()
 
   juce_add_console_app(AtlasSpeechTests PRODUCT_NAME "Atlas Speech Tests")

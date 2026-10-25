@@ -40,6 +40,7 @@
 #include "scanner_vibrato_module.h"
 #include "analogue_compressor_module.h"
 #include "maim_module.h"
+#include "particles_module.h"
 #include "note_monitor.h"
 #include "table_filter.h"
 #include "reorderable_effect_chain.h"
@@ -201,6 +202,7 @@ std::unique_ptr<vital::SynthModule> create(int type, vital::Output* bpm) {
     case constants::kScannerVibrato: return std::make_unique<ScannerVibratoModule>();
     case constants::kAnalogueCompressor: return std::make_unique<AnalogueCompressorModule>();
     case constants::kMaim: return std::make_unique<MaimModule>();
+    case constants::kParticles: return std::make_unique<ParticlesModule>(&note_monitor, "");
   }
   return {};
 }

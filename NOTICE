@@ -30,7 +30,12 @@ their sources.
   third_party/aquanode-plugins submodule, used only by the tests.
 - Mutable Instruments Braids and stmlib by Emilie Gillet (MIT,
   https://github.com/pichenettes/eurorack): the Braids oscillator type
-  (src/synthesis/effects/braids, licence in each file and LICENSE.stmlib).
+  (src/synthesis/effects/braids, licence in each file; stmlib in
+  src/synthesis/effects/stmlib, licence in LICENSE there).
+- The granular processor of Mutable Instruments Clouds by Emilie Gillet (MIT,
+  https://github.com/pichenettes/eurorack): the Particles effect
+  (src/synthesis/effects/particles, licence in each file), with stmlib as
+  above. Particles is not affiliated with Mutable Instruments.
 - Astralay by Iron Labs (MIT, https://github.com/ironcross32/astralay): the
   Glitch Delay effect's engine (src/synthesis/effects/glitch_delay, licence in
   LICENSE.astralay) and its engine tests (tests/glitch_delay).

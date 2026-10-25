@@ -73,6 +73,8 @@ namespace vital {
       void setTuning(const Tuning* tuning) { tuning_ = tuning; }
 
       bool seen() const { return seen_; }
+      // Counts every note-on, so a reader that keeps the last count sees new ones.
+      uint32_t noteOnCount() const { return stamp_; }
       bool held() const { return held_; }
       // The chosen key while keys are held; afterwards, the last one chosen.
       int note(int priority) const { return priority == kLowestNote ? lowest_ % 128 : last_ % 128; }
