@@ -2,6 +2,7 @@
 
 #include "screen_reader_speech.h"
 #include "library_layout.h"
+#include "drive_dynamics_controls.h"
 
 #if JUCE_MAC
 void focusNativeAccessibilityElement(juce::AccessibilityHandler& handler);
@@ -2330,6 +2331,111 @@ namespace {
       if (parent->getProperties().contains("SectionName"))
         titles.add(parent->getTitle());
     return titles.joinIntoString(" in ");
+  }
+
+  // Saturator, Dynamic Tube, Overdrive and Multiband Dynamics: Saturator's Type
+  // menu shows Bass Shaper Threshold and the Waveshaper group only for their
+  // curves; Multiband Dynamics groups its rows by band and reads its ratios as
+  // "1 : x"; every row reads in its script's units and has a description.
+  void testDriveDynamicsRows() {
+    SynthPlugin synth;
+    synth.parameterChanged("fx_slot_1_type", vital::constants::kSaturator + 1);
+    synth.parameterChanged("fx_slot_2_type", vital::constants::kMultibandDynamics + 1);
+    synth.parameterChanged("fx_slot_3_type", vital::constants::kDynamicTube + 1);
+    synth.parameterChanged("fx_slot_4_type", vital::constants::kOverdrive + 1);
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    editor.toFront(true);
+    pumpEditorEvents();
+
+    const auto check = [&](const String& id, const String& expected) {
+      const String found = effectRowGroups(editor, id);
+      expect(found == expected, (id + " sits in \"" + expected + "\" (found \"" + found + "\")").toStdString());
+    };
+    const auto value_text = [&](const String& id) {
+      auto* control = editor.controlForParameter(id);
+      auto* handler = control ? control->getAccessibilityHandler() : nullptr;
+      auto* value = handler ? handler->getValueInterface() : nullptr;
+      return value ? value->getCurrentValueAsString() : String("<missing>");
+    };
+    const auto reads = [&](const String& id, const String& expected) {
+      const String found = value_text(id);
+      expect(found == expected, (id + " reads " + expected + " (reads " + found + ")").toStdString());
+    };
+    const auto described = [&](const String& id, const String& phrase = {}) {
+      auto* control = editor.controlForParameter(id);
+      const String description = control ? control->getDescription() : String();
+      expect(description.isNotEmpty() && description.contains(phrase),
+             (id + " has a description" + (phrase.isEmpty() ? String() : " saying " + phrase) + ": " +
+              description).toStdString());
+    };
+
+    const String saturator = "fx_slot_1_saturator_";
+    auto* type = dynamic_cast<ComboBox*>(editor.controlForParameter(saturator + "type"));
+    expect(type != nullptr && type->getNumItems() == 8 && type->getText() == "Analog Clip",
+           "Saturator's Type is a menu of its eight curves, Analog Clip by default");
+    for (const auto* control : { "type", "drive", "post_clip", "output", "dc_filter", "hi_quality", "mix" }) {
+      check(saturator + control, "");
+      described(saturator + control);
+    }
+    for (const auto* control : { "color", "color_low", "color_frequency", "color_width", "color_high" })
+      check(saturator + control, "Color");
+    for (const auto* control : { "bass_threshold", "ws_drive", "ws_depth" })
+      check(saturator + control, "no row");
+    reads(saturator + "drive", "0 dB");
+    reads(saturator + "mix", "100%");
+    synth.parameterChanged((saturator + "type").toStdString(), float(vital::drive_dynamics::kBassShaper));
+    editor.updateFullGui();
+    pumpEditorEvents();
+    check(saturator + "bass_threshold", "");
+    check(saturator + "ws_drive", "no row");
+    synth.parameterChanged((saturator + "type").toStdString(), float(vital::drive_dynamics::kWaveshaper));
+    editor.updateFullGui();
+    pumpEditorEvents();
+    check(saturator + "bass_threshold", "no row");
+    for (const auto* control : { "ws_drive", "ws_linear", "ws_curve", "ws_damp", "ws_period", "ws_depth" })
+      check(saturator + control, "Waveshaper");
+
+    const String multiband = "fx_slot_2_multiband_dynamics_";
+    for (const auto* control : { "low_band", "high_band", "low_split", "high_split" })
+      check(multiband + control, "");
+    const std::pair<const char*, const char*> bands[] = { { "low_", "Low band" }, { "mid_", "Mid band" },
+                                                          { "high_", "High band" } };
+    for (const auto& band : bands)
+      for (const auto& control : vital::drive_dynamics::kMultibandBandControls) {
+        check(multiband + band.first + control.suffix, band.second);
+        described(multiband + band.first + control.suffix);
+      }
+    for (const auto* control : { "detection", "soft_knee", "time", "output", "amount" })
+      check(multiband + control, "Global");
+    reads(multiband + "low_above_ratio", "1 : 1.00");
+    reads(multiband + "low_split", "120 Hz");
+    synth.parameterChanged((multiband + "low_above_ratio").toStdString(), -1.0f);
+    synth.parameterChanged((multiband + "mid_above_ratio").toStdString(), -0.5f);
+    synth.parameterChanged((multiband + "high_below_ratio").toStdString(), -3.0f);
+    editor.updateFullGui();
+    pumpEditorEvents();
+    reads(multiband + "low_above_ratio", "1 : inf");
+    reads(multiband + "mid_above_ratio", "1 : 2.00");
+    reads(multiband + "high_below_ratio", "1 : 0.25");
+    {
+      const std::string id = (multiband + "mid_below_ratio").toStdString();
+      ValueBridge bridge(id, synth.getControls().at(id));
+      const float typed = bridge.getValueForText("1 : 2");
+      expect(bridge.getText(typed, 100) == "1 : 2.00" && bridge.getText(bridge.getValueForText("1:inf"), 100) == "1 : inf",
+             "typing 1 : 2 or 1 : inf sets a Below Ratio that reads back the same");
+    }
+
+    reads("fx_slot_3_dynamic_tube_tone", "0%");
+    reads("fx_slot_3_dynamic_tube_attack", "5 ms");
+    reads("fx_slot_4_overdrive_frequency", "1250 Hz");
+    reads("fx_slot_4_overdrive_mix", "50%");
+    described("fx_slot_3_dynamic_tube_bias", "bias");
+    described("fx_slot_4_overdrive_dynamics", "ceiling");
+    described(multiband + "high_below_ratio", "high band's ratio below its Below Threshold");
+    described(saturator + "ws_period", "ripple");
   }
 
   // Maim's Encoder is a menu that decides which rows show: the MP3 bends for

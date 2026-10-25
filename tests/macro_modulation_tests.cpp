@@ -1186,6 +1186,7 @@ int main(int argc, char** argv) {
     testSwitchingChoiceKeepsItsControl();
     testAnalogueCompressorRows();
     testMaimRows();
+    testDriveDynamicsRows();
     testAnalogSwitchKeepsItsControl();
     testEffectMoveKeepsFocusAcrossTimerTick();
     testSectionKeysStepThroughEffectSlots();

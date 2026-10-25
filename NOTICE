@@ -100,6 +100,12 @@ their sources.
   v3 or later), and OpenB3 (AGPL v3 or later, with setBfree's Beatrix files,
   GPL v2 or later) under third_party.
 
+The Saturator, Dynamic Tube, Overdrive and Multiband Dynamics effects are native
+ports of JSFX by Alessio Scala (version 1.0 of each), supplied for Atlas and kept
+unmodified in tests/drive_dynamics; the scripts carry no licence statement. They
+recreate devices from Ableton Live, modelled from measurements of the originals,
+not from their code (src/synthesis/effects/drive_dynamics/README.atlas.md).
+
 The Erosion, Trance gate, Resonator, Dimension Expander mode 2, Reverb filter,
 Analogue effects, Spectral Balance, Suppressor, Spectral Compressor, Filter Table ("Wavetable" filter model) and oscillator slot code are
 Atlas's own, under the GPL v3. Product and company names mentioned in the

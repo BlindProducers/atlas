@@ -26,6 +26,7 @@
 #include "analogue_compressor_module.h"
 #include "maim_module.h"
 #include "particles_module.h"
+#include "drive_dynamics_modules.h"
 #include "filter_fx_module.h"
 #include "spectral_balance_module.h"
 #include "glitch_delay_module.h"
@@ -229,6 +230,14 @@ namespace vital {
         return new MaimModule(module_prefix);
       case constants::kParticles:
         return new ParticlesModule(note_monitor_, module_prefix);
+      case constants::kSaturator:
+        return new SaturatorModule(module_prefix);
+      case constants::kDynamicTube:
+        return new DynamicTubeModule(module_prefix);
+      case constants::kOverdrive:
+        return new OverdriveModule(module_prefix);
+      case constants::kMultibandDynamics:
+        return new MultibandDynamicsModule(module_prefix);
       default:
         return nullptr;
     }

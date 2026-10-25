@@ -24,6 +24,7 @@
 #include "screen_reader_speech.h"
 #include "value_bridge.h"
 #include "tape_controls.h"
+#include "drive_dynamics_controls.h"
 #include "resonator/resonator_engine.h"
 #include "maim/maim_common.h"
 #include "analogue/chorus_engine.h"
@@ -1702,7 +1703,11 @@ namespace {
         "Scanner Vibrato",
         "Analogue Compressor",
         "Maim",
-        "Particles"
+        "Particles",
+        "Saturator",
+        "Dynamic Tube",
+        "Overdrive",
+        "Multiband Dynamics"
       };
       for (int envelope = 1; envelope <= vital::kNumEnvelopes; ++envelope)
         result.push_back("Envelope " + String(envelope));
@@ -1778,7 +1783,8 @@ namespace {
         section == "Analogue Rotary" || section == "Analogue Spring" ||
         section == "Analogue Wah" || section == "Spectral Balance" || section == "Glitch Delay" ||
         section == "OpenWurli Amp" || section == "Scanner Vibrato" || section == "Analogue Compressor" ||
-        section == "Maim" || section == "Particles")
+        section == "Maim" || section == "Particles" || section == "Saturator" || section == "Dynamic Tube" ||
+        section == "Overdrive" || section == "Multiband Dynamics")
       return "Effects";
     if (section == "Modulation routing")
       return "Modulation";
@@ -1859,6 +1865,58 @@ namespace {
         return 100 * tap_number + index;
     }
     return 900;
+  }
+
+  // Saturator, Dynamic Tube, Overdrive and Multiband Dynamics (drive_dynamics_controls.h).
+  const vital::drive_dynamics::ControlSpec* driveDynamicsSpec(const String& effect_id, const String& suffix,
+                                                              int* index = nullptr) {
+    using namespace vital::drive_dynamics;
+    using Spec = vital::drive_dynamics::ControlSpec;
+    const auto find = [&](const Spec* specs, int count) -> const Spec* {
+      for (int i = 0; i < count; ++i)
+        if (suffix == specs[i].suffix) {
+          if (index) *index = i;
+          return specs + i;
+        }
+      return nullptr;
+    };
+    if (effect_id == "saturator") return find(kSaturatorControls, kNumSaturatorControls);
+    if (effect_id == "dynamic_tube") return find(kDynamicTubeControls, kNumDynamicTubeControls);
+    if (effect_id == "overdrive") return find(kOverdriveControls, kNumOverdriveControls);
+    if (effect_id == "multiband_dynamics") {
+      for (int i = 0; i < kNumMultibandControls; ++i)
+        if (suffix == String(multibandSuffix(i))) {
+          if (index) *index = i;
+          return &multibandSpec(i);
+        }
+    }
+    return nullptr;
+  }
+
+  // The control a parameter ID names in one of those effects, in a slot or a bus.
+  const vital::drive_dynamics::ControlSpec* driveDynamicsSpecForId(const String& id) {
+    for (const char* effect : { "saturator", "dynamic_tube", "overdrive", "multiband_dynamics" }) {
+      const String prefix = String(effect) + "_";
+      int start = id.startsWith(prefix) ? 0 : -1;
+      if (start < 0) {
+        const int found = id.indexOf("_" + prefix);
+        if (found >= 0) start = found + 1;
+      }
+      if (start >= 0) return driveDynamicsSpec(effect, id.substring(start + prefix.length()));
+    }
+    return nullptr;
+  }
+
+  // Saturator shows Bass Shaper Threshold only for the Bass Shaper curve and
+  // the Waveshaper controls only for the Waveshaper.
+  int saturatorRowVariant(int type) {
+    using namespace vital::drive_dynamics;
+    return type == kBassShaper ? 1 : type == kWaveshaper ? 2 : 0;
+  }
+  bool isSaturatorParameterRelevant(const String& suffix, int type) {
+    if (suffix == "bass_threshold") return type == vital::drive_dynamics::kBassShaper;
+    if (suffix.startsWith("ws_")) return type == vital::drive_dynamics::kWaveshaper;
+    return true;
   }
 
   int effectSlotParameterRank(const String& effect_id, const String& suffix) {
@@ -1955,6 +2013,8 @@ namespace {
                     "feedback", "butterfly_straight", "butterfly_crossed", "band_step", "band_invert", "window_step",
                     "band_shift", "band_reverse", "loss_period", "loss_width", "loss_jitter", "loss_mode", "drive",
                     "low_cut", "high_cut", "makeup" });
+    if (int index = 0; driveDynamicsSpec(effect_id, suffix, &index) != nullptr)
+      return index;
     if (effect_id == "particles")
       return rank({ "mode", "quality", "input_gain", "position", "size", "pitch", "density", "texture", "spread",
                     "feedback", "reverb", "freeze", "trigger", "mix" });
@@ -2006,6 +2066,9 @@ namespace {
       if (model == atlas::resonator::kTube) return 3;
       return 0;
     }
+    // Saturator's Bass Shaper and Waveshaper curves each add their own rows.
+    if (control_id.endsWith("saturator_type"))
+      return saturatorRowVariant(roundToInt(value));
     // Maim's encoders each show their own rows.
     if (control_id.endsWith("analoguechorus_model") || control_id.endsWith("analoguerotary_model") ||
         control_id.endsWith("glitch_delay_tap_view") || control_id.endsWith("maim_encoder"))
@@ -2033,7 +2096,7 @@ namespace {
     for (const char* variant : { "dimension_expander_mode", "resonator_model", "analoguechorus_model",
                                  "analogueecho_medium", "analoguerotary_model", "analoguewah_model",
                                  "convolution_reverb_predelay_sync", "spectral_lock_mode",
-                                 "glitch_delay_tap_view", "maim_encoder" }) {
+                                 "glitch_delay_tap_view", "maim_encoder", "saturator_type" }) {
       if (id == variant || id.endsWith(String("_") + variant))
         return true;
     }
@@ -2694,11 +2757,12 @@ namespace {
       std::vector<EffectCategory> result {
         { "Analogue", { kAnalogueChorus, kAnalogueFlanger, kAnalogueEcho, kAnalogueRotary, kAnalogueSpring, kAnalogueWah,
                         kTape, kOpenWurliAmp, kScannerVibrato, kAnalogueCompressor } },
-        { "Dynamics", { kCompressor, kLimiter, kSuppressor } },
+        { "Dynamics", { kCompressor, kLimiter, kSuppressor, kMultibandDynamics } },
         { "Space", { kReverb, kConvolutionReverb, kDelay, kFloatyDelay, kGlitchDelay, kParticles } },
         { "Modulation", { kChorus, kFlanger, kPhaser, kTremoloPan, kDimensionExpander, kPhaseShift,
                           kFrequencyShifter, kTranceGate } },
-        { "Distortion and character", { kDistortion, kWaveShaper, kErosion, kResonator, kMaim } },
+        { "Distortion and character", { kDistortion, kWaveShaper, kErosion, kResonator, kMaim, kSaturator,
+                                        kDynamicTube, kOverdrive } },
         { "Filter and EQ", { kFilterFx, kEq, kMidSideEq, kDefuse } },
         { "Spectral", { kSpectralGate, kSpectralCompressor, kSpectralLock, kSpectralBalance } },
       };
@@ -2789,6 +2853,10 @@ namespace {
     if (rest.startsWith("analoguecompressor_")) return "Analogue Compressor";
     if (rest.startsWith("maim_")) return "Maim";
     if (rest.startsWith("particles_")) return "Particles";
+    if (rest.startsWith("saturator_")) return "Saturator";
+    if (rest.startsWith("dynamic_tube_")) return "Dynamic Tube";
+    if (rest.startsWith("overdrive_")) return "Overdrive";
+    if (rest.startsWith("multiband_dynamics_")) return "Multiband Dynamics";
     if (rest.startsWith("spectral_compressor_")) return "Spectral Compressor";
     if (rest.startsWith("spectral_gate_")) return "Spectral Gate";
     if (rest.startsWith("erosion_")) return "Erosion";
@@ -2943,6 +3011,10 @@ namespace {
     if (id.startsWith("analoguecompressor_")) return "Analogue Compressor";
     if (id.startsWith("maim_")) return "Maim";
     if (id.startsWith("particles_")) return "Particles";
+    if (id.startsWith("saturator_")) return "Saturator";
+    if (id.startsWith("dynamic_tube_")) return "Dynamic Tube";
+    if (id.startsWith("overdrive_")) return "Overdrive";
+    if (id.startsWith("multiband_dynamics_")) return "Multiband Dynamics";
     if (id.startsWith("spectral_compressor_")) return "Spectral Compressor";
     if (id.startsWith("spectral_gate_")) return "Spectral Gate";
     if (const int arp = arpeggiatorForId(id); arp > 0) return "Arpeggiator " + String(arp);
@@ -3258,6 +3330,164 @@ namespace {
       return "A gentle low-pass filter after the codec, with its cutoff here.";
     return {};
   }
+  String saturatorHelpText(const String& suffix) {
+    if (suffix == "type")
+      return "Choose the saturation curve. Analog Clip rounds off peaks like an analog stage; Soft Sine is a gentle "
+             "sine curve; Bass Shaper leaves quiet signals clean and compresses everything above its threshold; "
+             "Medium Curve and Hard Curve saturate more firmly; Sinoid Fold folds loud signals back on themselves; "
+             "Digital Clip clips hard at full scale; Waveshaper is a curve you shape with the Waveshaper controls.";
+    if (suffix == "drive")
+      return "Set how hard the signal drives the curve, from minus 36 to plus 36 dB. The output is scaled back "
+             "by the same amount, so Drive changes the character more than the level.";
+    if (suffix == "bass_threshold")
+      return "Set the level below which the Bass Shaper curve leaves the signal untouched, from minus 50 to 0 dB.";
+    if (suffix == "ws_drive")
+      return "Blend the Waveshaper's curve with the clean signal. Zero percent is clean.";
+    if (suffix == "ws_linear")
+      return "Set how much of the straight, linear part of the signal the Waveshaper keeps.";
+    if (suffix == "ws_curve")
+      return "Add a curve that bends the waveform more the louder it is, adding even harmonics.";
+    if (suffix == "ws_damp")
+      return "Flatten the Waveshaper's response around silence, which quiets low-level noise and hiss.";
+    if (suffix == "ws_period")
+      return "Set how quickly the Waveshaper's ripple repeats across the input level. Higher values give more "
+             "ripples, used with Depth.";
+    if (suffix == "ws_depth")
+      return "Set the size of the ripple added to the Waveshaper's curve. Zero adds none.";
+    if (suffix == "color")
+      return "Turn on the Color filters: an EQ before the curve and its inverse after it, so they change which "
+             "frequencies distort without changing the overall tone.";
+    if (suffix == "color_low")
+      return "Boost or cut the low frequencies going into the curve, from minus 36 to plus 36 dB. Color must be on.";
+    if (suffix == "color_frequency")
+      return "Set the centre frequency of the Color peak filter, from 30 Hz to 18.5 kHz. Color must be on.";
+    if (suffix == "color_width")
+      return "Set the width of the Color peak filter. Higher values affect a wider band. Color must be on.";
+    if (suffix == "color_high")
+      return "Boost or cut the Color peak filter, from minus 24 to plus 24 dB, so that band distorts more or less. "
+             "Color must be on.";
+    if (suffix == "post_clip")
+      return "Clip the output after the curve: Off, Soft Clip with the Analog Clip curve, or Hard Clip at full scale.";
+    if (suffix == "output")
+      return "Set the output level, from minus 36 to 0 dB.";
+    if (suffix == "dc_filter")
+      return "Remove DC offset and subsonic content before the curve, so asymmetric signals saturate evenly.";
+    if (suffix == "hi_quality")
+      return "Run the curve at twice the sample rate, which reduces aliasing. It adds 3 samples of latency, which "
+             "the dry signal is delayed to match.";
+    if (suffix == "mix")
+      return "Blend the dry signal with the saturated signal. 100 percent is the saturated signal alone.";
+    return {};
+  }
+
+  String dynamicTubeHelpText(const String& suffix) {
+    if (suffix == "tube_type")
+      return "Choose the tube curve. A adds distortion only when the bias is raised, B always distorts and C "
+             "distorts harder and more asymmetrically.";
+    if (suffix == "drive")
+      return "Set how hard the signal drives the tube, from minus 15 to plus 15 dB. The output is scaled back by "
+             "the same amount.";
+    if (suffix == "bias")
+      return "Set the tube's bias. Higher values push it toward its asymmetric region, adding more harmonics.";
+    if (suffix == "envelope")
+      return "Set how much the input level moves the bias, from minus 3 to 3. Positive values add bias as the "
+             "signal gets louder, negative values take it away. Zero holds the bias steady.";
+    if (suffix == "attack")
+      return "Set how quickly the envelope rises when the input gets louder, from 1 to 400 milliseconds.";
+    if (suffix == "release")
+      return "Set how quickly the envelope falls when the input gets quieter, from 1 to 1500 milliseconds.";
+    if (suffix == "tone")
+      return "Tilt the frequencies going into the tube: positive values distort the low end more, negative values "
+             "the high end. The opposite tilt after the tube keeps the overall tone balanced.";
+    if (suffix == "output")
+      return "Set the output level, from minus 15 to plus 15 dB.";
+    if (suffix == "hi_quality")
+      return "Run the tube at twice the sample rate, which reduces aliasing. It adds 4 samples of latency, which "
+             "the dry signal is delayed to match.";
+    if (suffix == "mix")
+      return "Blend the dry signal with the tube signal. 100 percent is the tube signal alone.";
+    return {};
+  }
+
+  String overdriveHelpText(const String& suffix) {
+    if (suffix == "frequency")
+      return "Set the centre of the band-pass filter in front of the drive, from 50 Hz to 20 kHz.";
+    if (suffix == "width")
+      return "Set the band-pass filter's width in octaves, from 0.5 to 9. Narrow settings sound thinner and more "
+             "focused.";
+    if (suffix == "drive")
+      return "Set how hard the filtered signal drives the clipper.";
+    if (suffix == "tone")
+      return "Tilt the distorted signal from dark at zero to bright at 100 percent.";
+    if (suffix == "dynamics")
+      return "Let the clipper's ceiling rise with the input level, keeping more of the playing's dynamics. Zero "
+             "compresses the most.";
+    if (suffix == "mix")
+      return "Blend the dry signal with the overdriven signal at equal power. 100 percent is the overdriven signal "
+             "alone.";
+    return {};
+  }
+
+  String multibandHelpText(const String& suffix) {
+    String band;
+    String control = suffix;
+    for (const char* name : vital::drive_dynamics::kMultibandBandNames) {
+      if (suffix.startsWith(String(name) + "_")) {
+        band = name;
+        control = suffix.substring(band.length() + 1);
+        break;
+      }
+    }
+    if (band.isEmpty()) {
+      if (suffix == "low_band")
+        return "Split off a low band below the Low-Mid Split. Off leaves the low frequencies in the mid band.";
+      if (suffix == "high_band")
+        return "Split off a high band above the Mid-High Split. Off leaves the high frequencies in the mid band.";
+      if (suffix == "low_split")
+        return "Set the crossover between the low and mid bands, from 30 Hz to 3 kHz. A split above the Mid-High "
+               "Split is pulled down to it.";
+      if (suffix == "high_split")
+        return "Set the crossover between the mid and high bands, from 300 Hz to 15 kHz.";
+      if (suffix == "detection")
+        return "Choose how each band's level is measured: RMS follows the average loudness, Peak follows the peaks.";
+      if (suffix == "soft_knee")
+        return "Ease every band into and out of compression and expansion over 20 dB around each threshold.";
+      if (suffix == "time")
+        return "Scale every band's Attack and Release, from 10 to 1000 percent.";
+      if (suffix == "output")
+        return "Set the output level after all three bands, from minus 24 to plus 24 dB.";
+      if (suffix == "amount")
+        return "Scale every gain change: the compression and expansion and all the input and output gains. Zero "
+               "percent leaves the signal unchanged.";
+      return {};
+    }
+    if (control == "active")
+      return "Process the " + band + " band. Off passes it through unchanged, without its gains.";
+    if (control == "solo")
+      return "Hear only the soloed bands. Soloing any band mutes the bands that are not soloed.";
+    if (control == "input")
+      return "Set the " + band + " band's level before its compression, from minus 24 to plus 24 dB.";
+    if (control == "above_threshold")
+      return "Set the level above which the " + band + " band's Above Ratio applies, from minus 80 to 0 dB.";
+    if (control == "above_ratio")
+      return "Set the " + band + " band's ratio above its Above Threshold, from 1 to 0.5 through 1 to infinity. "
+             "1 to 2 or more compresses loud sounds down, 1 to infinity limits them, and below 1 to 1, such as "
+             "1 to 0.5, expands them upward.";
+    if (control == "below_threshold")
+      return "Set the level below which the " + band + " band's Below Ratio applies, from minus 80 to 0 dB.";
+    if (control == "below_ratio")
+      return "Set the " + band + " band's ratio below its Below Threshold, from 1 to 0.25 through 1 to infinity. "
+             "1 to 2 or more lifts quiet sounds up, and below 1 to 1, such as 1 to 0.25, pushes them down like "
+             "a gate.";
+    if (control == "attack")
+      return "Set how quickly the " + band + " band responds to a rise in level, from 0.1 to 5000 milliseconds.";
+    if (control == "release")
+      return "Set how quickly the " + band + " band recovers after the level falls, from 0.1 to 5000 milliseconds.";
+    if (control == "output")
+      return "Set the " + band + " band's level after its compression, from minus 24 to plus 24 dB.";
+    return {};
+  }
+
   // Particles' controls mean different things in each mode, as on the module.
   String particlesHelpText(const String& suffix) {
     if (suffix == "mode")
@@ -4025,6 +4255,26 @@ namespace {
       if (help.isNotEmpty())
         return help;
     }
+    if (const String saturator_suffix = effectSuffix("saturator_"); saturator_suffix.isNotEmpty()) {
+      const String help = saturatorHelpText(saturator_suffix);
+      if (help.isNotEmpty())
+        return help;
+    }
+    if (const String tube_suffix = effectSuffix("dynamic_tube_"); tube_suffix.isNotEmpty()) {
+      const String help = dynamicTubeHelpText(tube_suffix);
+      if (help.isNotEmpty())
+        return help;
+    }
+    if (const String overdrive_suffix = effectSuffix("overdrive_"); overdrive_suffix.isNotEmpty()) {
+      const String help = overdriveHelpText(overdrive_suffix);
+      if (help.isNotEmpty())
+        return help;
+    }
+    if (const String multiband_suffix = effectSuffix("multiband_dynamics_"); multiband_suffix.isNotEmpty()) {
+      const String help = multibandHelpText(multiband_suffix);
+      if (help.isNotEmpty())
+        return help;
+    }
     const String analogue_spring_suffix = effectSuffix("analoguespring_");
     if (analogue_spring_suffix.isNotEmpty()) {
       if (analogue_spring_suffix == "tank") return "Choose a Short, Medium or Long spring tank. Longer tanks ring longer.";
@@ -4112,7 +4362,8 @@ namespace {
       "eq_", "flanger_", "frequency_shifter_", "limiter_", "mid_side_eq_", "phase_shift_", "phaser_",
       "reverb_", "utility_", "waveshaper_", "spectral_gate_", "erosion_", "floaty_delay_", "spectral_compressor_", "scream_", "tremolo_pan_", "tape_", "defuse_", "suppressor_", "trance_gate_", "spectral_lock_", "resonator_",
       "analoguechorus_", "analogueflanger_", "analogueecho_", "analoguerotary_", "analoguespring_", "analoguewah_",
-      "spectral_balance_", "openwurli_amp_", "scanner_vibrato_", "analoguecompressor_", "maim_", "particles_"
+      "spectral_balance_", "openwurli_amp_", "scanner_vibrato_", "analoguecompressor_", "maim_", "particles_",
+      "saturator_", "dynamic_tube_", "overdrive_", "multiband_dynamics_"
     };
     for (const auto& prefix : effect_prefixes) {
       effect_suffix = effectSuffix(prefix);
@@ -5192,6 +5443,17 @@ namespace {
       const double step = String(details.display_units).trim() == "dB" ? 0.5 : 1.0;
       slider.adjustmentStep = [step] { return step; };
     }
+    if (const auto* spec = continuous ? driveDynamicsSpecForId(parameter_id) : nullptr;
+        bridge != nullptr && spec != nullptr && interval == 0.0 && !ValueBridge::usesRangePercentDisplay(bridge->getDetails())) {
+      // Saturator, Dynamic Tube, Overdrive and Multiband Dynamics keep their
+      // scripts' units; keys move each control by its own step in them.
+      const auto& details = bridge->getDetails();
+      const double minimum = details.min, span = details.max - minimum;
+      slider.toAdjustmentValue = [minimum, span](double v) { return minimum + span * v; };
+      slider.fromAdjustmentValue = [minimum, span](double v) { return (v - minimum) / span; };
+      const double step = spec->step;
+      slider.adjustmentStep = [step] { return step; };
+    }
     if (bridge != nullptr && analogue_control && interval == 0.0 &&
         bridge->getDetails().value_scale != vital::ValueDetails::kExponential) {
       // Keys move in display units: one percent, degree or millisecond. The
@@ -5844,6 +6106,7 @@ class AccessibleParameterRow : public Component {
       const bool glitch_delay_control = parameter_id.startsWith("glitch_delay_") || parameter_id.contains("_glitch_delay_");
       const bool maim_control = parameter_id.startsWith("maim_") || parameter_id.contains("_maim_");
       const bool particles_control = parameter_id.startsWith("particles_") || parameter_id.contains("_particles_");
+      const bool drive_dynamics_control = driveDynamicsSpecForId(parameter_id) != nullptr;
       const auto accessible_name = accessibleName.isNotEmpty() ? accessibleName : (random_rate ? String("Rate") : name);
       const String parameter_description = accessibleDescription.isNotEmpty()
           ? accessibleDescription
@@ -5920,6 +6183,7 @@ class AccessibleParameterRow : public Component {
                                         : tape_control ? "Use arrows to adjust, Shift arrows for finer changes, and Page keys for larger changes. Wow Rate uses 0.01 Hz, Flutter Rate 0.1 Hz, cutoffs 10 Hz, levels 0.1, Drive and percentages one percent. Enter types a value; Backspace restores the default. Home selects maximum and End minimum. Shift M opens the context menu."
                                         : maim_control ? "Use arrows for changes, Shift arrows for a tenth of the step, and Page keys for ten times the step. Percentages move one percent, Drive and Makeup half a decibel, Loss Period 50 milliseconds, the cutoffs 10 hertz, and lines, bands and steps one at a time. Home for maximum, End for minimum, Enter to type a value, Backspace to reset to default. Press Shift M for the context menu, Shift L for MIDI learn, and Shift C to clear MIDI learn."
                                         : particles_control ? "Use arrows for changes, Shift arrows for a tenth of the step, and Page keys for ten times the step. Percentages move one percent, Pitch one semitone and Input Gain half a decibel. Home for maximum, End for minimum, Enter to type a value, Backspace to reset to default. Press Shift M for the context menu, Shift L for MIDI learn, and Shift C to clear MIDI learn."
+                                        : drive_dynamics_control ? "Use arrows for changes, Shift arrows for a tenth of the step, and Page keys for ten times the step. Decibels move half a decibel, percentages one percent, frequencies 10 hertz, times one millisecond, ratios 0.01, Width 0.1 and Envelope 0.05. Home for maximum, End for minimum, Enter to type a value, Backspace to reset to default. Press Shift M for the context menu, Shift L for MIDI learn, and Shift C to clear MIDI learn."
                                         : glitch_delay_control ? "Use arrows for changes, Shift arrows for a tenth of the step, and Page keys for ten times the step. Tap times, Glide and tape times move 10 ms; Buffer and Smear Size 5 ms; slice and grain sizes 1 ms; High Cut 100 Hz; Low Cut and ring frequencies 10 Hz; pitch ranges one semitone; sweep speeds and formant shifts 0.1 semitone; FM ratios 0.05; FM index and rate reduction 0.1; densities one grain a second; Volume 0.5 dB and Output Gain 0.1 dB; percentages one percent. Home for maximum, End for minimum, Enter to type a value, Backspace to reset to default. Press Shift M for the context menu, Shift L for MIDI learn, and Shift C to clear MIDI learn."
                                         : resonator_control ? "Use arrows for changes, Shift arrows for finer changes, and Page keys for ten times the step. Tune moves one semitone; Decay, rates and Filter Frequency move in even ratio steps; percentages, degrees, cents and Glide milliseconds move by one; decibels, LFO Amount and Filter Bandwidth by 0.1; Ratio by 0.01. Named choices move one item at a time. Home for maximum, End for minimum, Enter to type a value, Backspace to reset to default. Press Shift M for the context menu, Shift L for MIDI learn, and Shift C to clear MIDI learn."
                                         : tremolo_control ? "Use arrows for changes, Shift arrows for finer changes, and Page keys for larger changes. Free Rate uses 0.1 Hz steps, Stereo Phase and Offset use one degree, Depth and Mix use one percent, and Smoothing uses 0.1 ms. Named choices move one item at a time. Home for maximum, End for minimum, Enter to type a value, Backspace to reset to default. Press Shift M for the context menu, Shift L for MIDI learn, and Shift C to clear MIDI learn."
@@ -17346,6 +17610,12 @@ void SynthEditor::addEffectSlotGroups(const String& sectionName, Component& pare
         maim_encoder = jlimit(0, atlas::maim::kNumEncoders - 1, roundToInt(found->second->value()));
       effect_slot_modes_[effect_prefix + "encoder"] = effectSlotRowVariant(effect_prefix + "encoder", float(maim_encoder));
     }
+    int saturator_type = 0;
+    if (effect_id == "saturator") {
+      const auto found = synth_.getControls().find((effect_prefix + "type").toStdString());
+      if (found != synth_.getControls().end()) saturator_type = jlimit(0, 7, roundToInt(found->second->value()));
+      effect_slot_modes_[effect_prefix + "type"] = effectSlotRowVariant(effect_prefix + "type", float(saturator_type));
+    }
     int analogue_chorus_model = 0;
     if (effect_id == "analoguechorus") {
       const auto found = synth_.getControls().find((effect_prefix + "model").toStdString());
@@ -17394,6 +17664,8 @@ void SynthEditor::addEffectSlotGroups(const String& sectionName, Component& pare
       if (effect_id == "glitch_delay" && !isGlitchDelayParameterRelevant(suffix, glitch_delay_tap, glitch_delay_synced))
         continue;
       if (effect_id == "maim" && !isMaimParameterRelevant(suffix, maim_encoder))
+        continue;
+      if (effect_id == "saturator" && !isSaturatorParameterRelevant(suffix, saturator_type))
         continue;
       if (shouldExposeEffectSlotParameter(effect_id, suffix) &&
           shouldShowParameterInSection(sectionName, parameter))
@@ -17758,6 +18030,52 @@ void SynthEditor::addEffectSlotGroups(const String& sectionName, Component& pare
                                                   "in Low Band mode, everything below 2.5 kHz in High Band mode, and the "
                                                   "whole signal in Single Band mode", "band_"),
                                  band("High band", "Above 2.5 kHz, in Multiband and High Band modes", "high_") })
+        place_group(group, *slot_ptr, slot_y, group_width, group_key, place_group);
+      grouped_rows = true;
+    }
+
+    // Saturator: the curve and its own controls, then the Waveshaper's
+    // controls (only for that curve) and the Color filters in groups, then
+    // the output stage.
+    if (effect_id == "saturator") {
+      const auto add_rows = [&](std::initializer_list<const char*> controls) {
+        for (const auto* control : controls)
+          if (const auto found = by_suffix.find(control); found != by_suffix.end())
+            add_parameter_row(*found->second, *slot_ptr, *slot_ptr, slot_y, width);
+      };
+      add_rows({ "type", "drive", "bass_threshold" });
+      const std::vector<RowGroup> groups {
+        { "Waveshaper", "The Waveshaper curve's drive, linear part, curve, damping and ripple",
+          { "ws_drive", "ws_linear", "ws_curve", "ws_damp", "ws_period", "ws_depth" }, {} },
+        { "Color", "Filters before the curve, undone after it, that change which frequencies distort",
+          { "color", "color_low", "color_frequency", "color_width", "color_high" }, {} } };
+      for (const auto& group : groups)
+        place_group(group, *slot_ptr, slot_y, group_width, group_key, place_group);
+      add_rows({ "post_clip", "output", "dc_filter", "hi_quality", "mix" });
+      grouped_rows = true;
+    }
+
+    // Multiband Dynamics keeps its band switches and crossovers at the top of
+    // the slot, gives each band its own group, and ends with the controls
+    // every band shares.
+    if (effect_id == "multiband_dynamics") {
+      for (const auto* control : { "low_band", "high_band", "low_split", "high_split" }) {
+        if (const auto found = by_suffix.find(control); found != by_suffix.end())
+          add_parameter_row(*found->second, *slot_ptr, *slot_ptr, slot_y, width);
+      }
+      const auto band = [](const String& title, const String& range, const String& band_name) {
+        StringArray suffixes;
+        for (const auto& control : vital::drive_dynamics::kMultibandBandControls)
+          suffixes.add(band_name + "_" + control.suffix);
+        return RowGroup { title, range + ", with its thresholds, ratios, attack, release and gains", suffixes, {} };
+      };
+      const std::vector<RowGroup> groups {
+        band("Low band", "Below the Low-Mid Split, while Low Band is on", "low"),
+        band("Mid band", "Between the splits, and whatever the Low and High bands leave when they are off", "mid"),
+        band("High band", "Above the Mid-High Split, while High Band is on", "high"),
+        { "Global", "Detection, soft knee, time, output and amount for all three bands",
+          { "detection", "soft_knee", "time", "output", "amount" }, {} } };
+      for (const auto& group : groups)
         place_group(group, *slot_ptr, slot_y, group_width, group_key, place_group);
       grouped_rows = true;
     }

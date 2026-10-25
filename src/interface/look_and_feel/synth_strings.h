@@ -659,7 +659,11 @@ namespace strings {
     "scanner_vibrato",
     "analoguecompressor",
     "maim",
-    "particles"
+    "particles",
+    "saturator",
+    "dynamic_tube",
+    "overdrive",
+    "multiband_dynamics"
   };
 
   const std::string kEffectSlotTypeNames[] = {
@@ -705,7 +709,11 @@ namespace strings {
     "Scanner Vibrato",
     "Analogue Compressor",
     "Maim",
-    "Particles"
+    "Particles",
+    "Saturator",
+    "Dynamic Tube",
+    "Overdrive",
+    "Multiband Dynamics"
   };
 
   // Both tables are indexed by effect; a missing entry would read out of bounds.
@@ -774,6 +782,13 @@ namespace strings {
                                              "Spectral" };
   const std::string kParticlesQualityNames[] = { "16-bit stereo, 1 second", "16-bit mono, 2 seconds",
                                                 "8-bit stereo, 4 seconds", "8-bit mono, 7 seconds" };
+  // Saturator's curves and Post Clip, Dynamic Tube's tubes and Multiband
+  // Dynamics' detection, in their scripts' order.
+  const std::string kSaturatorTypeNames[] = { "Analog Clip", "Soft Sine", "Bass Shaper", "Medium Curve", "Hard Curve",
+                                             "Sinoid Fold", "Digital Clip", "Waveshaper" };
+  const std::string kSaturatorPostClipNames[] = { "Off", "Soft Clip", "Hard Clip" };
+  const std::string kDynamicTubeTypeNames[] = { "A", "B", "C" };
+  const std::string kMultibandDetectionNames[] = { "RMS", "Peak" };
   const std::string kAnalogueWahModelNames[] = { "Cry Baby", "V846", "Mu-Tron III" };
   const std::string kAnalogueWahModeNames[] = { "LP", "BP", "HP" };
   const std::string kAnalogueWahRangeNames[] = { "Lo", "Hi" };
@@ -1082,6 +1097,10 @@ namespace strings {
     "ANALOGUE COMPRESSOR",
     "MAIM",
     "PARTICLES",
+    "SATURATOR",
+    "DYNAMIC TUBE",
+    "OVERDRIVE",
+    "MULTIBAND DYNAMICS",
   };
 
   const std::string kDestinationMenuNames[vital::constants::kNumDestinations] = {
@@ -1135,6 +1154,10 @@ namespace strings {
     "Analogue Compressor",
     "Maim",
     "Particles",
+    "Saturator",
+    "Dynamic Tube",
+    "Overdrive",
+    "Multiband Dynamics",
   };
 
   const std::string kBusDestinationNames[vital::constants::kNumBusDestinations] = {

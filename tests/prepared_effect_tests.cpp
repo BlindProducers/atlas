@@ -41,6 +41,7 @@
 #include "analogue_compressor_module.h"
 #include "maim_module.h"
 #include "particles_module.h"
+#include "drive_dynamics_modules.h"
 #include "note_monitor.h"
 #include "table_filter.h"
 #include "reorderable_effect_chain.h"
@@ -203,9 +204,182 @@ std::unique_ptr<vital::SynthModule> create(int type, vital::Output* bpm) {
     case constants::kAnalogueCompressor: return std::make_unique<AnalogueCompressorModule>();
     case constants::kMaim: return std::make_unique<MaimModule>();
     case constants::kParticles: return std::make_unique<ParticlesModule>(&note_monitor, "");
+    case constants::kSaturator: return std::make_unique<SaturatorModule>();
+    case constants::kDynamicTube: return std::make_unique<DynamicTubeModule>();
+    case constants::kOverdrive: return std::make_unique<OverdriveModule>();
+    case constants::kMultibandDynamics: return std::make_unique<MultibandDynamicsModule>();
   }
   return {};
 }
+// Saturator, Dynamic Tube, Overdrive and Multiband Dynamics hand every control
+// to their ports unchanged: each module's output equals its port's, run here
+// with parameters looked up by name, through a change of every control.
+void driveDynamicsModules() {
+  using namespace vital;
+  namespace dd = atlas::drive_dynamics;
+  const auto run = [](SynthModule& module, const std::function<void(std::function<double(const char*)>)>& apply,
+                      const auto& process, const char* effect) {
+    module.init(); module.setSampleRate(48000); module.setOversampleAmount(1);
+    auto controls = module.getControls();
+    std::map<std::string, double> values;
+    const auto value = [&](const char* name) { return values.at(name); };
+    double worst = 0;
+    std::vector<poly_float> input(97);
+    for (int block = 0; block < 64; ++block) {
+      if (block == 0 || block == 20 || block == 40) {
+        // Every control to its own spot in its range, menus and switches to a whole step.
+        int index = 0;
+        for (const auto& control : controls) {
+          const auto& details = Parameters::getDetails(control.first);
+          float v = details.min + std::fmod(.29f + .17f * index++ + .31f * block, 1.0f) * (details.max - details.min);
+          if (details.value_scale == ValueDetails::kIndexed) v = std::round(v);
+          control.second->set(v);
+          values[control.first] = v;
+        }
+        apply(value);
+      }
+      for (int i = 0; i < int(input.size()); ++i) {
+        const float l = .7f * std::sin((block * 97 + i) * .053f), r = .6f * std::sin((block * 97 + i) * .031f + 1);
+        input[size_t(i)] = poly_float(l, r, l, r);
+      }
+      module.processWithInput(input.data(), int(input.size()));
+      for (int i = 0; i < int(input.size()); ++i) {
+        double l = input[size_t(i)][0], r = input[size_t(i)][1];
+        process(l, r);
+        const poly_float out = module.output()->buffer[i];
+        worst = std::max({ worst, double(std::abs(out[0] - float(l))), double(std::abs(out[1] - float(r))),
+                           double(std::abs(out[2] - out[0])), double(std::abs(out[3] - out[1])) });
+      }
+    }
+    std::cout << effect << " module against its port: maximum difference " << worst << '\n';
+    expect(worst == 0, std::string(effect) + " module output equals its port's");
+  };
+
+  {
+    SaturatorModule module;
+    dd::Saturator core;
+    core.prepare(48000);
+    run(module, [&](const auto& v) {
+      dd::Saturator::Parameters p;
+      p.drive = v("saturator_drive"); p.type = v("saturator_type"); p.color = v("saturator_color");
+      p.amt_lo = v("saturator_color_low"); p.frequency = v("saturator_color_frequency");
+      p.width = v("saturator_color_width"); p.amt_hi = v("saturator_color_high");
+      p.post_clip = v("saturator_post_clip"); p.output = v("saturator_output"); p.dry_wet = v("saturator_mix");
+      p.bass_threshold = v("saturator_bass_threshold"); p.ws_drive = v("saturator_ws_drive");
+      p.ws_linear = v("saturator_ws_linear"); p.ws_curve = v("saturator_ws_curve"); p.ws_damp = v("saturator_ws_damp");
+      p.ws_period = v("saturator_ws_period"); p.ws_depth = v("saturator_ws_depth");
+      p.dc_filter = v("saturator_dc_filter"); p.hi_quality = v("saturator_hi_quality");
+      core.setParameters(p);
+    }, [&](double& l, double& r) { core.process(l, r); }, "Saturator");
+  }
+  {
+    DynamicTubeModule module;
+    dd::DynamicTube core;
+    core.prepare(48000);
+    run(module, [&](const auto& v) {
+      dd::DynamicTube::Parameters p;
+      p.drive = v("dynamic_tube_drive"); p.tube_type = v("dynamic_tube_tube_type"); p.bias = v("dynamic_tube_bias");
+      p.envelope = v("dynamic_tube_envelope"); p.attack = v("dynamic_tube_attack");
+      p.release = v("dynamic_tube_release"); p.tone = v("dynamic_tube_tone"); p.output = v("dynamic_tube_output");
+      p.dry_wet = v("dynamic_tube_mix"); p.hi_quality = v("dynamic_tube_hi_quality");
+      core.setParameters(p);
+    }, [&](double& l, double& r) { core.process(l, r); }, "Dynamic Tube");
+  }
+  {
+    OverdriveModule module;
+    dd::Overdrive core;
+    core.prepare(48000);
+    run(module, [&](const auto& v) {
+      dd::Overdrive::Parameters p;
+      p.freq = v("overdrive_frequency"); p.width = v("overdrive_width"); p.drive = v("overdrive_drive");
+      p.tone = v("overdrive_tone"); p.dynamics = v("overdrive_dynamics"); p.dry_wet = v("overdrive_mix");
+      core.setParameters(p);
+    }, [&](double& l, double& r) { core.process(l, r); }, "Overdrive");
+  }
+  {
+    MultibandDynamicsModule module;
+    dd::MultibandDynamics core;
+    core.prepare(48000);
+    run(module, [&](const auto& v) {
+      dd::MultibandDynamics::Parameters p;
+      const auto at = [&](const std::string& suffix) { return v(("multiband_dynamics_" + suffix).c_str()); };
+      p.split_low_mid = at("low_split"); p.split_mid_high = at("high_split");
+      p.low_band = at("low_band"); p.high_band = at("high_band");
+      const char* names[] = { "low_", "mid_", "high_" };
+      for (int b = 0; b < 3; ++b) {
+        auto& band = p.bands[size_t(b)];
+        const std::string n = names[b];
+        band.active = at(n + "active"); band.solo = at(n + "solo"); band.input = at(n + "input");
+        band.above_threshold = at(n + "above_threshold"); band.above_ratio = at(n + "above_ratio");
+        band.below_threshold = at(n + "below_threshold"); band.below_ratio = at(n + "below_ratio");
+        band.attack = at(n + "attack"); band.release = at(n + "release"); band.output = at(n + "output");
+      }
+      p.amount = at("amount"); p.time = at("time"); p.output = at("output");
+      p.peak = at("detection"); p.knee = at("soft_knee");
+      core.setParameters(p);
+    }, [&](double& l, double& r) { core.process(l, r); }, "Multiband Dynamics");
+  }
+}
+
+// Multiband Dynamics' factory presets: every key one of its parameters and in
+// range, every bus preset accepted by Atlas's loader, and every preset
+// rendering finite audio through the module.
+void driveDynamicsPresets(const String& folder) {
+  using namespace vital;
+  using json = nlohmann::json;
+  int bus_presets = 0, single_presets = 0;
+  for (const auto& entry : RangedDirectoryIterator(File(folder), false, "*.atf;*.atfx")) {
+    const File file = entry.getFile();
+    const std::string name = file.getFileName().toStdString();
+    const json data = json::parse(file.loadFileAsString().toStdString(), nullptr, false);
+    expect(!data.is_discarded(), name + " is valid JSON");
+    if (data.is_discarded()) continue;
+    json parameters;
+    if (file.hasFileExtension("atfx")) {
+      ++bus_presets;
+      SynthPlugin synth;
+      String error;
+      expect(synth.loadFxBusPreset(0, data, error), name + " loads as an FX bus preset (" + error.toStdString() + ")");
+      parameters = data["slots"][0]["parameters"];
+    }
+    else {
+      ++single_presets;
+      expect(data["type"] == "Atlas FX Preset" && data["effect"] == "multiband_dynamics", name + " is a Multiband Dynamics preset");
+      parameters = data["parameters"];
+    }
+    expect(parameters.size() == size_t(drive_dynamics::kNumMultibandControls), name + " sets every control");
+    MultibandDynamicsModule module;
+    module.init(); module.setSampleRate(48000); module.setOversampleAmount(1);
+    auto controls = module.getControls();
+    for (auto it = parameters.begin(); it != parameters.end(); ++it) {
+      const bool known = controls.count(it.key()) == 1;
+      expect(known, name + ": " + it.key() + " is a Multiband Dynamics control");
+      if (!known) continue;
+      const auto& details = Parameters::getDetails(it.key());
+      const float value = it.value().get<float>();
+      expect(value >= details.min && value <= details.max, name + ": " + it.key() + " is in range");
+      controls.at(it.key())->set(value);
+    }
+    std::vector<poly_float> input(256);
+    double peak = 0;
+    bool finite = true;
+    for (int block = 0; block < 375; ++block) {
+      for (int i = 0; i < int(input.size()); ++i) {
+        const float x = .5f * std::sin((block * 256 + i) * .0287f) * (block % 50 < 25 ? 1.0f : .03f);
+        input[size_t(i)] = poly_float(x, x, x, x);
+      }
+      module.processWithInput(input.data(), int(input.size()));
+      for (int i = 0; i < int(input.size()); ++i) {
+        finite = finite && std::isfinite(module.output()->buffer[i][0]) && std::isfinite(module.output()->buffer[i][1]);
+        peak = std::max(peak, double(std::abs(module.output()->buffer[i][0])));
+      }
+    }
+    expect(finite && peak > 0.001 && peak < 8.0, name + " renders finite audio (peak " + std::to_string(peak) + ")");
+  }
+  std::cout << "Multiband Dynamics factory presets: " << single_presets << " FX and " << bus_presets << " bus\n";
+  expect(single_presets == 12 && bus_presets == 12, "twelve Multiband Dynamics presets in both formats");
+}
+
 void compareEffects() {
   using namespace vital;
   cr::Value bpm(2);
@@ -1965,6 +2139,11 @@ int main(int argc, char** argv) {
   if (argc > 1 && String(argv[1]) == "--construction") {
     constructionCost(argc > 2 && String(argv[2]) == "chain",
                      argc > 3 && String(argv[2]) == "type" ? String(argv[3]).getIntValue() : -1);
+    return failures ? 1 : 0;
+  }
+  if (argc > 1 && String(argv[1]) == "--drive-dynamics") {
+    driveDynamicsModules();
+    if (argc > 2) driveDynamicsPresets(argv[2]);
     return failures ? 1 : 0;
   }
   if (argc > 1 && String(argv[1]) == "--convolution-threading") {

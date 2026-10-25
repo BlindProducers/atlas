@@ -151,6 +151,8 @@ private:
   Value* filter_style_control_ = nullptr;
   Value* maim_encoder_control_ = nullptr;
   Value* maim_lpc_rate_control_ = nullptr;
+  // Saturator's and Dynamic Tube's Hi-Quality, which adds latency.
+  Value* hi_quality_control_ = nullptr;
   std::atomic<Wavetable*> filter_table_ { nullptr };
   std::atomic<bool> filter_table_requested_ { false };
   // Once a Filter FX has used its table model it keeps the buffers, as the

@@ -1,0 +1,51 @@
+{
+  "type": "Atlas FX Bus Preset",
+  "version": 1,
+  "slots": [
+    {
+      "effect": "multiband_dynamics",
+      "enabled": true,
+      "parameters": {
+        "multiband_dynamics_low_split": 98.343628,
+        "multiband_dynamics_high_split": 1661.19495,
+        "multiband_dynamics_low_band": 1,
+        "multiband_dynamics_high_band": 1,
+        "multiband_dynamics_low_active": 1,
+        "multiband_dynamics_low_solo": 0,
+        "multiband_dynamics_low_above_threshold": -21.75,
+        "multiband_dynamics_low_above_ratio": -0.43,
+        "multiband_dynamics_low_below_threshold": -80,
+        "multiband_dynamics_low_below_ratio": 0,
+        "multiband_dynamics_low_attack": 156.254028,
+        "multiband_dynamics_low_release": 363.863373,
+        "multiband_dynamics_low_input": 6,
+        "multiband_dynamics_low_output": 0,
+        "multiband_dynamics_mid_active": 1,
+        "multiband_dynamics_mid_solo": 0,
+        "multiband_dynamics_mid_above_threshold": -23.25,
+        "multiband_dynamics_mid_above_ratio": -0.43,
+        "multiband_dynamics_mid_below_threshold": -80,
+        "multiband_dynamics_mid_below_ratio": 0,
+        "multiband_dynamics_mid_attack": 102.39476,
+        "multiband_dynamics_mid_release": 282.361938,
+        "multiband_dynamics_mid_input": 6,
+        "multiband_dynamics_mid_output": 0,
+        "multiband_dynamics_high_active": 1,
+        "multiband_dynamics_high_solo": 0,
+        "multiband_dynamics_high_above_threshold": -22,
+        "multiband_dynamics_high_above_ratio": -0.43,
+        "multiband_dynamics_high_below_threshold": -80,
+        "multiband_dynamics_high_below_ratio": 0,
+        "multiband_dynamics_high_attack": 79.459465,
+        "multiband_dynamics_high_release": 219.115921,
+        "multiband_dynamics_high_input": 6,
+        "multiband_dynamics_high_output": 0,
+        "multiband_dynamics_amount": 100,
+        "multiband_dynamics_time": 100,
+        "multiband_dynamics_output": 0,
+        "multiband_dynamics_detection": 0,
+        "multiband_dynamics_soft_knee": 1
+      }
+    }
+  ]
+}

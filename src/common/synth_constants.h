@@ -184,6 +184,10 @@ namespace vital {
       kAnalogueCompressor,
       kMaim,
       kParticles,
+      kSaturator,
+      kDynamicTube,
+      kOverdrive,
+      kMultibandDynamics,
       kNumEffects
     };
 

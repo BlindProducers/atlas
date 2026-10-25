@@ -172,6 +172,16 @@ set(ATLAS_PARTICLES_SOURCES
   src/synthesis/effects/stmlib/stmlib/dsp/atan.cc
   src/synthesis/effects/stmlib/stmlib/dsp/units.cc)
 
+# Saturator, Overdrive, Dynamic Tube and Multiband Dynamics: Alessio Scala's
+# JSFX ported line for line in double precision, which the reference test
+# compares with the scripts run through EEL2. No fast-math, so the arithmetic
+# stays as written, and no FMA contraction, so macOS and Windows agree.
+set(ATLAS_DRIVE_DYNAMICS_SOURCES
+  src/synthesis/effects/drive_dynamics/saturator.cpp
+  src/synthesis/effects/drive_dynamics/dynamic_tube.cpp
+  src/synthesis/effects/drive_dynamics/overdrive.cpp
+  src/synthesis/effects/drive_dynamics/multiband_dynamics.cpp)
+
 # PFFFT (third_party/pffft) is every FFT in Atlas on every platform: the
 # oscillators' (src/common/fourier_transform.h) and, through
 # third_party/patches/juce8-pffft-fft-engine.patch, every juce::dsp::FFT and
@@ -263,6 +273,9 @@ target_sources(Atlas PRIVATE
   src/synthesis/producers/openb3_source.cpp
   src/synthesis/modules/openb3_module.cpp
   src/synthesis/modules/scanner_vibrato_module.cpp
+  # Saturator, Overdrive, Dynamic Tube and Multiband Dynamics (Alessio Scala's JSFX).
+  ${ATLAS_DRIVE_DYNAMICS_SOURCES}
+  src/synthesis/modules/drive_dynamics_modules.cpp
   # ZL Compressor by zsliu98 (AGPL v3): the Analogue Compressor effect.
   ${ATLAS_ZL_COMPRESSOR_SOURCES}
   # Maim by Arden Butterfield (GPL v3): the Maim effect.
@@ -297,7 +310,8 @@ set_source_files_properties(${ATLAS_OPENWURLI_SOURCES} src/synthesis/producers/o
 set_source_files_properties(${ATLAS_OPENB3_SOURCES} src/synthesis/producers/openb3_source.cpp
   src/synthesis/modules/openb3_module.cpp src/synthesis/modules/scanner_vibrato_module.cpp PROPERTIES
   COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:precise>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffp-contract=off;-fno-fast-math>")
-set_source_files_properties(${ATLAS_ZL_COMPRESSOR_SOURCES} ${ATLAS_MAIM_SOURCES} PROPERTIES
+set_source_files_properties(${ATLAS_ZL_COMPRESSOR_SOURCES} ${ATLAS_MAIM_SOURCES}
+  ${ATLAS_DRIVE_DYNAMICS_SOURCES} src/synthesis/modules/drive_dynamics_modules.cpp PROPERTIES
   COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:precise>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffp-contract=off;-fno-fast-math>")
 # The Scream filter's feedback loop amplifies any rounding difference, so its
 # SVFs and waveshaper round alike on arm64 and x64.
@@ -718,6 +732,8 @@ if(ATLAS_BUILD_TIMING_TESTS)
   add_test(NAME atlas_convolution_threading COMMAND AtlasPreparedEffectTests --convolution-threading)
   set_tests_properties(atlas_convolution_threading PROPERTIES TIMEOUT 60)
   add_test(NAME atlas_ir_switching COMMAND AtlasPreparedEffectTests --ir-switching)
+  add_test(NAME atlas_drive_dynamics_modules COMMAND AtlasPreparedEffectTests --drive-dynamics
+    "${CMAKE_SOURCE_DIR}/Factory/FX/Dynamics")
   add_test(NAME atlas_effect_sleep COMMAND AtlasPreparedEffectTests --effect-sleep)
   add_test(NAME atlas_voice_output_sharing COMMAND AtlasPreparedEffectTests --voice-output-sharing)
   set_tests_properties(atlas_ir_switching PROPERTIES TIMEOUT 60)
@@ -1322,6 +1338,14 @@ if(ATLAS_BUILD_TIMING_TESTS)
       juce::juce_audio_utils juce::juce_dsp juce::juce_recommended_config_flags)
     add_test(NAME atlas_trance_gate_reference COMMAND AtlasTranceGateReferenceTests
       "${CMAKE_SOURCE_DIR}/tests/trance_gate/BP StepGate.jsfx")
+    add_executable(AtlasDriveDynamicsReferenceTests tests/drive_dynamics/reference_tests.cpp
+      ${ATLAS_DRIVE_DYNAMICS_SOURCES})
+    target_include_directories(AtlasDriveDynamicsReferenceTests PRIVATE src/synthesis/effects/drive_dynamics)
+    set_source_files_properties(tests/drive_dynamics/reference_tests.cpp PROPERTIES
+      COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:precise>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffp-contract=off;-fno-fast-math>")
+    target_link_libraries(AtlasDriveDynamicsReferenceTests PRIVATE AtlasEelReference)
+    add_test(NAME atlas_drive_dynamics_reference COMMAND AtlasDriveDynamicsReferenceTests
+      "${CMAKE_SOURCE_DIR}/tests/drive_dynamics")
     add_executable(AtlasResonatorReferenceTests tests/resonator/reference_tests.cpp)
     target_include_directories(AtlasResonatorReferenceTests PRIVATE src/synthesis/effects)
     target_link_libraries(AtlasResonatorReferenceTests PRIVATE AtlasEelReference Atlas)

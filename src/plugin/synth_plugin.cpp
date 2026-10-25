@@ -67,7 +67,8 @@ namespace {
       "erosion_", "floaty_delay_", "spectral_compressor_", "scream_", "tremolo_pan_", "tape_", "defuse_", "suppressor_", "trance_gate_", "spectral_lock_", "resonator_",
       "analoguechorus_", "analogueflanger_", "analogueecho_",
       "analoguerotary_", "analoguespring_", "analoguewah_", "spectral_balance_", "glitch_delay_",
-      "openwurli_amp_", "scanner_vibrato_", "analoguecompressor_", "maim_", "particles_"
+      "openwurli_amp_", "scanner_vibrato_", "analoguecompressor_", "maim_", "particles_",
+      "saturator_", "dynamic_tube_", "overdrive_", "multiband_dynamics_"
     };
     for (const auto& prefix : prefixes) {
       if (name.rfind(prefix, 0) == 0)
@@ -432,7 +433,9 @@ void SynthPlugin::updateLatencyAfterControlChange(const std::string& name) {
           name.compare(start, std::string::npos, "filter_fx_model") == 0 ||
           name.compare(start, std::string::npos, "filter_fx_style") == 0 ||
           name.compare(start, std::string::npos, "maim_encoder") == 0 ||
-          name.compare(start, std::string::npos, "maim_lpc_rate") == 0;
+          name.compare(start, std::string::npos, "maim_lpc_rate") == 0 ||
+          name.compare(start, std::string::npos, "saturator_hi_quality") == 0 ||
+          name.compare(start, std::string::npos, "dynamic_tube_hi_quality") == 0;
     }
   }
   if (affects_latency) {

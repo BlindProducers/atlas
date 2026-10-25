@@ -5,6 +5,7 @@
 #include "table_filter.h"
 #include "spectral_lock_module.h"
 #include "maim_module.h"
+#include "drive_dynamics/drive_dynamics.h"
 #include "smooth_value.h"
 #include "value_switch.h"
 #include "operators.h"
@@ -121,6 +122,10 @@ PreparedEffectModule::PreparedEffectModule(int type, std::string prefix, Factory
                       type_ == constants::kSpectralLock ? SpectralLockModule::kMaxSpectralLatencySamples :
                       type_ == constants::kFilterFx ? filterFxLatency(atlas::filter_table::kLinear) :
                       type_ == constants::kMaim ? MaimModule::kMaxLatencySamples :
+                      type_ == constants::kSaturator ? atlas::drive_dynamics::Saturator::kHiQualityLatency :
+                      type_ == constants::kDynamicTube ? atlas::drive_dynamics::DynamicTube::kHiQualityLatency :
+                      // Overdrive's look-ahead grows with the rate: its most at 8 times 192 kHz.
+                      type_ == constants::kOverdrive ? atlas::drive_dynamics::Overdrive::latencyFor({}, 8 * 192000.0) :
                       description_.latency;
   // On Windows only a live shell has its dry history (reserveControls).
   if (!kReserveMemoryOnlyWhileUsed && pending_capacity_ > 0)
@@ -158,6 +163,10 @@ void PreparedEffectModule::init() {
     maim_encoder_control_ = parameter("maim_encoder");
     maim_lpc_rate_control_ = parameter("maim_lpc_rate");
   }
+  if (type_ == constants::kSaturator)
+    hi_quality_control_ = parameter("saturator_hi_quality");
+  if (type_ == constants::kDynamicTube)
+    hi_quality_control_ = parameter("dynamic_tube_hi_quality");
   SynthModule::init();
   worker_->add(this);
 }
@@ -540,6 +549,15 @@ int PreparedEffectModule::getLatencySamples() const {
   if (type_ == constants::kMaim)
     return MaimModule::latencyFor(maim_encoder_control_ ? maim_encoder_control_->value() : 1.0f,
                                   maim_lpc_rate_control_ ? maim_lpc_rate_control_->value() : 5.0f, getSampleRate());
+  // Saturator's and Dynamic Tube's Hi-Quality delays the dry path to match its filters.
+  if (type_ == constants::kSaturator)
+    return hi_quality_control_ != nullptr && hi_quality_control_->value() >= 0.5f ?
+        atlas::drive_dynamics::Saturator::kHiQualityLatency : 0;
+  if (type_ == constants::kDynamicTube)
+    return hi_quality_control_ != nullptr && hi_quality_control_->value() >= 0.5f ?
+        atlas::drive_dynamics::DynamicTube::kHiQualityLatency : 0;
+  if (type_ == constants::kOverdrive)
+    return atlas::drive_dynamics::Overdrive::latencyFor({}, getSampleRate());
   return description_.latency;
 }
 }
