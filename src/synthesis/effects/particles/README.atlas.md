@@ -81,7 +81,8 @@ away from `stmlib::Random`.
   reach; there the neighbouring table's entry is finite and weighted by zero.
 - **Trigger.** The module's TRIGGER input sets both `trigger` and `gate` for
   one block. `ParticlesModule` fires it on every note-on (it counts the
-  `NoteMonitor`'s note-ons) and whenever Trigger rises through one half.
+  `NoteMonitor`'s note-ons) and whenever Trigger, an Off/On slider, turns on
+  (above one half when modulated).
 - **Platforms.** The correlator shifts a 32-bit word by 32 when a candidate
   starts on a word boundary. arm64 and x64 both treat that as a shift by 0,
   unlike the module's Cortex-M4. So Mac and Windows agree with each other,

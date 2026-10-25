@@ -419,7 +419,7 @@ namespace {
     for (const Row row : { Row { "input_gain", "0 dB" }, Row { "position", "0%" }, Row { "size", "50%" },
                            Row { "pitch", "0 semitones" }, Row { "density", "30%" }, Row { "texture", "50%" },
                            Row { "mix", "50%" }, Row { "spread", "0%" }, Row { "feedback", "0%" },
-                           Row { "reverb", "0%" }, Row { "trigger", "0%" } }) {
+                           Row { "reverb", "0%" }, Row { "trigger", "Off" } }) {
       expect(value_text(row.suffix) == row.text, std::string("Particles ") + row.suffix + " reads " + row.text +
              " (reads " + value_text(row.suffix).toStdString() + ")");
     }
@@ -438,6 +438,9 @@ namespace {
       expect(y > previous_y, std::string("Particles rows in order at ") + suffix);
       previous_y = y;
       const bool menu = String(suffix) == "mode" || String(suffix) == "quality";
+      if (String(suffix) == "trigger")
+        expect(dynamic_cast<Slider*>(control) != nullptr && dynamic_cast<Button*>(control) == nullptr,
+               "Trigger is an Off/On slider, not a toggle");
       // The editor offers Modulate where the engine has a destination.
       const bool destination = synth.getEngine()->getMonoModulationDestination((prefix + suffix).toStdString()) != nullptr;
       expect(destination != menu, std::string("Particles ") + suffix + (menu ? " is not" : " is") +

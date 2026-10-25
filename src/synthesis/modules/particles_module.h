@@ -14,7 +14,7 @@ namespace vital {
   // Atlas controls around the Particles engine (src/synthesis/effects/particles):
   // a granular texture processor recording into a buffer of up to 7.4 s.
   // Mode and Quality are menus; the rest are modulation destinations. Each
-  // note-on fires a grain, as does Trigger rising through one half. Only the
+  // note-on fires a grain, as does Trigger turning on. Only the
   // left and right lanes reach the host, so those are processed and lanes 2-3
   // mirror them.
   class ParticlesModule : public SynthModule {

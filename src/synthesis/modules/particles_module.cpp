@@ -86,8 +86,8 @@ namespace vital {
       reset_pending_ = false;
     }
 
-    // A grain for every note-on since the last block, and for Trigger rising
-    // through one half: the module's TRIGGER input.
+    // A grain for every note-on since the last block, and for Trigger turning
+    // on (above one half when modulated): the module's TRIGGER input.
     const bool trigger_high = mod(kTrigger) >= 0.5f;
     bool fire = trigger_high && !trigger_high_;
     trigger_high_ = trigger_high;

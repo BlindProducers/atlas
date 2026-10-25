@@ -3,8 +3,8 @@
 // processor, MIT). Mode and Quality are menus; every other control is a
 // modulation destination. Density is stored -1..1 around the module's
 // centre detent: negative sows grains at a steady rate, positive at random,
-// 0 none. Freeze holds while its value is above one half; Trigger fires a
-// grain each time it rises through one half.
+// 0 none. Freeze holds while it is on; Trigger, an Off/On slider, fires a
+// grain each time it turns on (modulation turns it on above one half).
     { "particles_on", 0x020129, 0.0, 1.0, 0.0, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Particles Switch", strings::kOffOnNames },
     { "particles_mode", 0x020129, 0.0, 3.0, 0.0, 0.0, 1.0,
@@ -33,7 +33,7 @@
       ValueDetails::kLinear, false, "%", "Particles Reverb", nullptr },
     { "particles_freeze", 0x020129, 0.0, 1.0, 0.0, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Particles Freeze", strings::kOffOnNames },
-    { "particles_trigger", 0x020129, 0.0, 1.0, 0.0, 0.0, 100.0,
-      ValueDetails::kLinear, false, "%", "Particles Trigger", nullptr },
+    { "particles_trigger", 0x020129, 0.0, 1.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Particles Trigger", strings::kOffOnNames },
     { "effect_chain_slot_42", 0x020129, 0.0, constants::kNumEffects - 1, constants::kParticles, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Effect Chain Slot 42", nullptr },

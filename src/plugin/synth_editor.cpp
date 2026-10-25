@@ -3303,8 +3303,9 @@ namespace {
       return "Stop recording, so the buffer holds what it has and the grains keep playing it. Modulation above "
              "one half freezes it.";
     if (suffix == "trigger")
-      return "Fire a single grain each time this rises through 50 percent, as a modulation source can. Every "
-             "note you play also fires one. With Density at zero, grains play only when triggered.";
+      return "Fire a single grain each time this turns on. Modulation turns it on above one half, so an LFO or "
+             "envelope can trigger grains too. Every note you play also fires one. With Density at zero, grains play "
+             "only when triggered.";
     return {};
   }
 
@@ -5833,7 +5834,8 @@ class AccessibleParameterRow : public Component {
       const bool suppressor_control = parameter_id.startsWith("suppressor_") || parameter_id.contains("_suppressor_");
       const bool defuse_control = parameter_id.startsWith("defuse_") || parameter_id.contains("_defuse_");
       use_toggle_control_ = !use_combo_control_ &&
-                            (forceToggleControl || (parameter_.isBoolean() && !forceSliderControl && !named_binary_choice && !tape_control && !defuse_control && !parameter_id.endsWith("trance_gate_trigger")));
+                            (forceToggleControl || (parameter_.isBoolean() && !forceSliderControl && !named_binary_choice && !tape_control && !defuse_control && !parameter_id.endsWith("trance_gate_trigger") &&
+                                                  !parameter_id.endsWith("particles_trigger")));
       const auto name = parameter_.getName(128);
       const bool random_rate = parameter_id.startsWith("random_") && parameter_id.endsWith("_frequency");
       const bool tremolo_control = parameter_id.startsWith("tremolo_pan_") || parameter_id.contains("_tremolo_pan_");
