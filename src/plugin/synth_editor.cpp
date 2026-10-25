@@ -1955,8 +1955,8 @@ namespace {
                     "band_shift", "band_reverse", "loss_period", "loss_width", "loss_jitter", "loss_mode", "drive",
                     "low_cut", "high_cut", "makeup" });
     if (effect_id == "particles")
-      return rank({ "mode", "quality", "input_gain", "position", "size", "pitch", "density", "texture", "mix",
-                    "spread", "feedback", "reverb", "freeze", "trigger" });
+      return rank({ "mode", "quality", "input_gain", "position", "size", "pitch", "density", "texture", "spread",
+                    "feedback", "reverb", "freeze", "trigger", "mix" });
     if (effect_id == "glitch_delay")
       return glitchDelayParameterRank(suffix);
     if (effect_id == "spectral_balance")

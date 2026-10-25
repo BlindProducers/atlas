@@ -424,8 +424,8 @@ namespace {
              " (reads " + value_text(row.suffix).toStdString() + ")");
     }
 
-    const char* order[] = { "mode", "quality", "input_gain", "position", "size", "pitch", "density", "texture", "mix",
-                            "spread", "feedback", "reverb", "freeze", "trigger" };
+    const char* order[] = { "mode", "quality", "input_gain", "position", "size", "pitch", "density", "texture",
+                            "spread", "feedback", "reverb", "freeze", "trigger", "mix" };
     int previous_y = -1;
     for (const char* suffix : order) {
       auto* control = editor.controlForParameter(prefix + suffix);
