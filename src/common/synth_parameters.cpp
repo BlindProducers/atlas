@@ -1843,22 +1843,22 @@ namespace vital {
   // in each mode; the editor names them after the mode.
   const ValueDetails ValueDetailsLookup::braids_slot_parameter_list[] = {
     { "braids_model", 0x000000, 0.0, braids_engine::kNumModels - 1, 0.0, 0.0, 1.0,
-      ValueDetails::kIndexed, false, "", "Braids Synthesis Mode", strings::kBraidsModelNames },
+      ValueDetails::kIndexed, false, "", "Macro Synthesis Mode", strings::kBraidsModelNames },
     { "braids_timbre", 0x000000, 0.0, 1.0, 0.5, 0.0, 100.0,
-      ValueDetails::kLinear, false, "%", "Braids Timbre", nullptr },
+      ValueDetails::kLinear, false, "%", "Macro Timbre", nullptr },
     { "braids_color", 0x000000, 0.0, 1.0, 0.5, 0.0, 100.0,
-      ValueDetails::kLinear, false, "%", "Braids Color", nullptr },
+      ValueDetails::kLinear, false, "%", "Macro Color", nullptr },
     { "braids_resolution", 0x000000, 0.0, braids_engine::kNumResolutions - 1, braids_engine::kFullResolution,
-      0.0, 1.0, ValueDetails::kIndexed, false, "", "Braids Bit Depth", strings::kBraidsResolutionNames },
+      0.0, 1.0, ValueDetails::kIndexed, false, "", "Macro Bit Depth", strings::kBraidsResolutionNames },
     { "braids_sample_rate", 0x000000, 0.0, braids_engine::kNumSampleRates - 1, braids_engine::kFullSampleRate,
-      0.0, 1.0, ValueDetails::kIndexed, false, "", "Braids Sample Rate", strings::kBraidsSampleRateNames },
+      0.0, 1.0, ValueDetails::kIndexed, false, "", "Macro Sample Rate", strings::kBraidsSampleRateNames },
     { "braids_transpose", 0x000000, -48.0, 48.0, 0.0, 0.0, 1.0,
-      ValueDetails::kIndexed, false, "", "Braids Transpose", nullptr },
+      ValueDetails::kIndexed, false, "", "Macro Transpose", nullptr },
     { "braids_tune", 0x000000, -1.0, 1.0, 0.0, 0.0, 100.0,
-      ValueDetails::kLinear, false, "", "Braids Tune", nullptr },
+      ValueDetails::kLinear, false, "", "Macro Tune", nullptr },
     // Off by default: every note from silence starts its cycle at zero.
     { "braids_random_phase", 0x000000, 0.0, 1.0, 0.0, 0.0, 100.0,
-      ValueDetails::kLinear, false, "%", "Braids Phase Randomization", nullptr },
+      ValueDetails::kLinear, false, "%", "Macro Phase Randomization", nullptr },
   };
 
   // OpenWurli oscillator type (the Wurlitzer 200A reed model of OpenWurli):

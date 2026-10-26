@@ -3773,14 +3773,14 @@ namespace {
     if (legacy_id.startsWith("braids_")) {
       const String suffix = legacy_id.fromFirstOccurrenceOf("braids_", false, false);
       if (suffix == "model")
-        return "Choose one of the 48 synthesis modes of Mutable Instruments Braids. Timbre and Color take a new "
+        return "Choose one of the 48 synthesis modes of the Macro oscillator. Timbre and Color take a new "
                "meaning with each mode, and their group is named after it.";
       if (suffix == "timbre") return "Set Timbre, the mode's first parameter. What it changes depends on the synthesis mode.";
       if (suffix == "color") return "Set Color, the mode's second parameter. What it changes depends on the synthesis mode.";
-      if (suffix == "resolution") return "Reduce the bit depth, as Braids' BITS setting does. 16 bit is the clean signal.";
-      if (suffix == "sample_rate") return "Hold samples to reduce the sample rate, as Braids' RATE setting does. 96 kHz is the clean signal.";
-      if (suffix == "transpose") return "Transpose the Braids oscillator in semitones.";
-      if (suffix == "tune") return "Fine tune the Braids oscillator in cents.";
+      if (suffix == "resolution") return "Reduce the bit depth. 16 bit is the clean signal.";
+      if (suffix == "sample_rate") return "Hold samples to reduce the sample rate. 96 kHz is the clean signal.";
+      if (suffix == "transpose") return "Transpose the Macro oscillator in semitones.";
+      if (suffix == "tune") return "Fine tune the Macro oscillator in cents.";
       if (suffix == "random_phase")
         return "Randomize where the oscillator starts its cycle on each note that starts from silence. "
                "0% starts every note the same way.";
@@ -8197,7 +8197,7 @@ std::unique_ptr<AccessibleParameterRow> SynthEditor::buildAccessibleParameterRow
         last_oscillator_modes_[prefix] = oscillatorModeKey(oscillator);
         return std::make_unique<AccessibleParameterRow>(
             parameter, String(), std::function<String(double)>(), 1.0, 0.0, String(), String(),
-            "Choose this oscillator's type: Wavetable, Analog, Sample, Granular, Spectral, Noise, Multi-sample, Braids, "
+            "Choose this oscillator's type: Wavetable, Analog, Sample, Granular, Spectral, Noise, Multi-sample, Macro, "
             "OpenWurli or OpenB3. "
             "Each type keeps its own settings, wavetable and sample for when you switch back.", true);
       }

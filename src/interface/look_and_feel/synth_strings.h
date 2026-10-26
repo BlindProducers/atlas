@@ -228,7 +228,7 @@ namespace strings {
     "Spectral",
     "Noise",
     "Multi-sample",
-    "Braids",
+    "Macro",
     "OpenWurli",
     "OpenB3",
     "Speech",

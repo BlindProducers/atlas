@@ -1285,7 +1285,7 @@ namespace {
       expect(warp->getDescription().contains("formants") || warp->getHelpText().contains("formants"),
              "the distortion mode describes FM on a voice");
     expect(findTitled(*section, [](const String& t) {
-             return t.contains("Unison") || t.contains("Braids") || t.contains("Wave Frame") ||
+             return t.contains("Unison") || t.contains("Macro ") || t.contains("Wave Frame") ||
                     t.contains("Spread") || t.contains("Scale lock");
            }) == nullptr,
            "Speech shows no other controls");
