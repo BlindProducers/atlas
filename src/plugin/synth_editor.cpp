@@ -6918,6 +6918,8 @@ class AccessibleSectionHeader : public Component, public AccessibleContextMenuTa
     }
 
     int headerHeight() const { return top_level_ ? 42 : 34; }
+    // A group's heading (Oscillators, Global) rather than a section's.
+    bool isTopLevel() const { return top_level_; }
 
   private:
     void configure(const String& title, int groupRank, bool topLevel, const String& sectionKey) {
@@ -6940,6 +6942,15 @@ class AccessibleSectionHeader : public Component, public AccessibleContextMenuTa
     String section_key_;
     std::vector<Component*> child_focus_order_;
 };
+
+namespace {
+  // The editor's own heading for `group`. A group inside an effect or a type
+  // may share its name, as Glitch Delay's Global does, but is never top level.
+  bool isGroupHeading(const Component* component, const String& group) {
+    const auto* header = dynamic_cast<const AccessibleSectionHeader*>(component);
+    return header != nullptr && header->isTopLevel() && header->getTitle() == group;
+  }
+}
 
 void SynthEditor::addCpuMeter(Component& parent, int x, int& y, int width, int& focusOrder) {
   if (cpu_meter_ == nullptr)
@@ -7848,9 +7859,11 @@ void SynthEditor::selectSectionByName(const String& section, bool announce) {
     }
   }
   if (target == nullptr) {
+    // The group's own heading: an effect's groups may share its name
+    // (Glitch Delay's and Multiband Dynamics' Global).
     const String group = groupForSection(section);
     for (auto* component : row_focus_order_) {
-      if (component != nullptr && component->getTitle() == group) {
+      if (isGroupHeading(component, group)) {
         target = component;
         break;
       }
@@ -11205,7 +11218,7 @@ namespace {
                  "groupings inside them, such as an EQ's bands or Glitch Delay's groups\n"
                : "  On an effects chain, Comma / Period also step through its effects (Slot 1, Slot 2 and so on)\n")
         : "";
-    return String(text).replace("{Cmd}", command).replace("{ContextMenuKeys}", context_menu)
+    return String::fromUTF8(text).replace("{Cmd}", command).replace("{ContextMenuKeys}", context_menu)
                        .replace("{HeadingMenuKeys}", heading_menu)
                        .replace("{EffectSlotSteps}", effect_slot_steps);
   }
@@ -11237,16 +11250,20 @@ String SynthEditor::keyboardHelpText() {
       "  Quick changes to the same control are undone together. In a text box {Cmd}+Z undoes the typing.\n"
       "\n"
       "Section navigation\n"
+      "  § - Presets\n"
       "  O - Oscillators\n"
-      "  X - Mixer and routing\n"
+      "  X - Signal routing\n"
+      "  V - Voice and performance\n"
       "  F - Filters\n"
       "  E - Envelopes\n"
       "  L - LFOs\n"
       "  M - Modulation routing\n"
       "  P - Effects\n"
-      "  R - Signal routing\n"
+      "  R - Random modulation\n"
       "  Z - Zones\n"
       "  G - Master and global\n"
+      "  Backslash ( \\ ) - Macros\n"
+      "  Shift+A - Arpeggiators\n"
       "  Ctrl+1 / Ctrl+2 / Ctrl+3 - Jump to Bus 1 / 2 / 3\n"
       "  1 to 9 - Jump to subsection within the current group\n"
       "  Comma ( , ) - Previous section\n"
@@ -24291,7 +24308,7 @@ bool SynthEditor::focusGroupShortcut(const String& group, const String& fallback
   if (row_focus_order_.empty())
     showAllSections(false);
   for (auto* component : row_focus_order_) {
-    if (component != nullptr && component->getTitle() == group) {
+    if (isGroupHeading(component, group)) {
       ensureComponentVisible(component);
       component->grabKeyboardFocus();
       current_group_ = group;
@@ -24324,18 +24341,26 @@ bool SynthEditor::focusShortcutTarget(const KeyPress& key) {
   // if (modifiers.isAltDown() && !modifiers.isCommandDown() && !modifiers.isCtrlDown() && character == 'm')
   //   return focusGroupShortcut("Modulation", "Modulation routing");
 
+  if (modifiers.isShiftDown() && !modifiers.isCommandDown() && !modifiers.isCtrlDown() && !modifiers.isAltDown() &&
+      key.getKeyCode() == 'A')
+    return focusGroupShortcut("Arpeggiators");
+
   if (modifiers.isAnyModifierKeyDown())
     return false;
 
   switch (character) {
+    // The section sign, left of 1 on a Mac's ISO keyboard.
+    case 0x00a7: return focusGroupShortcut(kPresetSection);
+    case '\\': return focusGroupShortcut("Macros");
     case 'o': return focusGroupShortcut("Oscillators");
-    case 'x': return focusGroupShortcut("Mixer and routing", kSignalRoutingSection);
+    case 'x': return focusSectionShortcut(kSignalRoutingSection);
+    case 'v': return focusSectionShortcut("Voice and performance");
     case 'f': return focusGroupShortcut("Filters");
     case 'e': return focusGroupShortcut("Envelopes");
     case 'l': return focusGroupShortcut("LFOs");
     case 'm': return focusSectionShortcut("Modulation routing");
     case 'p': return focusGroupShortcut("Effects", kEffectsChainSection);
-    case 'r': return focusSectionShortcut(kSignalRoutingSection);
+    case 'r': return focusGroupShortcut("Random modulation");
     case 'z': return focusGroupShortcut("Zones");
     case 'g': return focusSectionShortcut("Master and global");
     default: break;

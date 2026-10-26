@@ -1264,6 +1264,7 @@ int main(int argc, char** argv) {
     testLfoViewTabs();
     testEffectMoveKeepsFocusAcrossTimerTick();
     testSectionKeysStepThroughEffectSlots();
+    testGroupShortcutsReachTheEditorsGroups();
     testShiftMOpensEveryContextMenu();
     testSaveFormClosesWithEscape();
     testSaveFormSavesOnReturn();

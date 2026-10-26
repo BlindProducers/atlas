@@ -1366,6 +1366,70 @@ namespace {
   // also step through the slots that hold an effect: the chain, Slot 1, Slot 2,
   // then the next element, and back the same way. A bus's chain is reached at
   // its Bus heading and says only the bus (Windows only).
+  // G, R, the section sign, backslash and Shift A go to the editor's own
+  // group headings, and X and V to the Mixer and routing group's sections: an
+  // effect's group of the same name (Glitch Delay's and Multiband Dynamics'
+  // Global) never takes G's place.
+  void testGroupShortcutsReachTheEditorsGroups() {
+    atlas::speech::setObserverForTesting([](const String&) {});
+    SynthPlugin synth;
+    synth.parameterChanged("fx_slot_1_type", vital::constants::kGlitchDelay + 1);
+    synth.parameterChanged("fx_slot_2_type", vital::constants::kMultibandDynamics + 1);
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    editor.toFront(true);
+    pumpEditorEvents();
+
+    auto press = [&](const KeyPress& key) {
+      if (auto* peer = editor.getPeer())
+        peer->handleKeyPress(key);
+      pumpEditorEvents();
+    };
+    // A group's or a section's heading describes itself as one (AccessibleSectionHeader).
+    auto onHeading = [](const String& title, bool group) {
+      auto* focused = Component::getCurrentlyFocusedComponent();
+      return focused != nullptr && focused->getTitle() == title &&
+             focused->getDescription() == (group ? "Control group " : "Control section ") + title;
+    };
+    auto focusedText = [] {
+      auto* focused = Component::getCurrentlyFocusedComponent();
+      return focused != nullptr ? (focused->getTitle() + " / " + focused->getDescription()).toStdString() : std::string("nothing");
+    };
+    // A Global that is no group heading: an effect's.
+    std::function<bool(Component&)> effect_global = [&](Component& parent) {
+      if (parent.getTitle() == "Global" && parent.getDescription() != "Control group Global")
+        return true;
+      for (auto* child : parent.getChildren())
+        if (effect_global(*child))
+          return true;
+      return false;
+    };
+    expect(effect_global(editor), "an effect has a group called Global");
+
+    struct Shortcut { KeyPress key; const char* heading; bool group; const char* name; };
+    const Shortcut shortcuts[] = {
+      { KeyPress('g', ModifierKeys(), 'g'), "Global", true, "G" },
+      { KeyPress('r', ModifierKeys(), 'r'), "Random modulation", true, "R" },
+      { KeyPress(0x00a7, ModifierKeys(), 0x00a7), "Presets", true, "The section sign" },
+      { KeyPress('\\', ModifierKeys(), '\\'), "Macros", true, "Backslash" },
+      { KeyPress('A', ModifierKeys::shiftModifier, 'A'), "Arpeggiators", true, "Shift A" },
+      { KeyPress('x', ModifierKeys(), 'x'), "Signal routing", false, "X" },
+      { KeyPress('v', ModifierKeys(), 'v'), "Voice and performance", false, "V" },
+    };
+    for (const auto& shortcut : shortcuts) {
+      if (auto* oscillators = titled(editor, "Oscillators"))
+        oscillators->grabKeyboardFocus();
+      press(shortcut.key);
+      expect(onHeading(shortcut.heading, shortcut.group),
+             std::string(shortcut.name) + " focuses the " + shortcut.heading + (shortcut.group ? " group" : " section") +
+                 " heading, got " + focusedText());
+    }
+    editor.removeFromDesktop();
+    atlas::speech::setObserverForTesting(nullptr);
+  }
+
   void testSectionKeysStepThroughEffectSlots() {
     // Announcements are kept here rather than sent to the screen reader, with
     // the navigation ones, which say where a step landed, switched on.
