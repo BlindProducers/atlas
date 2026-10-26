@@ -81,7 +81,8 @@ class SynthPlugin : public SynthBase, public AudioProcessor, public ValueBridge:
     // Whether a host loaded this plugin (VST3 or AU) rather than a test
     // building it directly. Only then does Atlas reorganise the user's
     // library: the migration when the editor opens, and the stray banks and
-    // container presets a preset scan files (library_layout.h).
+    // container presets a preset scan files (library_layout.h). Only then
+    // does a new instance start from the user's default patch.
     bool loadedByHost() const { return wrapperType != AudioProcessor::wrapperType_Undefined; }
     bool hasEditor() const override;
 
@@ -158,6 +159,10 @@ class SynthPlugin : public SynthBase, public AudioProcessor, public ValueBridge:
     };
     StateChangeNotifier state_change_notifier_ { *this };
     bool restoring_state_ = false;
+
+    // The default patch (Save patch as default, or Settings' Browse default
+    // patch), which a new instance starts from; Atlas's own while there is none.
+    void loadDefaultPatch();
 
     EditorMemory editor_memory_;
     // The editor's audition source (setAuditionSource), its scratch block and

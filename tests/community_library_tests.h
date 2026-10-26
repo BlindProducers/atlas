@@ -1522,10 +1522,10 @@ namespace {
     expect(std::find(order.begin(), order.end(), share) != order.end() &&
                std::find(order.begin(), order.end(), progress) == order.end(),
            "Tab reaches the Share button, and not the hidden progress bar");
-    expect(style->getNumItems() == 24 && style->getItemText(0).startsWith("The patch's own style") &&
+    expect(style->getNumItems() == 24 && style->getItemText(0) == "None" &&
                style->getItemText(1) == "Atmosphere" && style->getItemText(4) == "Brass" &&
                style->getItemText(14) == "Piano" && style->getItemText(23) == "Other",
-           "the style menu offers the patch's own style and the library's twenty-three, Brass and Piano among them");
+           "the style menu offers None and the library's twenty-three, Brass and Piano among them");
     name->setText("Shared Patch", true);
     int lead = -1;
     for (int i = 0; i < style->getNumItems(); ++i) {
@@ -1810,6 +1810,7 @@ namespace {
     const std::pair<const char*, const char*> groups[] = {
       { "Plugin info", "Report an issue on GitHub" },
       { "Tuning", "Load tuning file..." },
+      { "Default patch", "Browse default patch..." },
       { "MIDI learn mappings", nullptr },
       { "Accessibility", "Other announcements" },
       { "Online community browser", "Show the community library in the preset browser" },
@@ -1844,6 +1845,15 @@ namespace {
     expect(tuning_name != nullptr && tuning_name->getText() == "Tuning: standard twelve-tone equal temperament." &&
                clear_tuning != nullptr && !clear_tuning->isVisible(),
            "Tuning says the standard tuning, with no Clear tuning");
+
+    // Default patch: none chosen, so Browse and no Reset.
+    auto* default_status = dynamic_cast<Label*>(titledIn(*content, "Current default patch"));
+    auto* browse_default = dynamic_cast<Button*>(titledIn(*content, "Browse default patch..."));
+    auto* reset_default = dynamic_cast<Button*>(titledIn(*content, "Reset default patch"));
+    expect(default_status != nullptr && default_status->getText() == "No default patch chosen." &&
+               browse_default != nullptr && browse_default->isVisible() &&
+               reset_default != nullptr && !reset_default->isVisible(),
+           "Default patch says none is chosen, with Browse default patch and no Reset default patch");
 
     // MIDI learn mappings: none yet.
     auto* midi_status = dynamic_cast<Label*>(titledIn(*content, "MIDI learn mapping count"));

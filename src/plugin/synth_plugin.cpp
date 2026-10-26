@@ -197,6 +197,25 @@ SynthPlugin::SynthPlugin() {
 
   auto bypass = bridge_lookup_.find("bypass");
   bypass_parameter_ = bypass == bridge_lookup_.end() ? nullptr : bypass->second;
+
+  // A host restoring a project or a host preset replaces this right after
+  // with setStateInformation.
+  if (loadedByHost())
+    loadDefaultPatch();
+}
+
+void SynthPlugin::loadDefaultPatch() {
+  const File default_patch = atlas::library::defaultPatchFile(LoadSave::getDataDirectory());
+  if (!default_patch.existsAsFile())
+    return;
+  {
+    // Where the instance starts: no step to undo, nothing for the host to save.
+    const ScopedValueSetter<bool> restoring(restoring_state_, true);
+    std::string error;
+    if (!loadFromFile(default_patch, error))
+      loadInitPreset();
+  }
+  undo_history_.clear();
 }
 
 SynthPlugin::~SynthPlugin() {

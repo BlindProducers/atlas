@@ -317,6 +317,101 @@ namespace {
     expect(heard(spoken, "changed since"), "and says why, heard: " + heardText(spoken));
   }
 
+  // A new instance in a host starts from the default patch. Settings' Reset
+  // default patch moves it to Trash and Browse default patch copies a chosen
+  // patch to it; undo takes either back. Atlas's own default plays Basic
+  // Shapes on every oscillator into the main effects.
+  void testDefaultPatch() {
+    TemporaryUndoLibrary library;
+    expect(library.isolated(), "the test's library is its own temporary folder");
+    if (!library.isolated())
+      return;
+    const float default_cutoff = vital::Parameters::getDetails("filter_1_cutoff").default_value;
+    auto hostInstance = [] {
+      AudioProcessor::setTypeOfNextNewPlugin(AudioProcessor::wrapperType_VST3);
+      auto plugin = std::make_unique<SynthPlugin>();
+      AudioProcessor::setTypeOfNextNewPlugin(AudioProcessor::wrapperType_Undefined);
+      return plugin;
+    };
+
+    {
+      auto hosted = hostInstance();
+      bool shapes = true;
+      bool main = true;
+      for (int i = 0; i < vital::kNumOscillators; ++i) {
+        shapes = shapes && hosted->getWavetableCreator(i)->getName() == "Basic Shapes" &&
+                 hosted->getWavetableCreator(i)->getGroup(0)->getComponent(0)->numFrames() == 7;
+        main = main && controlValue(*hosted, vital::source_types::slotPrefix(i) + "destination") ==
+                           static_cast<float>(vital::constants::kEffects);
+      }
+      expect(shapes, "without a default patch, every oscillator plays Basic Shapes");
+      expect(main, "and plays into the main effects");
+      close(controlValue(*hosted, "filter_1_cutoff"), default_cutoff, "with Atlas's own values");
+    }
+
+    SpokenMessages spoken;
+    SynthPlugin synth;
+    UndoTestEditor screen(synth);
+    synth.parameterChanged("filter_1_cutoff", 33.0f);
+    screen.editor.savePatchAsDefaultForTesting();
+    pumpEditorEvents();
+    const File default_file = atlas::library::defaultPatchFile(LoadSave::getDataDirectory());
+    MemoryBlock saved;
+    expect(default_file.loadFileAsData(saved), "Save patch as default writes the default patch");
+    {
+      auto hosted = hostInstance();
+      close(controlValue(*hosted, "filter_1_cutoff"), 33.0f, "a new instance in a host starts from the default patch");
+      expect(!hosted->undoHistory().canUndo(), "with nothing to undo");
+      SynthPlugin built;
+      close(controlValue(built, "filter_1_cutoff"), default_cutoff, "one a test builds starts from Atlas's own");
+    }
+
+    std::vector<File> trashed;
+    SynthEditor::trashFileForTesting() = [&trashed](const File& file) {
+      trashed.push_back(file);
+      return file.deleteFile();
+    };
+    spoken.messages.clear();
+    const bool reset = screen.editor.resetDefaultPatchForTesting();
+    SynthEditor::trashFileForTesting() = nullptr;
+    pumpUntil([&] { return heard(spoken, "Reset default patch"); }, 2000);
+    expect(reset && !default_file.exists() && trashed.size() == 1 && trashed[0] == default_file,
+           "Reset default patch moves the default patch to Trash");
+    expect(heard(spoken, "No default patch chosen"), "and says so, heard: " + heardText(spoken));
+    expect(screen.editor.defaultPatchNameForTesting().isEmpty(), "there is no default patch to name");
+    {
+      auto hosted = hostInstance();
+      close(controlValue(*hosted, "filter_1_cutoff"), default_cutoff, "a new instance starts from Atlas's own again");
+    }
+    expect(synth.undoHistory().undoDescription() == "reset default patch",
+           "the step is named, got " + synth.undoHistory().undoDescription().toStdString());
+    screen.press(undoKey());
+    MemoryBlock restored;
+    expect(default_file.loadFileAsData(restored) && restored == saved, "undo writes the default patch back");
+    screen.press(redoKey());
+    expect(!default_file.exists(), "redo takes it away again");
+
+    // Browse default patch: a preset file becomes the default, and keeps its name.
+    synth.parameterChanged("filter_1_cutoff", 44.0f);
+    synth.setPresetName("Pluck");
+    const File pluck = library.folder.getChildFile("Pluck.atp");
+    expect(synth.saveCopyToFile(pluck), "a preset is saved to choose");
+    spoken.messages.clear();
+    expect(screen.editor.chooseDefaultPatchForTesting(pluck), "Browse default patch takes a preset");
+    pumpUntil([&] { return heard(spoken, "Default patch: Pluck"); }, 2000);
+    MemoryBlock chosen, pluck_data;
+    expect(default_file.loadFileAsData(chosen) && pluck.loadFileAsData(pluck_data) && chosen == pluck_data,
+           "the default patch is a copy of it");
+    expect(screen.editor.defaultPatchNameForTesting() == "Pluck" && heard(spoken, "Default patch: Pluck"),
+           "named after it, heard: " + heardText(spoken));
+    {
+      auto hosted = hostInstance();
+      close(controlValue(*hosted, "filter_1_cutoff"), 44.0f, "a new instance starts from the chosen patch");
+    }
+    screen.press(undoKey());
+    expect(!default_file.exists(), "undo takes away the default patch it chose");
+  }
+
   // An LFO edit is a step once the keys stop, and undo puts the shape back.
   void testLfoEditIsUndone() {
     SynthPlugin synth;
@@ -562,6 +657,7 @@ namespace {
     testAutoloadedPresetsAreOneStep();
     testInitializePatchIsUndone();
     testSavePatchAsDefaultIsUndone();
+    testDefaultPatch();
     testLfoEditIsUndone();
     testEffectRemovalIsUndone();
     testModulationRouteIsUndone();

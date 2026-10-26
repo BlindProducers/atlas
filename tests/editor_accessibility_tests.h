@@ -2225,6 +2225,8 @@ namespace {
 
     {
       SynthPlugin synth;
+      // One frame, rather than the seven of the default Basic Shapes.
+      synth.getWavetableCreator(0)->init();
       SynthEditor editor(synth);
       openEditor(editor);
       auto* creator = synth.getWavetableCreator(0);

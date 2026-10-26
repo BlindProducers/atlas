@@ -67,6 +67,9 @@ struct Location {
 Location locate(const juce::File& path, const juce::File& data_directory);
 
 juce::File libraryDirectory(Library library, const juce::File& data_directory);
+// User/Default.atp, which Save patch as default writes: outside every bank, so
+// no scan lists it. A new instance in a host and Initialize patch load it.
+juce::File defaultPatchFile(const juce::File& data_directory);
 // <Library>/<kind folder>; for presets, <Library>/Banks.
 juce::File kindDirectory(Library library, Kind kind, const juce::File& data_directory);
 juce::File bankDirectory(Library library, const juce::String& bank, const juce::File& data_directory);

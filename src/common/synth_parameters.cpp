@@ -1604,7 +1604,7 @@ namespace vital {
       ValueDetails::kLinear, false, "%", "Frequency Morph Amount", nullptr },
     { "spectral_morph_spread", 0x000407, -0.5, 0.5, 0.0, 0.0, 200.0,
       ValueDetails::kLinear, false, "%", "Frequency Morph Spread", nullptr },
-    { "destination", 0x000500, 0.0, constants::kNumDestinations - 1, 0.0, 0.0, 1.0,
+    { "destination", 0x000500, 0.0, constants::kNumDestinations - 1, constants::kEffects, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Destination", strings::kDestinationNames },
     { "view_2d", 0x000402, 0.0, 2.0, 1.0, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "View 2D", nullptr },
@@ -2257,16 +2257,11 @@ namespace vital {
     }
 
     details_lookup_["osc_1_on"].default_value = 1.0f;
-    details_lookup_["osc_2_destination"].default_value = 1.0f;
-    details_lookup_["osc_3_destination"].default_value = 3.0f;
-    details_lookup_["osc_4_destination"].default_value = 3.0f;
-    // Every slot defaults to Wavetable. Slots 5-8, which replaced the Sample, Granular,
-    // Spectral and Noise sources, keep their effects destination. Presets that predate
-    // this and lack a slot's type load those sources (LoadSave::migrateSlotTypeLevels).
-    for (int i = 0; i < source_types::kNumLegacySources; ++i) {
-      const std::string prefix = source_types::slotPrefix(source_types::kFirstLegacySourceSlot + i);
-      details_lookup_[prefix + "destination"].default_value = 3.0f;
-    }
+    // Every slot defaults to Wavetable, played into the main effects (the
+    // destination's default above). Oscillators 1 and 2 once played into
+    // Filter 1 and Filter 2: states without their destination keep that
+    // (LoadSave::jsonToState). Presets that predate the slots and lack a
+    // slot's type load the sources they had (LoadSave::migrateSlotTypeLevels).
     details_lookup_["filter_1_osc1_input"].default_value = 1.0f;
     details_lookup_["filter_2_osc2_input"].default_value = 1.0f;
 

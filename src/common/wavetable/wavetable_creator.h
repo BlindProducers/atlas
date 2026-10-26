@@ -58,6 +58,10 @@ class WavetableCreator {
     void loadDefaultCreator();
 
     void initPredefinedWaves();
+    // The oscillators' default table: sine, saturated sine, triangle, saw,
+    // square and two narrower pulses, a shape every 32 frames, as Vital's
+    // Basic Shapes holds them.
+    void initBasicShapes();
     void initFromAudioFile(const float* audio_buffer, int num_samples, int sample_rate,
                            AudioFileLoadStyle load_style, FileSource::FadeStyle fade_style);
 

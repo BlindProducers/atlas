@@ -789,6 +789,19 @@ namespace {
       settings.erase(prefix + "tracking");
     }
   }
+
+  // Oscillators 1 and 2 played into Filter 1 and Filter 2 by default before
+  // every slot defaulted to the main effects. Atlas and Vital save every
+  // destination, so only a state written some other way leaves one out: it
+  // keeps the routing it was made with.
+  void migrateSourceDestinations(json& settings) {
+    if (!settings.is_object())
+      return;
+    if (!settings.count("osc_1_destination"))
+      settings["osc_1_destination"] = static_cast<float>(vital::constants::kFilter1);
+    if (!settings.count("osc_2_destination"))
+      settings["osc_2_destination"] = static_cast<float>(vital::constants::kFilter2);
+  }
 }
 
 void LoadSave::loadConvolutionIrs(SynthBase* synth, const json& convolution_irs) {
@@ -1742,6 +1755,7 @@ bool LoadSave::jsonToState(SynthBase* synth, std::map<std::string, String>& save
   migrateFixedSourcesToSlots(settings, modulations);
   migrateSlotTypeLevels(settings, modulations);
   migrateAnalogAging(settings);
+  migrateSourceDestinations(settings);
   json wavetables = arrayFieldOrEmpty(settings, "wavetables");
   json lfos = arrayFieldOrEmpty(settings, "lfos");
 
@@ -1905,6 +1919,33 @@ String LoadSave::getTagsFromFile(const File& file) {
   }
 
   return "";
+}
+
+String LoadSave::getPresetNameFromFile(const File& file) {
+  // The metadata keys sort before "settings", so they lead the file.
+  static constexpr int kMetadataScanSize = 16384;
+  std::unique_ptr<InputStream> stream_owner = openPresetStream(file);
+  if (stream_owner == nullptr)
+    return "";
+
+  MemoryBlock memory_block;
+  stream_owner->readIntoMemoryBlock(memory_block, kMetadataScanSize);
+  const std::string text = memory_block.toString().toStdString();
+  const std::string key = "\"preset_name\"";
+  const size_t key_index = text.find(key);
+  if (key_index == std::string::npos)
+    return "";
+  const size_t value_start = text.find_first_not_of(" \t\r\n:", key_index + key.size());
+  if (value_start == std::string::npos || text[value_start] != '"')
+    return "";
+  // The closing quote is the first one no backslash escapes.
+  size_t value_end = value_start + 1;
+  while (value_end < text.size() && text[value_end] != '"')
+    value_end += text[value_end] == '\\' ? 2 : 1;
+  if (value_end >= text.size())
+    return "";
+  const json name = json::parse(text.substr(value_start, value_end - value_start + 1), nullptr, false);
+  return name.is_string() ? String::fromUTF8(name.get<std::string>().c_str()) : String();
 }
 
 std::string LoadSave::getAuthor(json data) {

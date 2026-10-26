@@ -10370,6 +10370,18 @@ class AtlasSettingsContent : public Component, private FocusChangeListener {
       tuning_.addAndMakeVisible(load_tuning_);
       tuning_.addChildComponent(clear_tuning_);
 
+      // Default patch: what new instances and Initialize patch start from.
+      inner_.addAndMakeVisible(default_patch_);
+      default_status_.setTitle("Current default patch");
+      default_patch_.addAndMakeVisible(default_status_);
+      configureButton(browse_default_, "Browse default patch...",
+                      "Choose the patch new instances of Atlas and Initialize patch start from");
+      browse_default_.onClick = [this] { chooseDefaultPatchFile(); };
+      default_patch_.addAndMakeVisible(browse_default_);
+      configureButton(reset_default_, "Reset default patch", "Moves the default patch to Trash");
+      reset_default_.onClick = [this] { resetDefault(); };
+      default_patch_.addChildComponent(reset_default_);
+
       // MIDI learn mappings: a button for each removes it.
       inner_.addAndMakeVisible(midi_);
       midi_status_.setTitle("MIDI learn mapping count");
@@ -10488,6 +10500,7 @@ class AtlasSettingsContent : public Component, private FocusChangeListener {
       keyboard_help_.addAndMakeVisible(help_text_);
 
       updateTuning();
+      updateDefaultPatch();
       updateMappings();
       updateCommunityControls();
       refreshAccount();
@@ -10622,6 +10635,48 @@ class AtlasSettingsContent : public Component, private FocusChangeListener {
       if (!custom && clear_tuning_.hasKeyboardFocus(false))
         load_tuning_.grabKeyboardFocus();
       clear_tuning_.setVisible(custom);
+      layout();
+    }
+
+    // Default patch. Read when the window opens and after its buttons.
+    void chooseDefaultPatchFile() {
+      if (editor_ == nullptr || default_chooser_ != nullptr)
+        return;
+      default_chooser_ = std::make_unique<FileChooser>("Choose Default Patch", LoadSave::getDataDirectory(),
+                                                       String(vital::kPresetExtensionsList));
+      Component::SafePointer<AtlasSettingsContent> safe_this(this);
+      default_chooser_->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
+                                    [safe_this](const FileChooser& chooser) {
+        if (safe_this == nullptr)
+          return;
+        const File file = chooser.getResult();
+        if (file.existsAsFile() && safe_this->editor_ != nullptr)
+          safe_this->editor_->chooseDefaultPatch(file, &safe_this->browse_default_);
+        safe_this->updateDefaultPatch();
+        focusAfterOsWindow(safe_this->browse_default_);
+        safe_this->default_chooser_.reset();
+      });
+    }
+
+    void resetDefault() {
+      if (editor_ != nullptr)
+        editor_->resetDefaultPatch(&reset_default_);
+      updateDefaultPatch();
+    }
+
+    void updateDefaultPatch() {
+      if (editor_ == nullptr)
+        return;
+      const String name = editor_->defaultPatchName();
+      const bool chosen = name.isNotEmpty();
+      default_status_.setText(chosen ? "Default patch: " + name + "." : String("No default patch chosen."),
+                              dontSendNotification);
+      if (reset_default_.isVisible() == chosen)
+        return;
+      // Off the button before it goes, so the focus stays in the window.
+      if (!chosen && reset_default_.hasKeyboardFocus(false))
+        browse_default_.grabKeyboardFocus();
+      reset_default_.setVisible(chosen);
       layout();
     }
 
@@ -10862,6 +10917,7 @@ class AtlasSettingsContent : public Component, private FocusChangeListener {
       };
       placeGroup(info_, { &version_, &issue_, &source_, &releases_ });
       placeGroup(tuning_, { &tuning_name_, &load_tuning_, &clear_tuning_ });
+      placeGroup(default_patch_, { &default_status_, &browse_default_, &reset_default_ });
       std::vector<Component*> midi_rows { &midi_status_ };
       for (auto& button : mapping_buttons_)
         midi_rows.push_back(button.get());
@@ -10887,6 +10943,7 @@ class AtlasSettingsContent : public Component, private FocusChangeListener {
     SettingsLayout inner_;
     SettingsGroup info_ { "Plugin info" };
     SettingsGroup tuning_ { "Tuning" };
+    SettingsGroup default_patch_ { "Default patch" };
     SettingsGroup midi_ { "MIDI learn mappings" };
     SettingsGroup accessibility_ { "Accessibility" };
     SettingsGroup community_ { "Online community browser" };
@@ -10896,6 +10953,9 @@ class AtlasSettingsContent : public Component, private FocusChangeListener {
     SettingsText tuning_name_;
     AccessibleTextButton load_tuning_, clear_tuning_;
     std::unique_ptr<FileChooser> tuning_chooser_;
+    SettingsText default_status_;
+    AccessibleTextButton browse_default_, reset_default_;
+    std::unique_ptr<FileChooser> default_chooser_;
     SettingsText midi_status_;
     std::vector<std::pair<int, std::string>> mappings_;
     std::vector<std::unique_ptr<AccessibleTextButton>> mapping_buttons_;
@@ -11326,7 +11386,7 @@ String SynthEditor::keyboardHelpText() {
       "\n"
       "Settings (the Settings button in the toolbar)\n"
       "  Tab / Shift+Tab - Move through the controls of every group: Plugin info, Tuning, "
-      "MIDI learn mappings, Accessibility, Online community browser and Keyboard help\n"
+      "Default patch, MIDI learn mappings, Accessibility, Online community browser and Keyboard help\n"
       "  A screen reader presents each group with its controls inside it\n"
       "  Escape - Close Settings\n";
 
@@ -11334,9 +11394,7 @@ String SynthEditor::keyboardHelpText() {
 }
 
 File SynthEditor::defaultPatchFile() const {
-  // At the User library's level, outside every bank, so no scan lists it.
-  return atlas::library::libraryDirectory(atlas::library::Library::kUser, LoadSave::getDataDirectory())
-      .getChildFile("Default").withFileExtension(vital::kPresetExtension);
+  return atlas::library::defaultPatchFile(LoadSave::getDataDirectory());
 }
 
 void SynthEditor::initializePatch() {
@@ -11391,6 +11449,76 @@ void SynthEditor::savePatchAsDefault() {
   refreshPresetList();
   updatePresetSummary();
   postPluginAnnouncement("Saved patch as default", AccessibilityHandler::AnnouncementPriority::high);
+}
+
+String SynthEditor::defaultPatchName() const {
+  const File default_file = defaultPatchFile();
+  if (!default_file.existsAsFile())
+    return {};
+  const String name = LoadSave::getPresetNameFromFile(default_file).trim();
+  return name.isNotEmpty() ? name : String("Untitled");
+}
+
+bool SynthEditor::chooseDefaultPatch(const File& preset, Component* returnTo) {
+  const File default_file = defaultPatchFile();
+  if (preset == default_file)
+    return true;
+  // A patch Atlas can open, copied byte for byte (a container keeps its instruments).
+  const String name = preset.getFileNameWithoutExtension();
+  MemoryBlock chosen;
+  std::string text;
+  const bool readable = preset.loadFileAsData(chosen) && vital::multisample::container::readPresetText(preset, text) &&
+                        json::parse(text, nullptr, false).is_object();
+  if (!readable) {
+    showWarningBox("Unable to choose the default patch", name + " is not a patch Atlas can open.", returnTo);
+    postSettingsAnnouncement("Unable to choose " + name + " as the default patch");
+    return false;
+  }
+  // The default it replaces, so that undo can put it back.
+  std::optional<MemoryBlock> previous;
+  bool previous_read = true;
+  if (default_file.existsAsFile()) {
+    MemoryBlock data;
+    previous_read = default_file.loadFileAsData(data);
+    if (previous_read)
+      previous = std::move(data);
+  }
+  if (!default_file.getParentDirectory().createDirectory() ||
+      !default_file.replaceWithData(chosen.getData(), chosen.getSize())) {
+    showWarningBox("Unable to choose the default patch", "The default patch could not be written.", returnTo);
+    postSettingsAnnouncement("Unable to choose " + name + " as the default patch");
+    return false;
+  }
+  if (previous_read)
+    synth_.undoHistory().recordFileChange(default_file, "choose default patch", std::move(previous), std::move(chosen));
+
+  refreshPresetList();
+  updatePresetSummary();
+  postSettingsAnnouncement("Default patch: " + defaultPatchName());
+  return true;
+}
+
+bool SynthEditor::resetDefaultPatch(Component* returnTo) {
+  const File default_file = defaultPatchFile();
+  if (!default_file.existsAsFile())
+    return true;
+  // Read first, so that undo can write it back.
+  MemoryBlock previous;
+  const bool previous_read = default_file.loadFileAsData(previous);
+  const bool moved = trashFileForTesting() ? trashFileForTesting()(default_file) : default_file.moveToTrash();
+  if (!moved || default_file.existsAsFile()) {
+    showWarningBox("Unable to reset the default patch", "Atlas could not move the default patch to Trash.", returnTo);
+    postSettingsAnnouncement("Unable to reset the default patch");
+    return false;
+  }
+  if (previous_read)
+    synth_.undoHistory().recordFileChange(default_file, "reset default patch", std::move(previous), std::nullopt);
+
+  refreshPresetList();
+  updatePresetSummary();
+  // Settings' buttons: said whatever the optional announcement categories are.
+  postSettingsAnnouncement("Reset default patch. No default patch chosen");
+  return true;
 }
 
 void SynthEditor::undoOrRedo(bool redo) {
@@ -13943,7 +14071,8 @@ void SynthEditor::showShareForm(bool bank, const String& preface) {
     share_name_.setText(synth_.getPresetName().isNotEmpty() ? synth_.getPresetName() : String("Untitled"), false);
     share_style_.clear(dontSendNotification);
     const String own_style = synth_.getStyle().trim();
-    share_style_.addItem(own_style.isNotEmpty() ? "The patch's own style, " + own_style : String("The patch's own style"), 1);
+    // None uploads the patch without a style.
+    share_style_.addItem("None", 1);
     int id = 2;
     for (const auto& style : atlas::community::styles())
       share_style_.addItem(style.label, id++);

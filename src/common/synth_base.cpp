@@ -195,7 +195,7 @@ SynthBase::SynthBase() : expired_(false) {
     vital::Wavetable* wavetable = engine_->getWavetable(i);
     if (wavetable) {
       wavetable_creators_[i] = std::make_unique<WavetableCreator>(wavetable);
-      wavetable_creators_[i]->init();
+      wavetable_creators_[i]->initBasicShapes();
     }
   }
 
@@ -998,7 +998,7 @@ void SynthBase::initEngine() {
   speech_manager_->clearAll();
   if (getWavetableCreator(0)) {
     for (int i = 0; i < vital::kNumOscillators; ++i)
-      getWavetableCreator(i)->init();
+      getWavetableCreator(i)->initBasicShapes();
 
     for (int i = 0; i < vital::kNumOscillators; ++i)
       engine_->getSample(i)->init();

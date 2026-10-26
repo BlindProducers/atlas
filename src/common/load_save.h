@@ -105,6 +105,7 @@ class LoadSave {
     static String getAuthorFromFile(const File& file);
     static String getStyleFromFile(const File& file);
     static String getTagsFromFile(const File& file);
+    static String getPresetNameFromFile(const File& file);
     static std::string getAuthor(json file);
     static std::string getLicense(json state);
 

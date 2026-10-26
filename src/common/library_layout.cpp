@@ -473,6 +473,11 @@ juce::File libraryDirectory(Library library, const juce::File& data_directory) {
   return data_directory.getChildFile(libraryName(library));
 }
 
+juce::File defaultPatchFile(const juce::File& data_directory) {
+  return libraryDirectory(Library::kUser, data_directory).getChildFile("Default")
+      .withFileExtension(vital::kPresetExtension);
+}
+
 juce::File kindDirectory(Library library, Kind kind, const juce::File& data_directory) {
   return libraryDirectory(library, data_directory).getChildFile(kindFolderName(kind));
 }

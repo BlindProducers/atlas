@@ -95,10 +95,11 @@ class UndoHistory : private AsyncUpdater, private Timer {
     // the same non-empty `mergeKey` in a row make one step that goes back to
     // where the first began (presets autoloaded while browsing).
     void describeNextStep(const String& description, const String& mergeKey = {});
-    // The user's action wrote `file` (Save patch as default): its bytes before,
-    // none when it did not exist, and after.
+    // The user's action wrote or removed `file` (Save patch as default, the
+    // Default patch group's Browse and Reset): its bytes before and after,
+    // none where it did not exist.
     void recordFileChange(const File& file, const String& description, std::optional<MemoryBlock> before,
-                          MemoryBlock after);
+                          std::optional<MemoryBlock> after);
     // The host, its automation or MIDI learn changed control `name`: the
     // history starts from its new value. Any thread.
     void absorbExternalChange(const std::string& name);
@@ -147,7 +148,7 @@ class UndoHistory : private AsyncUpdater, private Timer {
     struct FileChange {
       File file;
       std::optional<MemoryBlock> before;
-      MemoryBlock after;
+      std::optional<MemoryBlock> after;
     };
 
     struct Step {

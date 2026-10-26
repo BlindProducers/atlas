@@ -489,6 +489,9 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     static std::function<bool(const File&)>& trashFileForTesting();
     // Tests: the Preset menu's Save patch as default and Initialize patch.
     void savePatchAsDefaultForTesting() { savePatchAsDefault(); }
+    bool chooseDefaultPatchForTesting(const File& preset) { return chooseDefaultPatch(preset, nullptr); }
+    bool resetDefaultPatchForTesting() { return resetDefaultPatch(nullptr); }
+    String defaultPatchNameForTesting() const { return defaultPatchName(); }
     void initializePatchForTesting() { initializePatch(); }
     // The grouped source menu a parameter row offers (tests walk it like the slot menus).
     PopupMenu createModulationSourceSubmenu(const String& destinationId, std::map<int, String>& choices,
@@ -654,6 +657,13 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     static String keyboardHelpText();
     void initializePatch();
     void savePatchAsDefault();
+    // Settings' Default patch group. Browse copies the chosen patch to the
+    // default patch, and Reset default patch moves it to Trash; undo takes
+    // either back. False when the file could not be read, written or moved.
+    bool chooseDefaultPatch(const File& preset, Component* returnTo);
+    bool resetDefaultPatch(Component* returnTo);
+    // The default patch's name, "Untitled" when it has none; empty with no default patch.
+    String defaultPatchName() const;
     File defaultPatchFile() const;
     // Command Z and Shift Command Z (or Command Y): undoes or redoes the last
     // change, shows the patch as it is then and says what was undone.

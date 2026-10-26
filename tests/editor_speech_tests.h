@@ -87,8 +87,9 @@ namespace {
         wavetable_section != nullptr ? titled(*wavetable_section, "Wavetable keyboard editor") : nullptr);
     expect(wavetable != nullptr, "the wavetable editor has its keyboard editor");
     if (wavetable != nullptr) {
-      expectNavigationSpoken(*wavetable, spoken, KeyPress(KeyPress::endKey), "Frame 1 of 1", "Wavetable editor");
-      expectNavigationSpoken(*wavetable, spoken, KeyPress(KeyPress::rightKey), "Frame 1 of 1", "Wavetable editor");
+      // The default table, Basic Shapes, has a keyframe for each of its seven shapes.
+      expectNavigationSpoken(*wavetable, spoken, KeyPress(KeyPress::endKey), "Frame 7 of 7", "Wavetable editor");
+      expectNavigationSpoken(*wavetable, spoken, KeyPress(KeyPress::rightKey), "Frame 7 of 7", "Wavetable editor");
       expectNavigationSpoken(*wavetable, spoken, characterKey('.'), "Harmonic 2", "Wavetable editor next harmonic");
       expectNavigationSpoken(*wavetable, spoken, characterKey(','), "Harmonic 1", "Wavetable editor previous harmonic");
       expectNavigationSpoken(*wavetable, spoken, KeyPress(KeyPress::pageUpKey), "Harmonic 11", "Wavetable editor ten harmonics up");

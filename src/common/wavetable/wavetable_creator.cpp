@@ -22,6 +22,7 @@
 #include "wave_line_source.h"
 
 #include <algorithm>
+#include <cmath>
 #include "wave_source.h"
 #include "wavetable.h"
 
@@ -197,6 +198,53 @@ void WavetableCreator::initPredefinedWaves() {
   wave_source->setInterpolationStyle(WaveSource::kNone);
   full_normalize_ = false;
   remove_all_dc_ = false;
+
+  new_group->addComponent(wave_source);
+  addGroup(new_group);
+  render();
+}
+
+void WavetableCreator::initBasicShapes() {
+  // Each shape starts at zero, or high for the square and pulses, and holds
+  // until the next: Vital's factory Basic Shapes table, drawn here rather than
+  // shipped, since Vital's factory content may not be redistributed.
+  enum Shape { kSine, kSaturatedSine, kTriangle, kSaw, kSquare, kQuarterPulse, kEighthPulse };
+  static constexpr struct { Shape shape; int position; } kKeyframes[] = {
+    { kSine, 0 }, { kSaturatedSine, 32 }, { kTriangle, 64 }, { kSaw, 96 },
+    { kSquare, 128 }, { kQuarterPulse, 192 }, { kEighthPulse, 224 },
+  };
+
+  clear();
+  wavetable_->setName("Basic Shapes");
+  WavetableGroup* new_group = new WavetableGroup();
+  WaveSource* wave_source = new WaveSource();
+  constexpr int kSize = vital::WaveFrame::kWaveformSize;
+  int index = 0;
+  for (const auto& keyframe : kKeyframes) {
+    wave_source->insertNewKeyframe(keyframe.position);
+    vital::WaveFrame* wave_frame = wave_source->getKeyframe(index++)->wave_frame();
+    for (int i = 0; i < kSize; ++i) {
+      const float t = i / static_cast<float>(kSize);
+      const float phase = 2.0f * vital::kPi * t;
+      float value = 0.0f;
+      switch (keyframe.shape) {
+        case kSine: value = std::sin(phase); break;
+        // A sine rounded towards a square by its third and fifth harmonics.
+        case kSaturatedSine:
+          value = std::sin(phase) + 0.2194f * std::sin(3.0f * phase) + 0.0481f * std::sin(5.0f * phase);
+          break;
+        case kTriangle: value = t < 0.25f ? 4.0f * t : (t < 0.75f ? 2.0f - 4.0f * t : 4.0f * t - 4.0f); break;
+        case kSaw: value = t < 0.5f ? 2.0f * t : 2.0f * t - 2.0f; break;
+        case kSquare: value = t < 0.5f ? 1.0f : -1.0f; break;
+        case kQuarterPulse: value = t < 0.25f ? 1.0f : -1.0f; break;
+        case kEighthPulse: value = t < 0.125f ? 1.0f : -1.0f; break;
+      }
+      wave_frame->time_domain[i] = value;
+    }
+    wave_frame->toFrequencyDomain();
+  }
+  wave_source->setInterpolationMode(WaveSource::kTime);
+  wave_source->setInterpolationStyle(WaveSource::kNone);
 
   new_group->addComponent(wave_source);
   addGroup(new_group);

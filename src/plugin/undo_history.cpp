@@ -274,7 +274,7 @@ void UndoHistory::describeNextStep(const String& description, const String& merg
 }
 
 void UndoHistory::recordFileChange(const File& file, const String& description, std::optional<MemoryBlock> before,
-                                   MemoryBlock after) {
+                                   std::optional<MemoryBlock> after) {
   if (!onMessageThread() || applying_)
     return;
   processResetRequest();
@@ -664,7 +664,8 @@ size_t UndoHistory::stepBytes(const Step& step) {
       bytes += block.after->size();
   }
   if (step.file != nullptr) {
-    bytes += step.file->after.getSize();
+    if (step.file->after.has_value())
+      bytes += step.file->after->getSize();
     if (step.file->before.has_value())
       bytes += step.file->before->getSize();
   }
@@ -821,15 +822,17 @@ bool UndoHistory::applyFile(const FileChange& change, bool undoing, String& fail
     }
     current = std::move(data);
   }
-  const MemoryBlock* expected = undoing ? &change.after : (change.before.has_value() ? &*change.before : nullptr);
+  const std::optional<MemoryBlock>& left = undoing ? change.after : change.before;
+  const MemoryBlock* expected = left.has_value() ? &*left : nullptr;
   const bool unchanged = current.has_value() == (expected != nullptr) && (!current.has_value() || *current == *expected);
   if (!unchanged) {
     failure = change.file.getFileNameWithoutExtension() + " has changed since, so it was left as it is";
     return false;
   }
 
-  const MemoryBlock* target = undoing ? (change.before.has_value() ? &*change.before : nullptr) : &change.after;
-  // The file did not exist before the step: undoing takes away the one it made.
+  const std::optional<MemoryBlock>& wanted = undoing ? change.before : change.after;
+  const MemoryBlock* target = wanted.has_value() ? &*wanted : nullptr;
+  // The file did not exist on that side of the step: it is taken away.
   const bool written = target != nullptr ? change.file.replaceWithData(target->getData(), target->getSize())
                                          : change.file.deleteFile();
   if (!written)
