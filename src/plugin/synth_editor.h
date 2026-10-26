@@ -689,6 +689,14 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     bool inCommunityCollection() const { return presetCollection() == PresetCollection::kCommunity; }
     bool inCommunityBankCollection() const { return presetCollection() == PresetCollection::kCommunityBanks; }
     bool inAnyCommunityCollection() const { return inCommunityCollection() || inCommunityBankCollection(); }
+    // The browser's lists and columns as the collection names them: on the
+    // community library's side the Bank list and column are its Author (the
+    // uploader), Category is Style for presets and Genre for banks, and the
+    // Library list and column, which would name only Community, are left out.
+    void namePresetBrowserForCollection();
+    void namePresetFacetTable(PresetTableListBox& table, const String& title);
+    // The facet lists side by side in `preset_facet_area_`, without the hidden ones.
+    void layoutPresetFacets();
     // The items the facets and the table are built from: a community list in
     // its collection, the local index otherwise.
     const std::vector<PresetBrowserItem>& activePresetIndex() const;
@@ -1272,6 +1280,7 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     PresetTableListBox preset_bank_table_ { "Bank" };
     PresetTableListBox preset_category_table_ { "Category" };
     PresetTableListBox preset_tag_table_ { "Tags" };
+    Rectangle<int> preset_facet_area_;
     PresetTableListBox preset_table_ { "Preset table" };
     ToggleButton preset_preview_ { "Autoload preset when scrolling" };
     Label save_patch_prompt_;

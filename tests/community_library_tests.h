@@ -334,13 +334,15 @@ namespace {
 
     auto* collection = dynamic_cast<TableListBox*>(titled(editor, "Collection"));
     auto* libraries = dynamic_cast<TableListBox*>(titled(editor, "Library"));
+    auto* authors = dynamic_cast<TableListBox*>(titled(editor, "Bank"));
     auto* categories = dynamic_cast<TableListBox*>(titled(editor, "Category"));
     auto* tags = dynamic_cast<TableListBox*>(titled(editor, "Tags"));
     auto* results = dynamic_cast<TableListBox*>(titled(editor, "Preset results table"));
     auto* search = dynamic_cast<TextEditor*>(titled(editor, "Preset search"));
     auto* autoload = dynamic_cast<Button*>(titled(editor, "Autoload preset when scrolling"));
-    const bool browser = made && collection != nullptr && libraries != nullptr && categories != nullptr &&
-                         tags != nullptr && results != nullptr && search != nullptr && autoload != nullptr;
+    const bool browser = made && collection != nullptr && libraries != nullptr && authors != nullptr &&
+                         categories != nullptr && tags != nullptr && results != nullptr && search != nullptr &&
+                         autoload != nullptr;
     expect(browser, "the editor has its preset browser");
     if (!browser) {
       editor.removeFromDesktop();
@@ -384,18 +386,24 @@ namespace {
     // Sorted by name: Broken Bass, then Shared Lead.
     expect(editor.presetFileAtRow(1) == expected,
            "a row is where its download lands: " + editor.presetFileAtRow(1).getFullPathName().toStdString());
-    expect(cell(1, kName) == "Shared Lead" && cell(1, kAuthor) == "Tester" && cell(1, kDownloaded) == "Not downloaded" &&
+    expect(cell(1, kName) == "Shared Lead" && cell(1, kAuthor) == "tester" && cell(1, kDownloaded) == "Not downloaded" &&
                cell(1, kTags) == "glow, test" && cell(1, kCategory) == "Lead" && cell(1, kBank) == "tester" &&
                cell(1, kLibrary) == "Community",
-           "the row shows the name, author, download state, tags, style, uploader and library: " +
+           "the row shows the name, uploader as its author, download state, tags, style, uploader and library: " +
                (cell(1, kName) + " | " + cell(1, kAuthor) + " | " + cell(1, kDownloaded) + " | " + cell(1, kTags) + " | " +
                 cell(1, kCategory) + " | " + cell(1, kBank) + " | " + cell(1, kLibrary)).toStdString());
     expect(results->getHeader().getColumnName(kDownloaded) == "Downloaded", "the Favourite column is named Downloaded");
-    expect(facetRows(*libraries) == StringArray { "All libraries", "Community" } &&
-               facetRows(*categories) == StringArray { "All categories", "Bass", "Lead" } &&
+    expect(results->getHeader().getColumnName(kCategory) == "Style" && !results->getHeader().isColumnVisible(kBank) &&
+               !results->getHeader().isColumnVisible(kLibrary),
+           "the Category column is Style, and the Bank and Library columns are left out");
+    expect(!libraries->isVisible() && authors->getTitle() == "Author" && categories->getTitle() == "Style",
+           "the lists are Collection, Author, Style and Tags, with no Library list: " +
+               (authors->getTitle() + ", " + categories->getTitle()).toStdString());
+    expect(facetRows(*authors) == StringArray { "All authors", "tester" } &&
+               facetRows(*categories) == StringArray { "All styles", "Bass", "Lead" } &&
                facetRows(*tags) == StringArray { "All tags", "glow", "test" },
-           "the Library, Category and Tags lists come from the library's styles and tags: " +
-               (facetRows(*libraries).joinIntoString(", ") + " / " + facetRows(*categories).joinIntoString(", ") + " / " +
+           "the Author, Style and Tags lists come from the library's uploaders, styles and tags: " +
+               (facetRows(*authors).joinIntoString(", ") + " / " + facetRows(*categories).joinIntoString(", ") + " / " +
                 facetRows(*tags).joinIntoString(", ")).toStdString());
 
     // The Category list, the Tags list and the search narrow the rows.
@@ -467,6 +475,10 @@ namespace {
                (facetRows(*libraries).joinIntoString(", ") + " | " + cell(0, kLibrary) + " | " + cell(0, kBank) + " | " +
                 cell(0, kCategory) + " | " + cell(0, kDownloaded)).toStdString());
     expect(results->getHeader().getColumnName(kDownloaded) == "Favourite", "the column is named Favourite again");
+    expect(libraries->isVisible() && authors->getTitle() == "Bank" && categories->getTitle() == "Category" &&
+               results->getHeader().isColumnVisible(kBank) && results->getHeader().isColumnVisible(kLibrary) &&
+               results->getHeader().getColumnName(kCategory) == "Category",
+           "and the Library, Bank and Category lists and columns are back");
     finish();
   }
 
@@ -696,20 +708,24 @@ namespace {
     const File archive = atlas::community::banksDirectory(library.folder).getChildFile("tester").getChildFile("Test Bank.atb");
     expect(editor.presetFileAtRow(1) == archive,
            "a row is where its archive lands: " + editor.presetFileAtRow(1).getFullPathName().toStdString());
-    expect(cell(1, kName) == "Test Bank" && cell(1, kAuthor) == "Test Account" && cell(1, kImported) == "Not imported" &&
+    expect(cell(1, kName) == "Test Bank" && cell(1, kAuthor) == "tester" && cell(1, kImported) == "Not imported" &&
                cell(1, kTags) == "test, garage" && cell(1, kCategory) == "Speed Garage" && cell(1, kBank) == "tester" &&
                cell(1, kLibrary) == "Community",
            "the row shows the name, uploader, import state, tags, genre, uploader and library: " +
                (cell(1, kName) + " | " + cell(1, kAuthor) + " | " + cell(1, kImported) + " | " + cell(1, kTags) + " | " +
                 cell(1, kCategory) + " | " + cell(1, kBank) + " | " + cell(1, kLibrary)).toStdString());
     expect(results->getHeader().getColumnName(kImported) == "Imported", "the Favourite column is named Imported");
-    expect(facetRows(*libraries) == StringArray { "All libraries", "Community" } &&
-               facetRows(*uploaders) == StringArray { "All banks", "tester" } &&
-               facetRows(*categories) == StringArray { "All categories", "Ambient", "Speed Garage" } &&
+    expect(results->getHeader().getColumnName(kCategory) == "Genre" && !results->getHeader().isColumnVisible(kBank) &&
+               !results->getHeader().isColumnVisible(kLibrary),
+           "the Category column is Genre, and the Bank and Library columns are left out");
+    expect(!libraries->isVisible() && uploaders->getTitle() == "Author" && categories->getTitle() == "Genre",
+           "the lists are Collection, Author, Genre and Tags, with no Library list");
+    expect(facetRows(*uploaders) == StringArray { "All authors", "tester" } &&
+               facetRows(*categories) == StringArray { "All genres", "Ambient", "Speed Garage" } &&
                facetRows(*tags) == StringArray { "All tags", "garage", "test" },
-           "the Library, Bank, Category and Tags lists come from the banks' uploaders, genres and tags: " +
-               (facetRows(*libraries).joinIntoString(", ") + " / " + facetRows(*uploaders).joinIntoString(", ") + " / " +
-                facetRows(*categories).joinIntoString(", ") + " / " + facetRows(*tags).joinIntoString(", ")).toStdString());
+           "the Author, Genre and Tags lists come from the banks' uploaders, genres and tags: " +
+               (facetRows(*uploaders).joinIntoString(", ") + " / " + facetRows(*categories).joinIntoString(", ") + " / " +
+                facetRows(*tags).joinIntoString(", ")).toStdString());
     results->selectRow(1);
     pumpEditorEvents();
     const String before = details->getText();

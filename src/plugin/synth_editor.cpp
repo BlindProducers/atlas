@@ -7052,14 +7052,12 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
                                     int kind, const String& title) {
     model = std::make_unique<PresetFacetTableModel>(*this, kind);
     table.setModel(model.get());
-    table.setTitle(title);
-    table.setDescription("Filter presets by " + title.toLowerCase() + ". The selected row is applied immediately.");
-    table.setHelpText("Use Up and Down to select a " + title.toLowerCase() + ".");
+    table.getHeader().addColumn(title, 1, 170, 90, 420);
+    namePresetFacetTable(table, title);
     table.setWantsKeyboardFocus(true);
     table.setRowHeight(30);
     table.setHeaderHeight(32);
     table.setMultipleSelectionEnabled(false);
-    table.getHeader().addColumn(title, 1, 170, 90, 420);
     table.getHeader().setStretchToFitActive(true);
     table.onFocusGained = [this] { ensurePresetListLoaded(); };
     table.onKeyPressed = [this, table_pointer = &table, kind](const KeyPress& key) {
@@ -7161,9 +7159,13 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
     if (character_shortcut && character == 's') {
       if (key.getModifiers().isShiftDown())
         preset_sort_ascending_ = !preset_sort_ascending_;
-      else
-        preset_sort_column_ = preset_sort_column_ >= kPresetModifiedColumn
-                                ? kPresetNameColumn : preset_sort_column_ + 1;
+      else {
+        // The next column shown: the community's collections leave Bank and Library out.
+        auto& header = preset_table_.getHeader();
+        do
+          preset_sort_column_ = preset_sort_column_ >= kPresetModifiedColumn ? kPresetNameColumn : preset_sort_column_ + 1;
+        while (!header.isColumnVisible(preset_sort_column_) && preset_sort_column_ != kPresetNameColumn);
+      }
       preset_table_.getHeader().setSortColumnId(preset_sort_column_, preset_sort_ascending_);
       postPluginAnnouncement("Sorted by " + preset_table_.getHeader().getColumnName(preset_sort_column_) +
                                (preset_sort_ascending_ ? ", ascending" : ", descending"),
@@ -9684,22 +9686,14 @@ void SynthEditor::showAllSections(bool announce) {
         group_ptr->addAccessibleChild(&preset_search_);
         row_focus_order_.push_back(&preset_search_);
         group_y += 42;
-        std::array<PresetTableListBox*, 5> facet_tables {
-          &preset_collection_table_, &preset_library_table_, &preset_bank_table_,
-          &preset_category_table_, &preset_tag_table_
-        };
-        const int facet_width = available_width / static_cast<int>(facet_tables.size());
-        int facet_x = 16;
-        for (int index = 0; index < static_cast<int>(facet_tables.size()); ++index) {
-          auto* table = facet_tables[static_cast<size_t>(index)];
-          const int table_width = index == static_cast<int>(facet_tables.size()) - 1
-                                    ? 16 + available_width - facet_x : facet_width;
-          table->setBounds(facet_x, group_y, table_width, 100);
+        for (auto* table : { &preset_collection_table_, &preset_library_table_, &preset_bank_table_,
+                             &preset_category_table_, &preset_tag_table_ }) {
           group_ptr->addAndMakeVisible(table);
           group_ptr->addAccessibleChild(table);
           row_focus_order_.push_back(table);
-          facet_x += facet_width;
         }
+        preset_facet_area_ = Rectangle<int>(16, group_y, available_width, 100);
+        layoutPresetFacets();
         group_y += 104;
         preset_table_.setBounds(16, group_y, available_width, 220);
         group_ptr->addAndMakeVisible(preset_table_);
@@ -12166,11 +12160,66 @@ void SynthEditor::setPresetCollection(PresetCollection collection) {
                           : collection == PresetCollection::kCommunity ? kCommunityCollection
                           : collection == PresetCollection::kCommunityBanks ? kCommunityBanksCollection
                                                                             : kAllPresetsCollection;
+  namePresetBrowserForCollection();
+}
+
+void SynthEditor::namePresetFacetTable(PresetTableListBox& table, const String& title) {
+  if (table.getTitle() == title)
+    return;
+  table.setTitle(title);
+  table.setDescription("Filter presets by " + title.toLowerCase() + ". The selected row is applied immediately.");
+  table.setHelpText("Use Up and Down to select a " + title.toLowerCase() + ".");
+  table.getHeader().setColumnName(1, title);
+  if (auto* handler = table.getAccessibilityHandler())
+    handler->notifyAccessibilityEvent(AccessibilityEvent::titleChanged);
+}
+
+void SynthEditor::namePresetBrowserForCollection() {
+  const bool presets = inCommunityCollection();
+  const bool banks = inCommunityBankCollection();
+  const bool community = presets || banks;
+  const String category = presets ? "Style" : banks ? "Genre" : "Category";
+  namePresetFacetTable(preset_bank_table_, community ? "Author" : "Bank");
+  namePresetFacetTable(preset_category_table_, category);
+
   // The column that says Favourite says Downloaded for the community
   // library's presets and Imported for its banks.
-  preset_table_.getHeader().setColumnName(kPresetFavoriteColumn,
-                                          collection == PresetCollection::kCommunity ? "Downloaded"
-                                          : collection == PresetCollection::kCommunityBanks ? "Imported" : "Favourite");
+  auto& header = preset_table_.getHeader();
+  header.setColumnName(kPresetFavoriteColumn, presets ? "Downloaded" : banks ? "Imported" : "Favourite");
+  header.setColumnName(kPresetCategoryColumn, category);
+  header.setColumnVisible(kPresetBankColumn, !community);
+  header.setColumnVisible(kPresetLibraryColumn, !community);
+  // A sort by a column left out goes back to the name.
+  if (!header.isColumnVisible(preset_sort_column_)) {
+    preset_sort_column_ = kPresetNameColumn;
+    header.setSortColumnId(preset_sort_column_, preset_sort_ascending_);
+  }
+  layoutPresetFacets();
+}
+
+void SynthEditor::layoutPresetFacets() {
+  // The community library is a single library: its collections leave the
+  // Library list out, and a hidden list is out of the Tab order and of what a
+  // screen reader finds in Presets (ChildListTraverser skips it).
+  const bool library_shown = !inAnyCommunityCollection();
+  if (preset_facet_area_.isEmpty() || preset_library_table_.getParentComponent() == nullptr) {
+    preset_library_table_.setVisible(library_shown && preset_library_table_.getParentComponent() != nullptr);
+    return;
+  }
+  std::vector<PresetTableListBox*> shown;
+  for (auto* table : { &preset_collection_table_, &preset_library_table_, &preset_bank_table_,
+                       &preset_category_table_, &preset_tag_table_ }) {
+    if (table != &preset_library_table_ || library_shown)
+      shown.push_back(table);
+  }
+  const int width = preset_facet_area_.getWidth() / static_cast<int>(shown.size());
+  int x = preset_facet_area_.getX();
+  for (size_t index = 0; index < shown.size(); ++index) {
+    const int table_width = index + 1 == shown.size() ? preset_facet_area_.getRight() - x : width;
+    shown[index]->setBounds(x, preset_facet_area_.getY(), table_width, preset_facet_area_.getHeight());
+    x += width;
+  }
+  preset_library_table_.setVisible(library_shown);
 }
 
 String SynthEditor::presetCollectionName() const {
@@ -12944,7 +12993,7 @@ void SynthEditor::filterPresetList() {
       case kPresetCategoryColumn: return item.category;
       case kPresetTagsColumn: return item.tags.joinIntoString(", ");
       case kPresetBankColumn: return item.bank;
-      case kPresetAuthorColumn: return item.author;
+      case kPresetAuthorColumn: return item.isRemote() ? item.bank : item.author;
       case kPresetLibraryColumn: return item.library;
       default: return item.file.getFileNameWithoutExtension();
     }
@@ -13103,7 +13152,11 @@ String SynthEditor::presetTableCellText(int row, int columnId) const {
     case kPresetCategoryColumn: return item->category;
     case kPresetTagsColumn: return item->tags.isEmpty() ? String("No tags") : item->tags.joinIntoString(", ");
     case kPresetBankColumn: return item->bank;
-    case kPresetAuthorColumn: return item->author.isEmpty() ? String("Unknown") : item->author;
+    // On the community's side the author is the uploader, as its Author list has it.
+    case kPresetAuthorColumn:
+      if (item->isRemote())
+        return item->bank;
+      return item->author.isEmpty() ? String("Unknown") : item->author;
     case kPresetLibraryColumn: return item->library;
     case kPresetModifiedColumn: return Time(item->modified_time).toString(true, true, false, true);
     default: return {};
@@ -13112,7 +13165,14 @@ String SynthEditor::presetTableCellText(int row, int columnId) const {
 
 String SynthEditor::presetFacetCellText(int kind, int row) const {
   const auto* facet = presetFacetForRow(kind, row);
-  return facet != nullptr ? facet->value : String();
+  if (facet == nullptr)
+    return {};
+  // The first row is named after the list as the community's side names it.
+  if (kind == kBankFacet && facet->value == kAllBanks && inAnyCommunityCollection())
+    return "All authors";
+  if (kind == kCategoryFacet && facet->value == kAllCategories && inAnyCommunityCollection())
+    return inCommunityCollection() ? "All styles" : "All genres";
+  return facet->value;
 }
 
 bool SynthEditor::isPresetFavorite(const File& file) const {
@@ -13225,7 +13285,7 @@ void SynthEditor::updatePresetManagementControls() {
       details += String(item->downloaded ? ". Downloaded" : ". Not downloaded, Return downloads and loads it") +
                  ". Community preset by " + (item->author.isEmpty() ? String("unknown") : item->author) +
                  ", shared by " + uploader +
-                 ". Category: " + item->category;
+                 ". Style: " + item->category;
     }
     details += ". Tags: " + (item->tags.isEmpty() ? String("none") : item->tags.joinIntoString(", ")) +
                ". Downloads: " + String(item->remote_downloads);
