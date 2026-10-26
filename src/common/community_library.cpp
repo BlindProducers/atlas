@@ -602,6 +602,58 @@ juce::File localPreviewFile(const RemoteBank& bank, const juce::File& data_direc
       .getChildFile(pathPart(previewFileName(bank.preview, bank.name), "Preview.mp3"));
 }
 
+namespace {
+  // Downloads land on background threads, several at once.
+  std::mutex& downloadRecordLock() {
+    static std::mutex lock;
+    return lock;
+  }
+
+  juce::File downloadRecordFile(const juce::File& data_directory) {
+    return communityDirectory(data_directory).getChildFile("Downloads.json");
+  }
+
+  // Keyed by the path below the Community folder, which stays when the
+  // Atlas folder moves.
+  std::string downloadRecordKey(const juce::File& file, const juce::File& data_directory) {
+    return file.getRelativePathFrom(communityDirectory(data_directory)).replaceCharacter('\\', '/').toStdString();
+  }
+
+  json readDownloadRecords(const juce::File& data_directory) {
+    const juce::File record = downloadRecordFile(data_directory);
+    if (!record.existsAsFile())
+      return json::object();
+    json records = json::parse(record.loadFileAsString().toStdString(), nullptr, false);
+    return records.is_object() ? records : json::object();
+  }
+}
+
+void recordDownload(const juce::File& file, const juce::String& sha256, const juce::File& data_directory) {
+  if (sha256.isEmpty() || !file.isAChildOf(communityDirectory(data_directory)))
+    return;
+  const std::lock_guard<std::mutex> hold(downloadRecordLock());
+  json records = readDownloadRecords(data_directory);
+  records[downloadRecordKey(file, data_directory)] = sha256.toLowerCase().toStdString();
+  downloadRecordFile(data_directory).replaceWithText(juce::String(records.dump(2)));
+}
+
+bool isDownloadCurrent(const juce::File& file, const juce::String& sha256, juce::int64 size,
+                       const juce::File& data_directory) {
+  if (!file.existsAsFile())
+    return false;
+  std::string recorded;
+  {
+    const std::lock_guard<std::mutex> hold(downloadRecordLock());
+    const json records = readDownloadRecords(data_directory);
+    const auto found = records.find(downloadRecordKey(file, data_directory));
+    if (found != records.end() && found->is_string())
+      recorded = found->get<std::string>();
+  }
+  if (!recorded.empty())
+    return sha256.isEmpty() || sha256.equalsIgnoreCase(juce::String(recorded));
+  return size <= 0 || file.getSize() == size;
+}
+
 juce::String systemFileName(const juce::String& name) {
 #if JUCE_WINDOWS
   juce::String printable;

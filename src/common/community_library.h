@@ -133,6 +133,15 @@ juce::File localFile(const RemoteBank& bank, const juce::File& data_directory);
 juce::File previewDirectory(const juce::File& data_directory);
 juce::File localPreviewFile(const RemotePreset& preset, const juce::File& data_directory);
 juce::File localPreviewFile(const RemoteBank& bank, const juce::File& data_directory);
+// What each download was: the library's checksum of the file, kept in
+// <data>/Community/Downloads.json when it lands. A download carrying its
+// instruments is rewritten once they are unpacked, so its own size and
+// checksum no longer say which copy of the library's it is.
+void recordDownload(const juce::File& file, const juce::String& sha256, const juce::File& data_directory);
+// Whether `file` is the library's current copy, checksum `sha256` and
+// `size` bytes: by the record, or for a download from before records by its size.
+bool isDownloadCurrent(const juce::File& file, const juce::String& sha256, juce::int64 size,
+                       const juce::File& data_directory);
 // `name` as Windows takes a file or folder name: control characters become
 // spaces, trailing dots and spaces go (Windows drops them), and a device name
 // (CON, AUX, NUL, COM1 and the like, with any extension) gets an underscore

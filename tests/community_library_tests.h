@@ -214,6 +214,35 @@ namespace {
 
   // The networking against a saved page and file: the list is fetched, a
   // download is kept when it checks out and refused when it does not.
+  // A download carrying its instruments is rewritten once they are unpacked:
+  // the record of its checksum still says it is the library's copy, so
+  // Return loads it rather than fetching it again.
+  void testDownloadRecords() {
+    const File data = File::getSpecialLocation(File::tempDirectory).getNonexistentChildFile("AtlasDownloadRecords", "");
+    const File preset = atlas::community::communityDirectory(data).getChildFile("Banks").getChildFile("jay")
+                            .getChildFile("Keys").getChildFile("Piano.atp");
+    preset.getParentDirectory().createDirectory();
+    const String container(String::repeatedString("x", 4000));
+    preset.replaceWithText(container);
+    const String sha = atlas::community::sha256Hex(container.toRawUTF8(), container.getNumBytesAsUTF8());
+    const int64 size = preset.getSize();
+    expect(atlas::community::isDownloadCurrent(preset, sha, size, data),
+           "a download from before records is current while its size matches");
+    preset.replaceWithText("{}");
+    expect(!atlas::community::isDownloadCurrent(preset, sha, size, data),
+           "and fetched again once its size differs, with no record to say otherwise");
+    atlas::community::recordDownload(preset, sha, data);
+    expect(atlas::community::communityDirectory(data).getChildFile("Downloads.json").existsAsFile(),
+           "the record is kept in the Community library");
+    expect(atlas::community::isDownloadCurrent(preset, sha.toUpperCase(), size, data),
+           "a recorded download stays current after its instruments are unpacked");
+    expect(!atlas::community::isDownloadCurrent(preset, String::repeatedString("0", 64), size, data),
+           "a new copy on the library is fetched again");
+    preset.deleteFile();
+    expect(!atlas::community::isDownloadCurrent(preset, sha, size, data), "a download that is gone is fetched");
+    data.deleteRecursively();
+  }
+
   void testSavedLibraryRoundTrip() {
     const File folder = File::getSpecialLocation(File::tempDirectory)
                             .getNonexistentChildFile("AtlasCommunityRoundTrip", "", false);
@@ -2178,6 +2207,7 @@ namespace {
     testSha256MatchesTheStandardVectors();
     testPresetsPageParses();
     testDownloadsLandInTheCommunityFolder();
+    testDownloadRecords();
     testSavedLibraryRoundTrip();
     testCommunityCollectionListsAndDownloads();
     testCommunityPreviewPlays();

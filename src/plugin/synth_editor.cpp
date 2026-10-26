@@ -12497,9 +12497,11 @@ void SynthEditor::downloadCommunityPreset(const PresetBrowserItem& item, bool lo
     const String error = atlas::community::downloadFile(URL(url), file, sha256, size, cancelled.get());
     if (cancelled->load())
       return;
-    // A download carrying its instruments inside: they go into the
-    // uploader's bank once and the preset refers to them.
+    // A download carrying its instruments inside: they go into the Community
+    // library's Multisamples once and the preset refers to them. The record
+    // says which copy it is once that has rewritten it.
     if (error.isEmpty()) {
+      atlas::community::recordDownload(file, sha256, LoadSave::getDataDirectory());
       String conversion_error;
       if (!atlas::library::adoptContainerPreset(file, LoadSave::getDataDirectory(), conversion_error) &&
           conversion_error.isNotEmpty())
@@ -13814,10 +13816,10 @@ void SynthEditor::loadSelectedPreset() {
     downloadCommunityBank(*item);
     return;
   }
-  // A community preset is fetched first, again when the library's copy has
-  // changed size since; the download loads it when it lands.
+  // A community preset is fetched first, and again once the library has a
+  // new copy of it; the download loads it when it lands.
   if (item != nullptr && item->isRemote() &&
-      (!file.existsAsFile() || (item->file_size > 0 && file.getSize() != item->file_size))) {
+      !atlas::community::isDownloadCurrent(file, item->remote_sha256, item->file_size, LoadSave::getDataDirectory())) {
     downloadCommunityPreset(*item, true);
     return;
   }
