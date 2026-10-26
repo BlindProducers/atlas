@@ -990,6 +990,25 @@ namespace strings {
     "Free Running",
   };
 
+  const std::string kLfoViewNames[] = {
+    "Custom",
+    "Simple",
+  };
+
+  const std::string kLfoSimpleShapeNames[] = {
+    "Sine",
+    "Triangle",
+    "Saw Up",
+    "Saw Down",
+    "Square",
+  };
+
+  const std::string kLfoSimpleTriggerNames[] = {
+    "Trigger",
+    "Sync",
+    "Free Running",
+  };
+
   const std::string kRandomSyncNames[] = {
     "Trigger",
     "Sync",

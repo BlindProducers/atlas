@@ -1168,6 +1168,91 @@ namespace {
   // Envelope 1's Analog switch swaps its Power rows for Analog Age, which
   // rebuilds the rows. Focus stays on the switch, and on Windows the rebuild
   // keeps the switch itself and its groups, as for the menus above.
+  // Each LFO opens with Simple and Custom tabs. Simple shows Shape, Morph,
+  // Sync, the rate row Sync uses and Trigger Mode, in that order; Custom shows
+  // the shape editor and the other rows. The arrows move between the tabs.
+  void testLfoViewTabs() {
+    atlas::speech::setObserverForTesting([](const String&) {});
+    SynthPlugin synth;
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    editor.toFront(true);
+    pumpEditorEvents();
+    auto& controls = synth.getControls();
+
+    auto tab = [&](const String& name) {
+      auto* section = editorSection(editor, "LFO 1");
+      return section != nullptr ? dynamic_cast<Button*>(titled(*section, name)) : nullptr;
+    };
+    auto* simple = tab("Simple");
+    auto* custom = tab("Custom");
+    expect(simple != nullptr && custom != nullptr, "LFO 1 has Simple and Custom tabs");
+    if (simple == nullptr || custom == nullptr) {
+      atlas::speech::setObserverForTesting(nullptr);
+      editor.removeFromDesktop();
+      return;
+    }
+    auto* handler = simple->getAccessibilityHandler();
+    expect(handler != nullptr && handler->getRole() == AccessibilityRole::radioButton &&
+           !handler->getCurrentState().isChecked(), "the Simple tab reads as an unchecked radio button");
+    expect(custom->getToggleState(), "a new LFO shows the Custom view");
+    expect(editor.controlForParameter("lfo_1_phase") != nullptr &&
+           editor.controlForParameter("lfo_1_morph") == nullptr &&
+           titled(*editorSection(editor, "LFO 1"), "LFO 1 accessible editor") != nullptr,
+           "the Custom view shows the shape editor and Phase, not Morph");
+
+    editor.ensureComponentVisible(simple);
+    simple->grabKeyboardFocus();
+    if (auto* peer = editor.getPeer())
+      peer->handleKeyPress(KeyPress(KeyPress::returnKey));
+    pumpUntil([&] { return editor.controlForParameter("lfo_1_morph") != nullptr; });
+    expect(controls.at("lfo_1_view")->value() == float(vital::SynthLfo::kSimpleView), "Enter on Simple shows the Simple view");
+    auto* focused = Component::getCurrentlyFocusedComponent();
+    expect(focused != nullptr && focused == tab("Simple") && tab("Simple")->getToggleState(),
+           "focus stays on the Simple tab, now checked");
+    expect(editor.controlForParameter("lfo_1_phase") == nullptr &&
+           editor.controlForParameter("lfo_1_frequency") == nullptr &&
+           titled(*editorSection(editor, "LFO 1"), "LFO 1 accessible editor") == nullptr,
+           "the Simple view hides the shape editor, Phase and the unused rate");
+
+    const auto order = editor.createKeyboardFocusTraverser()->getAllComponents(&editor);
+    auto position = [&](const String& id) {
+      auto* control = editor.controlForParameter(id);
+      const auto found = std::find(order.begin(), order.end(), control);
+      return control != nullptr && found != order.end() ? int(found - order.begin()) : -1;
+    };
+    const int shape = position("lfo_1_simple_shape"), morph = position("lfo_1_morph"),
+              sync = position("lfo_1_sync"), tempo = position("lfo_1_tempo"),
+              trigger = position("lfo_1_simple_trigger");
+    expect(shape >= 0 && shape < morph && morph < sync && sync < tempo && tempo < trigger,
+           "Tab reads Shape, Morph, Sync, Tempo and Trigger Mode in order");
+
+    // Sync in seconds swaps Tempo for Frequency.
+    if (auto* sync_menu = dynamic_cast<ComboBox*>(editor.controlForParameter("lfo_1_sync")))
+      sync_menu->setSelectedItemIndex(vital::SynthLfo::kTime, sendNotificationSync);
+    pumpUntil([&] { return editor.controlForParameter("lfo_1_frequency") != nullptr; });
+    expect(editor.controlForParameter("lfo_1_frequency") != nullptr &&
+           editor.controlForParameter("lfo_1_tempo") == nullptr,
+           "Sync in seconds shows Frequency in place of Tempo");
+
+    if (auto* now = tab("Simple")) {
+      editor.ensureComponentVisible(now);
+      now->grabKeyboardFocus();
+      static_cast<Component*>(now)->keyPressed(KeyPress(KeyPress::rightKey));
+    }
+    pumpUntil([&] { return editor.controlForParameter("lfo_1_phase") != nullptr; });
+    expect(controls.at("lfo_1_view")->value() == float(vital::SynthLfo::kCustomView),
+           "Right arrow from Simple shows the Custom view");
+    focused = Component::getCurrentlyFocusedComponent();
+    expect(focused != nullptr && focused == tab("Custom") && tab("Custom")->getToggleState(),
+           "focus moves to the Custom tab, now checked");
+
+    atlas::speech::setObserverForTesting(nullptr);
+    editor.removeFromDesktop();
+  }
+
   void testAnalogSwitchKeepsItsControl() {
     // Announcements go nowhere rather than to the screen reader.
     atlas::speech::setObserverForTesting([](const String&) {});

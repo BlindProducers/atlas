@@ -311,6 +311,79 @@ namespace {
           "LFO 3 runs at 1/16 only for the beat LFO 5 holds 1", 0.02f);
   }
 
+  // An LFO's Simple view plays a standard shape bent by Morph in place of its
+  // custom shape, with only its own rate and Trigger Mode.
+  void testSimpleLfoShapes() {
+    using vital::SynthLfo;
+    auto near = [](float a, float b) { return std::abs(a - b) < 1.0e-3f; };
+    expect(near(SynthLfo::simpleShapeValue(SynthLfo::kSimpleSine, 0.0f, 0.0f), 0.0f) &&
+           near(SynthLfo::simpleShapeValue(SynthLfo::kSimpleSine, 0.5f, 0.0f), 1.0f) &&
+           near(SynthLfo::simpleShapeValue(SynthLfo::kSimpleSine, 0.25f, 0.0f), 0.5f),
+           "Sine starts at the bottom and peaks halfway, as the custom Sin does");
+    expect(near(SynthLfo::simpleShapeValue(SynthLfo::kSimpleSine, 0.125f, -1.0f), 0.25f),
+           "Sine at Morph -100% is a triangle");
+    expect(SynthLfo::simpleShapeValue(SynthLfo::kSimpleSine, 0.125f, 1.0f) > 0.0f &&
+           SynthLfo::simpleShapeValue(SynthLfo::kSimpleSine, 0.375f, 1.0f) > 0.95f,
+           "Sine at Morph 100% is nearly square");
+    expect(near(SynthLfo::simpleShapeValue(SynthLfo::kSimpleTriangle, 0.25f, 0.0f), 0.5f) &&
+           near(SynthLfo::simpleShapeValue(SynthLfo::kSimpleTriangle, 0.5f, 0.0f), 1.0f),
+           "Triangle rises to its peak halfway");
+    expect(near(SynthLfo::simpleShapeValue(SynthLfo::kSimpleTriangle, 0.5f, 1.0f), 0.5f / 0.99f),
+           "Triangle at Morph 100% rises all cycle, as a saw");
+    expect(near(SynthLfo::simpleShapeValue(SynthLfo::kSimpleSawUp, 0.3f, 0.0f), 0.3f) &&
+           near(SynthLfo::simpleShapeValue(SynthLfo::kSimpleSawDown, 0.3f, 0.0f), 0.7f),
+           "the saws ramp straight at Morph 0");
+    expect(SynthLfo::simpleShapeValue(SynthLfo::kSimpleSawUp, 0.3f, 0.5f) > 0.3f &&
+           SynthLfo::simpleShapeValue(SynthLfo::kSimpleSawUp, 0.3f, -0.5f) < 0.3f,
+           "Morph curves the saws");
+    expect(SynthLfo::simpleShapeValue(SynthLfo::kSimpleSquare, 0.49f, 0.0f) == 1.0f &&
+           SynthLfo::simpleShapeValue(SynthLfo::kSimpleSquare, 0.51f, 0.0f) == 0.0f &&
+           SynthLfo::simpleShapeValue(SynthLfo::kSimpleSquare, 0.6f, 0.5f) == 1.0f,
+           "Square is high for the first half, and Morph widens it");
+
+    // The default custom shape is a triangle; the Simple view's square only
+    // ever sits at its two levels. Free Running runs it without a note.
+    for (bool simple : { false, true }) {
+      SynthPlugin synth;
+      prepare(synth);
+      auto& controls = synth.getControls();
+      controls.at("lfo_1_sync")->set(0.0f);
+      controls.at("lfo_1_frequency")->set(2.0f);
+      controls.at("lfo_1_sync_type")->set(float(SynthLfo::kFreeRunning));
+      controls.at("lfo_1_simple_trigger")->set(float(SynthLfo::kSimpleFreeRunning));
+      controls.at("lfo_1_simple_shape")->set(float(SynthLfo::kSimpleSquare));
+      controls.at("lfo_1_view")->set(simple ? float(SynthLfo::kSimpleView) : float(SynthLfo::kCustomView));
+      // The Simple view leaves the custom view's 10x Rate alone.
+      controls.at("lfo_1_rate_x10")->set(simple ? 1.0f : 0.0f);
+      auto* route = connect(synth, "lfo_1", "delay_dry_wet");
+      if (route == nullptr)
+        continue;
+      std::vector<float> values;
+      for (int block = 0; block < 750; ++block) {
+        MidiBuffer none;
+        renderMidi(synth, none);
+        values.push_back(route->modulation_processor->output()->buffer[0][0]);
+      }
+      const auto [lowest, highest] = std::minmax_element(values.begin(), values.end());
+      const float range = *highest - *lowest;
+      int between = 0, rises = 0;
+      for (size_t i = 0; i < values.size(); ++i) {
+        const float level = range > 0.0f ? (values[i] - *lowest) / range : 0.0f;
+        between += level > 0.1f && level < 0.9f;
+        rises += i > 0 && values[i] > values[i - 1] + 0.5f * range;
+      }
+      const std::string view = simple ? "the Simple view" : "the Custom view";
+      expect(range > 0.2f, view + " moves its route");
+      if (simple) {
+        expect(between < 5, "the Simple view plays its square, not the custom triangle");
+        // Frequency 2 is 4 Hz: about eight cycles in two seconds, not eighty.
+        expect(rises >= 7 && rises <= 9, "the Simple view runs at its rate without 10x Rate");
+      }
+      else
+        expect(between > int(values.size()) / 2, "the Custom view plays its own triangle");
+    }
+  }
+
   void testSameSampleNoteOnOffDoesNotStick() {
     SynthPlugin synth;
     prepare(synth);
@@ -1188,6 +1261,7 @@ int main(int argc, char** argv) {
     testMaimRows();
     testDriveDynamicsRows();
     testAnalogSwitchKeepsItsControl();
+    testLfoViewTabs();
     testEffectMoveKeepsFocusAcrossTimerTick();
     testSectionKeysStepThroughEffectSlots();
     testShiftMOpensEveryContextMenu();
@@ -1233,6 +1307,7 @@ int main(int argc, char** argv) {
   testFreeRunningLfoJoinsNotesWherever();
   testFreeRunningSourcesOutliveTheirVoices();
   testLfoTempoModulatedByAnotherLfo();
+  testSimpleLfoShapes();
   if (failures == 0)
     std::cout << "Atlas macro tests passed\n";
   return failures == 0 ? 0 : 1;

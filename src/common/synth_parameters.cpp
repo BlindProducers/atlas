@@ -1414,6 +1414,14 @@ namespace vital {
       ValueDetails::kIndexed, false, "", "Transpose", nullptr },
     { "keytrack_tune", 0x000704, -1.0, 1.0, 0.0, 0.0, 100.0,
       ValueDetails::kLinear, false, "", "Tune", nullptr },
+    { "view", 0x02012b, 0.0, SynthLfo::kNumViews - 1, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "View", strings::kLfoViewNames },
+    { "simple_shape", 0x02012b, 0.0, SynthLfo::kNumSimpleShapes - 1, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Shape", strings::kLfoSimpleShapeNames },
+    { "morph", 0x02012b, -1.0, 1.0, 0.0, 0.0, 100.0,
+      ValueDetails::kLinear, false, "%", "Morph", nullptr },
+    { "simple_trigger", 0x02012b, 0.0, SynthLfo::kNumSimpleTriggers - 1, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Trigger Mode", strings::kLfoSimpleTriggerNames },
   };
 
   const ValueDetails ValueDetailsLookup::random_lfo_parameter_list[] = {

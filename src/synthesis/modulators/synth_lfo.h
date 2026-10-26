@@ -35,6 +35,10 @@ namespace vital {
         kNoteCount,
         kDeform,
         kSwing,
+        kView,
+        kSimpleShape,
+        kMorph,
+        kSimpleTriggerMode,
         kNumInputs
       };
 
@@ -54,6 +58,30 @@ namespace vital {
         kLoopHold,
         kFreeRunning,
         kNumSyncTypes
+      };
+
+      // The Simple view draws one of these shapes, bent by Morph, in place of
+      // the custom shape, and its Trigger mode picks one of three sync types.
+      enum View {
+        kCustomView,
+        kSimpleView,
+        kNumViews
+      };
+
+      enum SimpleShape {
+        kSimpleSine,
+        kSimpleTriangle,
+        kSimpleSawUp,
+        kSimpleSawDown,
+        kSimpleSquare,
+        kNumSimpleShapes
+      };
+
+      enum SimpleTrigger {
+        kSimpleTrigger,
+        kSimpleSync,
+        kSimpleFreeRunning,
+        kNumSimpleTriggers
       };
 
       enum {
@@ -115,11 +143,14 @@ namespace vital {
       void process(int num_samples) override;
       void correctToTime(double seconds);
       void advanceFreeClock(int num_samples) { free_clock_->now += static_cast<uint64_t>(num_samples); }
-      bool runsFreely() const {
-        return static_cast<int>(std::round(input(kSyncType)->at(0)[0])) == kFreeRunning;
-      }
+      bool runsFreely() const { return effectiveSyncType() == kFreeRunning; }
+      bool isSimple() const { return input(kView)->at(0)[0] >= 0.5f; }
+      // A Simple shape's value from 0 to 1 at a phase from 0 to 1. Morph runs
+      // from -1 to 1 and leaves the plain shape at 0.
+      static float simpleShapeValue(int shape, float phase, float morph);
 
     protected:
+      int effectiveSyncType() const;
       void catchUpFreeClock();
       poly_float applySwingToPhase(poly_float phase, bool preserve_end) const;
       void updateLineGeneratorControls();

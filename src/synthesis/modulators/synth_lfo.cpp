@@ -30,8 +30,58 @@ namespace vital {
     }
   } // namespace
 
+  float SynthLfo::simpleShapeValue(int shape, float phase, float morph) {
+    static constexpr float kMaxDrive = 8.0f;
+    static constexpr float kMinWidth = 0.01f;
+    static constexpr float kMaxCurve = 3.0f;
+    morph = utils::clamp(finiteOr(morph, 0.0f), -1.0f, 1.0f);
+    phase = utils::clamp(phase, 0.0f, 1.0f);
+
+    // Sine bends towards a triangle below 0 and is driven towards a square
+    // above it.
+    if (shape == kSimpleSine) {
+      const float cosine = -std::cos(2.0f * kPi * phase);
+      if (morph < 0.0f) {
+        const float triangle = 1.0f - 2.0f * std::abs(1.0f - 2.0f * phase);
+        return 0.5f + 0.5f * utils::interpolate(cosine, triangle, -morph);
+      }
+      const float drive = morph * kMaxDrive;
+      if (drive < 0.001f)
+        return 0.5f + 0.5f * cosine;
+      return 0.5f + 0.5f * std::tanh(drive * cosine) / std::tanh(drive);
+    }
+
+    // Square's Morph sets the pulse width, from 5 to 95 percent high.
+    if (shape == kSimpleSquare)
+      return phase < 0.5f + 0.45f * morph ? 1.0f : 0.0f;
+
+    // Saws bend: above 0 they move fast at first, below 0 slowly.
+    if (shape == kSimpleSawUp || shape == kSimpleSawDown) {
+      const float ramp = shape == kSimpleSawUp ? phase : 1.0f - phase;
+      return std::pow(ramp, std::exp2(-kMaxCurve * morph));
+    }
+
+    // Triangle's Morph moves its peak, to a falling saw at -1 and a rising
+    // one at 1.
+    const float peak = utils::clamp(0.5f + 0.5f * morph, kMinWidth, 1.0f - kMinWidth);
+    return phase < peak ? phase / peak : (1.0f - phase) / (1.0f - peak);
+  }
+
   SynthLfo::SynthLfo(LineGenerator* source) : Processor(kNumInputs, kNumOutputs), source_(source),
       sync_seconds_(std::make_shared<double>(0.0)), free_clock_(std::make_shared<FreeClock>()) { }
+
+  int SynthLfo::effectiveSyncType() const {
+    if (isSimple()) {
+      const int trigger = utils::iclamp(static_cast<int>(std::round(input(kSimpleTriggerMode)->at(0)[0])),
+                                        0, kNumSimpleTriggers - 1);
+      if (trigger == kSimpleSync)
+        return kSync;
+      if (trigger == kSimpleFreeRunning)
+        return kFreeRunning;
+      return kTrigger;
+    }
+    return utils::iclamp(static_cast<int>(std::round(input(kSyncType)->at(0)[0])), 0, kNumSyncTypes - 1);
+  }
 
   void SynthLfo::catchUpFreeClock() {
     FreeClock& clock = *free_clock_;
@@ -146,13 +196,18 @@ namespace vital {
 
     updateLineGeneratorControls();
 
-    const int sync_type = utils::iclamp(static_cast<int>(std::round(input(kSyncType)->at(0)[0])),
-                                        0, kNumSyncTypes - 1);
+    // The Simple view shows only its shape, Morph, rate and Trigger mode, so
+    // the custom view's phase, stereo, delay, fade, smoothing, swing and 10x
+    // Rate leave it alone.
+    const bool simple = isSimple();
+    const int simple_shape = utils::iclamp(static_cast<int>(std::round(input(kSimpleShape)->at(0)[0])),
+                                           0, kNumSimpleShapes - 1);
+    const int sync_type = effectiveSyncType();
     const poly_mask trigger_mask = input(kNoteTrigger)->source->trigger_mask;
     const poly_float trigger_value = input(kNoteTrigger)->source->trigger_value;
     const poly_int trigger_offset = input(kNoteTrigger)->source->trigger_offset;
     const float tick_time = 1.0f / getSampleRate();
-    const bool smooth_mode = input(kSmoothMode)->at(0)[0] >= 0.5f;
+    const bool smooth_mode = !simple && input(kSmoothMode)->at(0)[0] >= 0.5f;
     const bool free_running = sync_type == kFreeRunning;
     const bool preserve_end = sync_type != kTrigger && sync_type != kSync && !free_running;
     if (free_running)
@@ -164,7 +219,9 @@ namespace vital {
     const int source_resolution = source_->resolution();
 
     for (int sample = 0; sample < num_samples; ++sample) {
-      poly_float frequency = inputAt(kFrequency, sample) * lfoRateMultiplier(inputAt(kRateX10, sample));
+      poly_float frequency = inputAt(kFrequency, sample);
+      if (!simple)
+        frequency *= lfoRateMultiplier(inputAt(kRateX10, sample));
       for (int lane = 0; lane < poly_float::kSize; ++lane) {
         const float safe = utils::clamp(finiteOr(frequency[lane], 0.0f),
                                         0.0f, getSampleRate() * 0.5f);
@@ -172,11 +229,16 @@ namespace vital {
       }
       applyEventAtSample(sample, sync_type, frequency, trigger_mask, trigger_value, trigger_offset);
 
-      const poly_float user_phase = inputAt(kPhase, sample);
-      const poly_float stereo_phase = inputAt(kStereoPhase, sample);
-      const poly_float phase_control = user_phase + stereo_phase * poly_float(0.5f, -0.5f);
-      const poly_float delay_time = utils::max(inputAt(kDelay, sample), 0.0f);
-      const poly_float fade_time = utils::max(inputAt(kFade, sample), 0.0f);
+      poly_float phase_control = 0.0f;
+      poly_float delay_time = 0.0f;
+      poly_float fade_time = 0.0f;
+      if (!simple) {
+        const poly_float user_phase = inputAt(kPhase, sample);
+        const poly_float stereo_phase = inputAt(kStereoPhase, sample);
+        phase_control = user_phase + stereo_phase * poly_float(0.5f, -0.5f);
+        delay_time = utils::max(inputAt(kDelay, sample), 0.0f);
+        fade_time = utils::max(inputAt(kFade, sample), 0.0f);
+      }
       const poly_float smooth_time = utils::max(inputAt(kSmoothTime, sample), 0.0f);
 
       poly_float raw_phase = 0.0f;
@@ -198,9 +260,19 @@ namespace vital {
         raw_phase.set(lane, static_cast<float>(phase));
       }
 
-      poly_float sample_phase = applySwingToPhase(raw_phase, preserve_end);
-      poly_float waveform_value = getValueAtPhase(source_buffer.get(), source_resolution,
-                                                   source_resolution - 1, sample_phase);
+      poly_float sample_phase = 0.0f;
+      poly_float waveform_value = 0.0f;
+      if (simple) {
+        sample_phase = utils::mod(raw_phase);
+        const poly_float morph = inputAt(kMorph, sample);
+        for (int lane = 0; lane < poly_float::kSize; ++lane)
+          waveform_value.set(lane, simpleShapeValue(simple_shape, sample_phase[lane], morph[lane]));
+      }
+      else {
+        sample_phase = applySwingToPhase(raw_phase, preserve_end);
+        waveform_value = getValueAtPhase(source_buffer.get(), source_resolution,
+                                         source_resolution - 1, sample_phase);
+      }
       poly_float result = 0.0f;
       for (int lane = 0; lane < poly_float::kSize; ++lane) {
         float current = 0.0f;

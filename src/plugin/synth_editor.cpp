@@ -2093,6 +2093,10 @@ namespace {
     const String filter_suffix = filterSuffixForParameter(id);
     if (filter_suffix == "model" || filter_suffix == "style")
       return true;
+    // An LFO's Sync picks which rate row its Simple view shows.
+    if (id.startsWith("lfo_") && id.endsWith("_sync") &&
+        id.fromFirstOccurrenceOf("lfo_", false, false).upToFirstOccurrenceOf("_", false, false).containsOnly("0123456789"))
+      return true;
     for (const char* variant : { "dimension_expander_mode", "resonator_model", "analoguechorus_model",
                                  "analogueecho_medium", "analoguerotary_model", "analoguewah_model",
                                  "convolution_reverb_predelay_sync", "spectral_lock_mode",
@@ -2637,22 +2641,28 @@ namespace {
         continue;
 
       const String suffix = id.fromFirstOccurrenceOf(prefix, false, false);
-      static const std::array<const char*, 15> lfo_order = {{
+      // The Simple view reads Shape, Morph, Sync, the rate and Trigger Mode
+      // in that order; the custom view skips those three and reads the rest.
+      static const std::array<const char*, 19> lfo_order = {{
+        "simple_shape",
+        "morph",
         "phase",
         "sync_type",
+        "sync",
         "frequency",
         "rate_x10",
-        "sync",
         "tempo",
+        "keytrack_transpose",
+        "keytrack_tune",
+        "simple_trigger",
+        "view",
         "deform",
         "swing",
         "fade_time",
         "smooth_mode",
         "smooth_time",
         "delay_time",
-        "stereo",
-        "keytrack_transpose",
-        "keytrack_tune"
+        "stereo"
       }};
       for (int i = 0; i < static_cast<int>(lfo_order.size()); ++i) {
         if (suffix == lfo_order[i])
@@ -3974,6 +3984,10 @@ namespace {
       if (suffix == "rate_x10") return "Multiply this LFO rate by ten.";
       if (suffix == "keytrack_transpose") return "Transpose the keytracked LFO rate.";
       if (suffix == "keytrack_tune") return "Fine tune the keytracked LFO rate.";
+      if (suffix == "view") return "Choose the Simple view, a standard shape with a few controls, or the Custom view and its shape editor.";
+      if (suffix == "simple_shape") return "Choose the Simple view's shape: Sine, Triangle, Saw Up, Saw Down or Square.";
+      if (suffix == "morph") return "Bend the Simple view's shape. At zero it is the plain shape. Sine moves towards a triangle below zero and a square above. Triangle moves its peak, becoming a falling saw at minus 100 and a rising one at 100. Saws curve. Square sets its pulse width.";
+      if (suffix == "simple_trigger") return "Choose whether the LFO restarts with each note, follows the host transport, or runs freely across notes.";
     }
 
     if (id.startsWith("random_")) {
@@ -5281,6 +5295,46 @@ namespace {
 
       std::unique_ptr<AccessibilityHandler> createAccessibilityHandler() override {
         return std::make_unique<OffscreenButtonAccessibilityHandler>(*this, AccessibilityRole::toggleButton);
+      }
+  };
+
+  // One of an LFO's two view tabs, Simple and Custom. It reads as a radio
+  // button, checked while its view shows. Enter or Space shows its view, and
+  // the arrows move to the other tab and show that, as in a tab list.
+  class LfoViewTabButton : public TextButton {
+    public:
+      using TextButton::TextButton;
+
+      std::function<void(int)> onMove;
+
+      bool keyPressed(const KeyPress& key) override {
+        const bool back = key == KeyPress::leftKey || key == KeyPress::upKey;
+        const bool forward = key == KeyPress::rightKey || key == KeyPress::downKey;
+        if ((back || forward) && onMove) {
+          onMove(forward ? 1 : -1);
+          return true;
+        }
+        return TextButton::keyPressed(key);
+      }
+
+      std::unique_ptr<AccessibilityHandler> createAccessibilityHandler() override {
+        class Handler final : public AccessibilityHandler {
+          public:
+            explicit Handler(Button& button) :
+                AccessibilityHandler(button, AccessibilityRole::radioButton,
+                                     AccessibilityActions().addAction(AccessibilityActionType::press,
+                                                                      [&button] { button.triggerClick(); })),
+                button_(button) { }
+
+            AccessibleState getCurrentState() const override {
+              auto state = AccessibilityHandler::getCurrentState().withAccessibleOffscreen().withCheckable();
+              return button_.getToggleState() ? state.withChecked() : state;
+            }
+
+          private:
+            Button& button_;
+        };
+        return std::make_unique<Handler>(*this);
       }
   };
 
@@ -8379,6 +8433,28 @@ bool SynthEditor::shouldShowParameterInSection(const String& sectionName, AudioP
       return !analog;
   }
 
+  // View is the tabs at the top of an LFO. The Simple view shows its shape,
+  // Morph, Sync, the one rate row Sync uses and Trigger Mode; the custom view
+  // shows everything else.
+  if (const int lfo = lfoIndexForParameterId(parameter_id); lfo >= 0) {
+    const String suffix = parameter_id.fromFirstOccurrenceOf("lfo_" + String(lfo + 1) + "_", false, false);
+    if (suffix == "view")
+      return false;
+    const bool simple_only = suffix == "simple_shape" || suffix == "morph" || suffix == "simple_trigger";
+    if (!isLfoSimpleView(lfo))
+      return !simple_only;
+    if (simple_only || suffix == "sync")
+      return true;
+    const int sync = lfoSyncOption(lfo);
+    if (suffix == "frequency")
+      return sync == vital::SynthLfo::kTime;
+    if (suffix == "tempo")
+      return sync != vital::SynthLfo::kTime && sync != vital::SynthLfo::kKeytrack;
+    if (suffix == "keytrack_transpose" || suffix == "keytrack_tune")
+      return sync == vital::SynthLfo::kKeytrack;
+    return false;
+  }
+
   for (int osc = 1; osc <= vital::kNumOscillators; ++osc) {
     const String prefix = "osc_" + String(osc) + "_";
     if (!parameter_id.startsWith(prefix))
@@ -8482,6 +8558,62 @@ bool SynthEditor::shouldShowParameterInSection(const String& sectionName, AudioP
   if (suffix == "formant_transpose")
     return formant && !vocal_tract;
 
+  return true;
+}
+
+int SynthEditor::lfoIndexForParameterId(const String& parameterId) {
+  if (!parameterId.startsWith("lfo_"))
+    return -1;
+  const String number = parameterId.fromFirstOccurrenceOf("lfo_", false, false).upToFirstOccurrenceOf("_", false, false);
+  if (number.isEmpty() || !number.containsOnly("0123456789") || !parameterId.startsWith("lfo_" + number + "_"))
+    return -1;
+  const int lfo = number.getIntValue() - 1;
+  return isPositiveAndBelow(lfo, vital::kNumLfos) ? lfo : -1;
+}
+
+bool SynthEditor::isLfoSimpleView(int lfo) const {
+  return roundToInt(engineValueFor(parameterBridge("lfo_" + String(lfo + 1) + "_view"))) == vital::SynthLfo::kSimpleView;
+}
+
+int SynthEditor::lfoSyncOption(int lfo) const {
+  return jlimit(0, vital::SynthLfo::kNumSyncOptions - 1,
+                roundToInt(engineValueFor(parameterBridge("lfo_" + String(lfo + 1) + "_sync"))));
+}
+
+int SynthEditor::lfoRowLayout(int lfo) const {
+  if (!isLfoSimpleView(lfo))
+    return 0;
+  const int sync = lfoSyncOption(lfo);
+  if (sync == vital::SynthLfo::kTime)
+    return 1;
+  return sync == vital::SynthLfo::kKeytrack ? 3 : 2;
+}
+
+void SynthEditor::setLfoView(int lfo, int view) {
+  if (roundToInt(engineValueFor(parameterBridge("lfo_" + String(lfo + 1) + "_view"))) == view)
+    return;
+  setParameterEngineValue("lfo_" + String(lfo + 1) + "_view", static_cast<float>(view));
+}
+
+bool SynthEditor::refreshLfoRowsIfNeeded() {
+  bool changed = false;
+  for (auto& layout : last_lfo_layouts_) {
+    const int current = lfoRowLayout(layout.first);
+    changed |= layout.second != current;
+    layout.second = current;
+  }
+  if (!changed)
+    return false;
+
+  const String parameter_id = focusedParameterId();
+  const String accessible_title = focusedAccessibleTitle();
+  // Every LFO has the same tabs and rows: stay in this one.
+  const String section_key = focusedSectionKey();
+  auto* persistent_focus = persistentFocusedComponent();
+  keepFocusedSwitchingRow();
+  showAllSections(false);
+  restoreFocusAfterRebuild(parameter_id, persistent_focus, accessible_title, section_key, true);
+  releaseKeptFocus();
   return true;
 }
 
@@ -9462,6 +9594,7 @@ void SynthEditor::clearSectionComponents() {
   rows_.clear();
   last_filter_states_.clear();
   last_random_amplitude_modes_.clear();
+  last_lfo_layouts_.clear();
   last_oscillator_modes_.clear();
   instrument_preset_menu_stale_ = false;
   rows_container_.removeAllChildren();
@@ -9786,6 +9919,49 @@ void SynthEditor::showAllSections(bool announce) {
       else if (section_name.startsWith("LFO ")) {
         const int lfo = section_name.fromFirstOccurrenceOf("LFO ", false, false).getIntValue() - 1;
         if (isPositiveAndBelow(lfo, vital::kNumLfos)) {
+          last_lfo_layouts_[lfo] = lfoRowLayout(lfo);
+          const bool simple = isLfoSimpleView(lfo);
+          const int tab_x = flatten_section ? 16 : 10;
+          const int tab_width = jmax(620, width - (flatten_section ? 32 : 34)) / 2;
+          std::array<LfoViewTabButton*, 2> tabs {};
+          // The tabs read Simple first, as the Simple view is the plainer one.
+          const std::array<std::pair<int, const char*>, 2> views {{
+            { vital::SynthLfo::kSimpleView, "Simple" }, { vital::SynthLfo::kCustomView, "Custom" }
+          }};
+          for (int i = 0; i < 2; ++i) {
+            const int view = views[static_cast<size_t>(i)].first;
+            const String name = views[static_cast<size_t>(i)].second;
+            auto tab = std::make_unique<LfoViewTabButton>(name);
+            auto* tab_ptr = tab.get();
+            tab_ptr->setTitle(name);
+            tab_ptr->setDescription(view == vital::SynthLfo::kSimpleView
+                ? "Show " + section_name + "'s shape, Morph, rate and Trigger Mode"
+                : "Show " + section_name + "'s shape editor and every setting");
+            tab_ptr->setHelpText("Press Enter to show this view; Left and Right move to the other view");
+            tab_ptr->setWantsKeyboardFocus(true);
+            tab_ptr->setToggleable(true);
+            tab_ptr->setClickingTogglesState(false);
+            tab_ptr->setToggleState(simple == (view == vital::SynthLfo::kSimpleView), dontSendNotification);
+            tab_ptr->onClick = [this, lfo, view] { setLfoView(lfo, view); };
+            tab_ptr->setExplicitFocusOrder(focus_order++);
+            tab_ptr->setBounds(tab_x + i * tab_width, section_y, tab_width - 6, 38);
+            section_ptr->addAndMakeVisible(tab_ptr);
+            section_ptr->addAccessibleChild(tab_ptr);
+            row_focus_order_.push_back(tab_ptr);
+            section_headers_.push_back(std::move(tab));
+            tabs[static_cast<size_t>(i)] = tab_ptr;
+          }
+          for (int i = 0; i < 2; ++i) {
+            Component::SafePointer<LfoViewTabButton> other(tabs[static_cast<size_t>(1 - i)]);
+            tabs[static_cast<size_t>(i)]->onMove = [this, lfo, other, view = views[static_cast<size_t>(1 - i)].first](int) {
+              if (other != nullptr)
+                other->grabKeyboardFocus();
+              setLfoView(lfo, view);
+            };
+          }
+          section_y += 44;
+        }
+        if (isPositiveAndBelow(lfo, vital::kNumLfos) && !isLfoSimpleView(lfo)) {
           addButtonGroup("LFO presets", section_name + " presets", *section_ptr, flatten_section ? 16 : 10, section_y,
                          jmax(620, width - (flatten_section ? 32 : 34)), focus_order, groupRank(section_name), {
             { "Browse LFO presets", "Choose an LFO preset from the LFO Presets folders for " + section_name,
@@ -24346,6 +24522,8 @@ void SynthEditor::timerCallback() {
   if (refreshFilterRowsIfNeeded())
     return;
   if (refreshRandomAmplitudeRowsIfNeeded())
+    return;
+  if (refreshLfoRowsIfNeeded())
     return;
   if (refreshOscillatorModeRowsIfNeeded())
     return;
