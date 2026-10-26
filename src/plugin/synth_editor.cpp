@@ -668,15 +668,8 @@ namespace {
 
   // Indexed as SynthEditor::applyLfoShapePreset() numbers the shapes.
   const StringArray& lfoShapePresetNames() {
-    static const StringArray names { "Custom", "Sine", "Triangle", "Square", "Saw up", "Saw down",
-                                     "Pulse", "Ramp hold", "Step climb", "Step fall",
-                                     "Flat 0", "Flat 50", "Flat 100", "Gate", "Double pulse",
-                                     "Trance gate", "Up down", "Down up", "Half sine up",
-                                     "Half sine down", "Short pulse", "Offbeat pulse",
-                                     "Triplet gate", "Sidechain dip", "Reverse sidechain",
-                                     "Stutter 4", "Stutter 8", "Stair up 4", "Stair down 4",
-                                     "Zigzag steps", "Ramp up hold", "Ramp down hold",
-                                     "Curve up", "Curve down", "Smooth dip", "Smooth rise" };
+    // The waves most used: the Simple view's five and a pulse.
+    static const StringArray names { "Sine", "Triangle", "Saw up", "Saw down", "Square", "Pulse" };
     return names;
   }
 
@@ -16157,25 +16150,22 @@ void SynthEditor::applyLfoShapePreset() {
   if (generator == nullptr)
     return;
 
-  const int shape = lfo_shape_preset_index_;
-  if (shape == 0) {
-    postLfoAnnouncement("Custom shape selected. No change applied.");
-    return;
-  }
+  enum Shape { kSine, kTriangle, kSawUp, kSawDown, kSquare, kPulse };
+  const int shape = jlimit(0, lfoShapePresetNames().size() - 1, lfo_shape_preset_index_);
   const int mode = generator->getShapeMode();
   if (mode == LineGenerator::kModeStepSequencer) {
     postLfoAnnouncement("Shape presets are ignored in Step Sequencer mode; use Up and Down to set the current step");
     return;
   }
-  if (mode == LineGenerator::kModeLfo && shape == 1)
+  if (mode == LineGenerator::kModeLfo && shape == kSine)
     generator->initSin();
-  else if (mode == LineGenerator::kModeLfo && shape == 2)
+  else if (mode == LineGenerator::kModeLfo && shape == kTriangle)
     generator->initTriangle();
-  else if (mode == LineGenerator::kModeLfo && shape == 3)
+  else if (mode == LineGenerator::kModeLfo && shape == kSquare)
     generator->initSquare();
-  else if (mode == LineGenerator::kModeLfo && shape == 4)
+  else if (mode == LineGenerator::kModeLfo && shape == kSawUp)
     generator->initSawUp();
-  else if (mode == LineGenerator::kModeLfo && shape == 5)
+  else if (mode == LineGenerator::kModeLfo && shape == kSawDown)
     generator->initSawDown();
   else {
     struct ShapePoint {
@@ -16192,204 +16182,40 @@ void SynthEditor::applyLfoShapePreset() {
       const float hold = LineGenerator::kHoldPowerThreshold;
       constexpr float pi = 3.14159265358979323846f;
 
-      if (shape == 1) {
-        add(0.0f, 0.5f);
-        add(0.5f, 1.0f);
-        add(1.0f, 0.5f);
+      if (shape == kSine) {
+        // A Performer shape cannot be smoothed on its own: the sine is
+        // sampled, low to high and back, as LFO mode's Sine runs.
+        constexpr int kSegments = 16;
+        for (int i = 0; i <= kSegments; ++i) {
+          const float phase = i / static_cast<float>(kSegments);
+          add(phase, 0.5f - 0.5f * std::cos(2.0f * pi * phase));
+        }
       }
-      else if (shape == 2) {
+      else if (shape == kTriangle) {
         add(0.0f, 0.0f);
         add(0.5f, 1.0f);
         add(1.0f, 0.0f);
       }
-      else if (shape == 3) {
-        add(0.0f, 1.0f, hold);
-        add(0.5f, 1.0f, hold);
-        add(0.5f, 0.0f, hold);
-        add(1.0f, 0.0f, hold);
-      }
-      else if (shape == 4) {
+      else if (shape == kSawUp) {
         add(0.0f, 0.0f);
         add(1.0f, 1.0f);
       }
-      else if (shape == 5) {
+      else if (shape == kSawDown) {
         add(0.0f, 1.0f);
         add(1.0f, 0.0f);
       }
-      else if (shape == 6) {
-        add(0.0f, 1.0f, hold);
-        add(0.25f, 1.0f, hold);
-        add(0.25f, 0.0f, hold);
-        add(1.0f, 0.0f, hold);
-      }
-      else if (shape == 7) {
-        add(0.0f, 0.0f, hold);
-        add(0.25f, 0.3f, hold);
-        add(0.5f, 0.7f, hold);
-        add(0.75f, 1.0f, hold);
-        add(1.0f, 0.0f, hold);
-      }
-      else if (shape == 8 || shape == 9) {
-        for (int i = 0; i <= 8; ++i) {
-          const float value = i / 8.0f;
-          add(i / 8.0f, shape == 8 ? value : 1.0f - value, hold);
-        }
-      }
-      else if (shape == 10) {
-        add(0.0f, 0.0f, hold);
-        add(1.0f, 0.0f, hold);
-      }
-      else if (shape == 11) {
-        add(0.0f, 0.5f, hold);
-        add(1.0f, 0.5f, hold);
-      }
-      else if (shape == 12) {
-        add(0.0f, 1.0f, hold);
-        add(1.0f, 1.0f, hold);
-      }
-      else if (shape == 13) {
+      else if (shape == kSquare) {
         add(0.0f, 1.0f, hold);
         add(0.5f, 1.0f, hold);
         add(0.5f, 0.0f, hold);
         add(1.0f, 0.0f, hold);
-      }
-      else if (shape == 14) {
-        add(0.0f, 1.0f, hold);
-        add(0.25f, 1.0f, hold);
-        add(0.25f, 0.0f, hold);
-        add(0.5f, 0.0f, hold);
-        add(0.5f, 1.0f, hold);
-        add(0.75f, 1.0f, hold);
-        add(0.75f, 0.0f, hold);
-        add(1.0f, 0.0f, hold);
-      }
-      else if (shape == 15) {
-        add(0.0f, 1.0f, hold);
-        add(0.125f, 1.0f, hold);
-        add(0.125f, 0.0f, hold);
-        add(0.25f, 0.0f, hold);
-        add(0.25f, 1.0f, hold);
-        add(0.375f, 1.0f, hold);
-        add(0.375f, 0.0f, hold);
-        add(0.5f, 0.0f, hold);
-        add(0.5f, 1.0f, hold);
-        add(0.625f, 1.0f, hold);
-        add(0.625f, 0.0f, hold);
-        add(0.75f, 0.0f, hold);
-        add(0.75f, 1.0f, hold);
-        add(0.875f, 1.0f, hold);
-        add(0.875f, 0.0f, hold);
-        add(1.0f, 0.0f, hold);
-      }
-      else if (shape == 16) {
-        add(0.0f, 0.0f);
-        add(0.5f, 1.0f);
-        add(1.0f, 0.0f);
-      }
-      else if (shape == 17) {
-        add(0.0f, 1.0f);
-        add(0.5f, 0.0f);
-        add(1.0f, 1.0f);
-      }
-      else if (shape == 18) {
-        add(0.0f, 0.0f);
-        add(1.0f, 1.0f);
-      }
-      else if (shape == 19) {
-        add(0.0f, 1.0f);
-        add(1.0f, 0.0f);
-      }
-      else if (shape == 20) {
-        add(0.0f, 1.0f, hold);
-        add(0.125f, 1.0f, hold);
-        add(0.125f, 0.0f, hold);
-        add(1.0f, 0.0f, hold);
-      }
-      else if (shape == 21) {
-        add(0.0f, 0.0f, hold);
-        add(0.5f, 0.0f, hold);
-        add(0.5f, 1.0f, hold);
-        add(0.75f, 1.0f, hold);
-        add(0.75f, 0.0f, hold);
-        add(1.0f, 0.0f, hold);
-      }
-      else if (shape == 22) {
-        for (int i = 0; i < 3; ++i) {
-          const float start = i / 3.0f;
-          const float end = start + 1.0f / 6.0f;
-          add(start, 1.0f, hold);
-          add(end, 1.0f, hold);
-          add(end, 0.0f, hold);
-        }
-        add(1.0f, 0.0f, hold);
-      }
-      else if (shape == 23) {
-        add(0.0f, 1.0f);
-        add(0.25f, 0.0f);
-        add(1.0f, 1.0f);
-      }
-      else if (shape == 24) {
-        add(0.0f, 0.0f);
-        add(0.75f, 1.0f);
-        add(1.0f, 0.0f);
-      }
-      else if (shape == 25 || shape == 26) {
-        const int steps = shape == 25 ? 4 : 8;
-        for (int i = 0; i < steps; ++i) {
-          const float start = i / static_cast<float>(steps);
-          const float mid = start + 0.5f / steps;
-          add(start, 1.0f, hold);
-          add(mid, 1.0f, hold);
-          add(mid, 0.0f, hold);
-        }
-        add(1.0f, 0.0f, hold);
-      }
-      else if (shape == 27 || shape == 28) {
-        for (int i = 0; i <= 4; ++i) {
-          const float phase = i / 4.0f;
-          const float value = i / 4.0f;
-          add(phase, shape == 27 ? value : 1.0f - value, hold);
-        }
-      }
-      else if (shape == 29) {
-        for (int i = 0; i <= 8; ++i)
-          add(i / 8.0f, (i % 2) ? 1.0f : 0.0f, hold);
-      }
-      else if (shape == 30) {
-        add(0.0f, 0.0f);
-        add(0.75f, 1.0f);
-        add(0.75f, 1.0f, hold);
-        add(1.0f, 1.0f, hold);
-      }
-      else if (shape == 31) {
-        add(0.0f, 1.0f);
-        add(0.75f, 0.0f);
-        add(0.75f, 0.0f, hold);
-        add(1.0f, 0.0f, hold);
-      }
-      else if (shape == 32) {
-        for (int i = 0; i <= 8; ++i) {
-          const float phase = i / 8.0f;
-          add(phase, phase * phase);
-        }
-      }
-      else if (shape == 33) {
-        for (int i = 0; i <= 8; ++i) {
-          const float phase = i / 8.0f;
-          add(phase, 1.0f - (1.0f - phase) * (1.0f - phase));
-        }
-      }
-      else if (shape == 34) {
-        for (int i = 0; i <= 8; ++i) {
-          const float phase = i / 8.0f;
-          add(phase, 1.0f - std::sin(phase * pi));
-        }
       }
       else {
-        for (int i = 0; i <= 8; ++i) {
-          const float phase = i / 8.0f;
-          add(phase, std::sin(phase * pi));
-        }
+        // Pulse: high for the first quarter of the cycle.
+        add(0.0f, 1.0f, hold);
+        add(0.25f, 1.0f, hold);
+        add(0.25f, 0.0f, hold);
+        add(1.0f, 0.0f, hold);
       }
 
       if (mode == LineGenerator::kModeStepSequencer) {
@@ -16506,12 +16332,6 @@ void SynthEditor::applyLfoShapePreset() {
       setPoints(points);
     else
       insertPoints(points);
-
-    if (mode == LineGenerator::kModeLfo && (shape == 1 || shape == 18 || shape == 19)) {
-      generator->setSmooth(true);
-      generator->render();
-      synth_.markStateChanged(lfoUndoBlock(generator));
-    }
   }
   generator->setShapeMode(mode);
 

@@ -1171,6 +1171,43 @@ namespace {
   // Each LFO opens with Simple and Custom tabs. Simple shows Shape, Morph,
   // Sync, the rate row Sync uses and Trigger Mode, in that order; Custom shows
   // the shape editor and the other rows. The arrows move between the tabs.
+  // The shape preset menu offers the waves used most, starting on Sine, and
+  // Apply shape puts the chosen one on the LFO.
+  void testLfoShapePresets() {
+    atlas::speech::setObserverForTesting([](const String&) {});
+    SynthPlugin synth;
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    pumpEditorEvents();
+    auto* section = editorSection(editor, "LFO 1");
+    auto* menu = section != nullptr ? dynamic_cast<ComboBox*>(titled(*section, "LFO 1 shape preset")) : nullptr;
+    auto* apply = section != nullptr ? dynamic_cast<Button*>(titled(*section, "LFO 1 apply shape")) : nullptr;
+    expect(menu != nullptr && apply != nullptr && apply->onClick != nullptr, "LFO 1 has its shape preset menu and Apply shape");
+    if (menu != nullptr && apply != nullptr && apply->onClick != nullptr) {
+      StringArray items;
+      for (int i = 0; i < menu->getNumItems(); ++i)
+        items.add(menu->getItemText(i));
+      expect(items == StringArray { "Sine", "Triangle", "Saw up", "Saw down", "Square", "Pulse" },
+             "the menu offers Sine, Triangle, Saw up, Saw down, Square and Pulse: " +
+                 items.joinIntoString(", ").toStdString());
+      expect(menu->getSelectedItemIndex() == 0, "and starts on Sine");
+      LineGenerator* lfo = synth.getLfoSource(0);
+      apply->onClick();
+      pumpEditorEvents();
+      expect(lfo->getName() == "Sin" && lfo->smooth(), "Apply shape puts a sine on the LFO: " + lfo->getName());
+      menu->setSelectedItemIndex(5, dontSendNotification);
+      apply->onClick();
+      pumpEditorEvents();
+      expect(lfo->getNumPoints() >= 4 && lfo->valueAtPhase(0.1f) != lfo->valueAtPhase(0.6f) &&
+                 lfo->valueAtPhase(0.4f) == lfo->valueAtPhase(0.6f),
+             "and Pulse is high for a quarter of the cycle and low after");
+    }
+    editor.removeFromDesktop();
+    atlas::speech::setObserverForTesting(nullptr);
+  }
+
   void testLfoViewTabs() {
     atlas::speech::setObserverForTesting([](const String&) {});
     SynthPlugin synth;

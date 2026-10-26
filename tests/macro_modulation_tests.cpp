@@ -1262,6 +1262,7 @@ int main(int argc, char** argv) {
     testDriveDynamicsRows();
     testAnalogSwitchKeepsItsControl();
     testLfoViewTabs();
+    testLfoShapePresets();
     testEffectMoveKeepsFocusAcrossTimerTick();
     testSectionKeysStepThroughEffectSlots();
     testGroupShortcutsReachTheEditorsGroups();
