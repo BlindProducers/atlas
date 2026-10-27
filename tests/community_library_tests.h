@@ -1279,13 +1279,16 @@ namespace {
       bool isListening() const { return listening_; }
       String url() const { return "http://127.0.0.1:" + String(listener_.getBoundPort()); }
 
-      void answer(const String& method, const String& path, int status, const String& body) {
+      // An answer sent in `chunk_bytes` pieces `chunk_delay_ms` apart, when
+      // both are given, stands in for a large file on a slow connection.
+      void answer(const String& method, const String& path, int status, const String& body, int chunk_bytes = 0,
+                  int chunk_delay_ms = 0) {
         const ScopedLock lock(lock_);
         auto& queue = answers_[method + " " + path];
         // The last answer stays for later requests until another is queued.
         if (queue.size() == 1 && queue.front().served)
           queue.clear();
-        queue.push_back({ status, body });
+        queue.push_back({ status, body, false, chunk_bytes, chunk_delay_ms });
       }
       std::vector<Request> requests() const {
         const ScopedLock lock(lock_);
@@ -1297,6 +1300,8 @@ namespace {
         int status;
         String body;
         bool served = false;
+        int chunk_bytes = 0;
+        int chunk_delay_ms = 0;
       };
 
       void run() override {
@@ -1372,8 +1377,22 @@ namespace {
         const String head = "HTTP/1.1 " + String(reply.status) + (reply.status < 300 ? " OK" : " Error") +
                             "\r\nContent-Type: application/json\r\nContent-Length: " + String(body.size()) +
                             "\r\nConnection: close\r\n\r\n";
-        const std::string text = head.toStdString() + body;
-        socket.write(text.data(), static_cast<int>(text.size()));
+        if (reply.chunk_bytes <= 0 || reply.chunk_delay_ms <= 0) {
+          const std::string text = head.toStdString() + body;
+          socket.write(text.data(), static_cast<int>(text.size()));
+          return;
+        }
+        // Slowly: the head, then the body a chunk at a time, until the client
+        // has gone (a cancelled download closes its connection).
+        const std::string head_text = head.toStdString();
+        if (socket.write(head_text.data(), static_cast<int>(head_text.size())) < 0)
+          return;
+        for (size_t sent = 0; sent < body.size() && !threadShouldExit(); sent += static_cast<size_t>(reply.chunk_bytes)) {
+          const int piece = static_cast<int>(std::min<size_t>(static_cast<size_t>(reply.chunk_bytes), body.size() - sent));
+          if (socket.write(body.data() + sent, piece) < 0)
+            return;
+          Thread::sleep(reply.chunk_delay_ms);
+        }
       }
 
       StreamingSocket listener_;
@@ -1608,17 +1627,27 @@ namespace {
     // patch uploads; the answer is said, the form stays open and Share has
     // the focus again.
     spoken.messages.clear();
+    expect(titled(editor, "Cancel sharing") != nullptr && titled(editor, "Cancel upload") == nullptr,
+           "before Share, the form's Cancel is Cancel sharing");
     share->onClick();
     const bool uploading = editor.isShareBusy() && progress->isShowing() && progress->hasKeyboardFocus(false) &&
                            progress->getAccessibilityHandler() != nullptr &&
                            progress->getAccessibilityHandler()->getTitle().startsWith("Upload progress, ");
     expect(uploading, "Share moves the focus onto the progress bar, named with its percentage");
+    // The same button, next in the Tab order after the bar, stops the upload
+    // while it is on, and says so.
+    auto* cancel_upload = dynamic_cast<Button*>(titled(editor, "Cancel upload"));
+    expect(cancel_upload != nullptr && titled(editor, "Cancel sharing") == nullptr &&
+               cancel_upload->getDescription() == "Stop the upload and close the share form",
+           "while the upload is on, the form's Cancel is Cancel upload");
     pumpUntil([&] { return !editor.isShareBusy(); }, 15000);
-    expect(said("Sharing Shared Patch on 127.0.0.1") &&
+    expect(said("Sharing Shared Patch on 127.0.0.1. Escape or Cancel upload stops it") &&
                said("Unable to share Shared Patch. The upload was not accepted. Name: Ensure this value has at most 120 characters."),
-           "the library's field errors are said: " + heard());
+           "the upload is said with how to stop it, and the library's field errors are said: " + heard());
     expect(editor.isShareFormVisible() && !progress->isVisible() && share->hasKeyboardFocus(false),
            "the form stays open, the bar goes and Share has the focus");
+    expect(titled(editor, "Cancel sharing") != nullptr && titled(editor, "Cancel upload") == nullptr,
+           "and the form's Cancel is Cancel sharing again");
 
     // Shared: said, form closed, focus back.
     spoken.messages.clear();
@@ -2242,6 +2271,186 @@ namespace {
     return failures == 0 ? 0 : 1;
   }
 
+  // A download's progress is told to its caller as the bytes land, and a
+  // caller that says stop ends it with nothing left behind. In the browser,
+  // Download progress and Cancel download show after the Autoload toggle while
+  // a download is on, the bar's name carries the percentage, Cancel download
+  // stops the download and puts the focus back on the preset list, and the
+  // same preset asked for again then lands and loads.
+  void testDownloadProgressAndCancel() {
+    TestLibraryServer server;
+    expect(server.isListening(), "the test library listens on 127.0.0.1");
+    if (!server.isListening())
+      return;
+    TemporaryUndoLibrary library;
+    expect(library.isolated(), "the test's library is its own temporary folder");
+    if (!library.isolated())
+      return;
+
+    // The library's file: a patch as saved, which arrives in many chunks.
+    SynthPlugin synth;
+    const File saved = library.folder.getChildFile("SavedLibrary");
+    saved.createDirectory();
+    const File source = saved.getChildFile("Big Lead.atp");
+    expect(synth.saveCopyToFile(source), "a preset is saved to stand in for the library's file");
+    const String body = source.loadFileAsString();
+    const String sha256 = sha256OfFile(source);
+    const int64 size = source.getSize();
+    expect(size > 16 * 1024, "the preset is bigger than a few chunks: " + std::to_string(size) + " bytes");
+    const String file_path = "/media/big.atp";
+    const URL file_url(server.url() + file_path);
+
+    // The library function hears the bytes as they land, of the size listed.
+    server.answer("GET", file_path, 200, body, 4096, 5);
+    const File target = library.folder.getChildFile("Downloads").getChildFile("Big Lead.atp");
+    const File part = target.getSiblingFile("Big Lead.atp.part");
+    std::vector<std::pair<int64, int64>> steps;
+    String error = atlas::community::downloadFile(file_url, target, sha256, size, nullptr,
+                                                  [&](int64 received, int64 total) {
+                                                    steps.emplace_back(received, total);
+                                                    return true;
+                                                  });
+    expect(error.isEmpty() && target.existsAsFile() && sha256OfFile(target) == sha256,
+           "the download lands: " + error.toStdString());
+    bool steps_in_order = steps.size() >= 3 && steps.front().first == 0 && steps.back().first == size;
+    for (size_t i = 0; i < steps.size(); ++i) {
+      steps_in_order = steps_in_order && steps[i].second == size &&
+                       (i == 0 || steps[i].first >= steps[i - 1].first);
+    }
+    expect(steps_in_order, "the progress runs from nothing to the whole, of the listed size, in " +
+                               std::to_string(steps.size()) + " steps");
+
+    // A caller that says stop: the download ends with nothing left behind.
+    target.deleteFile();
+    server.answer("GET", file_path, 200, body, 4096, 5);
+    int calls = 0;
+    error = atlas::community::downloadFile(file_url, target, sha256, size, nullptr,
+                                           [&](int64, int64) { return ++calls < 3; });
+    expect(error == "Cancelled" && !target.existsAsFile() && !part.existsAsFile(),
+           "stopped, the download says Cancelled and leaves no file and no part file: " + error.toStdString());
+
+    // The browser, with the library listing the preset on the test server.
+    json page;
+    page["count"] = 1;
+    page["next"] = nullptr;
+    page["results"] = json::array();
+    json entry = communityPresetJson(1, "Big Lead", source, sha256, "lead", "Lead", { "test" });
+    entry["file"]["url"] = file_url.toString(false).toStdString();
+    page["results"].push_back(entry);
+    server.answer("GET", "/api/v1/presets/?kind=patch&page_size=200&page=1", 200, String(page.dump()));
+    atlas::community::setLibraryUrlForTesting(server.url());
+    struct RealLibraryAgain { ~RealLibraryAgain() { atlas::community::setLibraryUrlForTesting({}); } } real_library_again;
+    SpokenMessages spoken;
+    auto said = [&](const String& words) {
+      for (const auto& message : spoken.messages)
+        if (message.contains(words))
+          return true;
+      return false;
+    };
+    auto heard = [&] { return spoken.messages.joinIntoString(" | ").toStdString(); };
+
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    editor.toFront(true);
+    pumpEditorEvents();
+    editor.refreshPresetLibrary();
+    pumpUntil([&] { return !editor.isPresetLibraryBusy(); }, 60000);
+
+    auto* collection = dynamic_cast<TableListBox*>(titled(editor, "Collection"));
+    auto* results = dynamic_cast<TableListBox*>(titled(editor, "Preset results table"));
+    auto* autoload = dynamic_cast<Button*>(titled(editor, "Autoload preset when scrolling"));
+    auto* progress = titled(editor, "Download progress");
+    auto* cancel = dynamic_cast<Button*>(titled(editor, "Cancel download"));
+    const bool browser = collection != nullptr && results != nullptr && autoload != nullptr && progress != nullptr &&
+                         cancel != nullptr;
+    expect(browser, "the editor has its preset browser, with Download progress and Cancel download");
+    if (!browser) {
+      editor.removeFromDesktop();
+      return;
+    }
+    const bool autoload_was_on = autoload->getToggleState();
+    autoload->setToggleState(false, dontSendNotification);
+    auto finish = [&] {
+      autoload->setToggleState(autoload_was_on, dontSendNotification);
+      editor.removeFromDesktop();
+    };
+    // Where Tab goes, in order.
+    auto tabOrder = [&] { return static_cast<Component&>(editor).createKeyboardFocusTraverser()->getAllComponents(&editor); };
+    auto tabIndex = [&](const std::vector<Component*>& order, Component* component) {
+      const auto found = std::find(order.begin(), order.end(), component);
+      return found == order.end() ? -1 : static_cast<int>(found - order.begin());
+    };
+    auto order = tabOrder();
+    expect(!progress->isVisible() && !cancel->isVisible() && tabIndex(order, progress) < 0 && tabIndex(order, cancel) < 0,
+           "while nothing downloads, the bar and Cancel download are hidden and out of the Tab order");
+
+    collection->selectRow(2);
+    pumpEditorEvents();
+    pumpUntil([&] { return !editor.isCommunityLibraryBusy(); }, 10000);
+    expect(editor.presetRowCount() == 1, "the community list arrives with the preset: " +
+                                             editor.communityLibraryError().toStdString());
+    if (editor.presetRowCount() != 1) {
+      finish();
+      return;
+    }
+    const File expected = library.folder.getChildFile("Community").getChildFile("Banks").getChildFile("tester")
+                              .getChildFile("Lead").getChildFile("Big Lead.atp");
+    results->selectRow(0);
+    pumpEditorEvents();
+    editor.ensureComponentVisible(results);
+    results->grabKeyboardFocus();
+    pumpEditorEvents();
+
+    // A slow download: the bar and Cancel download show at once, after the
+    // Autoload toggle, and the bar is named with how much has arrived.
+    server.answer("GET", file_path, 200, body, 2048, 40);
+    spoken.messages.clear();
+    expect(results->keyPressed(KeyPress(KeyPress::returnKey)), "Return on the row is handled");
+    expect(editor.isCommunityDownloadBusy() && progress->isVisible() && cancel->isVisible(),
+           "the bar and Cancel download show as the download starts");
+    expect(said("Downloading Big Lead from 127.0.0.1, "), "the download is said with its size: " + heard());
+    order = tabOrder();
+    expect(tabIndex(order, progress) == tabIndex(order, autoload) + 1 && tabIndex(order, cancel) == tabIndex(order, progress) + 1,
+           "Tab reaches the bar after the Autoload toggle, and Cancel download after the bar");
+    pumpUntil([&] { return editor.downloadProgressPercentForTesting() > 0; }, 10000);
+    const int percent = editor.downloadProgressPercentForTesting();
+    expect(percent > 0 && percent <= 100 && progress->getAccessibilityHandler() != nullptr &&
+               progress->getAccessibilityHandler()->getTitle() == "Download progress, " + String(percent) + " percent",
+           "the bar's name carries the percentage that has arrived: " + std::to_string(percent));
+    expect(editor.isCommunityDownloadBusy(), "the download is still on");
+
+    // Cancel download, from the button: the download is dropped and said to
+    // be, the bar and button go, the focus is back on the preset list, and
+    // nothing is left behind.
+    cancel->grabKeyboardFocus();
+    pumpEditorEvents();
+    spoken.messages.clear();
+    cancel->onClick();
+    expect(!editor.isCommunityDownloadBusy() && !progress->isVisible() && !cancel->isVisible(),
+           "Cancel download drops the download, and the bar and button go");
+    expect(said("Download of Big Lead cancelled"), "the cancel is said: " + heard());
+    expect(results->hasKeyboardFocus(false), "the focus is back on the preset list");
+    const File expected_part = expected.getSiblingFile("Big Lead.atp.part");
+    pumpUntil([&] { return !expected_part.existsAsFile(); }, 5000);
+    pumpUntil([&] { return false; }, 300);   // the thread's last chunk
+    expect(!expected.existsAsFile() && !expected_part.existsAsFile(),
+           "the cancelled download leaves no file and no part file");
+    expect(!said("Downloaded Big Lead") && !said("Unable to download"), "and nothing more is said of it: " + heard());
+
+    // Asked for again, at full speed: it lands and loads, and the bar goes.
+    server.answer("GET", file_path, 200, body);
+    spoken.messages.clear();
+    expect(results->keyPressed(KeyPress(KeyPress::returnKey)), "Return on the row is handled again");
+    pumpUntil([&] { return !editor.isCommunityDownloadBusy() && synth.getActiveFile() == expected; }, 15000);
+    expect(expected.existsAsFile() && sha256OfFile(expected) == sha256 && synth.getActiveFile() == expected,
+           "the download lands and loads: " + synth.getActiveFile().getFullPathName().toStdString());
+    expect(!progress->isVisible() && !cancel->isVisible() && said("Downloaded Big Lead"),
+           "the bar and Cancel download go once it has landed, and the download is said: " + heard());
+    finish();
+  }
+
   int runCommunityLibraryTests() {
     testSha256MatchesTheStandardVectors();
     testPresetsPageParses();
@@ -2249,6 +2458,7 @@ namespace {
     testDownloadRecords();
     testSavedLibraryRoundTrip();
     testCommunityCollectionListsAndDownloads();
+    testDownloadProgressAndCancel();
     testCommunityPreviewPlays();
     testBanksPageParses();
     testCommunityBanksListAndImport();

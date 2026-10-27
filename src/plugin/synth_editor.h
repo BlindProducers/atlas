@@ -36,7 +36,7 @@
 class AccessibleParameterRow;
 class AccessibleSectionHeader;
 class CpuUsageMeter;
-class ShareProgressBar;
+class TransferProgressBar;
 class LineGenerator;
 class WaveSource;
 class WavetableComponent;
@@ -444,6 +444,9 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     bool isCommunityLibraryBusy() const { return community_list_loading_; }
     bool isCommunityLibraryLoaded() const { return community_list_loaded_; }
     bool isCommunityDownloadBusy() const { return !community_downloads_.empty(); }
+    // The download bar's percentage, -1 before anything has landed or while
+    // no download is on.
+    int downloadProgressPercentForTesting() const;
     String communityLibraryError() const { return community_list_error_; }
     // Settings, for the tests: the window it opened, or null.
     DialogWindow* showSettingsForTesting() {
@@ -710,7 +713,8 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
                             bool fetched, int generation);
     void rebuildCommunityLookup();
     void downloadCommunityPreset(const PresetBrowserItem& item, bool loadAfter);
-    void finishCommunityDownload(const File& file, const String& name, const String& error, bool loadAfter);
+    void finishCommunityDownload(const File& file, const String& name, const String& error, bool loadAfter,
+                                 int generation);
     void ensureCommunityBankListLoaded();
     void startCommunityBankListLoad(bool announce, bool forceRefresh = false);
     void applyCommunityBankList(std::vector<PresetBrowserItem> items, const String& error, bool announce,
@@ -719,7 +723,33 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     // Fetches a bank's archive (unless the copy here is the one the library
     // lists) and unpacks it into the Atlas folder, both in the background.
     void downloadCommunityBank(const PresetBrowserItem& item);
-    void finishCommunityBankImport(const File& file, const String& name, const String& error, int files);
+    void finishCommunityBankImport(const File& file, const String& name, const String& error, int files,
+                                   int generation);
+    struct CommunityDownload {
+      String name;
+      int generation = 0;
+      int64 received = 0;
+      int64 total = -1;   // the library's size, or -1 while unknown
+      std::shared_ptr<std::atomic<bool>> cancelled;
+    };
+    // A download's life in `community_downloads_`: begun with its name and the
+    // size the library lists (the bar and Cancel download show), its progress
+    // as its thread reports it, and ended when it lands or fails. `end` says
+    // whether the download was still current, since Cancel download drops it
+    // first and its thread's news then counts for nothing.
+    CommunityDownload& beginCommunityDownload(const std::string& key, const String& name, int64 total);
+    void setCommunityDownloadProgress(const std::string& key, int generation, int64 received, int64 total);
+    // What a download's thread reports with: the progress above, posted as the
+    // percentage changes, and false once Cancel download has set its flag.
+    atlas::community::DownloadProgress communityDownloadProgress(const std::string& key,
+                                                                 const CommunityDownload& download);
+    bool endCommunityDownload(const std::string& key, int generation);
+    // Cancel download: every download under way stops, and is said to.
+    void cancelCommunityDownloads();
+    // The bar and Cancel download follow the downloads: shown while any is on,
+    // with the percentage of all of them together, said now and then while
+    // one of the two has the focus.
+    void updateDownloadProgress();
     // Adds a file that just appeared (a download) to the local index and the
     // process-wide cache ahead of the next scan.
     void addPresetToLocalIndex(const File& file);
@@ -853,6 +883,9 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     // it; said now and then while the bar has the focus.
     void setShareProgress(int percent, int generation);
     void stopShareUpload();
+    // The form's Cancel is Cancel upload while the upload is on, since it
+    // stops the upload then, and Cancel sharing otherwise.
+    void nameShareCancel(bool uploading);
     void finishShare(const atlas::community::UploadResult& result, const String& name, bool bank, int generation);
     bool shareFormHasFocus() const;
     void savePresetFile(const File& file);
@@ -1283,6 +1316,10 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     Rectangle<int> preset_facet_area_;
     PresetTableListBox preset_table_ { "Preset table" };
     ToggleButton preset_preview_ { "Autoload preset when scrolling" };
+    // A community download's progress and its Cancel, after the Autoload
+    // toggle while a download is on (updateDownloadProgress).
+    std::unique_ptr<TransferProgressBar> download_progress_;
+    AccessibleTextButton download_cancel_ { "Cancel download" };
     Label save_patch_prompt_;
     TextEditor save_patch_name_;
     TextEditor save_patch_author_;
@@ -1304,7 +1341,7 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     AccessibleTextEditor share_description_;
     AccessibleTextButton share_ok_ { "Share" };
     AccessibleTextButton share_cancel_ { "Cancel" };
-    std::unique_ptr<ShareProgressBar> share_progress_;
+    std::unique_ptr<TransferProgressBar> share_progress_;
     Label routing_summary_;
     AccessibleComboBox routing_mode_;
     TextButton routing_default_ { "Default routing" };
@@ -1546,7 +1583,14 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     bool community_list_loading_ = false;
     String community_list_error_;
     int community_list_generation_ = 0;
-    std::set<std::string> community_downloads_;   // the local paths being fetched
+    // The downloads under way, by the local path each lands at: what the
+    // progress bar sums up, and what Cancel download stops. A download's
+    // thread reports under its generation, so one cancelled and started again
+    // is not confused with its earlier self.
+    std::map<std::string, CommunityDownload> community_downloads_;
+    int community_download_generation_ = 0;
+    uint32 download_progress_said_ms_ = 0;
+    int download_progress_said_ = -1;
     // The same for the library's banks.
     std::vector<PresetBrowserItem> community_bank_index_;
     std::unordered_map<std::string, size_t> community_bank_index_by_path_;

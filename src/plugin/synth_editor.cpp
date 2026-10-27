@@ -552,6 +552,18 @@ namespace {
   // Direct responses to a preset-browser command must not disappear when the
   // optional background preset-announcement category is disabled. These are
   // confirmations of an action the user just performed, not browser chatter.
+  // How often an upload's or a download's percentage is said while its bar
+  // (or Cancel download) has the focus.
+  constexpr uint32 kTransferProgressSayMs = 2000;
+  // A download of this much or more is told where its bar and Cancel are;
+  // a small one is over before they would be reached.
+  constexpr int64 kLargeDownloadBytes = 8 * 1024 * 1024;
+
+  String downloadControlsHint(int64 bytes) {
+    return bytes >= kLargeDownloadBytes ? String(". Its progress and Cancel download are after the preset list")
+                                        : String();
+  }
+
   void postPresetActionAnnouncement(const String& message,
                                     AccessibilityHandler::AnnouncementPriority priority) {
     if (accessibilitySpeechSettings().speech_feedback)
@@ -6011,24 +6023,27 @@ class CpuUsageMeter final : public Component {
     uint32 last_refresh_ = 0;
 };
 
-// The Share form's upload progress (SynthEditor::startShareUpload): a bar
-// with the percentage the library has taken, or "preparing" before the first
-// byte (a bank is zipped first). The focus moves onto it when Share is
-// pressed, and a screen reader reads it as a progress indicator whose name
-// carries the percentage, as the CPU meter's does, since VoiceOver can leave
-// a progress indicator's value unread. The editor says the percentage now and
+// A transfer's progress: the Share form's upload (SynthEditor::startShareUpload)
+// and the preset browser's downloads (SynthEditor::updateDownloadProgress). A
+// bar with the percentage that has gone over, or "preparing" before the first
+// byte (a bank is zipped before its upload; a download waits for its
+// connection). The focus moves onto the upload's when Share is pressed; the
+// download's stays where it is, after the preset list, with Cancel download
+// beside it. A screen reader reads the bar as a progress indicator whose name
+// carries the percentage, as the CPU meter's does, since VoiceOver can leave a
+// progress indicator's value unread. The editor says the percentage now and
 // then while the bar keeps the focus (SynthEditor::setShareProgress); the bar
 // itself raises no value events, which NVDA would beep at.
-class ShareProgressBar : public Component {
+class TransferProgressBar : public Component {
   public:
     std::function<bool(const KeyPress&)> onKeyPressed;
 
-    ShareProgressBar() {
-      setTitle("Upload progress");
+    explicit TransferProgressBar(const String& title) {
+      setTitle(title);
       setWantsKeyboardFocus(true);
     }
 
-    // -1 before the library has taken any of the upload.
+    // -1 before any of the transfer has gone over.
     void setPercent(int percent) {
       percent = jlimit(-1, 100, percent);
       if (percent == percent_)
@@ -6067,7 +6082,7 @@ class ShareProgressBar : public Component {
     std::unique_ptr<AccessibilityHandler> createAccessibilityHandler() override {
       class Value final : public AccessibilityValueInterface {
         public:
-          explicit Value(ShareProgressBar& bar) : bar_(bar) { }
+          explicit Value(TransferProgressBar& bar) : bar_(bar) { }
           bool isReadOnly() const override { return true; }
           double getCurrentValue() const override { return jmax(0, bar_.percent()); }
           String getCurrentValueAsString() const override {
@@ -6077,11 +6092,11 @@ class ShareProgressBar : public Component {
           void setValueAsString(const String&) override { }
           AccessibleValueRange getRange() const override { return { { 0.0, 100.0 }, 1.0 }; }
         private:
-          ShareProgressBar& bar_;
+          TransferProgressBar& bar_;
       };
       class Handler final : public AccessibilityHandler {
         public:
-          explicit Handler(ShareProgressBar& bar) :
+          explicit Handler(TransferProgressBar& bar) :
               AccessibilityHandler(bar, AccessibilityRole::progressBar, {}, Interfaces{ std::make_unique<Value>(bar) }),
               bar_(bar) { }
           // The percentage in the spoken name too, read live (see the class).
@@ -6091,7 +6106,7 @@ class ShareProgressBar : public Component {
             return AccessibilityHandler::getCurrentState().withAccessibleOffscreen();
           }
         private:
-          ShareProgressBar& bar_;
+          TransferProgressBar& bar_;
       };
       return std::make_unique<Handler>(*this);
     }
@@ -7195,6 +7210,22 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   };
   addChildComponent(preset_preview_);
 
+  // A community download's progress and its Cancel, shown after the Autoload
+  // toggle while a download is on (updateDownloadProgress). Small presets are
+  // over before either is reached; a preset carrying its instruments, or a
+  // bank, can take a while, and Cancel download stops it.
+  download_progress_ = std::make_unique<TransferProgressBar>("Download progress");
+  download_progress_->setDescription("How much of the community download has arrived");
+  download_progress_->setHelpText("The percentage of the download from the community library that has arrived. "
+                                  "Cancel download, next to it, stops the download.");
+  addChildComponent(*download_progress_);
+  download_cancel_.setTitle("Cancel download");
+  download_cancel_.setDescription("Stop the download from the community library");
+  download_cancel_.setHelpText("Stops the download from the community library and removes what has arrived.");
+  download_cancel_.setWantsKeyboardFocus(true);
+  download_cancel_.onClick = [this] { cancelCommunityDownloads(); };
+  addChildComponent(download_cancel_);
+
   preset_details_.setTitle("Selected preset details");
   preset_details_.setDescription("No preset selected");
   preset_details_.setColour(Label::textColourId, Colours::white);
@@ -7305,7 +7336,7 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
                        "What the sound or bank is. Empty uses the comments in the file.", "Description");
   // The upload's progress while Share is at work (startShareUpload). Escape
   // on it cancels the upload and closes the form, as on the other controls.
-  share_progress_ = std::make_unique<ShareProgressBar>();
+  share_progress_ = std::make_unique<TransferProgressBar>("Upload progress");
   share_progress_->onKeyPressed = [this](const KeyPress& key) {
     if (key.getKeyCode() == KeyPress::escapeKey && share_form_visible_) {
       hideShareForm();
@@ -9695,6 +9726,21 @@ void SynthEditor::showAllSections(bool announce) {
         group_y += 224;
         addPresetControl(preset_details_, 42);
         addPresetControl(preset_preview_);
+        // The download's bar and its Cancel share a row, kept hidden until a
+        // download is on: a hidden control is out of the Tab order and of what
+        // a screen reader finds (OrderedFocusTraverser and ChildListTraverser
+        // skip it), so the row costs nothing while nothing downloads.
+        auto download_row = Rectangle<int>(16, group_y, available_width, 38);
+        download_cancel_.setBounds(download_row.removeFromRight(170));
+        download_progress_->setBounds(download_row.withTrimmedRight(6));
+        for (Component* control : { static_cast<Component*>(download_progress_.get()),
+                                    static_cast<Component*>(&download_cancel_) }) {
+          group_ptr->addChildComponent(control);
+          group_ptr->addAccessibleChild(control);
+          row_focus_order_.push_back(control);
+        }
+        group_y += 44;
+        updateDownloadProgress();
       }
     }
 
@@ -12387,10 +12433,14 @@ void SynthEditor::downloadCommunityBank(const PresetBrowserItem& item) {
   data_directory.createDirectory();
   if (!LoadSave::hasDataDirectory())
     LoadSave::saveDataDirectory(data_directory);
-  community_downloads_.insert(key);
+  const auto& download = beginCommunityDownload(key, name, fetch ? item.file_size : -1);
+  const int generation = download.generation;
+  const auto download_cancelled = download.cancelled;
+  const auto progress = communityDownloadProgress(key, download);
   if (fetch) {
     postPresetActionAnnouncement("Downloading bank " + name + " from " + atlas::community::libraryHost() +
-                                     (item.file_size > 0 ? ", " + File::descriptionOfSizeInBytes(item.file_size) : String()),
+                                     (item.file_size > 0 ? ", " + File::descriptionOfSizeInBytes(item.file_size) : String()) +
+                                     downloadControlsHint(item.file_size),
                                  AccessibilityHandler::AnnouncementPriority::medium);
   }
   else {
@@ -12401,12 +12451,16 @@ void SynthEditor::downloadCommunityBank(const PresetBrowserItem& item) {
   const String url = item.remote_url;
   const String sha256 = item.remote_sha256;
   const int64 size = item.file_size;
-  runPresetBackgroundTask([safe_this, file, name, url, sha256, size, fetch, data_directory](const std::shared_ptr<std::atomic<bool>>& cancelled) {
+  runPresetBackgroundTask([safe_this, file, name, url, sha256, size, fetch, data_directory, generation, download_cancelled,
+                           progress](const std::shared_ptr<std::atomic<bool>>& cancelled) {
     String error;
     int files = 0;
     if (fetch)
-      error = atlas::community::downloadFile(URL(url), file, sha256, size, cancelled.get());
-    if (cancelled->load())
+      error = atlas::community::downloadFile(URL(url), file, sha256, size, cancelled.get(), progress);
+    // Cancelled while it was fetched: the part file is gone and the news was
+    // said when Cancel download was pressed. Once the archive is here, its
+    // unpacking goes on to its end, and is reported.
+    if (cancelled->load() || download_cancelled->load())
       return;
     if (error.isEmpty()) {
       const auto imported = atlas::library::importBankArchive(file, atlas::library::Library::kCommunity, data_directory,
@@ -12418,15 +12472,20 @@ void SynthEditor::downloadCommunityBank(const PresetBrowserItem& item) {
     }
     if (cancelled->load())
       return;
-    MessageManager::callAsync([safe_this, file, name, error, files] {
+    MessageManager::callAsync([safe_this, file, name, error, files, generation] {
       if (safe_this != nullptr)
-        safe_this->finishCommunityBankImport(file, name, error, files);
+        safe_this->finishCommunityBankImport(file, name, error, files, generation);
     });
   });
 }
 
-void SynthEditor::finishCommunityBankImport(const File& file, const String& name, const String& error, int files) {
-  community_downloads_.erase(file.getFullPathName().toStdString());
+void SynthEditor::finishCommunityBankImport(const File& file, const String& name, const String& error, int files,
+                                            int generation) {
+  // Dropped by Cancel download while its archive was unpacked: the import
+  // went on to its end, so what it made is still reported; a failure is not.
+  const bool current = endCommunityDownload(file.getFullPathName().toStdString(), generation);
+  if (!current && error.isNotEmpty())
+    return;
   if (error.isNotEmpty()) {
     LoadSave::writeErrorLog("Community bank import failed: " + error);
     postPresetActionAnnouncement("Unable to import bank " + name + ". " + error,
@@ -12555,17 +12614,25 @@ void SynthEditor::downloadCommunityPreset(const PresetBrowserItem& item, bool lo
                                  AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
-  community_downloads_.insert(key);
-  postPresetActionAnnouncement("Downloading " + name + " from " + atlas::community::libraryHost(),
+  const auto& download = beginCommunityDownload(key, name, item.file_size);
+  const int generation = download.generation;
+  const auto download_cancelled = download.cancelled;
+  const auto progress = communityDownloadProgress(key, download);
+  postPresetActionAnnouncement("Downloading " + name + " from " + atlas::community::libraryHost() +
+                                   (item.file_size > 0 ? ", " + File::descriptionOfSizeInBytes(item.file_size) : String()) +
+                                   downloadControlsHint(item.file_size),
                                AccessibilityHandler::AnnouncementPriority::medium);
 
   Component::SafePointer<SynthEditor> safe_this(this);
   const String url = item.remote_url;
   const String sha256 = item.remote_sha256;
   const int64 size = item.file_size;
-  runPresetBackgroundTask([safe_this, file, name, url, sha256, size, loadAfter](const std::shared_ptr<std::atomic<bool>>& cancelled) {
-    const String error = atlas::community::downloadFile(URL(url), file, sha256, size, cancelled.get());
-    if (cancelled->load())
+  runPresetBackgroundTask([safe_this, file, name, url, sha256, size, loadAfter, generation, download_cancelled,
+                           progress](const std::shared_ptr<std::atomic<bool>>& cancelled) {
+    const String error = atlas::community::downloadFile(URL(url), file, sha256, size, cancelled.get(), progress);
+    // Cancelled while it was fetched: the part file is gone and the news was
+    // said when Cancel download was pressed.
+    if (cancelled->load() || download_cancelled->load())
       return;
     // A download carrying its instruments inside: they go into the Community
     // library's Multisamples once and the preset refers to them. The record
@@ -12577,15 +12644,22 @@ void SynthEditor::downloadCommunityPreset(const PresetBrowserItem& item, bool lo
           conversion_error.isNotEmpty())
         LoadSave::writeErrorLog("Could not unpack the instruments of " + file.getFullPathName() + ": " + conversion_error);
     }
-    MessageManager::callAsync([safe_this, file, name, error, loadAfter] {
+    MessageManager::callAsync([safe_this, file, name, error, loadAfter, generation] {
       if (safe_this != nullptr)
-        safe_this->finishCommunityDownload(file, name, error, loadAfter);
+        safe_this->finishCommunityDownload(file, name, error, loadAfter, generation);
     });
   });
 }
 
-void SynthEditor::finishCommunityDownload(const File& file, const String& name, const String& error, bool loadAfter) {
-  community_downloads_.erase(file.getFullPathName().toStdString());
+void SynthEditor::finishCommunityDownload(const File& file, const String& name, const String& error, bool loadAfter,
+                                          int generation) {
+  // Dropped by Cancel download while its instruments were unpacked: the file
+  // is here all the same, so it is listed as downloaded, but not loaded; a
+  // failure is not reported.
+  const bool current = endCommunityDownload(file.getFullPathName().toStdString(), generation);
+  if (!current && error.isNotEmpty())
+    return;
+  loadAfter = loadAfter && current;
   if (error.isNotEmpty()) {
     LoadSave::writeErrorLog("Community preset download failed: " + error);
     postPresetActionAnnouncement("Unable to download " + name + ". " + error,
@@ -12612,6 +12686,127 @@ void SynthEditor::finishCommunityDownload(const File& file, const String& name, 
   postPresetActionAnnouncement("Downloaded " + name, AccessibilityHandler::AnnouncementPriority::medium);
   if (loadAfter)
     loadPresetFile(file, false, false);
+}
+
+SynthEditor::CommunityDownload& SynthEditor::beginCommunityDownload(const std::string& key, const String& name,
+                                                                    int64 total) {
+  auto& download = community_downloads_[key];
+  download.name = name;
+  download.generation = ++community_download_generation_;
+  download.received = 0;
+  download.total = total > 0 ? total : -1;
+  download.cancelled = std::make_shared<std::atomic<bool>>(false);
+  if (community_downloads_.size() == 1) {
+    download_progress_said_ = -1;
+    download_progress_said_ms_ = Time::getMillisecondCounter();
+  }
+  updateDownloadProgress();
+  return download;
+}
+
+atlas::community::DownloadProgress SynthEditor::communityDownloadProgress(const std::string& key,
+                                                                          const CommunityDownload& download) {
+  Component::SafePointer<SynthEditor> safe_this(this);
+  const int generation = download.generation;
+  const auto cancelled = download.cancelled;
+  // Posted as the percentage changes, not for every chunk.
+  auto posted = std::make_shared<std::atomic<int>>(-2);
+  return [safe_this, key, generation, cancelled, posted](int64 received, int64 total) {
+    if (cancelled->load())
+      return false;
+    const int percent = total > 0 ? static_cast<int>(jlimit<int64>(0, 100, received * 100 / total)) : -1;
+    if (posted->exchange(percent) != percent) {
+      MessageManager::callAsync([safe_this, key, generation, received, total] {
+        if (safe_this != nullptr)
+          safe_this->setCommunityDownloadProgress(key, generation, received, total);
+      });
+    }
+    return true;
+  };
+}
+
+void SynthEditor::setCommunityDownloadProgress(const std::string& key, int generation, int64 received, int64 total) {
+  const auto found = community_downloads_.find(key);
+  if (found == community_downloads_.end() || found->second.generation != generation)
+    return;
+  found->second.received = received;
+  if (total > 0)
+    found->second.total = total;
+  updateDownloadProgress();
+}
+
+bool SynthEditor::endCommunityDownload(const std::string& key, int generation) {
+  const auto found = community_downloads_.find(key);
+  if (found == community_downloads_.end() || found->second.generation != generation)
+    return false;
+  community_downloads_.erase(found);
+  updateDownloadProgress();
+  return true;
+}
+
+void SynthEditor::cancelCommunityDownloads() {
+  if (community_downloads_.empty()) {
+    postPresetActionAnnouncement("No download to cancel", AccessibilityHandler::AnnouncementPriority::high);
+    return;
+  }
+  StringArray names;
+  for (auto& [key, download] : community_downloads_) {
+    if (download.cancelled != nullptr)
+      download.cancelled->store(true);
+    names.add(download.name);
+  }
+  community_downloads_.clear();
+  // Off the bar or its Cancel before they go: onto the preset list. What the
+  // focus move says would cut the news short.
+  const ScopedAnnouncementHold hold;
+  if ((download_progress_->hasKeyboardFocus(false) || download_cancel_.hasKeyboardFocus(false)) &&
+      preset_table_.isShowing())
+    preset_table_.grabKeyboardFocus();
+  updateDownloadProgress();
+  postPresetActionAnnouncement(names.size() == 1 ? "Download of " + names[0] + " cancelled"
+                                                 : "Downloads cancelled: " + names.joinIntoString(", "),
+                               AccessibilityHandler::AnnouncementPriority::high);
+}
+
+void SynthEditor::updateDownloadProgress() {
+  const bool on = !community_downloads_.empty();
+  int percent = -1;
+  if (on) {
+    int64 received = 0;
+    int64 total = 0;
+    bool known = true;
+    for (const auto& [key, download] : community_downloads_) {
+      received += download.received;
+      if (download.total > 0)
+        total += download.total;
+      else
+        known = false;
+    }
+    if (known && total > 0)
+      percent = static_cast<int>(jlimit<int64>(0, 100, received * 100 / total));
+  }
+  download_progress_->setPercent(percent);
+  if (download_progress_->isVisible() != on) {
+    download_progress_->setVisible(on);
+    download_cancel_.setVisible(on);
+  }
+  if (!on)
+    return;
+  // Said while the bar or its Cancel has the focus, at most every couple of
+  // seconds, so a quick download is not read out step by step.
+  const bool focused = download_progress_->hasKeyboardFocus(false) || download_cancel_.hasKeyboardFocus(false);
+  if (percent < 0 || percent == download_progress_said_ || !focused)
+    return;
+  const uint32 now = Time::getMillisecondCounter();
+  if (now - download_progress_said_ms_ < kTransferProgressSayMs)
+    return;
+  download_progress_said_ = percent;
+  download_progress_said_ms_ = now;
+  postPresetActionAnnouncement(download_progress_->spokenPercent(), AccessibilityHandler::AnnouncementPriority::medium);
+}
+
+int SynthEditor::downloadProgressPercentForTesting() const {
+  return community_downloads_.empty() ? -1 : download_progress_->percent();
 }
 
 void SynthEditor::addPresetToLocalIndex(const File& file) {
@@ -14258,9 +14453,6 @@ namespace {
       preface << ". " << atlas::community::tokenStorageText(true).trimCharactersAtEnd(".");
     return preface + ". ";
   }
-
-  // How often the upload's percentage is said while its bar has the focus.
-  constexpr uint32 kShareProgressSayMs = 2000;
 }
 
 void SynthEditor::shareOnCommunity(bool bank) {
@@ -14340,13 +14532,27 @@ void SynthEditor::startShareUpload(const String& message) {
   share_progress_said_ms_ = Time::getMillisecondCounter();
   share_progress_->setPercent(-1);
   share_progress_->setVisible(true);
+  nameShareCancel(true);
   rebuildFocusOrder();
   resized();
   // Onto the bar, whose name and value the screen reader reads; what is being
-  // shared is said after that rather than cut short by it.
+  // shared is said after that rather than cut short by it, with how to stop it.
   const ScopedAnnouncementHold hold;
   share_progress_->grabKeyboardFocus();
-  postPresetActionAnnouncement(message, AccessibilityHandler::AnnouncementPriority::medium);
+  postPresetActionAnnouncement(message + ". Escape or Cancel upload stops it",
+                               AccessibilityHandler::AnnouncementPriority::medium);
+}
+
+void SynthEditor::nameShareCancel(bool uploading) {
+  const String title = uploading ? "Cancel upload" : "Cancel sharing";
+  if (share_cancel_.getTitle() == title)
+    return;
+  const String help = uploading ? "Stop the upload and close the share form" : "Close the share form without uploading";
+  share_cancel_.setTitle(title);
+  share_cancel_.setDescription(help);
+  share_cancel_.setHelpText(help);
+  if (auto* handler = share_cancel_.getAccessibilityHandler())
+    handler->notifyAccessibilityEvent(AccessibilityEvent::titleChanged);
 }
 
 void SynthEditor::setShareProgress(int percent, int generation) {
@@ -14358,7 +14564,7 @@ void SynthEditor::setShareProgress(int percent, int generation) {
   if (percent < 0 || percent == share_progress_said_ || !share_progress_->hasKeyboardFocus(false))
     return;
   const uint32 now = Time::getMillisecondCounter();
-  if (now - share_progress_said_ms_ < kShareProgressSayMs)
+  if (now - share_progress_said_ms_ < kTransferProgressSayMs)
     return;
   share_progress_said_ = percent;
   share_progress_said_ms_ = now;
@@ -14377,6 +14583,7 @@ void SynthEditor::stopShareUpload() {
   ++share_generation_;
   share_busy_ = false;
   share_progress_->setVisible(false);
+  nameShareCancel(false);
   postPresetActionAnnouncement("Sharing cancelled", AccessibilityHandler::AnnouncementPriority::high);
 }
 
@@ -14595,6 +14802,7 @@ void SynthEditor::finishShare(const atlas::community::UploadResult& result, cons
     return;
   share_busy_ = false;
   share_cancelled_.reset();
+  nameShareCancel(false);
   if (!result.shared()) {
     LoadSave::writeErrorLog("Community share failed (" + String(result.status) + "): " + result.error);
     const String message = "Unable to share " + name + ". " + result.error;

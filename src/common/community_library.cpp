@@ -236,10 +236,16 @@ namespace {
   }
 
   // Copies `stream` to `out` (and into `hash`), at most `max_bytes`.
+  // `progress`, when given, hears the bytes read so far of `expected_bytes`
+  // (-1 while nothing says how long the stream is) after each chunk, and
+  // stops the read by returning false.
   juce::String readAll(juce::InputStream& stream, juce::OutputStream& out, Sha256* hash, juce::int64 max_bytes,
-                       const std::atomic<bool>* cancelled) {
+                       const std::atomic<bool>* cancelled, const DownloadProgress& progress = {},
+                       juce::int64 expected_bytes = -1) {
     juce::HeapBlock<char> chunk(static_cast<size_t>(kChunkBytes));
     juce::int64 total = 0;
+    if (progress && !progress(0, expected_bytes))
+      return "Cancelled";
     while (!stream.isExhausted()) {
       if (cancelled != nullptr && cancelled->load())
         return "Cancelled";
@@ -255,6 +261,8 @@ namespace {
         return "Could not write the download";
       if (hash != nullptr)
         hash->update(chunk, static_cast<size_t>(read));
+      if (progress && !progress(total, expected_bytes))
+        return "Cancelled";
     }
     return {};
   }
@@ -750,7 +758,8 @@ juce::String fetchAllBanks(const juce::String& library_url, std::vector<RemoteBa
 }
 
 juce::String downloadFile(const juce::URL& url, const juce::File& target, const juce::String& expected_sha256,
-                          juce::int64 expected_size, const std::atomic<bool>* cancelled) {
+                          juce::int64 expected_size, const std::atomic<bool>* cancelled,
+                          const DownloadProgress& progress) {
   const juce::File folder = target.getParentDirectory();
   if (!folder.createDirectory())
     return "Could not create the folder " + folder.getFullPathName();
@@ -767,7 +776,12 @@ juce::String downloadFile(const juce::URL& url, const juce::File& target, const 
     if (out.failedToOpen())
       return "Could not write " + part.getFullPathName();
     Sha256 hash;
-    error = readAll(*stream, out, &hash, expected_size > 0 ? expected_size : kMaxPresetBytes, cancelled);
+    // The whole, for the progress: the size the library lists, else what the
+    // connection says (a Content-Length), else unknown.
+    const juce::int64 stream_length = stream->getTotalLength();
+    const juce::int64 expected_bytes = expected_size > 0 ? expected_size : stream_length > 0 ? stream_length : -1;
+    error = readAll(*stream, out, &hash, expected_size > 0 ? expected_size : kMaxPresetBytes, cancelled, progress,
+                    expected_bytes);
     out.flush();
     if (error.isEmpty()) {
       if (expected_size > 0 && out.getPosition() != expected_size) {

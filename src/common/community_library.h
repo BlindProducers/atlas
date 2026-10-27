@@ -167,10 +167,16 @@ juce::String fetchAllPresets(const juce::String& library_url, std::vector<Remote
 // Every shared bank, page after page.
 juce::String fetchAllBanks(const juce::String& library_url, std::vector<RemoteBank>& banks,
                            const std::atomic<bool>* cancelled = nullptr);
+// How far a download has got, told to the thread that fetches it as the bytes
+// land: the bytes received of the whole, which is the size the library lists,
+// or -1 while nothing says how long the file is. Returning false stops the
+// download, which then fails with "Cancelled" and leaves no part file.
+using DownloadProgress = std::function<bool(juce::int64 bytes_received, juce::int64 bytes_total)>;
 // Downloads `url` to `target`, through a .part file beside it, and keeps it
 // only when it is `expected_size` bytes (when known) hashing to `expected_sha256`.
 juce::String downloadFile(const juce::URL& url, const juce::File& target, const juce::String& expected_sha256,
-                          juce::int64 expected_size, const std::atomic<bool>* cancelled = nullptr);
+                          juce::int64 expected_size, const std::atomic<bool>* cancelled = nullptr,
+                          const DownloadProgress& progress = {});
 
 // Sharing. Uploading needs a personal API token ("bpa_..."), made on the
 // account's API tokens page on the site and sent as "Authorization: Bearer".
