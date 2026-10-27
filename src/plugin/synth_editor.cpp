@@ -555,13 +555,9 @@ namespace {
   // How often an upload's or a download's percentage is said while its bar
   // (or Cancel download) has the focus.
   constexpr uint32 kTransferProgressSayMs = 2000;
-  // A download of this much or more is told where its bar and Cancel are;
-  // a small one is over before they would be reached.
-  constexpr int64 kLargeDownloadBytes = 8 * 1024 * 1024;
-
-  String downloadControlsHint(int64 bytes) {
-    return bytes >= kLargeDownloadBytes ? String(". Its progress and Cancel download are after the preset list")
-                                        : String();
+  // What a transfer is said as: "Downloading bank Keys, 1.1 GB".
+  String transferText(const String& action, const String& name, int64 bytes) {
+    return action + " " + name + (bytes > 0 ? ", " + File::descriptionOfSizeInBytes(bytes) : String());
   }
 
   void postPresetActionAnnouncement(const String& message,
@@ -12425,8 +12421,7 @@ void SynthEditor::downloadCommunityBank(const PresetBrowserItem& item) {
   if (!fetch && atlas::community::isDownloadRecorded(file, item.remote_sha256, data_directory)) {
     const File bank = atlas::library::archiveBankDirectory(file, atlas::library::Library::kCommunity, data_directory, name);
     if (bank.isDirectory()) {
-      postPresetActionAnnouncement("Bank " + name + " is already imported, as the Community bank " + bank.getFileName(),
-                                   AccessibilityHandler::AnnouncementPriority::medium);
+      postPresetActionAnnouncement("Bank " + name + " already imported", AccessibilityHandler::AnnouncementPriority::medium);
       return;
     }
   }
@@ -12438,13 +12433,11 @@ void SynthEditor::downloadCommunityBank(const PresetBrowserItem& item) {
   const auto download_cancelled = download.cancelled;
   const auto progress = communityDownloadProgress(key, download);
   if (fetch) {
-    postPresetActionAnnouncement("Downloading bank " + name + " from " + atlas::community::libraryHost() +
-                                     (item.file_size > 0 ? ", " + File::descriptionOfSizeInBytes(item.file_size) : String()) +
-                                     downloadControlsHint(item.file_size),
+    postPresetActionAnnouncement(transferText("Downloading bank", name, item.file_size),
                                  AccessibilityHandler::AnnouncementPriority::medium);
   }
   else {
-    postPresetActionAnnouncement("Importing bank " + name + " again", AccessibilityHandler::AnnouncementPriority::medium);
+    postPresetActionAnnouncement("Importing bank " + name, AccessibilityHandler::AnnouncementPriority::medium);
   }
 
   Component::SafePointer<SynthEditor> safe_this(this);
@@ -12454,7 +12447,6 @@ void SynthEditor::downloadCommunityBank(const PresetBrowserItem& item) {
   runPresetBackgroundTask([safe_this, file, name, url, sha256, size, fetch, data_directory, generation, download_cancelled,
                            progress](const std::shared_ptr<std::atomic<bool>>& cancelled) {
     String error;
-    int files = 0;
     if (fetch)
       error = atlas::community::downloadFile(URL(url), file, sha256, size, cancelled.get(), progress);
     // Cancelled while it was fetched: the part file is gone and the news was
@@ -12466,20 +12458,19 @@ void SynthEditor::downloadCommunityBank(const PresetBrowserItem& item) {
       const auto imported = atlas::library::importBankArchive(file, atlas::library::Library::kCommunity, data_directory,
                                                               name);
       error = imported.error;
-      files = imported.files;
       if (error.isEmpty())
         atlas::community::recordDownload(file, sha256, data_directory);
     }
     if (cancelled->load())
       return;
-    MessageManager::callAsync([safe_this, file, name, error, files, generation] {
+    MessageManager::callAsync([safe_this, file, name, error, generation] {
       if (safe_this != nullptr)
-        safe_this->finishCommunityBankImport(file, name, error, files, generation);
+        safe_this->finishCommunityBankImport(file, name, error, generation);
     });
   });
 }
 
-void SynthEditor::finishCommunityBankImport(const File& file, const String& name, const String& error, int files,
+void SynthEditor::finishCommunityBankImport(const File& file, const String& name, const String& error,
                                             int generation) {
   // Dropped by Cancel download while its archive was unpacked: the import
   // went on to its end, so what it made is still reported; a failure is not.
@@ -12509,9 +12500,7 @@ void SynthEditor::finishCommunityBankImport(const File& file, const String& name
   }
   // The unpacked presets join the list through a rescan of the Atlas folder.
   startPresetListLoad(false, true);
-  postPresetActionAnnouncement("Imported bank " + name + ", " + String(files) + (files == 1 ? " file" : " files") +
-                                   ". Preset list refreshed",
-                               AccessibilityHandler::AnnouncementPriority::medium);
+  postPresetActionAnnouncement("Imported bank " + name, AccessibilityHandler::AnnouncementPriority::medium);
 }
 
 void SynthEditor::startCommunityListLoad(bool announce, bool forceRefresh) {
@@ -12618,9 +12607,7 @@ void SynthEditor::downloadCommunityPreset(const PresetBrowserItem& item, bool lo
   const int generation = download.generation;
   const auto download_cancelled = download.cancelled;
   const auto progress = communityDownloadProgress(key, download);
-  postPresetActionAnnouncement("Downloading " + name + " from " + atlas::community::libraryHost() +
-                                   (item.file_size > 0 ? ", " + File::descriptionOfSizeInBytes(item.file_size) : String()) +
-                                   downloadControlsHint(item.file_size),
+  postPresetActionAnnouncement(transferText("Downloading", name, item.file_size),
                                AccessibilityHandler::AnnouncementPriority::medium);
 
   Component::SafePointer<SynthEditor> safe_this(this);
@@ -12763,8 +12750,7 @@ void SynthEditor::cancelCommunityDownloads() {
       preset_table_.isShowing())
     preset_table_.grabKeyboardFocus();
   updateDownloadProgress();
-  postPresetActionAnnouncement(names.size() == 1 ? "Download of " + names[0] + " cancelled"
-                                                 : "Downloads cancelled: " + names.joinIntoString(", "),
+  postPresetActionAnnouncement(names.size() == 1 ? "Download cancelled" : "Downloads cancelled",
                                AccessibilityHandler::AnnouncementPriority::high);
 }
 
@@ -12873,7 +12859,7 @@ void SynthEditor::startCommunityPreview(const PresetBrowserItem& item) {
   }
   preview_fetching_ = true;
   updatePresetManagementControls();
-  postPresetActionAnnouncement("Fetching the preview of " + name, AccessibilityHandler::AnnouncementPriority::medium);
+  postPresetActionAnnouncement("Loading preview of " + name, AccessibilityHandler::AnnouncementPriority::medium);
 
   Component::SafePointer<SynthEditor> safe_this(this);
   const String url = item.remote_preview_url;
@@ -14536,11 +14522,10 @@ void SynthEditor::startShareUpload(const String& message) {
   rebuildFocusOrder();
   resized();
   // Onto the bar, whose name and value the screen reader reads; what is being
-  // shared is said after that rather than cut short by it, with how to stop it.
+  // shared is said after that rather than cut short by it.
   const ScopedAnnouncementHold hold;
   share_progress_->grabKeyboardFocus();
-  postPresetActionAnnouncement(message + ". Escape or Cancel upload stops it",
-                               AccessibilityHandler::AnnouncementPriority::medium);
+  postPresetActionAnnouncement(message, AccessibilityHandler::AnnouncementPriority::medium);
 }
 
 void SynthEditor::nameShareCancel(bool uploading) {
@@ -14584,7 +14569,7 @@ void SynthEditor::stopShareUpload() {
   share_busy_ = false;
   share_progress_->setVisible(false);
   nameShareCancel(false);
-  postPresetActionAnnouncement("Sharing cancelled", AccessibilityHandler::AnnouncementPriority::high);
+  postPresetActionAnnouncement("Upload cancelled", AccessibilityHandler::AnnouncementPriority::high);
 }
 
 void SynthEditor::populateShareFolders(const File& select) {
@@ -14679,7 +14664,6 @@ void SynthEditor::commitShareForm() {
     postPresetActionAnnouncement("Still sharing", AccessibilityHandler::AnnouncementPriority::medium);
     return;
   }
-  const String host = atlas::community::libraryHost();
   Component::SafePointer<SynthEditor> safe_this(this);
   // Logged out meanwhile (in Settings), or a saved token the store will not
   // give: the login dialog, and Share goes on once a token is accepted. The
@@ -14743,7 +14727,7 @@ void SynthEditor::commitShareForm() {
     }
     fields.genre = share_genres_[static_cast<size_t>(genre_index)].slug;
     const String name = fields.name.isNotEmpty() ? fields.name : folder.getFileName();
-    startShareUpload("Sharing bank " + name + " on " + host);
+    startShareUpload("Uploading bank " + name);
     runPresetBackgroundTask([safe_this, folder, name, fields, token, library_url, generation, cancelled_share, progress](
                                 const std::shared_ptr<std::atomic<bool>>& cancelled) {
       const File scratch = shareScratchFolder();
@@ -14782,7 +14766,7 @@ void SynthEditor::commitShareForm() {
                                  AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
-  startShareUpload("Sharing " + name + " on " + host);
+  startShareUpload(transferText("Uploading", name, preset.getSize()));
   runPresetBackgroundTask([safe_this, scratch, preset, name, fields, token, library_url, generation, cancelled_share,
                            progress](const std::shared_ptr<std::atomic<bool>>& cancelled) {
     const auto result = atlas::community::uploadPreset(library_url, token, preset, fields, cancelled.get(), progress);
@@ -14842,8 +14826,7 @@ void SynthEditor::finishShare(const atlas::community::UploadResult& result, cons
     community_banks_loaded_ = false;
   else
     community_list_loaded_ = false;
-  const String message = "Shared " + (result.name.isNotEmpty() ? result.name : name) + " on " +
-                         atlas::community::libraryHost();
+  const String message = "Uploaded " + (result.name.isNotEmpty() ? result.name : name);
   {
     // What the focus move says would cut the news short.
     const ScopedAnnouncementHold hold;

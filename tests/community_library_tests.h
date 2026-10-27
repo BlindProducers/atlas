@@ -752,7 +752,7 @@ namespace {
            "the bank's presets are filed into the Community library's Banks under its own name");
     expect(archive.existsAsFile() && sha256OfFile(archive) == sha256OfFile(good),
            "the archive is kept in Community/Archives/tester");
-    expect(said("Downloading bank Test Bank from a saved copy of the library") && said("Imported bank Test Bank, 2 files"),
+    expect(said("Downloading bank Test Bank, ") && said("Imported bank Test Bank"),
            "the download and the import are said: " + heard());
     expect(cell(1, kImported) == "Imported" && details->getText().contains("Test Bank. Imported. Community bank shared by"),
            "the row and the details say Imported: " + details->getText().toStdString());
@@ -763,7 +763,7 @@ namespace {
     spoken.messages.clear();
     expect(results->keyPressed(KeyPress(KeyPress::returnKey)), "Return on the imported bank row is handled");
     pumpEditorEvents();
-    expect(said("Bank Test Bank is already imported, as the Community bank Test Bank") && !said("Downloading") &&
+    expect(said("Bank Test Bank already imported") && !said("Downloading") &&
                !said("Importing") && !editor.isCommunityDownloadBusy() &&
                unpacked.getChildFile("Shared Two.atp").getLastModificationTime() == imported_time,
            "an imported bank is not imported again: " + heard());
@@ -773,7 +773,7 @@ namespace {
     spoken.messages.clear();
     expect(results->keyPressed(KeyPress(KeyPress::returnKey)), "Return on the bank whose folder is gone is handled");
     pumpUntil([&] { return !editor.isCommunityDownloadBusy() && said("Imported bank Test Bank"); }, 15000);
-    expect(said("Importing bank Test Bank again") && !said("Downloading") &&
+    expect(said("Importing bank Test Bank") && !said("Downloading") &&
                unpacked.getChildFile("Shared Two.atp").existsAsFile(),
            "a bank whose folder is gone is imported again from its archive: " + heard());
 
@@ -942,7 +942,7 @@ namespace {
     expect(cached.existsAsFile() && cached.getSize() == preview.getSize(),
            "the preview is fetched into Community/Previews/Presets/tester: " + cached.getFullPathName().toStdString());
     expect(editor.isCommunityPreviewPlaying() && editor.communityPreviewFile() == cached, "and plays");
-    expect(said("Fetching the preview of Shared Lead") && said("Playing preview of Shared Lead"),
+    expect(said("Loading preview of Shared Lead") && said("Playing preview of Shared Lead"),
            "the fetch and the start are said: " + heard());
     expect(renderedSound(400), "the plugin's output carries the preview");
     expect(details->getText().contains("Preview: 2 seconds, playing, P stops it"),
@@ -1641,7 +1641,7 @@ namespace {
                cancel_upload->getDescription() == "Stop the upload and close the share form",
            "while the upload is on, the form's Cancel is Cancel upload");
     pumpUntil([&] { return !editor.isShareBusy(); }, 15000);
-    expect(said("Sharing Shared Patch on 127.0.0.1. Escape or Cancel upload stops it") &&
+    expect(said("Uploading Shared Patch, ") &&
                said("Unable to share Shared Patch. The upload was not accepted. Name: Ensure this value has at most 120 characters."),
            "the upload is said with how to stop it, and the library's field errors are said: " + heard());
     expect(editor.isShareFormVisible() && !progress->isVisible() && share->hasKeyboardFocus(false),
@@ -1654,8 +1654,8 @@ namespace {
     share->onClick();
     pumpUntil([&] { return !editor.isShareBusy() && !editor.isShareFormVisible(); }, 15000);
     // Announcements wait while the screen reader is moved back to the Preset menu.
-    pumpUntil([&] { return said("Shared Shared Patch"); }, 2000);
-    expect(said("Shared Shared Patch on 127.0.0.1") && !editor.isShareFormVisible(),
+    pumpUntil([&] { return said("Uploaded Shared Patch"); }, 2000);
+    expect(said("Uploaded Shared Patch") && !editor.isShareFormVisible(),
            "the share is said and the form closes: " + heard());
     expect(preset_menu->hasKeyboardFocus(false), "the focus is back on the Preset menu");
     auto requests = server.requests();
@@ -1714,9 +1714,9 @@ namespace {
       spoken.messages.clear();
       log_in->onClick();
       pumpUntil([&] { return !editor.isShareFormVisible(); }, 15000);
-      pumpUntil([&] { return said("Shared My Bank"); }, 2000);
+      pumpUntil([&] { return said("Uploaded My Bank"); }, 2000);
     }
-    expect(said("Sharing bank My Bank on 127.0.0.1") && said("Shared My Bank on 127.0.0.1") && !editor.isShareFormVisible(),
+    expect(said("Uploading bank My Bank") && said("Uploaded My Bank") && !editor.isShareFormVisible(),
            "the bank is shared after the login, without another Share, and it is said: " + heard());
     requests = server.requests();
     const auto bank_request = std::find_if(requests.rbegin(), requests.rend(),
@@ -2410,7 +2410,7 @@ namespace {
     expect(results->keyPressed(KeyPress(KeyPress::returnKey)), "Return on the row is handled");
     expect(editor.isCommunityDownloadBusy() && progress->isVisible() && cancel->isVisible(),
            "the bar and Cancel download show as the download starts");
-    expect(said("Downloading Big Lead from 127.0.0.1, "), "the download is said with its size: " + heard());
+    expect(said("Downloading Big Lead, "), "the download is said with its size: " + heard());
     order = tabOrder();
     expect(tabIndex(order, progress) == tabIndex(order, autoload) + 1 && tabIndex(order, cancel) == tabIndex(order, progress) + 1,
            "Tab reaches the bar after the Autoload toggle, and Cancel download after the bar");
@@ -2430,7 +2430,7 @@ namespace {
     cancel->onClick();
     expect(!editor.isCommunityDownloadBusy() && !progress->isVisible() && !cancel->isVisible(),
            "Cancel download drops the download, and the bar and button go");
-    expect(said("Download of Big Lead cancelled"), "the cancel is said: " + heard());
+    expect(said("Download cancelled"), "the cancel is said: " + heard());
     expect(results->hasKeyboardFocus(false), "the focus is back on the preset list");
     const File expected_part = expected.getSiblingFile("Big Lead.atp.part");
     pumpUntil([&] { return !expected_part.existsAsFile(); }, 5000);

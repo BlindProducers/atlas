@@ -723,8 +723,7 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     // Fetches a bank's archive (unless the copy here is the one the library
     // lists) and unpacks it into the Atlas folder, both in the background.
     void downloadCommunityBank(const PresetBrowserItem& item);
-    void finishCommunityBankImport(const File& file, const String& name, const String& error, int files,
-                                   int generation);
+    void finishCommunityBankImport(const File& file, const String& name, const String& error, int generation);
     struct CommunityDownload {
       String name;
       int generation = 0;
