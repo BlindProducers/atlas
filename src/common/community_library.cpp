@@ -637,21 +637,30 @@ void recordDownload(const juce::File& file, const juce::String& sha256, const ju
   downloadRecordFile(data_directory).replaceWithText(juce::String(records.dump(2)));
 }
 
+namespace {
+  std::string recordedDownload(const juce::File& file, const juce::File& data_directory) {
+    const std::lock_guard<std::mutex> hold(downloadRecordLock());
+    const json records = readDownloadRecords(data_directory);
+    const auto found = records.find(downloadRecordKey(file, data_directory));
+    return found != records.end() && found->is_string() ? found->get<std::string>() : std::string();
+  }
+}
+
 bool isDownloadCurrent(const juce::File& file, const juce::String& sha256, juce::int64 size,
                        const juce::File& data_directory) {
   if (!file.existsAsFile())
     return false;
-  std::string recorded;
-  {
-    const std::lock_guard<std::mutex> hold(downloadRecordLock());
-    const json records = readDownloadRecords(data_directory);
-    const auto found = records.find(downloadRecordKey(file, data_directory));
-    if (found != records.end() && found->is_string())
-      recorded = found->get<std::string>();
-  }
+  const std::string recorded = recordedDownload(file, data_directory);
   if (!recorded.empty())
     return sha256.isEmpty() || sha256.equalsIgnoreCase(juce::String(recorded));
   return size <= 0 || file.getSize() == size;
+}
+
+bool isDownloadRecorded(const juce::File& file, const juce::String& sha256, const juce::File& data_directory) {
+  if (!file.existsAsFile())
+    return false;
+  const std::string recorded = recordedDownload(file, data_directory);
+  return !recorded.empty() && (sha256.isEmpty() || sha256.equalsIgnoreCase(juce::String(recorded)));
 }
 
 juce::String systemFileName(const juce::String& name) {

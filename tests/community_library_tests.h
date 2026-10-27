@@ -231,7 +231,11 @@ namespace {
     preset.replaceWithText("{}");
     expect(!atlas::community::isDownloadCurrent(preset, sha, size, data),
            "and fetched again once its size differs, with no record to say otherwise");
+    expect(!atlas::community::isDownloadRecorded(preset, sha, data), "a file with no record is not recorded");
     atlas::community::recordDownload(preset, sha, data);
+    expect(atlas::community::isDownloadRecorded(preset, sha.toUpperCase(), data) &&
+               !atlas::community::isDownloadRecorded(preset, String::repeatedString("0", 64), data),
+           "the record names the library's copy it was");
     expect(atlas::community::communityDirectory(data).getChildFile("Downloads.json").existsAsFile(),
            "the record is kept in the Community library");
     expect(atlas::community::isDownloadCurrent(preset, sha.toUpperCase(), size, data),
@@ -750,9 +754,28 @@ namespace {
            "the archive is kept in Community/Archives/tester");
     expect(said("Downloading bank Test Bank from a saved copy of the library") && said("Imported bank Test Bank, 2 files"),
            "the download and the import are said: " + heard());
-    expect(cell(1, kImported) == "Imported" && details->getText().contains("Test Bank. Imported, Return imports it again"),
+    expect(cell(1, kImported) == "Imported" && details->getText().contains("Test Bank. Imported. Community bank shared by"),
            "the row and the details say Imported: " + details->getText().toStdString());
     expect(synth.getActiveFile() == File(), "importing a bank loads nothing");
+
+    // Return again neither fetches nor unpacks it: its packs go in once.
+    const Time imported_time = unpacked.getChildFile("Shared Two.atp").getLastModificationTime();
+    spoken.messages.clear();
+    expect(results->keyPressed(KeyPress(KeyPress::returnKey)), "Return on the imported bank row is handled");
+    pumpEditorEvents();
+    expect(said("Bank Test Bank is already imported, as the Community bank Test Bank") && !said("Downloading") &&
+               !said("Importing") && !editor.isCommunityDownloadBusy() &&
+               unpacked.getChildFile("Shared Two.atp").getLastModificationTime() == imported_time,
+           "an imported bank is not imported again: " + heard());
+
+    // A bank whose folder is gone is unpacked again from the archive, not fetched.
+    unpacked.deleteRecursively();
+    spoken.messages.clear();
+    expect(results->keyPressed(KeyPress(KeyPress::returnKey)), "Return on the bank whose folder is gone is handled");
+    pumpUntil([&] { return !editor.isCommunityDownloadBusy() && said("Imported bank Test Bank"); }, 15000);
+    expect(said("Importing bank Test Bank again") && !said("Downloading") &&
+               unpacked.getChildFile("Shared Two.atp").existsAsFile(),
+           "a bank whose folder is gone is imported again from its archive: " + heard());
 
     // A bank whose archive does not match the library's checksum is refused.
     results->selectRow(0);

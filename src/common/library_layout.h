@@ -164,6 +164,10 @@ struct ImportResult {
 // forks are skipped.
 ImportResult importBankArchive(const juce::File& archive, Library library, const juce::File& data_directory,
                                const juce::String& fallback_name);
+// The bank folder importBankArchive files `archive`'s presets into; none when
+// the archive cannot be read.
+juce::File archiveBankDirectory(const juce::File& archive, Library library, const juce::File& data_directory,
+                                const juce::String& fallback_name);
 
 struct ArchiveResult {
   int added = 0;                   // files in the archive

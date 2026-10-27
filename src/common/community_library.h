@@ -142,6 +142,9 @@ void recordDownload(const juce::File& file, const juce::String& sha256, const ju
 // `size` bytes: by the record, or for a download from before records by its size.
 bool isDownloadCurrent(const juce::File& file, const juce::String& sha256, juce::int64 size,
                        const juce::File& data_directory);
+// Whether the record says `file` is the library's copy with checksum `sha256`.
+// A bank's archive is recorded once it is imported.
+bool isDownloadRecorded(const juce::File& file, const juce::String& sha256, const juce::File& data_directory);
 // `name` as Windows takes a file or folder name: control characters become
 // spaces, trailing dots and spaces go (Windows drops them), and a device name
 // (CON, AUX, NUL, COM1 and the like, with any extension) gets an underscore

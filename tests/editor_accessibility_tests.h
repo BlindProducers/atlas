@@ -1403,7 +1403,7 @@ namespace {
   // also step through the slots that hold an effect: the chain, Slot 1, Slot 2,
   // then the next element, and back the same way. A bus's chain is reached at
   // its Bus heading and says only the bus (Windows only).
-  // G, R, the section sign, backslash and Shift A go to the editor's own
+  // G, R, the grave accent, the section sign, backslash and Shift A go to the editor's own
   // group headings, and X and V to the Mixer and routing group's sections: an
   // effect's group of the same name (Glitch Delay's and Multiband Dynamics'
   // Global) never takes G's place.
@@ -1449,6 +1449,7 @@ namespace {
     const Shortcut shortcuts[] = {
       { KeyPress('g', ModifierKeys(), 'g'), "Global", true, "G" },
       { KeyPress('r', ModifierKeys(), 'r'), "Random modulation", true, "R" },
+      { KeyPress('`', ModifierKeys(), '`'), "Presets", true, "The grave accent" },
       { KeyPress(0x00a7, ModifierKeys(), 0x00a7), "Presets", true, "The section sign" },
       { KeyPress('\\', ModifierKeys(), '\\'), "Macros", true, "Backslash" },
       { KeyPress('A', ModifierKeys::shiftModifier, 'A'), "Arpeggiators", true, "Shift A" },

@@ -11237,7 +11237,7 @@ String SynthEditor::keyboardHelpText() {
       "  Quick changes to the same control are undone together. In a text box {Cmd}+Z undoes the typing.\n"
       "\n"
       "Section navigation\n"
-      "  § - Presets\n"
+      "  Grave accent (`) or § - Presets\n"
       "  O - Oscillators\n"
       "  X - Signal routing\n"
       "  V - Voice and performance\n"
@@ -12372,9 +12372,18 @@ void SynthEditor::downloadCommunityBank(const PresetBrowserItem& item) {
     return;
   }
   // The archive is fetched unless the copy here is the one the library
-  // lists; either way it is unpacked again into the Atlas folder.
-  const bool fetch = !file.existsAsFile() || (item.file_size > 0 && file.getSize() != item.file_size);
+  // lists, and unpacked unless that copy was, into a bank still there: its
+  // wavetables, samples, LFO and FX presets and IRs go in once.
   File data_directory = LoadSave::getDataDirectory();
+  const bool fetch = !atlas::community::isDownloadCurrent(file, item.remote_sha256, item.file_size, data_directory);
+  if (!fetch && atlas::community::isDownloadRecorded(file, item.remote_sha256, data_directory)) {
+    const File bank = atlas::library::archiveBankDirectory(file, atlas::library::Library::kCommunity, data_directory, name);
+    if (bank.isDirectory()) {
+      postPresetActionAnnouncement("Bank " + name + " is already imported, as the Community bank " + bank.getFileName(),
+                                   AccessibilityHandler::AnnouncementPriority::medium);
+      return;
+    }
+  }
   data_directory.createDirectory();
   if (!LoadSave::hasDataDirectory())
     LoadSave::saveDataDirectory(data_directory);
@@ -12404,6 +12413,8 @@ void SynthEditor::downloadCommunityBank(const PresetBrowserItem& item) {
                                                               name);
       error = imported.error;
       files = imported.files;
+      if (error.isEmpty())
+        atlas::community::recordDownload(file, sha256, data_directory);
     }
     if (cancelled->load())
       return;
@@ -13265,7 +13276,7 @@ void SynthEditor::updatePresetManagementControls() {
   if (remote) {
     const String uploader = item->remote_uploader.isEmpty() ? String("unknown") : item->remote_uploader;
     if (item->remote_bank) {
-      details += String(item->downloaded ? ". Imported, Return imports it again"
+      details += String(item->downloaded ? ". Imported"
                                          : ". Not imported, Return downloads and imports it") +
                  ". Community bank shared by " + uploader +
                  ". Genre: " + item->category +
@@ -24229,7 +24240,9 @@ bool SynthEditor::focusShortcutTarget(const KeyPress& key) {
     return false;
 
   switch (character) {
-    // The section sign, left of 1 on a Mac's ISO keyboard.
+    // The grave accent, left of 1 on a US keyboard, and the section sign
+    // that key types on a Mac's ISO keyboard.
+    case '`':
     case 0x00a7: return focusGroupShortcut(kPresetSection);
     case '\\': return focusGroupShortcut("Macros");
     case 'o': return focusGroupShortcut("Oscillators");

@@ -858,6 +858,18 @@ ImportResult importBankArchive(const juce::File& archive, Library library, const
   return result;
 }
 
+juce::File archiveBankDirectory(const juce::File& archive, Library library, const juce::File& data_directory,
+                                const juce::String& fallback_name) {
+  juce::FileInputStream input(archive);
+  if (!input.openedOk())
+    return {};
+  juce::ZipFile zip(input);
+  if (zip.getNumEntries() == 0)
+    return {};
+  const juce::String top = archiveBankName(zip);
+  return bankDirectory(library, legalName(top.isNotEmpty() ? top : fallback_name, "Imported bank"), data_directory);
+}
+
 namespace {
   // The instruments the presets of a bank play, as folders (or single files)
   // in a library's Multisamples.
