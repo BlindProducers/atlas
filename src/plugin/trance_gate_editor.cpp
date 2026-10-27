@@ -4,11 +4,11 @@
 #include "synth_strings.h"
 
 namespace {
-String stepValueText(double value) {
-  // Parameter conversion can leave tiny negative values around zero.
-  return String(std::abs(value) < 0.005 ? 0.0 : value, 2);
-}
-String curveText(double curve) { return String(roundToInt(curve * 100.0)) + "%"; }
+// A step's level: 0 is its full level, -1 silent (muted), and presets may
+// hold others, up to +1 for double.
+constexpr double kMutedValue = -1.0;
+bool isMuted(double value) { return value <= kMutedValue + 0.005; }
+String levelText(double value) { return String(roundToInt((value + 1.0) * 100.0)) + "%"; }
 }
 
 TranceGateEditor::TranceGateEditor(State& state) : state_(state) {
@@ -20,12 +20,10 @@ TranceGateEditor::TranceGateEditor(State& state) : state_(state) {
 }
 
 String TranceGateEditor::helpText() {
-  return "Left/Right move between steps. Up/Down or brackets change the value by 0.01; "
-         "Shift changes 0.05. Comma/Period decrease/increase the curve by 1%, or 5% with Shift; I/K also adjust it. "
-         "G/H choose a step shape, A applies it, and M/Shift M cycle the current step shape forward/backward. "
-         "Minus/Equals make the speed coarser/finer. Semicolon/Apostrophe shorten/lengthen the pattern range. "
-         "Delete clears the current step to silence. Backspace clears all steps. "
-         "Navigation announces position first. Edits announce only the changed value.";
+  return "Left/Right move between steps. G/H change the step's shape: Whole, Medium, Short, Ramp down or Ramp up. "
+         "M mutes or unmutes the step. Minus/Equals make the grid coarser/finer. "
+         "Semicolon/Apostrophe shorten/lengthen the pattern. Backspace resets the pattern to its default. "
+         "Navigation announces position first. Edits announce only what changed.";
 }
 
 TranceGateEditor::Step TranceGateEditor::step(int index) const {
@@ -33,21 +31,20 @@ TranceGateEditor::Step TranceGateEditor::step(int index) const {
   return { read(prefix + "value"), jlimit(0, vital::trance_gate::kModes - 1, roundToInt(read(prefix + "mode"))), read(prefix + "curve") };
 }
 
-void TranceGateEditor::appendStep(Changes& changes, int index, Step value) const {
-  const auto prefix = "step_" + String(index + 1) + "_";
-  changes.emplace_back(prefix + "value", static_cast<float>(jlimit(-1.0, 1.0, value.value)));
-  changes.emplace_back(prefix + "mode", static_cast<float>(jlimit(0, vital::trance_gate::kModes - 1, value.mode)));
-  changes.emplace_back(prefix + "curve", static_cast<float>(jlimit(-1.0, 1.0, value.curve)));
-}
-
 String TranceGateEditor::statusText() const {
   if (!read) return "Trance gate editor unavailable";
   const auto value = step(state_.cursor);
   const int grid = jlimit(0, 7, roundToInt(read("grid")));
   const int time = roundToInt(state_.cursor * vital::trance_gate::beatsPerStep(grid) * 100.0);
+  // The level only when a preset set one other than full or silent.
+  String level;
+  if (isMuted(value.value))
+    level = ", muted";
+  else if (std::abs(value.value) >= 0.005)
+    level = ", level " + levelText(value.value);
   return "Bar " + String(time / 400 + 1) + " beat " + String((time % 400) / 100 + 1) + " " +
-      String(time % 100) + "%, Step " + String(state_.cursor + 1) + ", value " + stepValueText(value.value) +
-      ", " + String(strings::kTranceGateModeNames[value.mode]) + ", curve " + curveText(value.curve);
+      String(time % 100) + "%, Step " + String(state_.cursor + 1) + ", " +
+      String(strings::kTranceGateModeNames[value.mode]) + level;
 }
 
 void TranceGateEditor::refresh() {
@@ -67,26 +64,29 @@ void TranceGateEditor::move(int direction) {
   state_.cursor = jlimit(0, 31, state_.cursor + direction);
   say(statusText());
 }
-void TranceGateEditor::changeValue(double delta) {
-  const double value = jlimit(-1.0, 1.0, std::round((step(state_.cursor).value + delta) * 100.0) / 100.0);
-  apply({ { "step_" + String(state_.cursor + 1) + "_value", static_cast<float>(value) } }, stepValueText(value));
-}
-void TranceGateEditor::changeCurve(double delta) {
-  const double curve = jlimit(-1.0, 1.0, std::round((step(state_.cursor).curve + delta) * 100.0) / 100.0);
-  apply({ { "step_" + String(state_.cursor + 1) + "_curve", static_cast<float>(curve) } }, curveText(curve));
-}
 void TranceGateEditor::changeMode(int direction) {
   const int mode = (step(state_.cursor).mode + direction + vital::trance_gate::kModes) % vital::trance_gate::kModes;
   apply({ { "step_" + String(state_.cursor + 1) + "_mode", static_cast<float>(mode) } }, strings::kTranceGateModeNames[mode]);
 }
-void TranceGateEditor::clear(bool all) {
+void TranceGateEditor::toggleMute() {
+  // Unmuting brings the step back at its full level.
+  const bool mute = !isMuted(step(state_.cursor).value);
+  apply({ { "step_" + String(state_.cursor + 1) + "_value", static_cast<float>(mute ? kMutedValue : 0.0) } },
+        mute ? "Muted" : "Unmuted");
+}
+
+void TranceGateEditor::resetPattern() {
+  // Every step, the grid and the pattern's range as a new Trance gate has
+  // them (trance_gate_parameters.inc); its other controls stay.
   Changes changes;
-  if (all) {
-    for (int i = 0; i < 32; ++i) appendStep(changes, i, { -1.0, 0, 0.0 });
-    state_.cursor = 0;
-  }
-  else appendStep(changes, state_.cursor, { -1.0, 0, 0.0 });
-  apply(std::move(changes), all ? "Cleared Trance gate" : "Cleared step");
+  for (int i = 1; i <= vital::trance_gate::kSteps; ++i)
+    for (auto* field : { "_value", "_mode", "_curve" })
+      changes.emplace_back("step_" + String(i) + field, 0.0f);
+  changes.emplace_back("grid", 2.0f);
+  changes.emplace_back("start", 1.0f);
+  changes.emplace_back("stop", static_cast<float>(vital::trance_gate::kSteps));
+  state_.cursor = 0;
+  apply(std::move(changes), "Reset pattern to default");
 }
 
 bool TranceGateEditor::handleShortcut(const KeyPress& key) {
@@ -99,25 +99,9 @@ bool TranceGateEditor::handleShortcut(const KeyPress& key) {
   const int code = key.getKeyCode();
   if (!shift && code == KeyPress::leftKey) { move(-1); return true; }
   if (!shift && code == KeyPress::rightKey) { move(1); return true; }
-  if (code == KeyPress::upKey || character == ']' || character == '}') { changeValue(shift ? 0.05 : 0.01); return true; }
-  if (code == KeyPress::downKey || character == '[' || character == '{') { changeValue(shift ? -0.05 : -0.01); return true; }
-  if (code == KeyPress::backspaceKey) { clear(true); return true; }
-  if (code == KeyPress::deleteKey) { clear(false); return true; }
-  if (character == ',' || character == '<' || character == 'k') {
-    changeCurve(shift ? -0.05 : -0.01); return true;
-  }
-  if (character == '.' || character == '>' || character == 'i') {
-    changeCurve(shift ? 0.05 : 0.01); return true;
-  }
-  if (character == 'g' || character == 'h') {
-    state_.shape = (state_.shape + (character == 'h' ? 1 : -1) + vital::trance_gate::kModes) % vital::trance_gate::kModes;
-    say(strings::kTranceGateModeNames[state_.shape]); return true;
-  }
-  if (character == 'a') {
-    apply({ { "step_" + String(state_.cursor + 1) + "_mode", static_cast<float>(state_.shape) } },
-          strings::kTranceGateModeNames[state_.shape]); return true;
-  }
-  if (character == 'm') { changeMode(shift ? -1 : 1); return true; }
+  if (!shift && (character == 'g' || character == 'h')) { changeMode(character == 'h' ? 1 : -1); return true; }
+  if (!shift && character == 'm') { toggleMute(); return true; }
+  if (!shift && code == KeyPress::backspaceKey) { resetPattern(); return true; }
   if (character == '-' || character == '_' || character == '=' || character == '+') {
     const int delta = character == '-' || character == '_' ? -1 : 1;
     const int grid = jlimit(0, 7, roundToInt(read("grid")) + delta);

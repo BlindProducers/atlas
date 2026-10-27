@@ -69,8 +69,8 @@ namespace {
       expectNavigationSpoken(*gate, spoken, KeyPress(KeyPress::rightKey), "Step 2,", "Trance gate editor");
       expectNavigationSpoken(*gate, spoken, KeyPress(KeyPress::rightKey), "Step 3,", "Trance gate editor");
       expectNavigationSpoken(*gate, spoken, KeyPress(KeyPress::leftKey), "Step 2,", "Trance gate editor");
-      expectNavigationSpoken(*gate, spoken, KeyPress(KeyPress::upKey), "", "Trance gate editor value");
-      expectNavigationSpoken(*gate, spoken, characterKey('h'), "", "Trance gate editor step shape");
+      expectNavigationSpoken(*gate, spoken, characterKey('h'), "Medium", "Trance gate editor step shape");
+      expectNavigationSpoken(*gate, spoken, characterKey('m'), "Muted", "Trance gate editor mute");
     }
 
     auto* show = dynamic_cast<Button*>(titled(*editorSection(editor, "Oscillator 1"), "Show wavetable editor"));

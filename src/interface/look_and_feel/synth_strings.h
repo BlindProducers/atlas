@@ -748,7 +748,7 @@ namespace strings {
   const std::string kTapeNoiseNames[] = { "Vinyl 1", "Vinyl 2", "Vinyl 3", "Vinyl 4", "Vinyl 5", "Vinyl 6", "Vinyl 7", "Vinyl 8" };
   const std::string kTranceGateTriggerNames[] = { "Playback", "MIDI legato" };
   const std::string kTranceGateGridNames[] = { "1/1", "1/2", "1/4", "1/8", "1/16", "1/32", "1/64", "1/128" };
-  const std::string kTranceGateModeNames[] = { "Long", "Medium", "Short", "Ramp Down (-inf)", "Ramp Up (0 dB)" };
+  const std::string kTranceGateModeNames[] = { "Whole", "Medium", "Short", "Ramp down", "Ramp up" };
   const std::string kTremoloPanSyncNames[] = { "Free", "Sync", "Dotted", "Triplet" };
   const std::string kTremoloPanShapeNames[] = { "Sine", "Triangle", "Square", "Ramp Up", "Ramp Down" };
   const std::string kSpectralLockModeNames[] = { "Filterbank", "Spectral" };
