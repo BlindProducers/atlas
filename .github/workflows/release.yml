@@ -1,19 +1,20 @@
 # Builds Atlas for macOS (VST3, AU and a .pkg installer) and for Windows (VST3
 # and an .exe installer) on every push to dev, then publishes all of it as the
-# current beta pre-release on the Releases page (v2.0.0-beta.1 and so on, see
-# ATLAS_PRERELEASE below). The two builds run side by side; the release is
+# current pre-release on the Releases page (v2.0.0-beta.1, v2.0.0-rc.1 and so
+# on, see ATLAS_PRERELEASE below). The two builds run side by side; the release is
 # touched only once both have succeeded, so its files always come from one
-# commit. Each publish replaces the files of the one before, and the beta's
-# tag moves to the commit it was built from; bumping ATLAS_PRERELEASE starts
+# commit. Each publish replaces the files of the one before, and the
+# pre-release's tag moves to the commit it was built from; bumping ATLAS_PRERELEASE starts
 # a new release. Nothing here touches main.
 name: Build and publish
 
 env:
   # The pre-release the dev branch publishes: its tag is v<version>-<this>,
-  # its title "Atlas <version> beta N". Bump it for the next beta, and write
-  # what changed since the one before in docs/releases/v<version>-<this>.md,
-  # which the publish job puts at the top of the release notes.
-  ATLAS_PRERELEASE: beta.2
+  # its title "Atlas <version> beta N" or "Atlas <version> RC N". Bump it for
+  # the next one, and write what changed since the one before in
+  # docs/releases/v<version>-<this>.md, which the publish job puts at the top
+  # of the release notes.
+  ATLAS_PRERELEASE: rc.1
 
 on:
   push:
@@ -145,18 +146,23 @@ jobs:
         run: |
           version=$(sed -n 's/^project(Atlas VERSION \([^ ]*\).*/\1/p' CMakeLists.txt)
           tag="v${version}-${ATLAS_PRERELEASE}"
-          # beta.1 reads as "beta 1" in the title and notes.
+          # beta.1 reads as "beta 1" in the title and notes, rc.1 as "RC 1".
           beta="${ATLAS_PRERELEASE/./ }"
+          beta="${beta/#rc /RC }"
           title="Atlas ${version} ${beta}"
-          # What changed since the beta before, written when ATLAS_PRERELEASE
-          # was bumped; an older beta republished by hand may have none.
+          case "$ATLAS_PRERELEASE" in
+            rc.*) stage="This is a release candidate: Atlas ${version} as it is meant to ship, unless testing finds something that has to change first. Keep copies of the presets you care about, and tell us what works and what does not." ;;
+            *) stage="This is a beta release. Atlas is still being developed and tested: expect rough edges, keep copies of the presets you care about, and tell us what works and what does not." ;;
+          esac
+          # What changed since the pre-release before, written when
+          # ATLAS_PRERELEASE was bumped; an older one republished by hand may have none.
           changes=""
           if [ -f "docs/releases/${tag}.md" ]; then
             changes="$(cat "docs/releases/${tag}.md")"$'\n\n'
           fi
-          notes="Atlas ${version} ${beta}, built from commit ${GITHUB_SHA} on the dev branch (${GITHUB_SHA::7}: $(git log -1 --format=%s)). Every push to dev replaces these files until the next beta.
+          notes="Atlas ${version} ${beta}, built from commit ${GITHUB_SHA} on the dev branch (${GITHUB_SHA::7}: $(git log -1 --format=%s)). Every push to dev replaces these files until the next pre-release.
 
-          ${changes}This is a beta release. Atlas is still being developed and tested: expect rough edges, keep copies of the presets you care about, and tell us what works and what does not.
+          ${changes}${stage}
 
           Atlas can get loud. Some oscillators, filters and effects reach well above 0 dBFS, so a limiter after Atlas, on the track or on the master, is recommended when you play it, especially on headphones.
 

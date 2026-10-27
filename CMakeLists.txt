@@ -487,7 +487,7 @@ target_include_directories(Atlas PRIVATE
   third_party/maim/include)
 
 # The beta the release workflow publishes this version as (ATLAS_PRERELEASE in
-# .github/workflows/release.yml, "beta.2"), which Settings shows after the
+# .github/workflows/release.yml, "rc.1"), which Settings shows after the
 # version; empty for a final release. Bumping it there configures again.
 set(ATLAS_PRERELEASE "")
 set(ATLAS_RELEASE_WORKFLOW "${CMAKE_CURRENT_SOURCE_DIR}/.github/workflows/release.yml")

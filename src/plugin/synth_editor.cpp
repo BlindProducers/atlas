@@ -11158,8 +11158,10 @@ String SynthEditor::versionText() {
   String text = ProjectInfo::versionString;
 #ifdef ATLAS_PRERELEASE
   const String prerelease = String(ATLAS_PRERELEASE).trim();
-  // "beta.2" reads as "beta 2", as the release's title does.
-  if (prerelease.isNotEmpty())
+  // "beta.2" reads as "beta 2" and "rc.1" as "RC 1", as the release's title does.
+  if (prerelease.startsWith("rc."))
+    text << " RC " << prerelease.fromFirstOccurrenceOf(".", false, false);
+  else if (prerelease.isNotEmpty())
     text << " " << prerelease.replace(".", " ");
 #endif
   return text;
