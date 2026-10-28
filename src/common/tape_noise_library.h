@@ -7,6 +7,10 @@
 #include <memory>
 
 namespace vital {
+// The plug-in bundle's Resources folder (Contents/Resources in a VST3 or AU
+// bundle), where the build copies the Tape recordings and espeak-ng's data.
+juce::File bundleResourcesDirectory();
+
 // Shared across all slots and plug-in instances. Immutable decoded clips stay
 // owned by the worker until the last module is destroyed off the audio thread.
 class TapeNoiseLibrary final : private juce::Thread {

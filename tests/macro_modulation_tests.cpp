@@ -7,10 +7,14 @@
 #include "value_bridge.h"
 #include "sample_source.h"
 #include "source_types.h"
+#include "random_lfo.h"
+#include "synth_lfo.h"
 #include "synth_strings.h"
 #include "file_source.h"
 #include "line_generator.h"
 #include "load_save.h"
+#include "community_library.h"
+#include "credential_store.h"
 #include "phase_modifier.h"
 #include "wave_source.h"
 #include "wavetable_creator.h"
@@ -201,6 +205,72 @@ namespace {
            "a note played while another sounds joins the running clock instead of restarting it");
   }
 
+  // Free Running keeps one LFO phase through every note and the gaps between
+  // them, transport or not: notes two cycles apart hear the same curve, notes
+  // two and a half apart hear it half a cycle out.
+  void testFreeRunningLfoJoinsNotesWherever() {
+    for (bool playing : { false, true }) {
+      const std::string transport = playing ? " with the transport running" : " with the transport stopped";
+      auto whole = lfoPitchCurves(vital::SynthLfo::kFreeRunning, playing, { 0.37, 1.37 }, 0.45);
+      expect(curveDifference(whole[0], whole[1]) < 0.3,
+             "a free-running LFO is where it would be two cycles on" + transport);
+      auto half = lfoPitchCurves(vital::SynthLfo::kFreeRunning, playing, { 0.37, 1.62 }, 0.45);
+      expect(curveDifference(half[0], half[1]) > 4.0,
+             "a free-running LFO does not restart with a note" + transport);
+    }
+  }
+
+  // An LFO or random source on an effect keeps moving after the last voice
+  // has released when it runs freely; Trigger holds its last value.
+  void testFreeRunningSourcesOutliveTheirVoices() {
+    for (const std::string source : { "lfo_1", "random_1" }) {
+      for (bool free_running : { false, true }) {
+        SynthPlugin synth;
+        prepare(synth);
+        auto& controls = synth.getControls();
+        controls.at("env_1_release")->set(0.05f);
+        controls.at(source + "_frequency")->set(2.0f);
+        controls.at(source + "_sync")->set(0.0f);   // seconds
+        const float mode = source == "lfo_1" ? float(vital::SynthLfo::kFreeRunning)
+                                             : float(vital::RandomLfo::kFreeRunning);
+        controls.at(source + "_sync_type")->set(free_running ? mode : 0.0f);
+        auto* route = connect(synth, source, "delay_dry_wet");
+        expect(route != nullptr, "connect " + source + " to an effect");
+        if (route == nullptr)
+          continue;
+
+        MidiBuffer on;
+        on.addEvent(MidiMessage::noteOn(1, 60, 0.8f), 0);
+        renderMidi(synth, on);
+        for (int block = 0; block < 40; ++block) {
+          MidiBuffer none;
+          renderMidi(synth, none);
+        }
+        MidiBuffer off;
+        off.addEvent(MidiMessage::noteOff(1, 60), 0);
+        renderMidi(synth, off);
+        for (int block = 0; block < 75; ++block) {
+          MidiBuffer none;
+          renderMidi(synth, none);
+        }
+        expect(synth.getEngine()->getNumActiveVoices() == 0, source + ": the voice has released");
+
+        float lowest = 1.0e9f, highest = -1.0e9f;
+        for (int block = 0; block < 375; ++block) {
+          MidiBuffer none;
+          renderMidi(synth, none);
+          const float value = route->modulation_processor->output()->buffer[0][0];
+          lowest = std::min(lowest, value);
+          highest = std::max(highest, value);
+        }
+        if (free_running)
+          expect(highest - lowest > 0.2f, source + ": a free-running source keeps moving after its voice ends");
+        else
+          expect(highest - lowest < 1.0e-4f, source + ": a triggered source holds after its voice ends");
+      }
+    }
+  }
+
   // As in a preset made on a Mac: LFO 5 holds 0.5, then 1, then 0 across two
   // bars and pushes LFO 3's Tempo (1/8) up by that much of a division. As on
   // the arm64 build, LFO 3 runs at 1/16 only while the push is 1. x86 builds
@@ -241,6 +311,79 @@ namespace {
           "LFO 3 runs at 1/16 only for the beat LFO 5 holds 1", 0.02f);
   }
 
+  // An LFO's Simple view plays a standard shape bent by Morph in place of its
+  // custom shape, with only its own rate and Trigger Mode.
+  void testSimpleLfoShapes() {
+    using vital::SynthLfo;
+    auto near = [](float a, float b) { return std::abs(a - b) < 1.0e-3f; };
+    expect(near(SynthLfo::simpleShapeValue(SynthLfo::kSimpleSine, 0.0f, 0.0f), 0.0f) &&
+           near(SynthLfo::simpleShapeValue(SynthLfo::kSimpleSine, 0.5f, 0.0f), 1.0f) &&
+           near(SynthLfo::simpleShapeValue(SynthLfo::kSimpleSine, 0.25f, 0.0f), 0.5f),
+           "Sine starts at the bottom and peaks halfway, as the custom Sin does");
+    expect(near(SynthLfo::simpleShapeValue(SynthLfo::kSimpleSine, 0.125f, -1.0f), 0.25f),
+           "Sine at Morph -100% is a triangle");
+    expect(SynthLfo::simpleShapeValue(SynthLfo::kSimpleSine, 0.125f, 1.0f) > 0.0f &&
+           SynthLfo::simpleShapeValue(SynthLfo::kSimpleSine, 0.375f, 1.0f) > 0.95f,
+           "Sine at Morph 100% is nearly square");
+    expect(near(SynthLfo::simpleShapeValue(SynthLfo::kSimpleTriangle, 0.25f, 0.0f), 0.5f) &&
+           near(SynthLfo::simpleShapeValue(SynthLfo::kSimpleTriangle, 0.5f, 0.0f), 1.0f),
+           "Triangle rises to its peak halfway");
+    expect(near(SynthLfo::simpleShapeValue(SynthLfo::kSimpleTriangle, 0.5f, 1.0f), 0.5f / 0.99f),
+           "Triangle at Morph 100% rises all cycle, as a saw");
+    expect(near(SynthLfo::simpleShapeValue(SynthLfo::kSimpleSawUp, 0.3f, 0.0f), 0.3f) &&
+           near(SynthLfo::simpleShapeValue(SynthLfo::kSimpleSawDown, 0.3f, 0.0f), 0.7f),
+           "the saws ramp straight at Morph 0");
+    expect(SynthLfo::simpleShapeValue(SynthLfo::kSimpleSawUp, 0.3f, 0.5f) > 0.3f &&
+           SynthLfo::simpleShapeValue(SynthLfo::kSimpleSawUp, 0.3f, -0.5f) < 0.3f,
+           "Morph curves the saws");
+    expect(SynthLfo::simpleShapeValue(SynthLfo::kSimpleSquare, 0.49f, 0.0f) == 1.0f &&
+           SynthLfo::simpleShapeValue(SynthLfo::kSimpleSquare, 0.51f, 0.0f) == 0.0f &&
+           SynthLfo::simpleShapeValue(SynthLfo::kSimpleSquare, 0.6f, 0.5f) == 1.0f,
+           "Square is high for the first half, and Morph widens it");
+
+    // The default custom shape is a triangle; the Simple view's square only
+    // ever sits at its two levels. Free Running runs it without a note.
+    for (bool simple : { false, true }) {
+      SynthPlugin synth;
+      prepare(synth);
+      auto& controls = synth.getControls();
+      controls.at("lfo_1_sync")->set(0.0f);
+      controls.at("lfo_1_frequency")->set(2.0f);
+      controls.at("lfo_1_sync_type")->set(float(SynthLfo::kFreeRunning));
+      controls.at("lfo_1_simple_trigger")->set(float(SynthLfo::kSimpleFreeRunning));
+      controls.at("lfo_1_simple_shape")->set(float(SynthLfo::kSimpleSquare));
+      controls.at("lfo_1_view")->set(simple ? float(SynthLfo::kSimpleView) : float(SynthLfo::kCustomView));
+      // The Simple view leaves the custom view's 10x Rate alone.
+      controls.at("lfo_1_rate_x10")->set(simple ? 1.0f : 0.0f);
+      auto* route = connect(synth, "lfo_1", "delay_dry_wet");
+      if (route == nullptr)
+        continue;
+      std::vector<float> values;
+      for (int block = 0; block < 750; ++block) {
+        MidiBuffer none;
+        renderMidi(synth, none);
+        values.push_back(route->modulation_processor->output()->buffer[0][0]);
+      }
+      const auto [lowest, highest] = std::minmax_element(values.begin(), values.end());
+      const float range = *highest - *lowest;
+      int between = 0, rises = 0;
+      for (size_t i = 0; i < values.size(); ++i) {
+        const float level = range > 0.0f ? (values[i] - *lowest) / range : 0.0f;
+        between += level > 0.1f && level < 0.9f;
+        rises += i > 0 && values[i] > values[i - 1] + 0.5f * range;
+      }
+      const std::string view = simple ? "the Simple view" : "the Custom view";
+      expect(range > 0.2f, view + " moves its route");
+      if (simple) {
+        expect(between < 5, "the Simple view plays its square, not the custom triangle");
+        // Frequency 2 is 4 Hz: about eight cycles in two seconds, not eighty.
+        expect(rises >= 7 && rises <= 9, "the Simple view runs at its rate without 10x Rate");
+      }
+      else
+        expect(between > int(values.size()) / 2, "the Custom view plays its own triangle");
+    }
+  }
+
   void testSameSampleNoteOnOffDoesNotStick() {
     SynthPlugin synth;
     prepare(synth);
@@ -252,6 +395,57 @@ namespace {
     renderMidi(synth, empty);
     expect(synth.getEngine()->getNumPressedNotes() == 0,
            "A zero-length host note (on then off at one sample) must not stay pressed");
+  }
+
+  // A wheel on a parameter outside the voices (an effect's mix, the volume)
+  // used to move it only while a note played: the route read the wheel from
+  // a voice, and stayed where the last voice left it once the notes ended.
+  void testWheelsMoveGlobalParametersWithoutNotes() {
+    SynthPlugin synth;
+    prepare(synth);
+    auto& controls = synth.getControls();
+    const auto settled = [&](const std::string& destination) {
+      render(synth, 24000);
+      return synth.getEngine()->getMonoModulations().at(destination)->buffer[0][0];
+    };
+    const auto range = [](const std::string& name) {
+      const auto& details = vital::Parameters::getDetails(name);
+      return details.max - details.min;
+    };
+
+    const float volume = controls.at("volume")->value();
+    connect(synth, "mod_wheel", "volume", 0.5f);
+    MidiBuffer wheel_up;
+    wheel_up.addEvent(MidiMessage::controllerEvent(1, 1, 127), 0);
+    renderMidi(synth, wheel_up);
+    close(settled("volume"), volume + 0.5f * range("volume"),
+          "the mod wheel moves a global parameter with no note playing", 0.01f * range("volume"));
+
+    // After a note has ended there is no voice to read the wheel from.
+    render(synth, 4800, true);
+    MidiBuffer release;
+    release.addEvent(MidiMessage::noteOff(1, 48), 0);
+    renderMidi(synth, release);
+    render(synth, 96000);
+    expect(synth.getEngine()->getNumActiveVoices() == 0, "the note has ended");
+    MidiBuffer wheel_down;
+    wheel_down.addEvent(MidiMessage::controllerEvent(1, 1, 0), 0);
+    renderMidi(synth, wheel_down);
+    close(settled("volume"), volume, "the mod wheel keeps moving a global parameter after the notes end",
+          0.01f * range("volume"));
+
+    const float routing = controls.at("stereo_routing")->value();
+    connect(synth, "pitch_wheel", "stereo_routing", 0.5f);
+    MidiBuffer bend;
+    bend.addEvent(MidiMessage::pitchWheel(1, 16383), 0);
+    renderMidi(synth, bend);
+    close(settled("stereo_routing"), routing + 0.5f * range("stereo_routing"),
+          "the pitch wheel moves a global parameter with no note playing", 0.01f * range("stereo_routing"));
+
+    // A per-voice parameter still takes each voice's own wheel.
+    auto* per_voice = connect(synth, "mod_wheel", "filter_1_cutoff");
+    expect(per_voice != nullptr && per_voice->modulation_processor->isPolyphonicModulation(),
+           "the mod wheel stays a per-voice source for a per-voice parameter");
   }
 
   void testArpeggiatorEnableAndDisableReleaseNotes() {
@@ -739,11 +933,24 @@ namespace {
 #include "oscillator_modulation_tests.h"
 #include "arpeggiator_tests.h"
 #include "release_hardening_tests.h"
+#include "undo_tests.h"
+#include "community_library_tests.h"
+#include "window_repaint_tests.h"
+#include "text_field_reading_tests.h"
+#include "modulation_amount_slider_tests.h"
+#include "focus_events_tests.h"
+#include "library_layout_tests.h"
 
 int main(int argc, char** argv) {
   ScopedJuceInitialiser_GUI juce;
+  // API tokens go to a store in memory: no test reaches the real keychain or
+  // Credential Manager. --credential-store alone tries the real one.
+  atlas::community::setCredentialStoreForTesting(std::make_shared<atlas::credentials::MemoryStore>());
+  if (argc > 1 && String(argv[1]) == "--credential-store")
+    return runCredentialStoreTests();
   if (argc > 1 && String(argv[1]) == "--editor-rebuild-focus") {
     testEditorRebuildFocus();
+    testEffectRemovalFocus();
     if (failures == 0)
       std::cout << "Atlas editor rebuild focus tests passed\n";
     return failures == 0 ? 0 : 1;
@@ -793,6 +1000,7 @@ int main(int argc, char** argv) {
     testArpOctave();
     testArpRetriggerDivisionParameter();
     testArpChordUsesVoicesOnlyForOscillatorsThatAreOn();
+    testArpRateFollowsModulation();
     if (failures == 0)
       std::cout << "Atlas arpeggiator tests passed\n";
     return failures == 0 ? 0 : 1;
@@ -810,6 +1018,48 @@ int main(int argc, char** argv) {
     synth.getStateInformation(state);
     File(String(argv[2])).replaceWithData(state.getData(), state.getSize());
     std::cout << "state bytes=" << state.getSize() << std::endl;
+    return 0;
+  }
+  if (argc > 1 && String(argv[1]) == "--undo-timing") {
+    // Timing only: what recording and undoing costs the message thread, on
+    // the default patch or, with a preset file, on that preset.
+    const auto ms = [](auto&& function) {
+      const auto start = Time::getMillisecondCounterHiRes();
+      function();
+      return Time::getMillisecondCounterHiRes() - start;
+    };
+    SynthPlugin synth;
+    synth.setPlayConfigDetails(0, 2, 48000, 512);
+    synth.prepareToPlay(48000, 512);
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    auto& history = synth.undoHistory();
+    if (argc > 2) {
+      std::string error;
+      const File preset = File(String(argv[2]));
+      std::cout << "load " << preset.getFileName() << " ms=" << ms([&] { synth.loadFromFile(preset, error); })
+                << std::endl;
+      std::cout << "record the load ms=" << ms([&] { history.commitPendingEdits(); }) << std::endl;
+    }
+    std::cout << "full snapshot ms=" << ms([&] { history.rebaseline(); }) << std::endl;
+    auto* bridge = parameter(synth, "filter_1_cutoff");
+    constexpr int kEdits = 50;
+    double record = 0.0;
+    for (int i = 0; i < kEdits; ++i) {
+      bridge->beginChangeGesture();
+      bridge->setValueNotifyingHost(i % 2 == 0 ? 0.25f : 0.75f);
+      bridge->endChangeGesture();
+      record += ms([&] { history.commitPendingEdits(); });
+    }
+    std::cout << "record one value change ms=" << record / kEdits << std::endl;
+    std::cout << "undo a value change ms=" << ms([&] { history.undo(); }) << std::endl;
+    if (argc > 2) {
+      while (history.numUndoSteps() > 1)
+        history.undo();
+      std::cout << "undo the preset load ms=" << ms([&] { history.undo(); }) << std::endl;
+      std::cout << "editor refresh after it ms=" << ms([&] { editor.updateFullGui(); }) << std::endl;
+      std::cout << "redo the preset load ms=" << ms([&] { history.redo(); }) << std::endl;
+    }
     return 0;
   }
   if (argc > 1 && String(argv[1]) == "--editor-timing") {
@@ -848,6 +1098,122 @@ int main(int argc, char** argv) {
   }
   if (argc > 1 && String(argv[1]) == "--release-hardening")
     return runReleaseHardeningTests();
+  if (argc > 1 && String(argv[1]) == "--window-repaint")
+    return runWindowRepaintTests();
+  if (argc > 1 && String(argv[1]) == "--text-field-reading")
+    return runTextFieldReadingTests();
+  if (argc > 1 && String(argv[1]) == "--modulation-amount-slider")
+    return runModulationAmountSliderTests();
+  if (argc > 1 && String(argv[1]) == "--focus-events")
+    return runFocusEventTests();
+  if (argc > 1 && String(argv[1]) == "--first-window-timing") {
+    // Timing only: the cost of the process's first window, before Atlas draws.
+    firstWindowTiming();
+    return 0;
+  }
+  if (argc > 1 && String(argv[1]) == "--community-probe") {
+    // By hand, not a test: fetches the live library's list (or ATLAS_COMMUNITY_URL's) and prints it.
+    std::vector<atlas::community::RemotePreset> presets;
+    const String error = atlas::community::fetchAllPresets(atlas::community::libraryUrl(), presets);
+    if (error.isNotEmpty()) {
+      std::cout << "Community library " << atlas::community::libraryHost() << ": " << error << '\n';
+      return 1;
+    }
+    std::cout << "Community library " << atlas::community::libraryHost() << ": " << presets.size() << " patches\n";
+    for (const auto& preset : presets) {
+      std::cout << "  " << preset.name << " by " << preset.author << ", shared by " << preset.uploader
+                << " (" << preset.style_label << "; " << preset.tags.joinIntoString(", ") << ") "
+                << preset.file_size << " bytes, sha256 " << preset.sha256
+                << (preset.preview.exists() ? ", preview " + atlas::community::durationText(preset.preview.duration_seconds)
+                                            : String()) << '\n';
+    }
+    std::vector<atlas::community::RemoteBank> banks;
+    const String bank_error = atlas::community::fetchAllBanks(atlas::community::libraryUrl(), banks);
+    if (bank_error.isNotEmpty()) {
+      std::cout << "Community library banks: " << bank_error << '\n';
+      return 1;
+    }
+    std::cout << "Community library " << atlas::community::libraryHost() << ": " << banks.size() << " banks\n";
+    for (const auto& bank : banks) {
+      std::cout << "  " << bank.name << " shared by " << bank.uploader << " (" << bank.genre << "; "
+                << bank.tags.joinIntoString(", ") << ") " << atlas::community::bankContentsText(bank) << ", "
+                << bank.file_size << " bytes, sha256 " << bank.sha256 << (bank.preview.exists() ? ", preview" : "") << '\n';
+    }
+    return 0;
+  }
+  // By hand, not in ctest: migrates a copy of an Atlas folder as if its
+  // config said `layout` and `default_bank`, and prints the log. A
+  // favourites file (its paths already pointing into the copy) is rewritten
+  // as the user's would be, and every favourite that misses its preset after
+  // the moves is listed; an empty default bank leaves the config without one.
+  //   AtlasMacroTests --library-migration <folder> <layout> [default bank] [favourites]
+  if (argc > 3 && String(argv[1]) == "--library-migration") {
+    const File folder { String(argv[2]) };
+    TemporaryFile config { ".config" };
+    TemporaryFile favourites { ".favorites" };
+    json contents = json::object();
+    contents["data_directory"] = folder.getFullPathName().toStdString();
+    contents["library_layout"] = String(argv[3]).getIntValue();
+    if (argc > 4 && String(argv[4]).isNotEmpty())
+      contents["default_bank"] = String(argv[4]).toStdString();
+    const File start_favourites = argc > 5 ? File(String(argv[5])) : File();
+    if (start_favourites.existsAsFile())
+      favourites.getFile().replaceWithText(start_favourites.loadFileAsString());
+    config.getFile().replaceWithText(contents.dump());
+    LoadSave::setConfigFileForTesting(config.getFile());
+    LoadSave::setFavoritesFileForTesting(favourites.getFile());
+    if (LoadSave::getDataDirectory() != folder) {
+      std::cerr << "not a folder: " << folder.getFullPathName() << "\n";
+      return 2;
+    }
+    const auto report = atlas::library::migrate(folder);
+    std::cout << report.moves << " moves, " << report.problems.size() << " problems, default bank "
+              << report.default_bank << "\n";
+    for (const auto& line : report.lines)
+      std::cout << "  " << line << "\n";
+    for (const auto& problem : report.problems)
+      std::cout << "  Problem: " << problem << "\n";
+    int missing = 0;
+    if (start_favourites.existsAsFile()) {
+      const json after = LoadSave::getFavoritesJson();
+      for (const auto& entry : after.items()) {
+        if (!File(String(entry.key())).existsAsFile()) {
+          ++missing;
+          std::cout << "  Favourite without its preset: " << entry.key() << "\n";
+        }
+      }
+      std::cout << after.size() << " favourites, " << report.favourites << " rewritten, " << missing
+                << " without their preset\n";
+    }
+    LoadSave::setConfigFileForTesting({});
+    LoadSave::setFavoritesFileForTesting({});
+    return report.problems.isEmpty() && missing == 0 ? 0 : 1;
+  }
+  if (argc > 1 && String(argv[1]) == "--library-layout") {
+    testLocateFindsLibraryBankKindAndCategory();
+    testBanksAndKindFoldersAreListed();
+    testMigrationFromTheFirstLayout();
+    testMigrationFromTheSecondLayout();
+    testStrayBankIsAdopted();
+#if JUCE_WINDOWS
+    testWindowsNamesAndCase();
+#endif
+    testBankArchivesRoundTrip();
+    testPresetBrowsersFilterAndLoad();
+    if (failures == 0)
+      std::cout << "Atlas library layout tests passed\n";
+    return failures == 0 ? 0 : 1;
+  }
+  if (argc > 1 && String(argv[1]) == "--community-library") {
+    // What is said must not depend on the user's own speech settings.
+    atlas::speech::useDefaultSettingsForTesting();
+    return runCommunityLibraryTests();
+  }
+  if (argc > 1 && String(argv[1]) == "--editor-undo") {
+    // What is said must not depend on the user's own speech settings.
+    atlas::speech::useDefaultSettingsForTesting();
+    return runUndoTests();
+  }
   if (argc > 1 && String(argv[1]) == "--oscillator-modulation") {
     testOscillatorSourcesReachOnlyAudioRateControls();
     testOscillatorRoutesFollowTheirSourceWithinTheBlock();
@@ -857,6 +1223,18 @@ int main(int argc, char** argv) {
     testEditorOffersOscillatorSources();
     if (failures == 0)
       std::cout << "Atlas oscillator modulation tests passed\n";
+    return failures == 0 ? 0 : 1;
+  }
+  if (argc > 1 && String(argv[1]) == "--editor-focus") {
+    // What is said must not depend on the user's own speech settings.
+    atlas::speech::useDefaultSettingsForTesting();
+    testSectionKeysStepThroughEffectGroups();
+    testOsWindowsGiveFocusBack();
+    testOrphanedFocusGoesToTheSectionHeading();
+    testContextMenuArrowsLeaveTheControl();
+    testPresetTrashKeepsBankAndFocus();
+    if (failures == 0)
+      std::cout << "Atlas editor focus tests passed\n";
     return failures == 0 ? 0 : 1;
   }
   if (argc > 1 && String(argv[1]) == "--editor-speech") {
@@ -876,13 +1254,21 @@ int main(int argc, char** argv) {
     testGranularSizeModeNamesBothChoices();
     testLevelsAndAmountsReadAsPercent();
     testSlotTypeRowsFollowTheType();
+    testArpeggiatorRatesOfferOnlyFreeRunningSources();
     testWavetableEditingOnASlotSwitchedToWavetable();
     testSwitchingChoiceKeepsItsControl();
+    testAnalogueCompressorRows();
+    testMaimRows();
+    testDriveDynamicsRows();
     testAnalogSwitchKeepsItsControl();
+    testLfoViewTabs();
+    testLfoShapePresets();
     testEffectMoveKeepsFocusAcrossTimerTick();
     testSectionKeysStepThroughEffectSlots();
+    testGroupShortcutsReachTheEditorsGroups();
     testShiftMOpensEveryContextMenu();
     testSaveFormClosesWithEscape();
+    testSaveFormSavesOnReturn();
     testOscillatorRowGroups();
     testOscillatorRowsNameTheirOscillatorNumber();
     testArpeggiatorDestinationsAreAGroup();
@@ -890,6 +1276,10 @@ int main(int argc, char** argv) {
     testPresetAutoloadAndRefresh();
     testEditorStateIsPerInstance();
     testConvolutionPredelayRows();
+    testEqualizerBandGroups();
+    testCompressorBandGroups();
+    testWindowRefocusFindsTheRebuiltControl();
+    testTypedValueReturnsToOscillatorRows();
     testFractionalModulationAmountOnTranspose();
     testModulationPromptsKeepFocus();
     testFxBusControlsAndFocus();
@@ -910,12 +1300,16 @@ int main(int argc, char** argv) {
   testEditorMacrosUpdateIndependently();
   testMacroLevelMatchesDirectLevel();
   testSameSampleNoteOnOffDoesNotStick();
+  testWheelsMoveGlobalParametersWithoutNotes();
   testArpeggiatorEnableAndDisableReleaseNotes();
   testArpeggiatorVoicesFollowSoundingSlots();
   testArpeggiatorTailsKeepTheirSlot();
   testGranularGridFollowsPluginClock();
   testSyncedLfoNotesWithTransportStoppedAndPlaying();
+  testFreeRunningLfoJoinsNotesWherever();
+  testFreeRunningSourcesOutliveTheirVoices();
   testLfoTempoModulatedByAnotherLfo();
+  testSimpleLfoShapes();
   if (failures == 0)
     std::cout << "Atlas macro tests passed\n";
   return failures == 0 ? 0 : 1;

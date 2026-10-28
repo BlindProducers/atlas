@@ -11,6 +11,9 @@ their sources.
 - BP Scream DSP (third_party/scream): MIT, Copyright 2025 Cure Audio,
   exacoustics, Xynth Audio. Includes ADAA (BSD-3, jatinchowdhury18) and
   Polylogarithm (MIT, Alexander Voigt).
+- fdlibm by Sun Microsystems (permissive notice, Copyright (C) 1993 Sun
+  Microsystems, Inc.): the log polynomial and ln 2 split in the Scream filter's
+  waveshaper (src/synthesis/filters/scream_tanh.cpp, notice in that file).
 - Wolf Shaper by Patrick Desaulniers (GPL v3 or later): the Waveshaper effect
   (third_party/licenses/WolfShaper.LICENSE).
 - Diopser by Robbert van der Helm (GPL v3 or later) and NIH-plug's parameter
@@ -27,7 +30,12 @@ their sources.
   third_party/aquanode-plugins submodule, used only by the tests.
 - Mutable Instruments Braids and stmlib by Emilie Gillet (MIT,
   https://github.com/pichenettes/eurorack): the Braids oscillator type
-  (src/synthesis/effects/braids, licence in each file and LICENSE.stmlib).
+  (src/synthesis/effects/braids, licence in each file; stmlib in
+  src/synthesis/effects/stmlib, licence in LICENSE there).
+- The granular processor of Mutable Instruments Clouds by Emilie Gillet (MIT,
+  https://github.com/pichenettes/eurorack): the Particles effect
+  (src/synthesis/effects/particles, licence in each file), with stmlib as
+  above. Particles is not affiliated with Mutable Instruments.
 - Astralay by Iron Labs (MIT, https://github.com/ironcross32/astralay): the
   Glitch Delay effect's engine (src/synthesis/effects/glitch_delay, licence in
   LICENSE.astralay) and its engine tests (tests/glitch_delay).
@@ -43,6 +51,26 @@ their sources.
   type, the Scanner Vibrato effect and Analogue Rotary's OpenB3 Whirl model
   (src/synthesis/effects/openb3, ported from C to C++). OpenB3 and setBfree
   are not affiliated with Hammond or Leslie.
+- ZL Compressor by zsliu98 (AGPL v3, https://github.com/ZL-Audio/ZLCompressor):
+  the Analogue Compressor effect's engine (src/synthesis/effects/zl_compressor,
+  licence in LICENSE.zlcompressor.md). Those files are AGPL v3; the AGPL permits
+  combining them with this GPL v3 program (GPL v3 section 13).
+- Maim by Arden Butterfield (GPL v3, https://github.com/ArdenButterfield/Maim):
+  the Maim effect (src/synthesis/effects/maim, its controllers ported to
+  Atlas), with the libraries Maim circuit bends, kept in third_party/maim:
+  LAME 3.99.5 by the LAME project (LGPL 2 or later, COPYING and LICENSE there)
+  and BladeEnc by Tord Jansson (LGPL 2.1 or later, COPYING there), each with
+  Maim's bends and one further change by Atlas noted in the effect's
+  README.atlas.md. With them, unchanged: libgsm by Jutta Degener and Carsten
+  Bormann, Technische Universitaet Berlin (its own permissive licence,
+  third_party/gsm/COPYRIGHT), and Opus by Xiph.Org and its contributors
+  (BSD-3, the third_party/opus submodule).
+- eSpeak NG by Reece H. Dunn and its contributors, based on eSpeak by Jonathan
+  Duddington (GPL v3 or later, https://github.com/espeak-ng/espeak-ng), with
+  ucd-tools (GPL v3 or later), NV Speech Player by NV Access (GPL v3 or later)
+  and Unicode character data (Unicode licence, COPYING.UCD): the Speech
+  oscillator type's voice, and the espeak-ng-data folder in the plug-in bundles
+  (the third_party/espeak-ng submodule).
 - NVDA's controller interface by NV Access (LGPL 2.1,
   https://github.com/nvaccess/nvda): the interface definition Atlas builds its
   NVDA speech client from on Windows (third_party/nvda_controller).
@@ -50,7 +78,7 @@ their sources.
   (BSD-3), as submodules under third_party.
 - PFFFT by Julien Pommier, based on FFTPACKv4 by Paul Swarztrauber (NCAR), under
   the FFTPACK licence (BSD style, Copyright (c) 2004 the University Corporation
-  for Atmospheric Research): the oscillators' FFT on Windows (third_party/pffft,
+  for Atmospheric Research): every FFT in Atlas on every platform (third_party/pffft,
   licence text at the top of each file).
 - The Tape effect's noise recordings "Vinyl 1" to "Vinyl 8"
   (Factory/Samples/Tape; the README.atlas.md there maps each file to its source
@@ -71,6 +99,12 @@ their sources.
   NIH-plug (ISC) with Diopser (GPL v3 or later), OpenWurli with Melange (GPL
   v3 or later), and OpenB3 (AGPL v3 or later, with setBfree's Beatrix files,
   GPL v2 or later) under third_party.
+
+The Saturator, Dynamic Tube, Overdrive and Multiband Dynamics effects are native
+ports of JSFX by Alessio Scala (version 1.0 of each), supplied for Atlas and kept
+unmodified in tests/drive_dynamics; the scripts carry no licence statement. They
+recreate devices from Ableton Live, modelled from measurements of the originals,
+not from their code (src/synthesis/effects/drive_dynamics/README.atlas.md).
 
 The Erosion, Trance gate, Resonator, Dimension Expander mode 2, Reverb filter,
 Analogue effects, Spectral Balance, Suppressor, Spectral Compressor, Filter Table ("Wavetable" filter model) and oscillator slot code are

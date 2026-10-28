@@ -37,8 +37,9 @@ void testAudioAndRealtime() {
       if (block == 30) controls.at(prefix + "reverb_bass_preserve")->set(.35f);
       if (block == 40) controls.at(prefix + "reverb_cutoff")->set(std::log2(20000.f));
       for (int i = 0; i < n; ++i) {
+        // A Filter FX slot's lanes 2-3 repeat lanes 0-1.
         const float input = .1f * std::sin((block * n + i) * .17f);
-        f.audio.buffer[i] = vital::poly_float(input, input, 0, 0);
+        f.audio.buffer[i] = mono ? vital::poly_float(input) : vital::poly_float(input, input, 0, 0);
       }
       tracked_allocations.store(0); track_allocations.store(true);
       f.module.process(n);
@@ -47,8 +48,12 @@ void testAudioAndRealtime() {
       for (int i = 0; i < n; ++i) {
         const auto value = f.module.output()->buffer[i];
         expect(std::isfinite(value[0]) && std::abs(value[0]) < 20, "Reverb filter stays finite under cutoff sweeps");
-        expect(value[0] == value[1] && value[2] == 0 && value[3] == 0,
-               "Reverb filter preserves mono and isolates voice lanes");
+        if (mono)
+          expect(value[0] == value[1] && value[2] == value[0] && value[3] == value[1],
+                 "Filter FX Reverb preserves mono and mirrors its stereo pair into lanes 2-3");
+        else
+          expect(value[0] == value[1] && value[2] == 0 && value[3] == 0,
+                 "Reverb filter preserves mono and isolates voice lanes");
         energy += value[0] * value[0];
       }
     }
@@ -437,7 +442,44 @@ void testPresetRoundtrip() {
            "All Reverb controls survive save/load in voice, legacy FX and every bus slot");
   }
 }
+// The core skips a pair of lanes once they have been exactly silent for longer
+// than any delay. Silence of -0.0 has a sign bit, so it never counts as silent:
+// a core given -0.0 runs throughout, one given +0.0 skips, and both must wake
+// to the same output when the signal starts, without a reset. One-pair mode
+// (Filter FX) must equal lanes 0-1 of the full core.
+void testIdleLanes() {
+  constexpr double kRate = 48000;
+  vital::ReverbFilterCore skipping, running, single;
+  for (auto* core : { &skipping, &running, &single }) { core->reserve(kRate); core->setSampleRate(kRate, 2); }
+  single.setPairs(1);
+  const int quiet = 40000, total = quiet + 20000;
+  bool identical = true, mirrored = true;
+  double energy = 0;
+  for (int position = 0; position < total; position += 128) {
+    for (int lane = 0; lane < 4; ++lane)
+      for (auto* core : { &skipping, &running, &single }) core->beginBlock(lane, .9, .2, 128);
+    for (int i = 0; i < 128; ++i) {
+      const int n = position + i;
+      const double voice = .2 * std::sin(n * .05) + .1 * std::sin(n * .31);
+      const double later = n < quiet ? 0.0 : .15 * std::sin(n * .07);
+      alignas(16) const double cutoffs[4] { 900, 900, n < quiet ? 900.0 : 300.0, n < quiet ? 900.0 : 300.0 };
+      alignas(16) const double silent[4] { voice, -voice, later, later * .5 };
+      alignas(16) double signed_zero[4] { voice, -voice, n < quiet ? -0.0 : later, n < quiet ? -0.0 : later * .5 };
+      alignas(16) double a[4], b[4], c[4];
+      skipping.tick(silent, cutoffs, a);
+      running.tick(signed_zero, cutoffs, b);
+      single.tick(silent, cutoffs, c);
+      for (int lane = 0; lane < 4; ++lane) identical = identical && a[lane] == b[lane];
+      mirrored = mirrored && c[0] == a[0] && c[1] == a[1] && c[2] == a[0] && c[3] == a[1];
+      if (n >= quiet) energy += a[2] * a[2];
+    }
+  }
+  expect(identical, "A Reverb pair skipped while silent wakes to exactly the output of one that ran");
+  expect(mirrored, "One-pair Reverb (Filter FX) equals the full core's lanes 0-1 and copies them into 2-3");
+  expect(energy > .01, "A woken Reverb pair produces audio");
+}
 int run() {
+  testIdleLanes();
   testAudioAndRealtime(); testModulation(); testVoiceReset(); testMemoryOnDemand(); testVoiceMemoryOnSelection();
   testPluginResonance(); testBassResponse(); testReleaseTails(); testForcedTailKill(); testPresetRoundtrip();
   if (!failures) std::cout << "Atlas Reverb filter tests passed\n";

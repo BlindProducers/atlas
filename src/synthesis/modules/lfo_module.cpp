@@ -41,6 +41,10 @@ namespace vital {
     Output* smooth_time = createPolyModControl(prefix_ + "_smooth_time");
     Output* deform = createMonoModControl(prefix_ + "_deform");
     Output* swing = createMonoModControl(prefix_ + "_swing");
+    Value* view = createBaseControl(prefix_ + "_view");
+    Value* simple_shape = createBaseControl(prefix_ + "_simple_shape");
+    Output* morph = createPolyModControl(prefix_ + "_morph");
+    Value* simple_trigger = createBaseControl(prefix_ + "_simple_trigger");
 
     Output* frequency = createTempoSyncSwitch(prefix_, free_frequency->owner, beats_per_second_, true, input(kMidi));
     lfo_->useInput(input(kNoteTrigger), SynthLfo::kNoteTrigger);
@@ -60,10 +64,22 @@ namespace vital {
     lfo_->plug(delay, SynthLfo::kDelay);
     lfo_->plug(deform, SynthLfo::kDeform);
     lfo_->plug(swing, SynthLfo::kSwing);
+    lfo_->plug(view, SynthLfo::kView);
+    lfo_->plug(simple_shape, SynthLfo::kSimpleShape);
+    lfo_->plug(morph, SynthLfo::kMorph);
+    lfo_->plug(simple_trigger, SynthLfo::kSimpleTriggerMode);
   }
 
   void LfoModule::correctToTime(double seconds) {
     lfo_->correctToTime(seconds);
+  }
+
+  void LfoModule::advanceFreeClock(int num_samples) {
+    lfo_->advanceFreeClock(num_samples);
+  }
+
+  bool LfoModule::runsFreely() const {
+    return lfo_->runsFreely();
   }
 
   void LfoModule::setControlRate(bool control_rate) {

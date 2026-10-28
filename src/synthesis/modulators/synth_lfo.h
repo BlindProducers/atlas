@@ -12,6 +12,8 @@
 #include "line_generator.h"
 
 #include <array>
+#include <cmath>
+#include <cstdint>
 #include <memory>
 
 namespace vital {
@@ -33,6 +35,10 @@ namespace vital {
         kNoteCount,
         kDeform,
         kSwing,
+        kView,
+        kSimpleShape,
+        kMorph,
+        kSimpleTriggerMode,
         kNumInputs
       };
 
@@ -50,7 +56,32 @@ namespace vital {
         kSustainEnvelope,
         kLoopPoint,
         kLoopHold,
+        kFreeRunning,
         kNumSyncTypes
+      };
+
+      // The Simple view draws one of these shapes, bent by Morph, in place of
+      // the custom shape, and its Trigger mode picks one of three sync types.
+      enum View {
+        kCustomView,
+        kSimpleView,
+        kNumViews
+      };
+
+      enum SimpleShape {
+        kSimpleSine,
+        kSimpleTriangle,
+        kSimpleSawUp,
+        kSimpleSawDown,
+        kSimpleSquare,
+        kNumSimpleShapes
+      };
+
+      enum SimpleTrigger {
+        kSimpleTrigger,
+        kSimpleSync,
+        kSimpleFreeRunning,
+        kNumSimpleTriggers
       };
 
       enum {
@@ -69,6 +100,19 @@ namespace vital {
         poly_float fade_amount = 0.0f;
         poly_float offset = 0.0f;
         poly_float phase = 0.0f;
+      };
+
+      // Free Running keeps one phase for every voice: notes join it where it
+      // is instead of restarting it. The voice handler counts the samples it
+      // renders (now), and the first voice of each block brings the phase up
+      // to then at the rate the voices last ran, so it also moves on while no
+      // voice sounds. Shared by every voice clone, like sync_seconds_.
+      struct FreeClock {
+        uint64_t now = 0;
+        uint64_t time = 0;
+        double phase = 0.0;
+        double frequency = 0.0;
+        bool started = false;
       };
 
       static constexpr mono_float kMaxPower = 20.0f;
@@ -98,8 +142,16 @@ namespace vital {
       Processor* clone() const override { return new SynthLfo(*this); }
       void process(int num_samples) override;
       void correctToTime(double seconds);
+      void advanceFreeClock(int num_samples) { free_clock_->now += static_cast<uint64_t>(num_samples); }
+      bool runsFreely() const { return effectiveSyncType() == kFreeRunning; }
+      bool isSimple() const { return input(kView)->at(0)[0] >= 0.5f; }
+      // A Simple shape's value from 0 to 1 at a phase from 0 to 1. Morph runs
+      // from -1 to 1 and leaves the plain shape at 0.
+      static float simpleShapeValue(int shape, float phase, float morph);
 
     protected:
+      int effectiveSyncType() const;
+      void catchUpFreeClock();
       poly_float applySwingToPhase(poly_float phase, bool preserve_end) const;
       void updateLineGeneratorControls();
       poly_float inputAt(int input_index, int sample) const;
@@ -116,6 +168,7 @@ namespace vital {
       // host clock is updated on the graph's original module, so every clone
       // must observe the same clock without allocating or locking at runtime.
       std::shared_ptr<double> sync_seconds_;
+      std::shared_ptr<FreeClock> free_clock_;
 
       JUCE_LEAK_DETECTOR(SynthLfo)
   };

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "multisample_manager.h"
 #include "multisample_container.h"
+#include "library_layout.h"
+#include "load_save.h"
 
 #include <chrono>
 #include <thread>
@@ -23,6 +25,13 @@ namespace multisample {
       return found != data.end() && found->is_number() ? found->get<int>() : fallback;
     }
 
+    // Whether `file` is in a bank's Multisamples folder: the library keeps
+    // such an instrument, so the cache needs no copy of it.
+    bool inLibrary(const juce::File& file) {
+      const auto location = atlas::library::locate(file, LoadSave::getDataDirectory());
+      return location.in_library && location.in_kind && location.kind == atlas::library::Kind::kMultisamples;
+    }
+
     void describePreset(InstrumentSpec& spec, const Instrument& instrument) {
       spec.sf2_index = instrument.preset_index;
       for (const PresetName& preset : instrument.preset_names) {
@@ -42,6 +51,8 @@ namespace multisample {
     data["path"] = path;
     data["hash"] = hash;
     data["entry"] = entry;
+    if (!library_instrument.empty())
+      data["library_instrument"] = library_instrument;
     if (format == "sf2") {
       data["sf2_preset"] = { { "index", sf2_index }, { "bank", sf2_bank }, { "program", sf2_program },
                              { "name", sf2_name } };
@@ -67,6 +78,7 @@ namespace multisample {
 
   InstrumentSpec InstrumentSpec::fromJson(const nlohmann::json& data) {
     InstrumentSpec spec;
+    spec.library_instrument = stringField(data, "library_instrument");
     if (!data.is_object())
       return spec;
     spec.format = stringField(data, "format");
@@ -372,7 +384,7 @@ namespace multisample {
     Job job;
     job.slot = slot;
     job.load.file = file;
-    job.populate_cache = true;
+    job.populate_cache = !inLibrary(file);
     {
       std::lock_guard<std::mutex> lock(mutex_);
       Slot& state = slots_[static_cast<size_t>(slot)];
@@ -555,7 +567,37 @@ namespace multisample {
     return true;
   }
 
-  void Manager::applySpec(int slot, const InstrumentSpec& spec, const juce::File& container_file) {
+  bool Manager::libraryJob(Job& job, const juce::File& entry) const {
+    if (entry == juce::File() || !entry.existsAsFile())
+      return false;
+    const juce::File data_directory = LoadSave::getDataDirectory();
+    const juce::File folder = atlas::library::instrumentFolderOf(entry, data_directory);
+    const atlas::library::InstrumentManifest manifest =
+        folder != juce::File() ? atlas::library::readInstrumentManifest(folder) : atlas::library::InstrumentManifest();
+    const bool described = manifest.valid && folder.getChildFile(manifest.entry) == entry;
+    // A folder Atlas placed an instrument in names it by hash: another
+    // instrument that took its name is not the one the preset plays.
+    if (described && !job.spec.hash.empty() && manifest.hash != juce::String(job.spec.hash) &&
+        atlas::library::findInstrumentAnywhere(job.spec.hash, data_directory) != juce::File())
+      return false;
+    job.load.file = entry;
+    if (isTextInstrument(entry)) {
+      if (described) {
+        for (const auto& path_override : manifest.path_overrides)
+          job.load.sfz_options.path_overrides[path_override.first] = folder.getChildFile(juce::String(path_override.second));
+      }
+      job.load.sfz_options.control_values = job.spec.control_values;
+    }
+    // The library's copy is the one the user keeps, and may have edited: it
+    // plays as it is, and needs no second copy in the cache.
+    job.check_hash = false;
+    job.populate_cache = false;
+    job.from_cache = false;
+    return true;
+  }
+
+  void Manager::applySpec(int slot, const InstrumentSpec& spec, const juce::File& container_file,
+                          const juce::File& library) {
     if (slot < 0 || slot >= kNumSlots)
       return;
     if (spec.empty()) {
@@ -574,19 +616,35 @@ namespace multisample {
     job.load.sf2_name = spec.sf2_name;
 
     const juce::File original(juce::String(spec.path));
-    if (container_file != juce::File() && !spec.hash.empty() && !spec.files.empty() && !spec.entry.empty()) {
+    bool found = false;
+    // The preset's own library first: the copy it was saved with.
+    if (library != juce::File() && !spec.library_instrument.empty())
+      found = libraryJob(job, atlas::library::instrumentsDirectory(library).getChildFile(juce::String(spec.library_instrument)));
+    if (found) {
+    }
+    else if (container_file != juce::File() && !spec.hash.empty() && !spec.files.empty() && !spec.entry.empty()) {
       job.container = container_file;
       job.from_cache = true;
+      found = true;
     }
     else if (!spec.path.empty() && original.existsAsFile()) {
       job.load.file = original;
       job.load.sfz_options.control_values = spec.control_values;
       job.check_hash = true;
-      job.populate_cache = true;
+      job.populate_cache = !inLibrary(original);
+      found = true;
     }
-    else if (container::isCached(spec.hash) && !spec.entry.empty())
+    else if (!spec.hash.empty() &&
+             libraryJob(job, atlas::library::findInstrumentAnywhere(spec.hash, LoadSave::getDataDirectory()))) {
+      // A library holds it: a project made before the preset or its
+      // instrument moved, or a preset copied out of its bank.
+      found = true;
+    }
+    else if (container::isCached(spec.hash) && !spec.entry.empty()) {
       job.from_cache = true;
-    else {
+      found = true;
+    }
+    if (!found) {
       {
         std::lock_guard<std::mutex> lock(mutex_);
         Slot& state = slots_[static_cast<size_t>(slot)];

@@ -28,9 +28,10 @@ The namespace is `atlas::glitch_delay` instead of `astralay::dsp` and
   draws: the probes only recorded what had been drawn.
 - The output hard clip (a session setting in Astralay, not a parameter) is
   left out. Atlas's effect chain has its own limiter.
-- `RealFft` uses `juce::dsp::FFT` (vDSP on macOS) instead of PFFFT, which Atlas
-  doesn't ship. Both use the same spectrum layout and scale the inverse
-  transform.
+- `RealFft` goes through `juce::dsp::FFT`, as Atlas's other spectral effects
+  do. That runs on PFFFT, as Astralay's did, through Atlas's JUCE patch
+  (`third_party/patches/juce8-pffft-fft-engine.patch`). The spectrum layout
+  and the inverse transform's scaling are the same as Astralay's.
 
 What Astralay keeps in its plug-in rather than its DSP is not used: macros,
 MIDI learn, the performance area, presets, undo, the glitch stop key (a

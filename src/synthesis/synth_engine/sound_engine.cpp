@@ -27,6 +27,7 @@
 #include "synth_voice_handler.h"
 #include "multisample_midi_state.h"
 #include "multisample_slot.h"
+#include "speech_slot.h"
 #include "source_slot_module.h"
 #include "peak_meter.h"
 #include "operators.h"
@@ -72,13 +73,26 @@ namespace vital {
       Processor* clone() const override { return new BusRouter(*this); }
 
       void process(int num_samples) override {
-        for (int output_index = 0; output_index < kNumOutputs; ++output_index)
-          utils::zeroBuffer(output(output_index)->buffer, num_samples);
+        // Only the chosen output carries the bus. The others stay silent, so
+        // clear them (whole, for longer blocks later) only when the choice moves.
+        const int destination_index = outputIndex();
+        if (destination_index != cleared_for_) {
+          for (int output_index = 0; output_index < kNumOutputs; ++output_index) {
+            if (output_index != destination_index)
+              utils::zeroBuffer(output(output_index)->buffer, output(output_index)->buffer_size);
+          }
+          cleared_for_ = destination_index;
+        }
 
         const poly_float* source = input(kAudio)->source->buffer;
-        poly_float* destination = output(outputIndex())->buffer;
+        poly_float* destination = output(destination_index)->buffer;
         for (int i = 0; i < num_samples; ++i)
           destination[i] = source[i];
+      }
+
+      void setOversampleAmount(int oversample) override {
+        Processor::setOversampleAmount(oversample);
+        cleared_for_ = -1;
       }
 
       int outputIndex() const {
@@ -98,6 +112,7 @@ namespace vital {
 
     private:
       int bus_index_;
+      int cleared_for_ = -1;
   };
 
 
@@ -386,8 +401,8 @@ namespace vital {
     voice_handler_->disableModulationConnection(change.modulation_processor);
 
     if (change.mono_destination != nullptr && change.mono_modulation_switch != nullptr &&
-        change.mono_destination->connectedInputs() == 1 &&
-        (change.poly_destination == nullptr || change.poly_destination->connectedInputs() == 0)) {
+        change.mono_destination->connectedPluggedInputs() == 1 &&
+        (change.poly_destination == nullptr || change.poly_destination->connectedPluggedInputs() == 0)) {
       change.mono_modulation_switch->set(0);
 
       if (change.poly_modulation_switch) {
@@ -414,6 +429,10 @@ namespace vital {
 
   Output* SoundEngine::getIndependentRandomModulationSource(const std::string& source, int connection_index) {
     return voice_handler_->getIndependentRandomModulationSource(source, connection_index);
+  }
+
+  Output* SoundEngine::getMonoModulationSource(const std::string& source) {
+    return voice_handler_->getMonoModulationSource(source);
   }
 
   mono_float SoundEngine::getLastActiveNote() const {
@@ -539,6 +558,19 @@ namespace vital {
         // level, pitch, or another per-sample destination.
         const int modulation_samples = num_samples * modulation->getOversampleAmount();
         if (modulation->collapsesPolyphonicSource()) {
+          // A free-running source carries on without voices: run it as an
+          // envelope is below and take its first voice pair, which every
+          // voice shares. The source counts as a new owner, so the step from
+          // the last voice's value gets the usual handoff.
+          Processor* source_owner = modulation->input(ModulationConnectionProcessor::kModulationInput)->source->owner;
+          auto* source_module = dynamic_cast<SynthModule*>(source_owner);
+          if (source_module != nullptr && source_module->runsFreely()) {
+            if (refreshed_idle_sources_.insert(source_owner))
+              source_owner->process(num_samples * source_owner->getOversampleAmount());
+            modulation->process(modulation_samples);
+            modulation->collapseToVoice(constants::kFirstMask, modulation_samples, -1, source_owner);
+            continue;
+          }
           // The final active block has already latched the actual sounding
           // voice pair. Keep that value constant through an FX-only tail;
           // reprocessing stale SIMD lanes here causes note-to-note alternation.
@@ -555,6 +587,8 @@ namespace vital {
         }
       }
     }
+    // After the idle sources above, so they render the block voices would.
+    voice_handler_->advanceFreeClocks(num_samples * voice_handler_->getOversampleAmount());
 
     for (auto& status_source : data_->status_outputs)
       status_source.second->update();
@@ -573,6 +607,7 @@ namespace vital {
     voice_handler_->allSoundsOff();
     for (int i = 0; i < kNumOscillators; ++i)
       voice_handler_->getSourceSlot(i)->getMultiSample()->resetVoicesState();
+    rewindSpeech();
     for (int i = 0; i < kNumBuses; ++i)
       bus_effect_chains_[i]->hardReset();
     effect_chain_->hardReset();
@@ -764,6 +799,21 @@ namespace vital {
 
   MultiSampleSlot* SoundEngine::getMultiSample(int index) {
     return voice_handler_->getSourceSlot(index)->getMultiSample();
+  }
+
+  SpeechSlot* SoundEngine::getSpeechSlot(int index) {
+    return voice_handler_->getSourceSlot(index)->getSpeech();
+  }
+
+  void SoundEngine::rewindSpeech() {
+    for (int i = 0; i < kNumOscillators; ++i)
+      getSpeechSlot(i)->rewind();
+  }
+
+  void SoundEngine::setSpeechSongPosition(double quarters, double quarters_per_second, double seconds,
+                                          double loop_start, double loop_end) {
+    for (int i = 0; i < kNumOscillators; ++i)
+      getSpeechSlot(i)->setSongPosition(quarters, quarters_per_second, seconds, loop_start, loop_end);
   }
 
   void SoundEngine::controlChange(int controller, int value, int sample) {

@@ -38,6 +38,10 @@
 #include "resonator_module.h"
 #include "openwurli_amp_module.h"
 #include "scanner_vibrato_module.h"
+#include "analogue_compressor_module.h"
+#include "maim_module.h"
+#include "particles_module.h"
+#include "drive_dynamics_modules.h"
 #include "note_monitor.h"
 #include "table_filter.h"
 #include "reorderable_effect_chain.h"
@@ -45,6 +49,7 @@
 #include "synth_strings.h"
 #include "sound_engine.h"
 #include "value_switch.h"
+#include "operators.h"
 #include "synth_oscillator.h"
 #include "smooth_value.h"
 #include "fourier_transform.h"
@@ -54,6 +59,7 @@
 #include <execinfo.h>
 #include <mach/mach.h>
 #include <unistd.h>
+#include <sys/resource.h>
 #elif JUCE_WINDOWS
 #include <malloc.h>
 #endif
@@ -195,9 +201,185 @@ std::unique_ptr<vital::SynthModule> create(int type, vital::Output* bpm) {
     case constants::kGlitchDelay: return std::make_unique<GlitchDelayModule>(bpm, nullptr);
     case constants::kOpenWurliAmp: return std::make_unique<OpenWurliAmpModule>();
     case constants::kScannerVibrato: return std::make_unique<ScannerVibratoModule>();
+    case constants::kAnalogueCompressor: return std::make_unique<AnalogueCompressorModule>();
+    case constants::kMaim: return std::make_unique<MaimModule>();
+    case constants::kParticles: return std::make_unique<ParticlesModule>(&note_monitor, "");
+    case constants::kSaturator: return std::make_unique<SaturatorModule>();
+    case constants::kDynamicTube: return std::make_unique<DynamicTubeModule>();
+    case constants::kOverdrive: return std::make_unique<OverdriveModule>();
+    case constants::kMultibandDynamics: return std::make_unique<MultibandDynamicsModule>();
   }
   return {};
 }
+// Saturator, Dynamic Tube, Overdrive and Multiband Dynamics hand every control
+// to their ports unchanged: each module's output equals its port's, run here
+// with parameters looked up by name, through a change of every control.
+void driveDynamicsModules() {
+  using namespace vital;
+  namespace dd = atlas::drive_dynamics;
+  const auto run = [](SynthModule& module, const std::function<void(std::function<double(const char*)>)>& apply,
+                      const auto& process, const char* effect) {
+    module.init(); module.setSampleRate(48000); module.setOversampleAmount(1);
+    auto controls = module.getControls();
+    std::map<std::string, double> values;
+    const auto value = [&](const char* name) { return values.at(name); };
+    double worst = 0;
+    std::vector<poly_float> input(97);
+    for (int block = 0; block < 64; ++block) {
+      if (block == 0 || block == 20 || block == 40) {
+        // Every control to its own spot in its range, menus and switches to a whole step.
+        int index = 0;
+        for (const auto& control : controls) {
+          const auto& details = Parameters::getDetails(control.first);
+          float v = details.min + std::fmod(.29f + .17f * index++ + .31f * block, 1.0f) * (details.max - details.min);
+          if (details.value_scale == ValueDetails::kIndexed) v = std::round(v);
+          control.second->set(v);
+          values[control.first] = v;
+        }
+        apply(value);
+      }
+      for (int i = 0; i < int(input.size()); ++i) {
+        const float l = .7f * std::sin((block * 97 + i) * .053f), r = .6f * std::sin((block * 97 + i) * .031f + 1);
+        input[size_t(i)] = poly_float(l, r, l, r);
+      }
+      module.processWithInput(input.data(), int(input.size()));
+      for (int i = 0; i < int(input.size()); ++i) {
+        double l = input[size_t(i)][0], r = input[size_t(i)][1];
+        process(l, r);
+        const poly_float out = module.output()->buffer[i];
+        worst = std::max({ worst, double(std::abs(out[0] - float(l))), double(std::abs(out[1] - float(r))),
+                           double(std::abs(out[2] - out[0])), double(std::abs(out[3] - out[1])) });
+      }
+    }
+    std::cout << effect << " module against its port: maximum difference " << worst << '\n';
+    expect(worst == 0, std::string(effect) + " module output equals its port's");
+  };
+
+  {
+    SaturatorModule module;
+    dd::Saturator core;
+    core.prepare(48000);
+    run(module, [&](const auto& v) {
+      dd::Saturator::Parameters p;
+      p.drive = v("saturator_drive"); p.type = v("saturator_type"); p.color = v("saturator_color");
+      p.amt_lo = v("saturator_color_low"); p.frequency = v("saturator_color_frequency");
+      p.width = v("saturator_color_width"); p.amt_hi = v("saturator_color_high");
+      p.post_clip = v("saturator_post_clip"); p.output = v("saturator_output"); p.dry_wet = v("saturator_mix");
+      p.bass_threshold = v("saturator_bass_threshold"); p.ws_drive = v("saturator_ws_drive");
+      p.ws_linear = v("saturator_ws_linear"); p.ws_curve = v("saturator_ws_curve"); p.ws_damp = v("saturator_ws_damp");
+      p.ws_period = v("saturator_ws_period"); p.ws_depth = v("saturator_ws_depth");
+      p.dc_filter = v("saturator_dc_filter"); p.hi_quality = v("saturator_hi_quality");
+      core.setParameters(p);
+    }, [&](double& l, double& r) { core.process(l, r); }, "Saturator");
+  }
+  {
+    DynamicTubeModule module;
+    dd::DynamicTube core;
+    core.prepare(48000);
+    run(module, [&](const auto& v) {
+      dd::DynamicTube::Parameters p;
+      p.drive = v("dynamic_tube_drive"); p.tube_type = v("dynamic_tube_tube_type"); p.bias = v("dynamic_tube_bias");
+      p.envelope = v("dynamic_tube_envelope"); p.attack = v("dynamic_tube_attack");
+      p.release = v("dynamic_tube_release"); p.tone = v("dynamic_tube_tone"); p.output = v("dynamic_tube_output");
+      p.dry_wet = v("dynamic_tube_mix"); p.hi_quality = v("dynamic_tube_hi_quality");
+      core.setParameters(p);
+    }, [&](double& l, double& r) { core.process(l, r); }, "Dynamic Tube");
+  }
+  {
+    OverdriveModule module;
+    dd::Overdrive core;
+    core.prepare(48000);
+    run(module, [&](const auto& v) {
+      dd::Overdrive::Parameters p;
+      p.freq = v("overdrive_frequency"); p.width = v("overdrive_width"); p.drive = v("overdrive_drive");
+      p.tone = v("overdrive_tone"); p.dynamics = v("overdrive_dynamics"); p.dry_wet = v("overdrive_mix");
+      core.setParameters(p);
+    }, [&](double& l, double& r) { core.process(l, r); }, "Overdrive");
+  }
+  {
+    MultibandDynamicsModule module;
+    dd::MultibandDynamics core;
+    core.prepare(48000);
+    run(module, [&](const auto& v) {
+      dd::MultibandDynamics::Parameters p;
+      const auto at = [&](const std::string& suffix) { return v(("multiband_dynamics_" + suffix).c_str()); };
+      p.split_low_mid = at("low_split"); p.split_mid_high = at("high_split");
+      p.low_band = at("low_band"); p.high_band = at("high_band");
+      const char* names[] = { "low_", "mid_", "high_" };
+      for (int b = 0; b < 3; ++b) {
+        auto& band = p.bands[size_t(b)];
+        const std::string n = names[b];
+        band.active = at(n + "active"); band.solo = at(n + "solo"); band.input = at(n + "input");
+        band.above_threshold = at(n + "above_threshold"); band.above_ratio = at(n + "above_ratio");
+        band.below_threshold = at(n + "below_threshold"); band.below_ratio = at(n + "below_ratio");
+        band.attack = at(n + "attack"); band.release = at(n + "release"); band.output = at(n + "output");
+      }
+      p.amount = at("amount"); p.time = at("time"); p.output = at("output");
+      p.peak = at("detection"); p.knee = at("soft_knee");
+      core.setParameters(p);
+    }, [&](double& l, double& r) { core.process(l, r); }, "Multiband Dynamics");
+  }
+}
+
+// Multiband Dynamics' factory presets: every key one of its parameters and in
+// range, every bus preset accepted by Atlas's loader, and every preset
+// rendering finite audio through the module.
+void driveDynamicsPresets(const String& folder) {
+  using namespace vital;
+  using json = nlohmann::json;
+  int bus_presets = 0, single_presets = 0;
+  for (const auto& entry : RangedDirectoryIterator(File(folder), false, "*.atf;*.atfx")) {
+    const File file = entry.getFile();
+    const std::string name = file.getFileName().toStdString();
+    const json data = json::parse(file.loadFileAsString().toStdString(), nullptr, false);
+    expect(!data.is_discarded(), name + " is valid JSON");
+    if (data.is_discarded()) continue;
+    json parameters;
+    if (file.hasFileExtension("atfx")) {
+      ++bus_presets;
+      SynthPlugin synth;
+      String error;
+      expect(synth.loadFxBusPreset(0, data, error), name + " loads as an FX bus preset (" + error.toStdString() + ")");
+      parameters = data["slots"][0]["parameters"];
+    }
+    else {
+      ++single_presets;
+      expect(data["type"] == "Atlas FX Preset" && data["effect"] == "multiband_dynamics", name + " is a Multiband Dynamics preset");
+      parameters = data["parameters"];
+    }
+    expect(parameters.size() == size_t(drive_dynamics::kNumMultibandControls), name + " sets every control");
+    MultibandDynamicsModule module;
+    module.init(); module.setSampleRate(48000); module.setOversampleAmount(1);
+    auto controls = module.getControls();
+    for (auto it = parameters.begin(); it != parameters.end(); ++it) {
+      const bool known = controls.count(it.key()) == 1;
+      expect(known, name + ": " + it.key() + " is a Multiband Dynamics control");
+      if (!known) continue;
+      const auto& details = Parameters::getDetails(it.key());
+      const float value = it.value().get<float>();
+      expect(value >= details.min && value <= details.max, name + ": " + it.key() + " is in range");
+      controls.at(it.key())->set(value);
+    }
+    std::vector<poly_float> input(256);
+    double peak = 0;
+    bool finite = true;
+    for (int block = 0; block < 375; ++block) {
+      for (int i = 0; i < int(input.size()); ++i) {
+        const float x = .5f * std::sin((block * 256 + i) * .0287f) * (block % 50 < 25 ? 1.0f : .03f);
+        input[size_t(i)] = poly_float(x, x, x, x);
+      }
+      module.processWithInput(input.data(), int(input.size()));
+      for (int i = 0; i < int(input.size()); ++i) {
+        finite = finite && std::isfinite(module.output()->buffer[i][0]) && std::isfinite(module.output()->buffer[i][1]);
+        peak = std::max(peak, double(std::abs(module.output()->buffer[i][0])));
+      }
+    }
+    expect(finite && peak > 0.001 && peak < 8.0, name + " renders finite audio (peak " + std::to_string(peak) + ")");
+  }
+  std::cout << "Multiband Dynamics factory presets: " << single_presets << " FX and " << bus_presets << " bus\n";
+  expect(single_presets == 12 && bus_presets == 12, "twelve Multiband Dynamics presets in both formats");
+}
+
 void compareEffects() {
   using namespace vital;
   cr::Value bpm(2);
@@ -498,10 +680,15 @@ void realtimeTransitions() {
   plugin.processBlock(audio, midi);
 }
 
+// The CPU seconds a process has used: in all, in its own code and in the system's.
+struct ProcessCpuTimes {
+  double total = 0.0, user = 0.0, system = 0.0;
+};
 #if JUCE_WINDOWS
 // Defined at the end of this file, after <windows.h>, so its macros reach nothing else.
 double windowsPrivateWorkingSetMiB();
 double windowsCommitMiB();
+ProcessCpuTimes windowsProcessCpuTimes();
 #endif
 // Memory the process actually touched, as Activity Monitor reports it (on
 // Windows, the private working set Task Manager shows).
@@ -1088,6 +1275,335 @@ void effectCpu(const std::string& only) {
   }
 }
 
+// CPU per host block (512 samples at 48 kHz) with no notes playing: the default
+// patch and a four-effect chain, at 1x and the default 2x oversampling, then
+// every effect alone in a slot at 2x. With an editor open, also the process
+// CPU the message thread spends while nothing plays.
+void idleCpu(const std::string& only) {
+  using namespace vital;
+  constexpr int kBlock = 512;
+  const double budget_us = 1.0e6 * kBlock / 48000.0;
+  auto prepare = [&](SynthPlugin& plugin, float oversampling, const std::vector<int>& effects) {
+    plugin.setPlayConfigDetails(0, 2, 48000, kBlock);
+    plugin.prepareToPlay(48000, kBlock);
+    plugin.valueChanged("oversampling", oversampling);
+    for (size_t slot = 0; slot < effects.size(); ++slot)
+      selectEffect(plugin, "fx_slot_" + std::to_string(slot + 1) + "_", effects[slot]);
+    plugin.getEngine()->prepareSelectedEffects();
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(250);
+  };
+  auto measure = [&](float oversampling, const std::vector<int>& effects) {
+    SynthPlugin plugin;
+    prepare(plugin, oversampling, effects);
+    juce::AudioBuffer<float> audio(2, kBlock);
+    juce::MidiBuffer midi;
+    for (int block = 0; block < 200; ++block) {
+      audio.clear();
+      plugin.processBlock(audio, midi);
+    }
+    double best = std::numeric_limits<double>::max();
+    for (int round = 0; round < 5; ++round) {
+      const auto start = std::chrono::steady_clock::now();
+      for (int block = 0; block < 200; ++block) {
+        audio.clear();
+        plugin.processBlock(audio, midi);
+      }
+      best = std::min(best, std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count() / 200);
+    }
+    return best;
+  };
+  auto report = [&](const std::string& name, double us) {
+    std::cout << name << " us_per_block=" << us << " budget_percent=" << 100.0 * us / budget_us << std::endl;
+  };
+  const std::vector<int> chain = { constants::kDistortion, constants::kReverb, constants::kChorus, constants::kDelay };
+  if (only.empty() || only == "summary") {
+    report("idle default 1x", measure(0.0f, {}));
+    report("idle default 2x", measure(1.0f, {}));
+    report("idle 4-effect chain 1x", measure(0.0f, chain));
+    report("idle 4-effect chain 2x", measure(1.0f, chain));
+  }
+  if (only.empty() || only == "effects") {
+    const double base = measure(1.0f, {});
+    for (int type = 0; type < constants::kNumEffects; ++type)
+      report(std::string("idle 2x effect=") + strings::kEffectOrder[type], measure(1.0f, { type }) - base);
+  }
+  if (only.empty() || only == "editor") {
+    auto pump = [](int ms) {
+      const auto end = juce::Time::getMillisecondCounter() + uint32(ms);
+      while (juce::Time::getMillisecondCounter() < end)
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(10);
+    };
+    // CPU seconds of the whole process.
+    auto cpu_times = [] {
+#if JUCE_WINDOWS
+      return windowsProcessCpuTimes();
+#else
+      rusage usage {};
+      getrusage(RUSAGE_SELF, &usage);
+      ProcessCpuTimes times;
+      times.user = usage.ru_utime.tv_sec + 1.0e-6 * usage.ru_utime.tv_usec;
+      times.system = usage.ru_stime.tv_sec + 1.0e-6 * usage.ru_stime.tv_usec;
+      times.total = times.user + times.system;
+      return times;
+#endif
+    };
+    auto plugin = std::make_unique<SynthPlugin>();
+    prepare(*plugin, 1.0f, chain);
+    // As in a host, an audio thread renders a block every 512 samples while
+    // the message thread runs, so the process CPU includes it and the time
+    // per block shows what the editor adds to the audio thread.
+    std::atomic<bool> rendering { true };
+    std::atomic<int64_t> render_ns { 0 };
+    std::atomic<int> render_blocks { 0 };
+    std::thread audio_thread([&] {
+      juce::AudioBuffer<float> audio(2, kBlock);
+      juce::MidiBuffer midi;
+      const auto period = std::chrono::microseconds(static_cast<int64_t>(budget_us));
+      auto next = std::chrono::steady_clock::now();
+      while (rendering.load()) {
+        const auto start = std::chrono::steady_clock::now();
+        audio.clear();
+        plugin->processBlock(audio, midi);
+        render_ns += std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count();
+        ++render_blocks;
+        next += period;
+        std::this_thread::sleep_until(next);
+      }
+    });
+    auto measure_cpu = [&](const char* name, int ms) {
+      render_ns = 0;
+      render_blocks = 0;
+      const auto start = cpu_times();
+      pump(ms);
+      const auto end = cpu_times();
+      const double seconds = ms / 1000.0;
+      const double block_us = render_blocks > 0 ? 1.0e-3 * render_ns / render_blocks : 0.0;
+      std::cout << name << " cpu_percent=" << 100.0 * (end.total - start.total) / seconds
+                << " user_percent=" << 100.0 * (end.user - start.user) / seconds
+                << " system_percent=" << 100.0 * (end.system - start.system) / seconds
+                << " audio_us_per_block=" << block_us << std::endl;
+    };
+    pump(1000);
+    measure_cpu("message thread, no editor,", 5000);
+    std::unique_ptr<juce::AudioProcessorEditor> editor(plugin->createEditorIfNeeded());
+    editor->addToDesktop(juce::ComponentPeer::windowHasTitleBar);
+    editor->setVisible(true);
+    pump(2000);
+    measure_cpu("message thread, editor open,", 5000);
+    // The editor refreshes its readouts faster while the user works in it.
+    editor->toFront(true);
+    if (auto* first = editor->getChildComponent(0)) first->grabKeyboardFocus();
+    pump(500);
+    if (editor->hasKeyboardFocus(true))
+      measure_cpu("message thread, editor focused,", 5000);
+    else
+      std::cout << "editor could not take the keyboard focus" << std::endl;
+    plugin->editorBeingDeleted(editor.get());
+    editor.reset();
+    rendering = false;
+    audio_thread.join();
+  }
+}
+
+// A slot sleeps once its input and output have stayed silent for its hold
+// time, and wakes on the next note's first block. Every effect, alone in the
+// main chain's first slot at its defaults: it either keeps sounding (noise) or
+// sleeps, and after sleeping a note sounds through it at once. A 4 s Delay
+// with feedback must not sleep between its echoes.
+// Every voice copy writes the same producer and filter output buffers. A note
+// cut off mid-block (a preset load's allSoundsOff) leaves its last block in
+// an output; when the routing then moves, the next voice must clear it even
+// if that voice never wrote the output itself, or every note replays the
+// stale block as a phantom tone of its own.
+void voiceOutputSharing() {
+  constexpr int kBlock = 512;
+  constexpr int kRate = 48000;
+  struct Scenario { const char* name; const char* parameter; float routed; float moved; };
+  const Scenario scenarios[] = {
+    { "oscillator to Effects", "osc_1_destination", vital::constants::kFilter1, vital::constants::kEffects },
+    { "filter to Bus 1", "filter_1_destination", vital::constants::kEffects, vital::constants::kBus1 },
+  };
+  for (const Scenario& scenario : scenarios) {
+    SynthPlugin plugin;
+    plugin.setPlayConfigDetails(0, 2, kRate, kBlock);
+    plugin.prepareToPlay(kRate, kBlock);
+    plugin.valueChanged("filter_1_on", 1.0f);
+    // Every slot renders for a keyboard note, so route them all alike.
+    for (int osc = 1; osc <= vital::kNumOscillators; ++osc)
+      plugin.valueChanged("osc_" + std::to_string(osc) + "_destination", vital::constants::kFilter1);
+    plugin.valueChanged("filter_1_destination", vital::constants::kEffects);
+    plugin.valueChanged(scenario.parameter, scenario.routed);
+    juce::AudioBuffer<float> audio(2, kBlock);
+    juce::MidiBuffer midi;
+    auto run = [&](int blocks) {
+      float peak = 0.0f;
+      for (int block = 0; block < blocks; ++block) {
+        audio.clear();
+        plugin.processBlock(audio, midi);
+        midi.clear();
+        peak = std::max({ peak, audio.getMagnitude(0, 0, kBlock), audio.getMagnitude(1, 0, kBlock) });
+      }
+      return peak;
+    };
+    // Give every voice copy the first routing: notes take free voices in turn.
+    for (int i = 0; i < 2 * vital::kMaxPolyphony; ++i) {
+      midi.addEvent(juce::MidiMessage::noteOn(1, 60, .8f), 0);
+      run(2);
+      midi.addEvent(juce::MidiMessage::noteOff(1, 60), 0);
+      run(1);
+      for (int block = 0; block < 400 && plugin.getEngine()->getNumActiveVoices() > 0; ++block)
+        run(1);
+    }
+    // A chord writes the moved output and is cut off while it sounds.
+    // Two notes, so they fill both lanes of a voice copy and the next note
+    // takes another copy, as after a chord.
+    plugin.valueChanged(scenario.parameter, scenario.moved);
+    midi.addEvent(juce::MidiMessage::noteOn(1, 60, .8f), 0);
+    midi.addEvent(juce::MidiMessage::noteOn(1, 64, .8f), 0);
+    expect(run(20) > 1.0e-2f, std::string(scenario.name) + ": the moved routing sounds");
+    plugin.getEngine()->allSoundsOff();
+    run(20);
+    // Back to the first routing with a silent oscillator: nothing should sound.
+    plugin.valueChanged(scenario.parameter, scenario.routed);
+    plugin.valueChanged("osc_1_on", 0.0f);
+    midi.addEvent(juce::MidiMessage::noteOn(1, 67, .8f), 0);
+    run(10);
+    const float leftover = run(20);
+    std::cout << scenario.name << " leftover peak=" << leftover << std::endl;
+    expect(leftover < 1.0e-6f, std::string(scenario.name) + ": no voice replays another voice's output");
+  }
+}
+
+void effectSleep() {
+  using namespace vital;
+  constexpr int kBlock = 512;
+  constexpr int kRate = 48000;
+  auto prepare = [&](SynthPlugin& plugin, int type) {
+    plugin.setPlayConfigDetails(0, 2, kRate, kBlock);
+    plugin.prepareToPlay(kRate, kBlock);
+    selectEffect(plugin, "fx_slot_1_", type);
+    plugin.getEngine()->prepareSelectedEffects();
+    juce::MessageManager::getInstance()->runDispatchLoopUntil(250);
+  };
+  auto peak = [](const juce::AudioBuffer<float>& audio) {
+    return std::max(audio.getMagnitude(0, 0, audio.getNumSamples()), audio.getMagnitude(1, 0, audio.getNumSamples()));
+  };
+  for (int type = 0; type < constants::kNumEffects; ++type) {
+    const std::string name = strings::kEffectOrder[type];
+    SynthPlugin plugin;
+    prepare(plugin, type);
+    auto* chain = plugin.getEngine()->getMainEffectChain();
+    juce::AudioBuffer<float> audio(2, kBlock);
+    juce::MidiBuffer midi;
+    midi.addEvent(juce::MidiMessage::noteOn(1, 60, .8f), 0);
+    for (int block = 0; block < 20; ++block) {
+      audio.clear();
+      plugin.processBlock(audio, midi);
+      midi.clear();
+    }
+    midi.addEvent(juce::MidiMessage::noteOff(1, 60), 0);
+    int slept_block = -1;
+    for (int block = 0; block < 60 * kRate / kBlock && slept_block < 0; ++block) {
+      audio.clear();
+      plugin.processBlock(audio, midi);
+      midi.clear();
+      if (chain->isSlotAsleep(0))
+        slept_block = block;
+    }
+    if (slept_block < 0) {
+      std::cout << "effect=" << name << " keeps sounding" << std::endl;
+      continue;
+    }
+    // Asleep, the slot passes its silent input through.
+    float asleep_peak = 0.0f;
+    for (int block = 0; block < 40; ++block) {
+      audio.clear();
+      plugin.processBlock(audio, midi);
+      asleep_peak = std::max(asleep_peak, peak(audio));
+    }
+    expect(chain->isSlotAsleep(0), name + " stays asleep in silence");
+    expect(asleep_peak < 1.0e-4f, name + " is silent while asleep");
+    midi.addEvent(juce::MidiMessage::noteOn(1, 64, .8f), 0);
+    float woken_peak = 0.0f;
+    for (int block = 0; block < 10; ++block) {
+      audio.clear();
+      plugin.processBlock(audio, midi);
+      midi.clear();
+      if (block == 0)
+        expect(!chain->isSlotAsleep(0), name + " wakes on the note's first block");
+      woken_peak = std::max(woken_peak, peak(audio));
+    }
+    expect(woken_peak > 1.0e-3f, name + " sounds after waking");
+    std::cout << "effect=" << name << " slept_after_s=" << (slept_block + 1) * double(kBlock) / kRate
+              << " woken_peak=" << woken_peak << std::endl;
+  }
+
+  // Echoes 4 s apart: the slot must stay awake through the gap.
+  SynthPlugin plugin;
+  prepare(plugin, constants::kDelay);
+  plugin.valueChanged("fx_slot_1_delay_sync", 0.0f);
+  plugin.valueChanged("fx_slot_1_delay_frequency", -2.0f);
+  plugin.valueChanged("fx_slot_1_delay_feedback", 0.5f);
+  auto* chain = plugin.getEngine()->getMainEffectChain();
+  juce::AudioBuffer<float> audio(2, kBlock);
+  juce::MidiBuffer midi;
+  midi.addEvent(juce::MidiMessage::noteOn(1, 60, .8f), 0);
+  midi.addEvent(juce::MidiMessage::noteOff(1, 60), kBlock / 2);
+  float echo_peak = 0.0f;
+  bool slept_before_echo = false;
+  for (int block = 0; block < 5 * kRate / kBlock; ++block) {
+    audio.clear();
+    plugin.processBlock(audio, midi);
+    midi.clear();
+    const double seconds = block * double(kBlock) / kRate;
+    if (seconds < 3.8 && chain->isSlotAsleep(0)) slept_before_echo = true;
+    if (seconds > 3.8 && seconds < 4.6) echo_peak = std::max(echo_peak, peak(audio));
+  }
+  expect(!slept_before_echo, "a 4 s Delay stays awake between echoes");
+  expect(echo_peak > 1.0e-3f, "a 4 s Delay's echo still sounds");
+  std::cout << "4 s delay echo_peak=" << echo_peak << std::endl;
+}
+
+// Renders blocks of 512 at 48 kHz for `seconds` of audio, holding `notes`
+// notes of the default patch (none: idle), for a profiler to sample. With
+// `preset`, that patch instead. ATLAS_LIST_MODULATION_SUMS=1 lists the
+// modulation totals that run every block.
+void cpuLoop(double seconds, int notes, const std::string& preset) {
+  constexpr int kBlock = 512;
+  SynthPlugin plugin;
+  plugin.setPlayConfigDetails(0, 2, 48000, kBlock);
+  plugin.prepareToPlay(48000, kBlock);
+  if (!preset.empty()) {
+    std::string error;
+    expect(plugin.loadFromFile(juce::File(preset), error), "the preset loads");
+  }
+  plugin.getEngine()->prepareSelectedEffects();
+  juce::MessageManager::getInstance()->runDispatchLoopUntil(250);
+  if (std::getenv("ATLAS_LIST_MODULATION_SUMS")) {
+    // Audio-rate modulation totals that run every block, mono and per voice.
+    for (const auto& destination : plugin.getEngine()->getMonoModulationDestinations())
+      if (dynamic_cast<vital::ModulationSum*>(destination.second) != nullptr && destination.second->enabled())
+        std::cout << "mono_sum " << destination.first << std::endl;
+    for (const auto& destination : plugin.getEngine()->getPolyModulationDestinations())
+      if (dynamic_cast<vital::ModulationSum*>(destination.second) != nullptr && destination.second->enabled())
+        std::cout << "poly_sum " << destination.first << std::endl;
+  }
+  juce::AudioBuffer<float> audio(2, kBlock);
+  juce::MidiBuffer midi;
+  const int chord[] = { 48, 55, 60, 64, 67, 71, 74, 79 };
+  for (int i = 0; i < notes && i < 8; ++i)
+    midi.addEvent(juce::MidiMessage::noteOn(1, chord[i], .8f), 0);
+  const int blocks = static_cast<int>(seconds * 48000 / kBlock);
+  const auto start = std::chrono::steady_clock::now();
+  for (int block = 0; block < blocks; ++block) {
+    audio.clear();
+    plugin.processBlock(audio, midi);
+    midi.clear();
+  }
+  const double us = std::chrono::duration<double, std::micro>(std::chrono::steady_clock::now() - start).count() / blocks;
+  std::cout << "notes=" << notes << " us_per_block=" << us << std::endl;
+}
+
 // The arpeggiator's cost in realtime blocks of 512 at 48 kHz: a preset (or the
 // default patch) holding a four-note chord, with and without Arp 1 at 1/16 and
 // a Distortion, Reverb, Chorus and Delay chain. Prints the mean and worst
@@ -1578,6 +2094,22 @@ int main(int argc, char** argv) {
     effectCpu(argc > 2 ? argv[2] : "");
     return failures ? 1 : 0;
   }
+  if (argc > 1 && String(argv[1]) == "--effect-sleep") {
+    effectSleep();
+    return failures ? 1 : 0;
+  }
+  if (argc > 1 && String(argv[1]) == "--voice-output-sharing") {
+    voiceOutputSharing();
+    return failures ? 1 : 0;
+  }
+  if (argc > 3 && String(argv[1]) == "--cpu-loop") {
+    cpuLoop(String(argv[2]).getDoubleValue(), String(argv[3]).getIntValue(), argc > 4 ? argv[4] : "");
+    return failures ? 1 : 0;
+  }
+  if (argc > 1 && String(argv[1]) == "--idle-cpu") {
+    idleCpu(argc > 2 ? argv[2] : "");
+    return failures ? 1 : 0;
+  }
   if (argc > 1 && String(argv[1]) == "--arp-cpu") {
     arpeggiatorCpu(argc > 2 ? argv[2] : "");
     return failures ? 1 : 0;
@@ -1609,6 +2141,11 @@ int main(int argc, char** argv) {
                      argc > 3 && String(argv[2]) == "type" ? String(argv[3]).getIntValue() : -1);
     return failures ? 1 : 0;
   }
+  if (argc > 1 && String(argv[1]) == "--drive-dynamics") {
+    driveDynamicsModules();
+    if (argc > 2) driveDynamicsPresets(argv[2]);
+    return failures ? 1 : 0;
+  }
   if (argc > 1 && String(argv[1]) == "--convolution-threading") {
     concurrentConvolutionLifecycle();
     return failures ? 1 : 0;
@@ -1629,6 +2166,7 @@ int main(int argc, char** argv) {
 #endif
 #include <windows.h>
 #include <psapi.h>
+#include <intrin.h>
 #pragma comment(lib, "psapi.lib")
 namespace {
 // PROCESS_MEMORY_COUNTERS_EX2 (Windows 10 1809 and later), declared here
@@ -1651,6 +2189,39 @@ double windowsPrivateWorkingSetMiB() {
 double windowsCommitMiB() {
   MemoryCounters counters;
   return readMemoryCounters(counters) ? counters.base.PrivateUsage / 1048576.0 : 0;
+}
+// The process's CPU seconds. GetProcessTimes charges a whole 15.6 ms clock
+// tick to whichever thread it lands on, which misses the short bursts an idle
+// editor and an audio thread run in, so the total comes from the cycles the
+// process's threads ran (QueryProcessCycleTime, in time stamp counter ticks).
+// The user and system split is GetProcessTimes's, coarse as it is.
+ProcessCpuTimes windowsProcessCpuTimes() {
+  // The time stamp counter's rate, measured once against the performance counter.
+  static const double cycles_per_second = [] {
+    LARGE_INTEGER frequency {}, start {}, end {};
+    QueryPerformanceFrequency(&frequency);
+    QueryPerformanceCounter(&start);
+    const unsigned long long start_cycles = __rdtsc();
+    Sleep(100);
+    QueryPerformanceCounter(&end);
+    const unsigned long long end_cycles = __rdtsc();
+    const double seconds = double(end.QuadPart - start.QuadPart) / double(frequency.QuadPart);
+    return double(end_cycles - start_cycles) / seconds;
+  }();
+  ProcessCpuTimes times;
+  ULONG64 cycles = 0;
+  if (QueryProcessCycleTime(GetCurrentProcess(), &cycles))
+    times.total = double(cycles) / cycles_per_second;
+  FILETIME created {}, exited {}, kernel {}, user {};
+  if (GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user)) {
+    // FILETIME counts 100 ns intervals.
+    auto seconds = [](const FILETIME& time) {
+      return double((static_cast<ULONGLONG>(time.dwHighDateTime) << 32) | time.dwLowDateTime) * 1.0e-7;
+    };
+    times.user = seconds(user);
+    times.system = seconds(kernel);
+  }
+  return times;
 }
 }
 #endif

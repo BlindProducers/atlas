@@ -69,6 +69,7 @@ class LoadSave {
     static const std::string kLfoFolderName;
     static const std::string kFxFolderName;
     static const std::string kIrFolderName;
+    static const std::string kMultisampleFolderName;
     static const std::string kAdditionalWavetableFoldersName;
     static const std::string kAdditionalSampleFoldersName;
 
@@ -86,6 +87,7 @@ class LoadSave {
     static void loadSlotSamples(SynthBase* synth, const json& settings);
     // Multi-sample instruments (osc_N_multisample); slots without one are cleared.
     static void loadSlotInstruments(SynthBase* synth, const json& settings);
+    static void loadSlotSpeech(SynthBase* synth, const json& settings);
     // Rewrites a preset saved with fixed Sample/Granular/Spectral/Noise sources
     // into oscillator slots 5-8. Safe to call on presets already migrated.
     static void migrateFixedSourcesToSlots(json& settings, json& modulations);
@@ -103,12 +105,15 @@ class LoadSave {
     static String getAuthorFromFile(const File& file);
     static String getStyleFromFile(const File& file);
     static String getTagsFromFile(const File& file);
+    static String getPresetNameFromFile(const File& file);
     static std::string getAuthor(json file);
     static std::string getLicense(json state);
 
     static File getConfigFile();
+    static File defaultConfigFile();
     // Tests point the config somewhere else, leaving the user's file alone.
     static void setConfigFileForTesting(const File& file);
+    static void setFavoritesFileForTesting(const File& file);
     static void writeCrashLog(String crash_log);
     static void writeErrorLog(String error_log);
     static json getConfigJson();

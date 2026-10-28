@@ -22,7 +22,7 @@ namespace atlas::speech {
     bool modulation = true;
     bool parameters = false;
     bool other = false;
-    bool frequency_values_in_hz = false;
+    bool frequency_values_in_hz = true;
   };
 
   Settings& settings();

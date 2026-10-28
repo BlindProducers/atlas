@@ -17,6 +17,7 @@
 #include "synth_parameters.h"
 #include "source_types.h"
 #include "braids_engine.h"
+#include "speech_voices.h"
 
 #include "compressor.h"
 #include "distortion.h"
@@ -561,6 +562,12 @@ namespace vital {
       ValueDetails::kLinear, false, " Hz", "Scanner Vibrato Rate", nullptr },
     { "effect_chain_slot_39", 0x02011d, 0.0, constants::kNumEffects - 1, constants::kScannerVibrato, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Effect Chain Slot 39", nullptr },
+
+#include "maim_parameters.inc"
+
+#include "particles_parameters.inc"
+
+#include "drive_dynamics_parameters.inc"
 
     { "spectral_compressor_on", 0x020104, 0.0, 1.0, 0.0, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Spectral Compressor Switch", strings::kOffOnNames },
@@ -1407,6 +1414,14 @@ namespace vital {
       ValueDetails::kIndexed, false, "", "Transpose", nullptr },
     { "keytrack_tune", 0x000704, -1.0, 1.0, 0.0, 0.0, 100.0,
       ValueDetails::kLinear, false, "", "Tune", nullptr },
+    { "view", 0x02012b, 0.0, SynthLfo::kNumViews - 1, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "View", strings::kLfoViewNames },
+    { "simple_shape", 0x02012b, 0.0, SynthLfo::kNumSimpleShapes - 1, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Shape", strings::kLfoSimpleShapeNames },
+    { "morph", 0x02012b, -1.0, 1.0, 0.0, 0.0, 100.0,
+      ValueDetails::kLinear, false, "%", "Morph", nullptr },
+    { "simple_trigger", 0x02012b, 0.0, SynthLfo::kNumSimpleTriggers - 1, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Trigger Mode", strings::kLfoSimpleTriggerNames },
   };
 
   const ValueDetails ValueDetailsLookup::random_lfo_parameter_list[] = {
@@ -1422,8 +1437,8 @@ namespace vital {
       ValueDetails::kIndexed, false, "", "Tempo", strings::kSyncedFrequencyNames },
     { "stereo", 0x000401, 0.0, 1.0, 0.0, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Stereo", strings::kOffOnNames },
-    { "sync_type", 0x000600, 0.0, 1.0, 0.0, 0.0, 1.0,
-      ValueDetails::kIndexed, false, "", "Sync Type", strings::kOffOnNames },
+    { "sync_type", 0x000600, 0.0, RandomLfo::kNumSyncModes - 1, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Sync Type", strings::kRandomSyncNames },
     { "keytrack_transpose", 0x000704, -60.0, 36.0, -12.0, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Transpose", nullptr },
     { "keytrack_tune", 0x000704, -1.0, 1.0, 0.0, 0.0, 100.0,
@@ -1589,7 +1604,7 @@ namespace vital {
       ValueDetails::kLinear, false, "%", "Frequency Morph Amount", nullptr },
     { "spectral_morph_spread", 0x000407, -0.5, 0.5, 0.0, 0.0, 200.0,
       ValueDetails::kLinear, false, "%", "Frequency Morph Spread", nullptr },
-    { "destination", 0x000500, 0.0, constants::kNumDestinations - 1, 0.0, 0.0, 1.0,
+    { "destination", 0x000500, 0.0, constants::kNumDestinations - 1, constants::kEffects, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Destination", strings::kDestinationNames },
     { "view_2d", 0x000402, 0.0, 2.0, 1.0, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "View 2D", nullptr },
@@ -1828,22 +1843,22 @@ namespace vital {
   // in each mode; the editor names them after the mode.
   const ValueDetails ValueDetailsLookup::braids_slot_parameter_list[] = {
     { "braids_model", 0x000000, 0.0, braids_engine::kNumModels - 1, 0.0, 0.0, 1.0,
-      ValueDetails::kIndexed, false, "", "Braids Synthesis Mode", strings::kBraidsModelNames },
+      ValueDetails::kIndexed, false, "", "Macro Synthesis Mode", strings::kBraidsModelNames },
     { "braids_timbre", 0x000000, 0.0, 1.0, 0.5, 0.0, 100.0,
-      ValueDetails::kLinear, false, "%", "Braids Timbre", nullptr },
+      ValueDetails::kLinear, false, "%", "Macro Timbre", nullptr },
     { "braids_color", 0x000000, 0.0, 1.0, 0.5, 0.0, 100.0,
-      ValueDetails::kLinear, false, "%", "Braids Color", nullptr },
+      ValueDetails::kLinear, false, "%", "Macro Color", nullptr },
     { "braids_resolution", 0x000000, 0.0, braids_engine::kNumResolutions - 1, braids_engine::kFullResolution,
-      0.0, 1.0, ValueDetails::kIndexed, false, "", "Braids Bit Depth", strings::kBraidsResolutionNames },
+      0.0, 1.0, ValueDetails::kIndexed, false, "", "Macro Bit Depth", strings::kBraidsResolutionNames },
     { "braids_sample_rate", 0x000000, 0.0, braids_engine::kNumSampleRates - 1, braids_engine::kFullSampleRate,
-      0.0, 1.0, ValueDetails::kIndexed, false, "", "Braids Sample Rate", strings::kBraidsSampleRateNames },
+      0.0, 1.0, ValueDetails::kIndexed, false, "", "Macro Sample Rate", strings::kBraidsSampleRateNames },
     { "braids_transpose", 0x000000, -48.0, 48.0, 0.0, 0.0, 1.0,
-      ValueDetails::kIndexed, false, "", "Braids Transpose", nullptr },
+      ValueDetails::kIndexed, false, "", "Macro Transpose", nullptr },
     { "braids_tune", 0x000000, -1.0, 1.0, 0.0, 0.0, 100.0,
-      ValueDetails::kLinear, false, "", "Braids Tune", nullptr },
+      ValueDetails::kLinear, false, "", "Macro Tune", nullptr },
     // Off by default: every note from silence starts its cycle at zero.
     { "braids_random_phase", 0x000000, 0.0, 1.0, 0.0, 0.0, 100.0,
-      ValueDetails::kLinear, false, "%", "Braids Phase Randomization", nullptr },
+      ValueDetails::kLinear, false, "%", "Macro Phase Randomization", nullptr },
   };
 
   // OpenWurli oscillator type (the Wurlitzer 200A reed model of OpenWurli):
@@ -1930,6 +1945,49 @@ namespace vital {
       ValueDetails::kLinear, false, "", "OpenB3 Tune", nullptr },
   };
 
+  // Speech oscillator type (espeak-ng): registered once per slot as
+  // osc_N_speech_*. The text it sings is slot state, not a parameter; these
+  // choose the voice espeak-ng renders it with.
+  const ValueDetails ValueDetailsLookup::speech_slot_parameter_list[] = {
+    { "speech_language", 0x000000, 0.0, speech::kNumLanguages - 1, speech::kDefaultLanguage, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Speech Language", strings::kSpeechLanguageNames },
+    { "speech_variant", 0x000000, 0.0, speech::kNumVariants - 1, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Speech Variant", strings::kSpeechVariantNames },
+    // Voice: each syllable shapes its note and sings to its last consonant
+    // after release. Envelope 1: the slot follows Env 1.
+    { "speech_amp_env", 0x000000, 0.0, 1.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Speech Amplitude Envelope", strings::kSpeechAmpEnvNames },
+    { "speech_transpose", 0x000000, -48.0, 48.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Speech Transpose", nullptr },
+    { "speech_tune", 0x000000, -1.0, 1.0, 0.0, 0.0, 100.0,
+      ValueDetails::kLinear, false, "", "Speech Tune", nullptr },
+    // Sung: a monotone the notes give the melody, the vowel held while the
+    // key is down. Spoken: espeak-ng's own intonation, played through.
+    { "speech_mode", 0x000000, 0.0, 1.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Speech Mode", strings::kSpeechModeNames },
+    // What each note takes: the next syllable, word or the whole text.
+    { "speech_split", 0x000000, 0.0, 2.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Speech Split", strings::kSpeechSplitNames },
+    // Moves the voice's formants, in semitones; the pitch stays. Changing the
+    // variant sets it back to 0.
+    { "speech_formant", 0x000000, -12.0, 12.0, 0.0, 0.0, 1.0,
+      ValueDetails::kLinear, false, " semitones", "Speech Formant", nullptr },
+    // 0% the voice as espeak-ng spoke it; 100% a whisper. Changing the
+    // variant sets it back to 0%.
+    { "speech_breath", 0x000000, 0.0, 1.0, 0.0, 0.0, 100.0,
+      ValueDetails::kLinear, false, "%", "Speech Breathiness", nullptr },
+    // How fast consonants and unheld vowels play, 0% to 400%; 100% is 65% of
+    // espeak-ng's speaking speed (SpeechSource::kBaseSpeed).
+    { "speech_speed", 0x000000, 0.0, 4.0, 1.0, 0.0, 100.0,
+      ValueDetails::kLinear, false, "%", "Speech Speed", nullptr },
+    // A vibrato that fades in after each note starts: depth in semitones,
+    // rate as log2 Hz (1 to 12 Hz).
+    { "speech_vibrato", 0x000000, 0.0, 1.0, 0.0, 0.0, 100.0,
+      ValueDetails::kLinear, false, " cents", "Speech Vibrato Depth", nullptr },
+    { "speech_vibrato_rate", 0x000000, 0.0, 3.5849625, 2.4594316, 0.0, 1.0,
+      ValueDetails::kExponential, false, " Hz", "Speech Vibrato Rate", nullptr },
+  };
+
   const ValueDetails ValueDetailsLookup::mod_parameter_list[] = {
     { "amount", 0x000000, -1.0, 1.0, 0.0, 0.0, 1.0,
       ValueDetails::kLinear, false, "", "Amount", nullptr },
@@ -2009,7 +2067,8 @@ namespace vital {
         "erosion_", "floaty_delay_", "spectral_compressor_", "scream_", "tremolo_pan_", "tape_", "defuse_", "suppressor_", "trance_gate_", "spectral_lock_", "resonator_",
         "analoguechorus_", "analogueflanger_", "analogueecho_",
         "analoguerotary_", "analoguespring_", "analoguewah_", "spectral_balance_", "glitch_delay_",
-        "openwurli_amp_", "scanner_vibrato_"
+        "openwurli_amp_", "scanner_vibrato_", "analoguecompressor_", "maim_", "particles_",
+        "saturator_", "dynamic_tube_", "overdrive_", "multiband_dynamics_"
       };
       for (const auto& prefix : effect_prefixes) {
         if (name.rfind(prefix, 0) == 0)
@@ -2169,6 +2228,12 @@ namespace vital {
       addParameterGroup(b3_slot_parameter_list, num_b3_parameters, osc, kOscIdPrefix,
                         kOscNamePrefix, kOpenB3Version);
     }
+    static constexpr int kSpeechVersion = 0x020126;
+    const int num_speech_parameters = sizeof(speech_slot_parameter_list) / sizeof(ValueDetails);
+    for (int osc = 0; osc < kNumOscillators; ++osc) {
+      addParameterGroup(speech_slot_parameter_list, num_speech_parameters, osc, kOscIdPrefix,
+                        kOscNamePrefix, kSpeechVersion);
+    }
 
     int num_filter_parameters = sizeof(filter_parameter_list) / sizeof(ValueDetails);
     for (int filter = 0; filter < kNumFilters; ++filter)
@@ -2192,16 +2257,11 @@ namespace vital {
     }
 
     details_lookup_["osc_1_on"].default_value = 1.0f;
-    details_lookup_["osc_2_destination"].default_value = 1.0f;
-    details_lookup_["osc_3_destination"].default_value = 3.0f;
-    details_lookup_["osc_4_destination"].default_value = 3.0f;
-    // Every slot defaults to Wavetable. Slots 5-8, which replaced the Sample, Granular,
-    // Spectral and Noise sources, keep their effects destination. Presets that predate
-    // this and lack a slot's type load those sources (LoadSave::migrateSlotTypeLevels).
-    for (int i = 0; i < source_types::kNumLegacySources; ++i) {
-      const std::string prefix = source_types::slotPrefix(source_types::kFirstLegacySourceSlot + i);
-      details_lookup_[prefix + "destination"].default_value = 3.0f;
-    }
+    // Every slot defaults to Wavetable, played into the main effects (the
+    // destination's default above). Oscillators 1 and 2 once played into
+    // Filter 1 and Filter 2: states without their destination keep that
+    // (LoadSave::jsonToState). Presets that predate the slots and lack a
+    // slot's type load the sources they had (LoadSave::migrateSlotTypeLevels).
     details_lookup_["filter_1_osc1_input"].default_value = 1.0f;
     details_lookup_["filter_2_osc2_input"].default_value = 1.0f;
 

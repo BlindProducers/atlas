@@ -375,6 +375,10 @@ void FileSource::detectPitch(int max_period) {
   const int start = std::max(0, (sample_buffer_.size - kPitchDetectMaxPeriod) / 3);
   pitch_detector_.loadSignal(getDataBuffer() + start, length);
   float period = pitch_detector_.matchPeriod(max_period);
+  // Too short to measure a period (an 8 ms hit, a 600-sample single cycle):
+  // the whole file is one cycle.
+  if (period <= 0.0f)
+    period = length;
   setWindowSize(period);
 }
 

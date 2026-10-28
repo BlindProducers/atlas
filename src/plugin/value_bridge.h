@@ -22,6 +22,7 @@
 #include "synth_parameters.h"
 #include "scream_parameter_utils.h"
 #include "envelope_time_utils.h"
+#include "drive_dynamics_controls.h"
 
 #include <algorithm>
 #include <cmath>
@@ -93,6 +94,11 @@ class ValueBridge : public AudioProcessorParameterWithID {
         return (String(vital::suppressor::positionHz(adjusted, getSuppressorSampleRate()), 2) + " Hz").substring(0, maximumStringLength);
       if (vital::scream::parameterIs(details_.name, "cutoff"))
         return formatDisplayValue(vital::scream::cutoffToHz(adjusted)).substring(0, maximumStringLength).trim();
+      if (const int ratio = multibandRatio(details_.name); ratio != 0) {
+        // Multiband Dynamics reads its ratios as its own display does: "1 : x".
+        const double denominator = vital::drive_dynamics::multibandRatioDenominator(adjusted, ratio > 0);
+        return (denominator == 0.0 ? String("1 : inf") : "1 : " + String(denominator, 2)).substring(0, maximumStringLength);
+      }
       if (usesRangePercentDisplay(details_))
         return rangePercentText(adjusted).substring(0, maximumStringLength);
       String result = "";
@@ -120,6 +126,13 @@ class ValueBridge : public AudioProcessorParameterWithID {
         for (int i = 0; i < static_cast<int>(vital::envelope_time::divisions.size()); ++i)
           if (division_text == vital::envelope_time::divisions[i].name)
             return valueForEnvelopeTimeDivision(i + 1);
+      }
+      if (const int ratio = multibandRatio(details_.name); ratio != 0 && trimmed.contains(":")) {
+        // "1 : x" back to the stored gain change per dB; a plain number is the stored value itself.
+        const String after = trimmed.fromFirstOccurrenceOf(":", false, false).trim();
+        const double slope = after.startsWithIgnoreCase("inf") ? 0.0 : 1.0 / std::max(0.001, after.getDoubleValue());
+        const double stored = ratio > 0 ? slope - 1.0 : 1.0 - slope;
+        return convertToPluginValue(std::clamp(static_cast<float>(stored), details_.min, details_.max));
       }
       if (vital::scream::parameterIs(details_.name, "cutoff")) {
         float hz = trimmed.getFloatValue() * (trimmed.containsIgnoreCase("kHz") ? 1000.0f : 1.0f);
@@ -191,6 +204,15 @@ class ValueBridge : public AudioProcessorParameterWithID {
     // Unitless levels and amounts read as a percentage of their range: 0% to
     // 100%, or -100% to 100% for bipolar ones such as modulation amounts. A
     // level shows its control position, not the squared gain behind it.
+    // A Multiband Dynamics band's Above Ratio (1) or Below Ratio (-1), else 0.
+    static int multibandRatio(const std::string& name) {
+      if (name.find("multiband_dynamics_") == std::string::npos) return 0;
+      const auto ends = [&name](const std::string& end) {
+        return name.size() >= end.size() && name.compare(name.size() - end.size(), end.size(), end) == 0;
+      };
+      return ends("_above_ratio") ? 1 : ends("_below_ratio") ? -1 : 0;
+    }
+
     static bool usesRangePercentDisplay(const vital::ValueDetails& details) {
       if (details.string_lookup != nullptr || String(details.display_units).trim().isNotEmpty() ||
           details.display_multiply != 1.0f || details.post_offset != 0.0f || details.max != 1.0f ||

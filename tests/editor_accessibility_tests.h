@@ -1,6 +1,8 @@
 #pragma once
 
 #include "screen_reader_speech.h"
+#include "library_layout.h"
+#include "drive_dynamics_controls.h"
 
 #if JUCE_MAC
 void focusNativeAccessibilityElement(juce::AccessibilityHandler& handler);
@@ -26,6 +28,13 @@ namespace {
   constexpr bool kRightBracketOpensMenus = true;
 #else
   constexpr bool kRightBracketOpensMenus = false;
+#endif
+  // Removing an effect slot focuses its neighbouring slot on Windows only; the
+  // Mac goes to the chain's Add effect button.
+#if JUCE_WINDOWS
+  constexpr bool kWindowsRemovalFocusesNeighbour = true;
+#else
+  constexpr bool kWindowsRemovalFocusesNeighbour = false;
 #endif
 
   void pumpEditorEvents() {
@@ -123,7 +132,10 @@ namespace {
         editor->ensureComponentVisible(header);
         header->grabKeyboardFocus();
         expect(header->hasKeyboardFocus(false), "Effect header receives real keyboard focus");
-        const String expected_title = key == KeyPress::backspaceKey ? "Add effect"
+        // Removing the first of the two slots: on Windows the focus goes to
+        // the slot that takes its place, on the Mac to Add effect.
+        const String removal_title = kWindowsRemovalFocusesNeighbour ? "Slot 1 (Utility)" : "Add effect";
+        const String expected_title = key == KeyPress::backspaceKey ? removal_title
             : "Slot " + String(key == ']' ? 2 : 1) + " (Delay)";
         Component::SafePointer<Component> old_header(header);
         FocusDeletionAudit audit(*editor);
@@ -133,7 +145,7 @@ namespace {
         expect(audit.stale_references == 0, "Destroyed controls must leave both focus lists before deletion");
         auto* focused = Component::getCurrentlyFocusedComponent();
         expect(focused && focused->getTitle() == expected_title,
-               "Focus returns to the moved effect or Add effect after removal");
+               "Focus returns to the moved effect, or after a removal to the next slot (Windows) or Add effect");
         for (bool keyboard : {false, true}) {
           auto traverser = keyboard ? editor->createKeyboardFocusTraverser() : editor->createFocusTraverser();
           const auto controls = traverser->getAllComponents(editor.get());
@@ -167,6 +179,79 @@ namespace {
     pumpEditorEvents();
   }
 
+  // Removing an effect slot keeps the user's place in the chain on Windows:
+  // the focus goes to the slot before the removed one (for the first slot, to
+  // the one that takes its place), whether Delete, Backspace or the slot's
+  // Remove item removed it, and to Add effect only once the chain is empty.
+  // On the Mac it goes to Add effect every time.
+  void testEffectRemovalFocus() {
+    SynthPlugin synth;
+    const int main_effects[] { vital::constants::kDelay, vital::constants::kUtility, vital::constants::kReverb,
+                               vital::constants::kChorus };
+    for (int i = 0; i < 4; ++i)
+      synth.parameterChanged("fx_slot_" + std::to_string(i + 1) + "_type", main_effects[i] + 1);
+    synth.parameterChanged("bus_2_fx_slot_1_type", vital::constants::kDelay + 1);
+    synth.parameterChanged("bus_2_fx_slot_2_type", vital::constants::kChorus + 1);
+    auto editor = std::make_unique<SynthEditor>(synth);
+    editor->updateFullGui();
+    editor->addToDesktop(0);
+    editor->setVisible(true);
+    editor->toFront(true);
+    pumpEditorEvents();
+
+    enum class By { kDelete, kBackspace, kMenu };
+    // Removes the effect in slot `slot` (its index, which the chain keeps
+    // while the positions after it move up) and checks where the focus lands.
+    auto remove = [&](const String& section, int slot, By by, const String& windows_target) {
+      const String expected = kWindowsRemovalFocusesNeighbour ? windows_target : String("Add effect");
+      const std::string where = "slot " + std::to_string(slot + 1) + " of " + section.toStdString();
+      auto* header = editorSection(*editor, section, slot);
+      expect(header != nullptr, where + " is in the chain");
+      if (header == nullptr)
+        return;
+      editor->ensureComponentVisible(header);
+      header->grabKeyboardFocus();
+      Component::SafePointer<Component> old_header(header);
+      if (by == By::kMenu) {
+        bool removed = false;
+        PopupMenu menu = editor->createEffectSlotContextMenu(section, slot, header->getTitle());
+        for (PopupMenu::MenuItemIterator it(menu); it.next() && !removed;) {
+          if (it.getItem().text.startsWith("Remove ") && it.getItem().action != nullptr) {
+            it.getItem().action();
+            removed = true;
+          }
+        }
+        expect(removed, "the menu of " + where + " removes it");
+      }
+      else {
+        const int key = by == By::kDelete ? KeyPress::deleteKey : KeyPress::backspaceKey;
+        expect(header->keyPressed(KeyPress(key)), "the key removes " + where);
+      }
+      pumpUntil([&] { return old_header == nullptr && Component::getCurrentlyFocusedComponent() != nullptr; });
+      auto* focused = Component::getCurrentlyFocusedComponent();
+      String focused_section;
+      for (auto* component = focused; component != nullptr && focused_section.isEmpty();
+           component = component->getParentComponent())
+        focused_section = component->getProperties()["SectionName"].toString();
+      expect(focused != nullptr && focused->getTitle() == expected && focused_section == section,
+             "removing " + where + " puts the focus on " + expected.toStdString() + " in that chain (it is on " +
+                 (focused != nullptr ? focused->getTitle().toStdString() : std::string("nothing")) + ")");
+    };
+
+    const String main_chain = "Chain and routing";
+    remove(main_chain, 3, By::kDelete, "Slot 3 (Reverb)");     // the last slot: back one
+    remove(main_chain, 1, By::kMenu, "Slot 1 (Delay)");        // a middle slot, by its menu
+    remove(main_chain, 0, By::kBackspace, "Slot 1 (Reverb)");  // the first: the slot after it moves up
+    remove(main_chain, 2, By::kDelete, "Add effect");          // the only slot left: the chain is empty
+    const String bus_chain = "Bus 2 - Chain and routing";
+    remove(bus_chain, 1, By::kBackspace, "Slot 1 (Delay)");
+    remove(bus_chain, 0, By::kMenu, "Add effect");
+    close(synth.getControls().at("fx_slot_3_type")->value(), 0, "every removed main chain slot is empty");
+    close(synth.getControls().at("bus_2_fx_slot_1_type")->value(), 0, "the bus's slots are removed from the bus");
+    editor.reset();
+    pumpEditorEvents();
+  }
+
   void testFxBusControlsAndFocus() {
     SynthPlugin synth;
     for (int bus = 0; bus <= vital::kNumBuses; ++bus) {
@@ -196,8 +281,9 @@ namespace {
              "Bus controls is a VoiceOver group");
       if (handler) {
         const auto children = handler->getChildren();
-        const StringArray titles { "Bus enabled", "Clear bus", "Load bus FX preset", "Save bus FX preset" };
-        expect(children.size() == static_cast<size_t>(titles.size()), "Bus controls exposes four actions to VoiceOver");
+        const StringArray titles { "Bus enabled", "Clear bus", "Browse bus FX presets", "Load bus FX preset",
+                                   "Save bus FX preset" };
+        expect(children.size() == static_cast<size_t>(titles.size()), "Bus controls exposes five actions to VoiceOver");
         for (int index = 0; index < jmin(titles.size(), static_cast<int>(children.size())); ++index)
           expect(children[index]->getTitle() == titles[index], "Bus actions follow the announced order");
         expect(!children.empty() && children[0]->getRole() == AccessibilityRole::toggleButton &&
@@ -372,6 +458,9 @@ namespace {
       expect(!top.contains("Reverb") && submenuTexts(*replace->subMenu, "Space").contains("Reverb"),
              "Reverb sits inside Space rather than at the top level");
       expect(submenuTexts(*replace->subMenu, "Analogue").contains("Analogue Wah"), "Analogue effects are grouped");
+      expect(submenuTexts(*replace->subMenu, "Analogue").contains("Analogue Compressor") &&
+             !submenuTexts(*replace->subMenu, "Dynamics").contains("Analogue Compressor"),
+             "the Analogue Compressor sits in the Analogue category");
       expect(submenuTexts(*replace->subMenu, "Analogue").contains("Tape") &&
              !submenuTexts(*replace->subMenu, "Distortion and character").contains("Tape"),
              "Tape sits in the Analogue category");
@@ -689,8 +778,8 @@ namespace {
         pumpEditorEvents();
       auto* handler = collection->getAccessibilityHandler();
       auto* table = handler ? handler->getTableInterface() : nullptr;
-      expect(table && table->getNumRows() == 2 && table->getRowHandler(0) != nullptr,
-             "All presets and Favourites populate without keyboard focus inside the preset browser");
+      expect(table && table->getNumRows() == 4 && table->getRowHandler(0) != nullptr,
+             "All presets, Favourites, Community presets and Community banks populate without keyboard focus inside the preset browser");
     }
     editor.removeFromDesktop();
   }
@@ -740,6 +829,36 @@ namespace {
     toggle(3, true);
     toggle(3, false);
     editor.removeFromDesktop();
+  }
+
+  // The arpeggiator's rates and time mode offer only sources that run on
+  // their own or that a player moves: every arp step is a new note, so a
+  // source a note restarts (an envelope) or sets (velocity, pressure) cannot
+  // shape its speed. Other parameters keep every source.
+  void testArpeggiatorRatesOfferOnlyFreeRunningSources() {
+    SynthPlugin synth;
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    pumpEditorEvents();
+    const auto sources = [&](const char* destination) {
+      std::map<int, String> choices;
+      editor.createModulationSourceSubmenu(destination, choices, 1);
+      StringArray ids;
+      for (const auto& choice : choices)
+        ids.add(choice.second);
+      return ids;
+    };
+    for (const char* destination : { "arp_1_free_rate", "arp_1_sync_rate", "arp_1_time_mode", "arp_2_free_rate" }) {
+      const StringArray ids = sources(destination);
+      for (const char* kept : { "lfo_1", "lfo_12", "random_1", "macro_control_1", "mod_wheel", "pitch_wheel" })
+        expect(ids.contains(kept), std::string(destination) + " offers " + kept);
+      for (const char* hidden : { "env_1", "env_2", "random", "velocity", "aftertouch", "slide", "lift",
+                                  "note", "note_in_octave", "stereo" })
+        expect(!ids.contains(hidden), std::string(destination) + " hides " + hidden);
+    }
+    const StringArray cutoff = sources("filter_1_cutoff");
+    expect(cutoff.contains("env_1") && cutoff.contains("velocity") && cutoff.contains("aftertouch") &&
+           cutoff.contains("random"), "a voice parameter keeps the note-bound sources");
   }
 
   // Oscillator slots Phase 2: every slot type shows the distortion rows it can
@@ -923,6 +1042,56 @@ namespace {
     editor.removeFromDesktop();
   }
 
+  // The Analogue Compressor's Mode is a menu of ZL Compressor's styles, though
+  // it keeps the slot's rows; the other rows read in decibels, a ratio and
+  // milliseconds.
+  void testAnalogueCompressorRows() {
+    SynthPlugin synth;
+    synth.parameterChanged("fx_slot_1_type", vital::constants::kAnalogueCompressor + 1);
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    editor.toFront(true);
+    pumpEditorEvents();
+
+    const String prefix = "fx_slot_1_analoguecompressor_";
+    auto* mode = dynamic_cast<ComboBox*>(editor.controlForParameter(prefix + "mode"));
+    expect(mode != nullptr, "Analogue Compressor Mode is a menu");
+    if (mode != nullptr) {
+      StringArray items;
+      for (int i = 0; i < mode->getNumItems(); ++i)
+        items.add(mode->getItemText(i));
+      expect(items == StringArray { "Clean", "Classic", "Optical", "Vocal" },
+             "Mode offers ZL Compressor's styles: " + items.joinIntoString(", ").toStdString());
+      expect(mode->getText() == "Clean", "Mode reads Clean by default: " + mode->getText().toStdString());
+    }
+    const auto value_text = [&](const char* suffix) {
+      auto* control = editor.controlForParameter(prefix + suffix);
+      auto* handler = control ? control->getAccessibilityHandler() : nullptr;
+      auto* value = handler ? handler->getValueInterface() : nullptr;
+      return value ? value->getCurrentValueAsString() : String("<missing>");
+    };
+    struct Row { const char* suffix; const char* text; };
+    for (const Row row : { Row { "threshold", "-18 dB" }, Row { "ratio", "3:1" }, Row { "knee", "8 dB" },
+                           Row { "attack", "100 ms" }, Row { "release", "500 ms" }, Row { "makeup", "0 dB" },
+                           Row { "mix", "100%" } }) {
+      expect(value_text(row.suffix) == row.text, std::string("Analogue Compressor ") + row.suffix + " reads " +
+             row.text + " (reads " + value_text(row.suffix).toStdString() + ")");
+    }
+
+    if (mode != nullptr) {
+      Component::SafePointer<Component> neighbour(editor.controlForParameter(prefix + "threshold"));
+      editor.ensureComponentVisible(mode);
+      mode->grabKeyboardFocus();
+      mode->keyPressed(KeyPress(KeyPress::downKey));
+      editor.pollStateNow();
+      pumpEditorEvents();
+      close(synth.getControls().at((prefix + "mode").toStdString())->value(), 1.0f, "Down steps Mode to Classic");
+      expect(neighbour != nullptr, "stepping Mode keeps the slot's rows");
+    }
+  }
+
   // Stepping a choice that decides which rows show (an oscillator's Type, a
   // filter's Model, an effect's mode) rebuilds the rows around it. The rebuild
   // used to replace the focused menu and every group around it, so NVDA read
@@ -999,6 +1168,128 @@ namespace {
   // Envelope 1's Analog switch swaps its Power rows for Analog Age, which
   // rebuilds the rows. Focus stays on the switch, and on Windows the rebuild
   // keeps the switch itself and its groups, as for the menus above.
+  // Each LFO opens with Simple and Custom tabs. Simple shows Shape, Morph,
+  // Sync, the rate row Sync uses and Trigger Mode, in that order; Custom shows
+  // the shape editor and the other rows. The arrows move between the tabs.
+  // The shape preset menu offers the waves used most, starting on Sine, and
+  // Apply shape puts the chosen one on the LFO.
+  void testLfoShapePresets() {
+    atlas::speech::setObserverForTesting([](const String&) {});
+    SynthPlugin synth;
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    pumpEditorEvents();
+    auto* section = editorSection(editor, "LFO 1");
+    auto* menu = section != nullptr ? dynamic_cast<ComboBox*>(titled(*section, "LFO 1 shape preset")) : nullptr;
+    auto* apply = section != nullptr ? dynamic_cast<Button*>(titled(*section, "LFO 1 apply shape")) : nullptr;
+    expect(menu != nullptr && apply != nullptr && apply->onClick != nullptr, "LFO 1 has its shape preset menu and Apply shape");
+    if (menu != nullptr && apply != nullptr && apply->onClick != nullptr) {
+      StringArray items;
+      for (int i = 0; i < menu->getNumItems(); ++i)
+        items.add(menu->getItemText(i));
+      expect(items == StringArray { "Sine", "Triangle", "Saw up", "Saw down", "Square", "Pulse" },
+             "the menu offers Sine, Triangle, Saw up, Saw down, Square and Pulse: " +
+                 items.joinIntoString(", ").toStdString());
+      expect(menu->getSelectedItemIndex() == 0, "and starts on Sine");
+      LineGenerator* lfo = synth.getLfoSource(0);
+      apply->onClick();
+      pumpEditorEvents();
+      expect(lfo->getName() == "Sin" && lfo->smooth(), "Apply shape puts a sine on the LFO: " + lfo->getName());
+      menu->setSelectedItemIndex(5, dontSendNotification);
+      apply->onClick();
+      pumpEditorEvents();
+      expect(lfo->getNumPoints() >= 4 && lfo->valueAtPhase(0.1f) != lfo->valueAtPhase(0.6f) &&
+                 lfo->valueAtPhase(0.4f) == lfo->valueAtPhase(0.6f),
+             "and Pulse is high for a quarter of the cycle and low after");
+    }
+    editor.removeFromDesktop();
+    atlas::speech::setObserverForTesting(nullptr);
+  }
+
+  void testLfoViewTabs() {
+    atlas::speech::setObserverForTesting([](const String&) {});
+    SynthPlugin synth;
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    editor.toFront(true);
+    pumpEditorEvents();
+    auto& controls = synth.getControls();
+
+    auto tab = [&](const String& name) {
+      auto* section = editorSection(editor, "LFO 1");
+      return section != nullptr ? dynamic_cast<Button*>(titled(*section, name)) : nullptr;
+    };
+    auto* simple = tab("Simple");
+    auto* custom = tab("Custom");
+    expect(simple != nullptr && custom != nullptr, "LFO 1 has Simple and Custom tabs");
+    if (simple == nullptr || custom == nullptr) {
+      atlas::speech::setObserverForTesting(nullptr);
+      editor.removeFromDesktop();
+      return;
+    }
+    auto* handler = simple->getAccessibilityHandler();
+    expect(handler != nullptr && handler->getRole() == AccessibilityRole::radioButton &&
+           !handler->getCurrentState().isChecked(), "the Simple tab reads as an unchecked radio button");
+    expect(custom->getToggleState(), "a new LFO shows the Custom view");
+    expect(editor.controlForParameter("lfo_1_phase") != nullptr &&
+           editor.controlForParameter("lfo_1_morph") == nullptr &&
+           titled(*editorSection(editor, "LFO 1"), "LFO 1 accessible editor") != nullptr,
+           "the Custom view shows the shape editor and Phase, not Morph");
+
+    editor.ensureComponentVisible(simple);
+    simple->grabKeyboardFocus();
+    if (auto* peer = editor.getPeer())
+      peer->handleKeyPress(KeyPress(KeyPress::returnKey));
+    pumpUntil([&] { return editor.controlForParameter("lfo_1_morph") != nullptr; });
+    expect(controls.at("lfo_1_view")->value() == float(vital::SynthLfo::kSimpleView), "Enter on Simple shows the Simple view");
+    auto* focused = Component::getCurrentlyFocusedComponent();
+    expect(focused != nullptr && focused == tab("Simple") && tab("Simple")->getToggleState(),
+           "focus stays on the Simple tab, now checked");
+    expect(editor.controlForParameter("lfo_1_phase") == nullptr &&
+           editor.controlForParameter("lfo_1_frequency") == nullptr &&
+           titled(*editorSection(editor, "LFO 1"), "LFO 1 accessible editor") == nullptr,
+           "the Simple view hides the shape editor, Phase and the unused rate");
+
+    const auto order = editor.createKeyboardFocusTraverser()->getAllComponents(&editor);
+    auto position = [&](const String& id) {
+      auto* control = editor.controlForParameter(id);
+      const auto found = std::find(order.begin(), order.end(), control);
+      return control != nullptr && found != order.end() ? int(found - order.begin()) : -1;
+    };
+    const int shape = position("lfo_1_simple_shape"), morph = position("lfo_1_morph"),
+              sync = position("lfo_1_sync"), tempo = position("lfo_1_tempo"),
+              trigger = position("lfo_1_simple_trigger");
+    expect(shape >= 0 && shape < morph && morph < sync && sync < tempo && tempo < trigger,
+           "Tab reads Shape, Morph, Sync, Tempo and Trigger Mode in order");
+
+    // Sync in seconds swaps Tempo for Frequency.
+    if (auto* sync_menu = dynamic_cast<ComboBox*>(editor.controlForParameter("lfo_1_sync")))
+      sync_menu->setSelectedItemIndex(vital::SynthLfo::kTime, sendNotificationSync);
+    pumpUntil([&] { return editor.controlForParameter("lfo_1_frequency") != nullptr; });
+    expect(editor.controlForParameter("lfo_1_frequency") != nullptr &&
+           editor.controlForParameter("lfo_1_tempo") == nullptr,
+           "Sync in seconds shows Frequency in place of Tempo");
+
+    if (auto* now = tab("Simple")) {
+      editor.ensureComponentVisible(now);
+      now->grabKeyboardFocus();
+      static_cast<Component*>(now)->keyPressed(KeyPress(KeyPress::rightKey));
+    }
+    pumpUntil([&] { return editor.controlForParameter("lfo_1_phase") != nullptr; });
+    expect(controls.at("lfo_1_view")->value() == float(vital::SynthLfo::kCustomView),
+           "Right arrow from Simple shows the Custom view");
+    focused = Component::getCurrentlyFocusedComponent();
+    expect(focused != nullptr && focused == tab("Custom") && tab("Custom")->getToggleState(),
+           "focus moves to the Custom tab, now checked");
+
+    atlas::speech::setObserverForTesting(nullptr);
+    editor.removeFromDesktop();
+  }
+
   void testAnalogSwitchKeepsItsControl() {
     // Announcements go nowhere rather than to the screen reader.
     atlas::speech::setObserverForTesting([](const String&) {});
@@ -1103,7 +1394,7 @@ namespace {
       expect(focused != nullptr && focused->getAccessibilityHandler() != nullptr &&
              focused->getAccessibilityHandler()->hasFocus(false),
              "accessibility focus follows the moved slot too");
-      expect(focused == nullptr || focused->getTitle() != "Editor menu", "focus must not fall back to the Editor menu");
+      expect(focused == nullptr || focused->getTitle() != "Settings", "focus must not fall back to the Settings button");
     }
     editor.removeFromDesktop();
   }
@@ -1112,6 +1403,71 @@ namespace {
   // also step through the slots that hold an effect: the chain, Slot 1, Slot 2,
   // then the next element, and back the same way. A bus's chain is reached at
   // its Bus heading and says only the bus (Windows only).
+  // G, R, the grave accent, the section sign, backslash and Shift A go to the editor's own
+  // group headings, and X and V to the Mixer and routing group's sections: an
+  // effect's group of the same name (Glitch Delay's and Multiband Dynamics'
+  // Global) never takes G's place.
+  void testGroupShortcutsReachTheEditorsGroups() {
+    atlas::speech::setObserverForTesting([](const String&) {});
+    SynthPlugin synth;
+    synth.parameterChanged("fx_slot_1_type", vital::constants::kGlitchDelay + 1);
+    synth.parameterChanged("fx_slot_2_type", vital::constants::kMultibandDynamics + 1);
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    editor.toFront(true);
+    pumpEditorEvents();
+
+    auto press = [&](const KeyPress& key) {
+      if (auto* peer = editor.getPeer())
+        peer->handleKeyPress(key);
+      pumpEditorEvents();
+    };
+    // A group's or a section's heading describes itself as one (AccessibleSectionHeader).
+    auto onHeading = [](const String& title, bool group) {
+      auto* focused = Component::getCurrentlyFocusedComponent();
+      return focused != nullptr && focused->getTitle() == title &&
+             focused->getDescription() == (group ? "Control group " : "Control section ") + title;
+    };
+    auto focusedText = [] {
+      auto* focused = Component::getCurrentlyFocusedComponent();
+      return focused != nullptr ? (focused->getTitle() + " / " + focused->getDescription()).toStdString() : std::string("nothing");
+    };
+    // A Global that is no group heading: an effect's.
+    std::function<bool(Component&)> effect_global = [&](Component& parent) {
+      if (parent.getTitle() == "Global" && parent.getDescription() != "Control group Global")
+        return true;
+      for (auto* child : parent.getChildren())
+        if (effect_global(*child))
+          return true;
+      return false;
+    };
+    expect(effect_global(editor), "an effect has a group called Global");
+
+    struct Shortcut { KeyPress key; const char* heading; bool group; const char* name; };
+    const Shortcut shortcuts[] = {
+      { KeyPress('g', ModifierKeys(), 'g'), "Global", true, "G" },
+      { KeyPress('r', ModifierKeys(), 'r'), "Random modulation", true, "R" },
+      { KeyPress('`', ModifierKeys(), '`'), "Presets", true, "The grave accent" },
+      { KeyPress(0x00a7, ModifierKeys(), 0x00a7), "Presets", true, "The section sign" },
+      { KeyPress('\\', ModifierKeys(), '\\'), "Macros", true, "Backslash" },
+      { KeyPress('A', ModifierKeys::shiftModifier, 'A'), "Arpeggiators", true, "Shift A" },
+      { KeyPress('x', ModifierKeys(), 'x'), "Signal routing", false, "X" },
+      { KeyPress('v', ModifierKeys(), 'v'), "Voice and performance", false, "V" },
+    };
+    for (const auto& shortcut : shortcuts) {
+      if (auto* oscillators = titled(editor, "Oscillators"))
+        oscillators->grabKeyboardFocus();
+      press(shortcut.key);
+      expect(onHeading(shortcut.heading, shortcut.group),
+             std::string(shortcut.name) + " focuses the " + shortcut.heading + (shortcut.group ? " group" : " section") +
+                 " heading, got " + focusedText());
+    }
+    editor.removeFromDesktop();
+    atlas::speech::setObserverForTesting(nullptr);
+  }
+
   void testSectionKeysStepThroughEffectSlots() {
     // Announcements are kept here rather than sent to the screen reader, with
     // the navigation ones, which say where a step landed, switched on.
@@ -1407,6 +1763,537 @@ namespace {
     editor.removeFromDesktop();
   }
 
+  // Return in any box of the save form saves the patch, as the Save button
+  // does, and each box says its name once: no description repeats it.
+  void testSaveFormSavesOnReturn() {
+    // A library of its own in a temporary folder: the saves never reach the
+    // user's presets.
+    struct TemporaryLibrary {
+      File folder = File::getSpecialLocation(File::tempDirectory)
+                        .getNonexistentChildFile("AtlasSaveFormTestLibrary", "", false);
+      TemporaryFile config { ".config" };
+      TemporaryLibrary() {
+        folder.createDirectory();
+        json contents = LoadSave::getConfigJson();
+        if (!contents.is_object())
+          contents = json::object();
+        contents["data_directory"] = folder.getFullPathName().toStdString();
+        config.getFile().replaceWithText(contents.dump());
+        LoadSave::setConfigFileForTesting(config.getFile());
+      }
+      ~TemporaryLibrary() {
+        atlas::speech::setObserverForTesting(nullptr);
+        LoadSave::setConfigFileForTesting({});
+        folder.deleteRecursively();
+      }
+    } library;
+    const bool isolated = LoadSave::getDataDirectory() == library.folder;
+    expect(isolated, "the test's library is its own temporary folder");
+    if (!isolated)
+      return;
+    atlas::speech::setObserverForTesting([](const String&) {});
+
+    SynthPlugin synth;
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    editor.toFront(true);
+    pumpEditorEvents();
+
+    auto press = [&](const KeyPress& key) {
+      if (auto* peer = editor.getPeer())
+        peer->handleKeyPress(key);
+    };
+    auto* name = dynamic_cast<TextEditor*>(titled(editor, "Patch name"));
+    auto* author = dynamic_cast<TextEditor*>(titled(editor, "Patch author"));
+    auto* tags = dynamic_cast<TextEditor*>(titled(editor, "Patch tags"));
+    expect(name != nullptr && author != nullptr && tags != nullptr && !synth.getActiveFile().existsAsFile(),
+           "the editor has the save form's boxes and no preset file loaded");
+    if (name == nullptr || author == nullptr || tags == nullptr || synth.getActiveFile().existsAsFile()) {
+      editor.removeFromDesktop();
+      return;
+    }
+    for (auto* box : { name, author, tags })
+      expect(box->getDescription().isEmpty(), box->getTitle().toStdString() + " has no description repeating its name");
+
+    auto open_form = [&](const KeyPress& key) {
+      if (auto* start = editor.controlForParameter("filter_1_model")) {
+        editor.ensureComponentVisible(start);
+        start->grabKeyboardFocus();
+      }
+      press(key);
+      pumpEditorEvents();
+      return name->isShowing();
+    };
+    auto saved = [&](const String& file_name) {
+      return library.folder.findChildFiles(File::findFiles, true, file_name).size() == 1;
+    };
+
+    expect(open_form(KeyPress('s', ModifierKeys::commandModifier, 0)), "Ctrl S opens the save form");
+    name->setText("Saved With Return", false);
+    author->grabKeyboardFocus();
+    press(KeyPress(KeyPress::returnKey));
+    pumpEditorEvents();
+    expect(!name->isShowing() && saved("Saved With Return.atp") &&
+               synth.getActiveFile().getFileName() == "Saved With Return.atp",
+           "Return in the author box saves the patch and closes the form");
+
+    // With the patch saved, Ctrl S saves over it: Save patch as asks again.
+    expect(open_form(KeyPress('s', ModifierKeys::commandModifier | ModifierKeys::shiftModifier, 0)),
+           "Shift Ctrl S opens the save form");
+    name->setText("Saved From Tags", false);
+    tags->grabKeyboardFocus();
+    press(KeyPress(KeyPress::returnKey));
+    pumpEditorEvents();
+    expect(!name->isShowing() && saved("Saved From Tags.atp"), "Return in the tags box saves the patch too");
+
+    editor.removeFromDesktop();
+  }
+
+  // The table list titled `title` (the preset browser's Bank list, say), not a
+  // cell or column of another table that carries the same name.
+  TableListBox* tableTitled(Component& parent, const String& title) {
+    if (auto* table = dynamic_cast<TableListBox*>(&parent); table != nullptr && table->getTitle() == title)
+      return table;
+    for (auto* child : parent.getChildren()) {
+      if (auto* found = tableTitled(*child, title))
+        return found;
+    }
+    return nullptr;
+  }
+
+  // Delete in the preset table moves the selected preset to Trash
+  // and keeps the user where they were: in the same bank, on the preset after
+  // the one that went, with the focus in the table. On Windows Atlas asks in
+  // the editor, where Escape answers No, rather than in a native box, which
+  // gave the focus to the host when it closed. A bank whose last preset goes
+  // falls back to All banks and says so.
+  void testPresetTrashKeepsBankAndFocus() {
+#if JUCE_WINDOWS
+    // A library of its own in a temporary folder, so the test never touches
+    // the user's presets or their preset index. Undone on every way out.
+    struct TemporaryLibrary {
+      File folder = File::getSpecialLocation(File::tempDirectory)
+                        .getNonexistentChildFile("AtlasFocusTestLibrary", "", false);
+      TemporaryFile config { ".config" };
+      TemporaryLibrary() {
+        folder.createDirectory();
+        json contents = LoadSave::getConfigJson();
+        if (!contents.is_object())
+          contents = json::object();
+        contents["data_directory"] = folder.getFullPathName().toStdString();
+        config.getFile().replaceWithText(contents.dump());
+        LoadSave::setConfigFileForTesting(config.getFile());
+      }
+      ~TemporaryLibrary() {
+        SynthEditor::trashFileForTesting() = nullptr;
+        atlas::speech::setObserverForTesting(nullptr);
+        LoadSave::setConfigFileForTesting({});
+        folder.deleteRecursively();
+      }
+    } library;
+    const bool isolated = LoadSave::getDataDirectory() == library.folder;
+    expect(isolated, "the test's library is its own temporary folder");
+    if (!isolated)
+      return;
+
+    std::vector<String> spoken;
+    atlas::speech::setObserverForTesting([&](const String& message) { spoken.push_back(message); });
+    auto said = [&](const String& words) {
+      return std::any_of(spoken.begin(), spoken.end(), [&](const String& message) { return message.contains(words); });
+    };
+
+    const String bank_name = "Atlas focus test bank";
+    const File bank = atlas::library::bankDirectory(atlas::library::Library::kUser, bank_name,
+                                                    LoadSave::getDataDirectory());
+    // Deletes the test's own presets rather than filling the Recycle Bin, and
+    // nothing outside its bank.
+    SynthEditor::trashFileForTesting() = [bank](const File& file) { return file.isAChildOf(bank) && file.deleteFile(); };
+    SynthPlugin synth;
+    const StringArray names { "Focus test A", "Focus test B", "Focus test C", "Focus test D" };
+    const String extension = "." + String(vital::kPresetExtension);
+    bool made = bank.createDirectory().wasOk();
+    for (const auto& name : names)
+      made = made && synth.saveCopyToFile(bank.getChildFile(name + extension));
+    // Another bank, so the library is not empty once the test bank is.
+    const File other_bank = atlas::library::bankDirectory(atlas::library::Library::kUser, "Atlas focus other bank",
+                                                          LoadSave::getDataDirectory());
+    made = made && other_bank.createDirectory().wasOk() && synth.saveCopyToFile(other_bank.getChildFile("Other" + extension));
+
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    editor.toFront(true);
+    pumpEditorEvents();
+    editor.refreshPresetLibrary();
+    pumpUntil([&] { return !editor.isPresetLibraryBusy(); }, 60000);
+
+    auto* results = tableTitled(editor, "Preset results table");
+    auto* banks = tableTitled(editor, "Bank");
+    auto* autoload = dynamic_cast<Button*>(titled(editor, "Autoload preset when scrolling"));
+    auto* peer = editor.getPeer();
+    expect(made && results != nullptr && banks != nullptr && autoload != nullptr && peer != nullptr,
+           "the test bank was saved and the editor has its preset browser");
+    if (!made || results == nullptr || banks == nullptr || autoload == nullptr || peer == nullptr) {
+      editor.removeFromDesktop();
+      return;
+    }
+    const bool autoload_was_on = autoload->getToggleState();
+    autoload->setToggleState(false, dontSendNotification);
+    auto finish = [&] {
+      autoload->setToggleState(autoload_was_on, dontSendNotification);
+      editor.removeFromDesktop();
+    };
+
+    // Into the test bank, through its row in the Bank list.
+    for (int row = 0; row < banks->getNumRows(); ++row) {
+      if (banks->getModel()->getCellTooltip(row, 1).startsWith(bank_name)) {
+        banks->selectRow(row);
+        break;
+      }
+    }
+    pumpEditorEvents();
+    const bool in_bank = synth.getEditorMemory().preset_bank == bank_name && editor.presetRowCount() == names.size();
+    expect(in_bank, "the Bank list shows the test bank's four presets");
+    if (!in_bank) {
+      finish();
+      return;
+    }
+
+    auto selected_name = [&] { return editor.presetFileAtRow(results->getSelectedRow()).getFileNameWithoutExtension(); };
+    auto focused_title = [&] {
+      auto* focused = Component::getCurrentlyFocusedComponent();
+      return focused != nullptr ? focused->getTitle() : String("nothing");
+    };
+    auto press = [&](const KeyPress& key) {
+      peer->handleKeyPress(key);
+      pumpEditorEvents();
+    };
+    // Only ever a preset of the test bank.
+    auto delete_selected = [&](int row) {
+      if (!editor.presetFileAtRow(row).isAChildOf(bank))
+        return false;
+      results->selectRow(row);
+      editor.ensureComponentVisible(results);
+      results->grabKeyboardFocus();
+      spoken.clear();
+      press(KeyPress(KeyPress::deleteKey));
+      return focused_title() == "Move to Trash";
+    };
+    const File second = bank.getChildFile("Focus test B" + extension);
+
+    // Escape answers No.
+    const bool asked = delete_selected(1);
+    expect(asked, "Delete asks in the editor, on its Move to Trash button, got " + focused_title().toStdString());
+    if (!asked) {
+      finish();
+      return;
+    }
+    // The question is said once; its buttons say only what they do, so
+    // moving between them does not repeat it.
+    MessageManager::getInstance()->runDispatchLoopUntil(400);
+    const String question = "Move Focus test B to Trash? It can be recovered from the Trash.";
+    expect(spoken.size() == 1 && spoken[0] == question,
+           "the question is said once (heard: " + StringArray(spoken.data(), int(spoken.size())).joinIntoString(" | ").toStdString() + ")");
+    auto* focused_button = Component::getCurrentlyFocusedComponent();
+    expect(focused_button != nullptr && focused_button->getDescription().isEmpty(),
+           "Move to Trash carries no description that NVDA would read again");
+    spoken.clear();
+    // The arrows stay with the question, moving between its buttons.
+    press(KeyPress(KeyPress::rightKey));
+    expect(focused_title() == "Cancel", "Right moves to Cancel, got " + focused_title().toStdString());
+    auto* cancel_button = Component::getCurrentlyFocusedComponent();
+    expect(cancel_button != nullptr && cancel_button->getDescription().isEmpty(),
+           "Cancel carries no description either");
+    press(KeyPress(KeyPress::leftKey));
+    expect(focused_title() == "Move to Trash", "Left moves back to Move to Trash");
+    MessageManager::getInstance()->runDispatchLoopUntil(400);
+    expect(spoken.empty(), "moving between the buttons says nothing more");
+    press(KeyPress(KeyPress::escapeKey));
+    pumpUntil([&] { return Component::getCurrentlyFocusedComponent() == results; });
+    // Held messages are spoken once the screen reader has moved (kScreenReaderRefocusDelayMs).
+    MessageManager::getInstance()->runDispatchLoopUntil(400);
+    expect(second.existsAsFile(), "Escape keeps the preset");
+    expect(Component::getCurrentlyFocusedComponent() == results,
+           "Escape goes back to the preset table, focused " + focused_title().toStdString());
+    expect(!said("Kept Focus test B"), "Escape says nothing more");
+
+    // Return on Move to Trash moves it; the next preset takes its place.
+    expect(delete_selected(1), "Delete asks again");
+    press(KeyPress(KeyPress::returnKey));
+    pumpUntil([&] { return !second.existsAsFile() && Component::getCurrentlyFocusedComponent() == results; });
+    MessageManager::getInstance()->runDispatchLoopUntil(400);
+    expect(!second.existsAsFile(), "Return moves the preset to Trash");
+    expect(Component::getCurrentlyFocusedComponent() == results,
+           "the focus is back in the preset table, focused " + focused_title().toStdString());
+    expect(peer->isFocused(), "the plugin window kept the keyboard");
+    expect(synth.getEditorMemory().preset_bank == bank_name, "the browser stays in the test bank");
+    expect(editor.presetRowCount() == 3 && selected_name() == "Focus test C",
+           "the trashed preset leaves the list at once and the next one is selected, got " +
+             selected_name().toStdString() + " of " + std::to_string(editor.presetRowCount()));
+    expect(said("Moved Focus test B to Trash") && said("Focus test C, 2 of 3"),
+           "the move and the new place are said");
+
+    // The rescan the move started changes none of that.
+    pumpUntil([&] { return !editor.isPresetLibraryBusy(); }, 60000);
+    expect(synth.getEditorMemory().preset_bank == bank_name && selected_name() == "Focus test C" &&
+             editor.presetRowCount() == 3,
+           "after the rescan the browser is still in the test bank on Focus test C");
+
+    // Space on Move to Trash answers Yes, as on a native button.
+    expect(delete_selected(1), "Delete asks for Focus test C");
+    press(KeyPress(KeyPress::spaceKey));
+    pumpUntil([&] { return editor.presetRowCount() == 2; });
+    MessageManager::getInstance()->runDispatchLoopUntil(400);
+    expect(editor.presetRowCount() == 2 && selected_name() == "Focus test D", "Space moves it, and Focus test D follows");
+
+    // The last presets of the bank: back to All banks, and said.
+    for (int left = 2; left > 0; --left) {
+      if (!delete_selected(0))
+        break;
+      press(KeyPress(KeyPress::returnKey));
+      pumpUntil([&] { return editor.presetRowCount() != left || synth.getEditorMemory().preset_bank != bank_name; });
+      MessageManager::getInstance()->runDispatchLoopUntil(400);
+    }
+    expect(synth.getEditorMemory().preset_bank != bank_name, "a bank with no presets left is no longer shown");
+    expect(said("No presets left in " + bank_name + ". Showing all banks"), "the fallback to All banks is said");
+    expect(Component::getCurrentlyFocusedComponent() == results, "the focus is still in the preset table");
+    expect(other_bank.getChildFile("Other" + extension).existsAsFile(), "the preset of the other bank is untouched");
+
+    // The editor joins its preset scans before the library is deleted.
+    pumpUntil([&] { return !editor.isPresetLibraryBusy(); }, 60000);
+    finish();
+#else
+    std::cout << "preset trash test skipped: the Mac asks in a native sheet\n";
+#endif
+  }
+
+  // On Windows comma and period step through an effects chain's slots and,
+  // inside a slot, through its effect's groupings: Reverb has none, so after
+  // Slot 1 (Reverb) and Slot 2 (EQ) come the EQ's Low band, Band 1 to 4 and
+  // High band, then the next element; comma goes back the same way. Mid Side
+  // EQ's Mid and Side are stops too, each followed by its own bands.
+  void testSectionKeysStepThroughEffectGroups() {
+#if JUCE_WINDOWS
+    atlas::speech::setObserverForTesting([](const String&) {});
+    SynthPlugin synth;
+    synth.parameterChanged("fx_slot_1_type", vital::constants::kReverb + 1);
+    synth.parameterChanged("fx_slot_2_type", vital::constants::kEq + 1);
+    synth.parameterChanged("bus_1_fx_slot_1_type", vital::constants::kMidSideEq + 1);
+    synth.parameterChanged("bus_2_fx_slot_1_type", vital::constants::kCompressor + 1);
+    synth.parameterChanged("bus_3_fx_slot_1_type", vital::constants::kGlitchDelay + 1);
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    editor.toFront(true);
+    pumpEditorEvents();
+    auto press = [&](const KeyPress& key) {
+      if (auto* peer = editor.getPeer())
+        peer->handleKeyPress(key);
+    };
+    const KeyPress comma(',', ModifierKeys(), ','), period('.', ModifierKeys(), '.');
+    auto focused_title = [] {
+      auto* focused = Component::getCurrentlyFocusedComponent();
+      return focused != nullptr ? focused->getTitle() : String("nothing");
+    };
+    auto focused_section = [] {
+      for (auto* component = Component::getCurrentlyFocusedComponent(); component != nullptr;
+           component = component->getParentComponent())
+        if (component->getProperties().contains("SectionName"))
+          return component->getProperties()["SectionName"].toString();
+      return String();
+    };
+    // Each press of `key` lands on the next title in `titles`.
+    auto walk = [&](const KeyPress& key, const std::vector<const char*>& titles, const std::string& what) {
+      for (const auto* title : titles) {
+        press(key);
+        if (focused_title() != title) {
+          expect(false, what + ": expected " + title + ", got " + focused_title().toStdString());
+          return false;
+        }
+      }
+      return true;
+    };
+
+    press(KeyPress('f', ModifierKeys(), 'f'));
+    for (int digit = 1; digit <= 9 && focused_section() != "Filter 2"; ++digit)
+      press(KeyPress('0' + digit, ModifierKeys(), static_cast<juce_wchar>('0' + digit)));
+    expect(focused_section() == "Filter 2", "the walk starts on Filter 2");
+    if (walk(period, { "Bus controls", "Slot 1 (Reverb)", "Slot 2 (EQ)", "Low band", "Band 1", "Band 2", "Band 3",
+                       "Band 4", "High band" },
+             "period through the chain, its slots and the EQ's bands")) {
+      press(period);
+      expect(focused_section() == "Envelope 1", "period after the EQ's last band goes on to Envelope 1, got " +
+                                                  focused_section().toStdString());
+      walk(comma, { "High band", "Band 4", "Band 3", "Band 2", "Band 1", "Low band", "Slot 2 (EQ)", "Slot 1 (Reverb)" },
+           "comma back from Envelope 1 through the bands and slots");
+    }
+
+    // From a control inside a band, period goes to the next band's heading
+    // and comma to the one before, as from a control in a slot.
+    auto from_control = [&](const String& id, const KeyPress& key, const char* expected, const std::string& what) {
+      Component::SafePointer<Component> control(editor.controlForParameter(id));
+      expect(control != nullptr, "the editor has " + id.toStdString());
+      if (control == nullptr)
+        return;
+      editor.ensureComponentVisible(control);
+      control->grabKeyboardFocus();
+      press(key);
+      expect(focused_title() == expected, what + ", got " + focused_title().toStdString());
+    };
+    from_control("fx_slot_2_eq_band_2_gain", period, "Band 3", "period from Band 2's Gain goes to Band 3");
+    from_control("fx_slot_2_eq_band_2_gain", comma, "Band 1", "comma from Band 2's Gain goes to Band 1");
+    // A row placed straight in the slot after a grouping (Glitch Delay's Tap
+    // view, between Global and Tap 1) steps on from the grouping before it.
+    from_control("bus_3_fx_slot_1_glitch_delay_tap_view", period, "Tap 1", "period from Tap view goes on to Tap 1");
+
+    // Mid Side EQ on Bus 1: Mid, its bands, then Side and its bands.
+    if (auto* slot = editorSection(editor, "Bus 1 - Chain and routing", 0)) {
+      editor.ensureComponentVisible(slot);
+      slot->grabKeyboardFocus();
+      walk(period, { "Mid", "Low band", "Band 1", "Band 2", "Band 3", "Band 4", "High band", "Side", "Low band" },
+           "period through Mid Side EQ's Mid and Side");
+    }
+    else {
+      expect(false, "Bus 1 shows Mid Side EQ in Slot 1");
+    }
+
+    // The compressor's bands, and Glitch Delay's groups with the ones inside them.
+    const std::pair<const char*, std::vector<const char*>> chains[] = {
+      { "Bus 2 - Chain and routing", { "Low band", "Mid band", "High band" } },
+      { "Bus 3 - Chain and routing", { "Global", "Timing", "Tape stop", "Glitch engine", "Output", "Tap 1", "Delay",
+                                       "Glitches", "Reverse" } } };
+    for (const auto& [chain, titles] : chains) {
+      auto* slot = editorSection(editor, chain, 0);
+      expect(slot != nullptr, std::string(chain) + " shows its effect in Slot 1");
+      if (slot == nullptr)
+        continue;
+      editor.ensureComponentVisible(slot);
+      slot->grabKeyboardFocus();
+      walk(period, titles, std::string("period through the groupings of ") + chain);
+    }
+
+    atlas::speech::setObserverForTesting(nullptr);
+    editor.removeFromDesktop();
+#endif
+  }
+
+  // A message box, file chooser or dialog window takes the window's focus;
+  // when it closes the focus comes back to the control it was opened from.
+  // On Windows the host's window got it before, and NVDA was left in REAPER.
+  void testOsWindowsGiveFocusBack() {
+    atlas::speech::setObserverForTesting([](const String&) {});
+    SynthPlugin synth;
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    editor.toFront(true);
+    pumpEditorEvents();
+    Component::SafePointer<Component> control(editor.controlForParameter("filter_1_model"));
+    auto* peer = editor.getPeer();
+    expect(control != nullptr && peer != nullptr, "the editor has Filter 1's Model");
+    if (control == nullptr || peer == nullptr) {
+      editor.removeFromDesktop();
+      return;
+    }
+    editor.ensureComponentVisible(control);
+    control->grabKeyboardFocus();
+    peer->handleFocusLoss();
+    expect(Component::getCurrentlyFocusedComponent() == nullptr, "the box has taken the window's focus");
+    editor.closeOsWindowForTesting(*control);
+    pumpEditorEvents();
+    expect(Component::getCurrentlyFocusedComponent() == control.getComponent(),
+           "closing the box gives the focus back to Filter 1's Model");
+    atlas::speech::setObserverForTesting(nullptr);
+    editor.removeFromDesktop();
+  }
+
+  // A rebuild that finds nothing like the control it took the focus from
+  // (a heading whose title changed with the oscillator's type) used to leave
+  // no control focused, and JUCE then gave every key to the host. The focus
+  // goes to the section's heading instead.
+  void testOrphanedFocusGoesToTheSectionHeading() {
+#if JUCE_WINDOWS
+    atlas::speech::setObserverForTesting([](const String&) {});
+    SynthPlugin synth;
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    editor.toFront(true);
+    pumpEditorEvents();
+    auto* control = editor.controlForParameter("filter_1_model");
+    Component* heading = nullptr;
+    for (auto* component = control; component != nullptr && heading == nullptr; component = component->getParentComponent())
+      if (component->getProperties()["SectionName"].toString().isNotEmpty() && component->getWantsKeyboardFocus())
+        heading = component;
+    expect(control != nullptr && heading != nullptr, "Filter 1's Model sits under a section heading");
+    if (control == nullptr || heading == nullptr) {
+      editor.removeFromDesktop();
+      return;
+    }
+    const String section = heading->getProperties()["SectionName"].toString();
+    editor.ensureComponentVisible(control);
+    control->grabKeyboardFocus();
+    // As a rebuild does before it deletes the rows.
+    control->giveAwayKeyboardFocus();
+    expect(Component::getCurrentlyFocusedComponent() == nullptr, "the rebuild took the focus from the control");
+    expect(!editor.restoreFocusForTesting("A control no rebuild makes", section),
+           "nothing matches the control that had the focus");
+    pumpEditorEvents();
+    auto* focused = Component::getCurrentlyFocusedComponent();
+    expect(focused == heading, "the focus goes to the section's heading, got " +
+                                 (focused != nullptr ? focused->getTitle().toStdString() : std::string("nothing")));
+    atlas::speech::setObserverForTesting(nullptr);
+    editor.removeFromDesktop();
+#endif
+  }
+
+  // A context menu passes Left (and Right on an item without a submenu) to
+  // the control it was opened from. The control sits behind the menu and must
+  // not change: the user hears the menu, and the sound moved silently.
+  void testContextMenuArrowsLeaveTheControl() {
+    atlas::speech::setObserverForTesting([](const String&) {});
+    SynthPlugin synth;
+    synth.parameterChanged("fx_slot_1_type", vital::constants::kDelay + 1);
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    editor.toFront(true);
+    pumpEditorEvents();
+    auto* peer = editor.getPeer();
+    const KeyPress shift_m('M', ModifierKeys::shiftModifier, 'M');
+    for (const char* id : { "fx_slot_1_delay_feedback", "filter_1_model" }) {
+      Component::SafePointer<Component> control(editor.controlForParameter(id));
+      auto* slider = dynamic_cast<Slider*>(control.getComponent());
+      auto* combo = dynamic_cast<ComboBox*>(control.getComponent());
+      expect(peer != nullptr && (slider != nullptr || combo != nullptr), std::string("the editor has ") + id);
+      if (peer == nullptr || (slider == nullptr && combo == nullptr))
+        continue;
+      auto value = [&] { return slider != nullptr ? slider->getValue() : double(combo->getSelectedItemIndex()); };
+      editor.ensureComponentVisible(control);
+      control->grabKeyboardFocus();
+      const double before = value();
+      peer->handleKeyPress(shift_m);
+      pumpEditorEvents();
+      expect(Component::getCurrentlyModalComponent() != nullptr, std::string("Shift M opens the menu on ") + id);
+      for (const int key : { KeyPress::leftKey, KeyPress::rightKey, KeyPress::leftKey })
+        peer->handleKeyPress(KeyPress(key));
+      pumpEditorEvents();
+      expect(control != nullptr && value() == before,
+             std::string("Left and Right in the menu leave ") + id + " as it was");
+      PopupMenu::dismissAllActiveMenus();
+      pumpEditorEvents();
+    }
+    atlas::speech::setObserverForTesting(nullptr);
+    editor.removeFromDesktop();
+  }
+
   // Oscillator sections group their rows: output rows at the top level, then
   // Analog controls, Pitch and unison (with Scale lock inside), Warp and the
   // type's own group, depending on the slot's type.
@@ -1440,6 +2327,8 @@ namespace {
 
     {
       SynthPlugin synth;
+      // One frame, rather than the seven of the default Basic Shapes.
+      synth.getWavetableCreator(0)->init();
       SynthEditor editor(synth);
       openEditor(editor);
       auto* creator = synth.getWavetableCreator(0);
@@ -1618,6 +2507,441 @@ namespace {
     pumpUntil([&] { return rowTitles().containsIgnoreCase("Predelay tempo"); });
     rows = rowTitles();
     expect(rows.containsIgnoreCase("Predelay tempo"), ("synced predelay shows the division row: " + rows).toStdString());
+  }
+
+  // The groups between a parameter's row and its effect slot, innermost first.
+  String effectRowGroups(SynthEditor& editor, const String& id) {
+    auto* control = editor.controlForParameter(id);
+    if (control == nullptr)
+      return "no row";
+    StringArray titles;
+    for (auto* parent = control->getParentComponent();
+         parent != nullptr && !parent->getProperties().contains("FxSlot"); parent = parent->getParentComponent())
+      if (parent->getProperties().contains("SectionName"))
+        titles.add(parent->getTitle());
+    return titles.joinIntoString(" in ");
+  }
+
+  // Saturator, Dynamic Tube, Overdrive and Multiband Dynamics: Saturator's Type
+  // menu shows Bass Shaper Threshold and the Waveshaper group only for their
+  // curves; Multiband Dynamics groups its rows by band and reads its ratios as
+  // "1 : x"; every row reads in its script's units and has a description.
+  void testDriveDynamicsRows() {
+    SynthPlugin synth;
+    synth.parameterChanged("fx_slot_1_type", vital::constants::kSaturator + 1);
+    synth.parameterChanged("fx_slot_2_type", vital::constants::kMultibandDynamics + 1);
+    synth.parameterChanged("fx_slot_3_type", vital::constants::kDynamicTube + 1);
+    synth.parameterChanged("fx_slot_4_type", vital::constants::kOverdrive + 1);
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    editor.toFront(true);
+    pumpEditorEvents();
+
+    const auto check = [&](const String& id, const String& expected) {
+      const String found = effectRowGroups(editor, id);
+      expect(found == expected, (id + " sits in \"" + expected + "\" (found \"" + found + "\")").toStdString());
+    };
+    const auto value_text = [&](const String& id) {
+      auto* control = editor.controlForParameter(id);
+      auto* handler = control ? control->getAccessibilityHandler() : nullptr;
+      auto* value = handler ? handler->getValueInterface() : nullptr;
+      return value ? value->getCurrentValueAsString() : String("<missing>");
+    };
+    const auto reads = [&](const String& id, const String& expected) {
+      const String found = value_text(id);
+      expect(found == expected, (id + " reads " + expected + " (reads " + found + ")").toStdString());
+    };
+    const auto described = [&](const String& id, const String& phrase = {}) {
+      auto* control = editor.controlForParameter(id);
+      const String description = control ? control->getDescription() : String();
+      expect(description.isNotEmpty() && description.contains(phrase),
+             (id + " has a description" + (phrase.isEmpty() ? String() : " saying " + phrase) + ": " +
+              description).toStdString());
+    };
+
+    const String saturator = "fx_slot_1_saturator_";
+    auto* type = dynamic_cast<ComboBox*>(editor.controlForParameter(saturator + "type"));
+    expect(type != nullptr && type->getNumItems() == 8 && type->getText() == "Analog Clip",
+           "Saturator's Type is a menu of its eight curves, Analog Clip by default");
+    for (const auto* control : { "type", "drive", "post_clip", "output", "dc_filter", "hi_quality", "mix" }) {
+      check(saturator + control, "");
+      described(saturator + control);
+    }
+    for (const auto* control : { "color", "color_low", "color_frequency", "color_width", "color_high" })
+      check(saturator + control, "Color");
+    for (const auto* control : { "bass_threshold", "ws_drive", "ws_depth" })
+      check(saturator + control, "no row");
+    reads(saturator + "drive", "0 dB");
+    reads(saturator + "mix", "100%");
+    synth.parameterChanged((saturator + "type").toStdString(), float(vital::drive_dynamics::kBassShaper));
+    editor.updateFullGui();
+    pumpEditorEvents();
+    check(saturator + "bass_threshold", "");
+    check(saturator + "ws_drive", "no row");
+    synth.parameterChanged((saturator + "type").toStdString(), float(vital::drive_dynamics::kWaveshaper));
+    editor.updateFullGui();
+    pumpEditorEvents();
+    check(saturator + "bass_threshold", "no row");
+    for (const auto* control : { "ws_drive", "ws_linear", "ws_curve", "ws_damp", "ws_period", "ws_depth" })
+      check(saturator + control, "Waveshaper");
+
+    const String multiband = "fx_slot_2_multiband_dynamics_";
+    for (const auto* control : { "low_band", "high_band", "low_split", "high_split" })
+      check(multiband + control, "");
+    const std::pair<const char*, const char*> bands[] = { { "low_", "Low band" }, { "mid_", "Mid band" },
+                                                          { "high_", "High band" } };
+    for (const auto& band : bands)
+      for (const auto& control : vital::drive_dynamics::kMultibandBandControls) {
+        check(multiband + band.first + control.suffix, band.second);
+        described(multiband + band.first + control.suffix);
+      }
+    for (const auto* control : { "detection", "soft_knee", "time", "output", "amount" })
+      check(multiband + control, "Global");
+    reads(multiband + "low_above_ratio", "1 : 1.00");
+    reads(multiband + "low_split", "120 Hz");
+    synth.parameterChanged((multiband + "low_above_ratio").toStdString(), -1.0f);
+    synth.parameterChanged((multiband + "mid_above_ratio").toStdString(), -0.5f);
+    synth.parameterChanged((multiband + "high_below_ratio").toStdString(), -3.0f);
+    editor.updateFullGui();
+    pumpEditorEvents();
+    reads(multiband + "low_above_ratio", "1 : inf");
+    reads(multiband + "mid_above_ratio", "1 : 2.00");
+    reads(multiband + "high_below_ratio", "1 : 0.25");
+    {
+      const std::string id = (multiband + "mid_below_ratio").toStdString();
+      ValueBridge bridge(id, synth.getControls().at(id));
+      const float typed = bridge.getValueForText("1 : 2");
+      expect(bridge.getText(typed, 100) == "1 : 2.00" && bridge.getText(bridge.getValueForText("1:inf"), 100) == "1 : inf",
+             "typing 1 : 2 or 1 : inf sets a Below Ratio that reads back the same");
+    }
+
+    reads("fx_slot_3_dynamic_tube_tone", "0%");
+    reads("fx_slot_3_dynamic_tube_attack", "5 ms");
+    reads("fx_slot_4_overdrive_frequency", "1250 Hz");
+    reads("fx_slot_4_overdrive_mix", "50%");
+    described("fx_slot_3_dynamic_tube_bias", "bias");
+    described("fx_slot_4_overdrive_dynamics", "ceiling");
+    described(multiband + "high_below_ratio", "high band's ratio below its Below Threshold");
+    described(saturator + "ws_period", "ripple");
+  }
+
+  // Maim's Encoder is a menu that decides which rows show: the MP3 bends for
+  // Blade and LAME, packet loss for Opus, GSM and LPC. The rows sit in the
+  // groups of Maim's panels, and read in Maim's units.
+  void testMaimRows() {
+    SynthPlugin synth;
+    synth.parameterChanged("fx_slot_1_type", vital::constants::kMaim + 1);
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    editor.toFront(true);
+    pumpEditorEvents();
+
+    const String prefix = "fx_slot_1_maim_";
+    auto* encoder = dynamic_cast<ComboBox*>(editor.controlForParameter(prefix + "encoder"));
+    expect(encoder != nullptr, "Maim's Encoder is a menu");
+    if (encoder != nullptr) {
+      StringArray items;
+      for (int i = 0; i < encoder->getNumItems(); ++i)
+        items.add(encoder->getItemText(i));
+      expect(items == StringArray { "Blade", "LAME", "Opus", "GSM", "LPC" },
+             "Encoder offers Maim's codecs: " + items.joinIntoString(", ").toStdString());
+      expect(encoder->getText() == "LAME", "Encoder reads LAME by default: " + encoder->getText().toStdString());
+    }
+    auto groups = [&](const char* suffix) { return effectRowGroups(editor, prefix + suffix); };
+    const auto check = [&](const char* suffix, const String& expected) {
+      const String found = groups(suffix);
+      expect(found == expected, (prefix + suffix + " sits in \"" + expected + "\" (found \"" + found + "\")").toStdString());
+    };
+    for (const auto* control : { "bitrate", "turbo", "tilt", "error", "mix" })
+      check(control, "");
+    for (const auto* control : { "shift", "level_shift", "feedback" })
+      check(control, "Spectral");
+    for (const auto* control : { "butterfly_straight", "butterfly_crossed" })
+      check(control, "Butterfly");
+    for (const auto* control : { "band_step", "band_invert", "window_step", "band_shift", "band_reverse" })
+      check(control, "MDCT");
+    for (const auto* control : { "drive", "low_cut", "high_cut", "makeup" })
+      check(control, "Gain and filters");
+    for (const auto* control : { "lpc_rate", "loss_period", "loss_width", "loss_jitter", "loss_mode" })
+      check(control, "no row");
+
+    const auto value_text = [&](const char* suffix) {
+      auto* control = editor.controlForParameter(prefix + suffix);
+      auto* handler = control ? control->getAccessibilityHandler() : nullptr;
+      auto* value = handler ? handler->getValueInterface() : nullptr;
+      return value ? value->getCurrentValueAsString() : String("<missing>");
+    };
+    struct Row { const char* suffix; const char* text; };
+    for (const Row row : { Row { "bitrate", "112 kbps" }, Row { "turbo", "0%" }, Row { "mix", "100%" },
+                           Row { "shift", "0 lines" }, Row { "band_step", "18" }, Row { "window_step", "64" },
+                           Row { "drive", "0 dB" }, Row { "low_cut", "10 Hz" }, Row { "high_cut", "18000 Hz" } }) {
+      expect(value_text(row.suffix) == row.text, std::string("Maim ") + row.suffix + " reads " + row.text +
+             " (reads " + value_text(row.suffix).toStdString() + ")");
+    }
+
+    // Blade loses the LAME-only MDCT rows; Opus loses the bends and gains packet loss.
+    synth.parameterChanged((prefix + "encoder").toStdString(), 0.0f);
+    editor.updateFullGui();
+    pumpEditorEvents();
+    check("butterfly_crossed", "Butterfly");
+    check("band_shift", "MDCT");
+    for (const auto* control : { "band_step", "band_invert", "window_step" })
+      check(control, "no row");
+    synth.parameterChanged((prefix + "encoder").toStdString(), 2.0f);
+    editor.updateFullGui();
+    pumpEditorEvents();
+    check("bitrate", "");
+    check("turbo", "");
+    for (const auto* control : { "loss_period", "loss_width", "loss_jitter", "loss_mode" })
+      check(control, "Packet loss");
+    for (const auto* control : { "shift", "butterfly_straight", "band_shift", "tilt", "lpc_rate" })
+      check(control, "no row");
+    expect(value_text("loss_period") == "2.05 secs" && value_text("loss_mode") == "Drop",
+           "the packet loss rows read in seconds and by name (" + value_text("loss_period").toStdString() + ", " +
+           value_text("loss_mode").toStdString() + ")");
+    // The timer compares the encoder with what the rows were built for; with
+    // Opus chosen it must not find a difference and rebuild the rows every tick.
+    {
+      Component::SafePointer<Component> loss_row(editor.controlForParameter(prefix + "loss_period"));
+      for (int tick = 0; tick < 3; ++tick) {
+        editor.pollStateNow();
+        pumpEditorEvents();
+      }
+      expect(loss_row != nullptr && editor.controlForParameter(prefix + "loss_period") == loss_row.getComponent(),
+             "the timer leaves Maim's rows alone while the encoder stays Opus");
+    }
+    synth.parameterChanged((prefix + "encoder").toStdString(), 4.0f);
+    editor.updateFullGui();
+    pumpEditorEvents();
+    check("lpc_rate", "");
+    check("bitrate", "no row");
+    expect(value_text("lpc_rate") == "8 kHz", "the LPC rate reads in kilohertz (" + value_text("lpc_rate").toStdString() + ")");
+
+    editor.removeFromDesktop();
+  }
+
+  // The EQ gives each band its own group. Mid Side EQ nests the bands of each
+  // channel in a Mid group and a Side group.
+  void testEqualizerBandGroups() {
+    SynthPlugin synth;
+    synth.parameterChanged("fx_slot_1_type", vital::constants::kEq + 1);
+    synth.parameterChanged("fx_slot_2_type", vital::constants::kMidSideEq + 1);
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    pumpEditorEvents();
+
+    auto check = [&](const String& id, const String& expected) {
+      const String found = effectRowGroups(editor, id);
+      expect(found == expected, (id + " sits in \"" + expected + "\" (found \"" + found + "\")").toStdString());
+    };
+    check("fx_slot_1_enabled", "");
+    check("fx_slot_1_eq_low_mode", "Low band");
+    check("fx_slot_1_eq_low_resonance", "Low band");
+    check("fx_slot_1_eq_band_cutoff", "Band 1");
+    check("fx_slot_1_eq_band_2_mode", "Band 2");
+    check("fx_slot_1_eq_band_3_gain", "Band 3");
+    check("fx_slot_1_eq_band_4_resonance", "Band 4");
+    check("fx_slot_1_eq_high_cutoff", "High band");
+    check("fx_slot_2_enabled", "");
+    check("fx_slot_2_mid_side_eq_mid_eq_low_cutoff", "Low band in Mid");
+    check("fx_slot_2_mid_side_eq_mid_eq_band_mode", "Band 1 in Mid");
+    check("fx_slot_2_mid_side_eq_mid_eq_high_gain", "High band in Mid");
+    check("fx_slot_2_mid_side_eq_side_eq_low_mode", "Low band in Side");
+    check("fx_slot_2_mid_side_eq_side_eq_band_3_resonance", "Band 3 in Side");
+    check("fx_slot_2_mid_side_eq_side_eq_high_resonance", "High band in Side");
+
+    // Keyboard order: each group's heading, then its rows, band after band, Mid before Side.
+    const auto& order = editor.getKeyboardFocusOrder();
+    auto position = [&](Component* control) {
+      const auto found = std::find(order.begin(), order.end(), control);
+      return found == order.end() ? -1 : int(found - order.begin());
+    };
+    auto row = [&](const String& id) { return position(editor.controlForParameter(id)); };
+    auto group = [&](const String& key) { return position(editorSection(editor, "Chain and routing slot " + key)); };
+    expect(group("1 eq low band") >= 0 && group("1 eq low band") < row("fx_slot_1_eq_low_mode") &&
+           row("fx_slot_1_eq_low_resonance") < group("1 eq band 1") &&
+           group("1 eq band 1") < row("fx_slot_1_eq_band_mode") &&
+           row("fx_slot_1_eq_band_4_resonance") < group("1 eq high band") &&
+           group("1 eq high band") < row("fx_slot_1_eq_high_mode"),
+           "the EQ reads each band's heading, then its rows, from low to high");
+    expect(group("2 mid side eq mid") >= 0 && group("2 mid side eq mid") < group("2 mid side eq mid low band") &&
+           row("fx_slot_2_mid_side_eq_mid_eq_high_resonance") < group("2 mid side eq side") &&
+           group("2 mid side eq side") < group("2 mid side eq side low band") &&
+           group("2 mid side eq side low band") < row("fx_slot_2_mid_side_eq_side_eq_low_mode"),
+           "Mid Side EQ reads the Mid group's bands, then the Side group's");
+  }
+
+  // The compressor keeps its global controls at the top of the slot and gives
+  // each band its own group below them.
+  void testCompressorBandGroups() {
+    SynthPlugin synth;
+    synth.parameterChanged("fx_slot_1_type", vital::constants::kCompressor + 1);
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    pumpEditorEvents();
+
+    const std::initializer_list<const char*> global_rows = {
+      "enabled", "compressor_enabled_bands", "compressor_attack", "compressor_release", "compressor_mix" };
+    const std::initializer_list<const char*> band_rows = {
+      "upper_threshold", "upper_ratio", "lower_threshold", "lower_ratio", "gain" };
+    const std::pair<const char*, const char*> bands[] = {
+      { "low", "Low band" }, { "band", "Mid band" }, { "high", "High band" } };
+
+    auto check = [&](const String& id, const String& expected) {
+      const String found = effectRowGroups(editor, id);
+      expect(found == expected, (id + " sits in \"" + expected + "\" (found \"" + found + "\")").toStdString());
+    };
+    for (const auto* control : global_rows)
+      check("fx_slot_1_" + String(control), "");
+    for (const auto& [prefix, title] : bands)
+      for (const auto* control : band_rows)
+        check("fx_slot_1_compressor_" + String(prefix) + "_" + control, title);
+
+    // Keyboard order: Enabled and the global rows, then each band's heading
+    // and its rows, from low to high.
+    const auto& order = editor.getKeyboardFocusOrder();
+    auto position = [&](Component* control) {
+      const auto found = std::find(order.begin(), order.end(), control);
+      return found == order.end() ? -1 : int(found - order.begin());
+    };
+    std::vector<int> sequence;
+    for (const auto* control : global_rows)
+      sequence.push_back(position(editor.controlForParameter("fx_slot_1_" + String(control))));
+    for (const auto& [prefix, title] : bands) {
+      sequence.push_back(position(editorSection(editor, "Chain and routing slot 1 compressor " + String(title).toLowerCase())));
+      for (const auto* control : band_rows)
+        sequence.push_back(position(editor.controlForParameter("fx_slot_1_compressor_" + String(prefix) + "_" + control)));
+    }
+    StringArray positions;
+    for (int index : sequence)
+      positions.add(String(index));
+    expect(sequence.front() >= 0 &&
+           std::adjacent_find(sequence.begin(), sequence.end(), std::greater_equal<int>()) == sequence.end(),
+           ("the compressor reads Enabled, Enabled Bands, Attack, Release and Mix, then each band's heading and rows "
+            "from low to high (positions " + positions.joinIntoString(" ") + ")").toStdString());
+  }
+
+  // Return on an oscillator row opens the value field; Return or Escape there
+  // must bring focus back to the row, whatever the oscillator's type, even
+  // when the editor's timer has run while the field was open.
+  void testTypedValueReturnsToOscillatorRows() {
+    SynthPlugin synth;
+    synth.parameterChanged("osc_1_type", float(vital::source_types::kMultiSample));
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    editor.toFront(true);
+    pumpEditorEvents();
+
+    auto focusedName = [&] {
+      auto* focused = Component::getCurrentlyFocusedComponent();
+      if (focused == &editor)
+        return std::string("the editor itself");
+      return focused != nullptr ? focused->getTitle().toStdString() : std::string("nothing");
+    };
+    // Keys go through the window, as typing does: Escape in the field reaches
+    // the editor, which closes the prompt.
+    auto press = [&](int key_code) {
+      if (auto* peer = editor.getPeer())
+        peer->handleKeyPress(KeyPress(key_code));
+    };
+    for (const String id : { "osc_1_multisample_transpose", "osc_1_multisample_tune", "osc_2_transpose" }) {
+      for (const bool cancel : { false, true }) {
+        const std::string what = id.toStdString() + (cancel ? " after Escape" : " after Return");
+        auto* control = editor.controlForParameter(id);
+        expect(control != nullptr, id.toStdString() + " has a row");
+        if (control == nullptr)
+          continue;
+        editor.ensureComponentVisible(control);
+        control->grabKeyboardFocus();
+        press(KeyPress::returnKey);
+        expect(dynamic_cast<TextEditor*>(Component::getCurrentlyFocusedComponent()) != nullptr,
+               "Return on " + id.toStdString() + " opens the value field, focused " + focusedName());
+        // Typing takes a while: the timer refreshes the rows meanwhile.
+        pumpEditorEvents();
+        auto* field = dynamic_cast<TextEditor*>(Component::getCurrentlyFocusedComponent());
+        expect(field != nullptr, "the value field keeps focus while open for " + id.toStdString() +
+               ", focused " + focusedName());
+        if (field == nullptr)
+          continue;
+        if (!cancel)
+          field->setText("3", dontSendNotification);
+        press(cancel ? KeyPress::escapeKey : KeyPress::returnKey);
+        pumpEditorEvents();
+        expect(editor.focusedRowParameterId() == id, "focus is back on " + what + ", focused " + focusedName());
+        auto* row = editor.controlForParameter(id);
+        expect(row != nullptr && row->getAccessibilityHandler() != nullptr &&
+               row->getAccessibilityHandler()->hasFocus(false), "the screen reader is back on " + what);
+        // The field stays a moment, until the screen reader has followed focus off it.
+        pumpUntil([&] { return !field->isVisible(); });
+        expect(!field->isVisible(), "the value field is hidden " + std::string(cancel ? "after Escape" : "after Return"));
+      }
+    }
+    editor.removeFromDesktop();
+  }
+
+  // The window loses focus to a file chooser, a menu or the host. If the rows
+  // are rebuilt before it gets focus back, JUCE has lost the control it was
+  // going to return to and focuses the editor itself, which a screen reader
+  // reads as the top of the window. Focus must land on the control's
+  // replacement instead.
+  void testWindowRefocusFindsTheRebuiltControl() {
+    SynthPlugin synth;
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    editor.toFront(true);
+    pumpEditorEvents();
+
+    auto showButton = [&]() -> Component* {
+      auto* oscillator = editorSection(editor, "Oscillator 2");
+      return oscillator != nullptr ? titled(*oscillator, "Show wavetable editor") : nullptr;
+    };
+    auto focusedName = [&] {
+      auto* focused = Component::getCurrentlyFocusedComponent();
+      if (focused == &editor)
+        return std::string("the editor itself");
+      return focused != nullptr ? focused->getTitle().toStdString() : std::string("nothing");
+    };
+    auto* button = showButton();
+    auto* peer = editor.getPeer();
+    expect(button != nullptr && peer != nullptr, "Oscillator 2 has a Show wavetable editor button on screen");
+    if (button == nullptr || peer == nullptr) {
+      editor.removeFromDesktop();
+      return;
+    }
+    editor.ensureComponentVisible(button);
+    button->grabKeyboardFocus();
+
+    // Nothing rebuilt: focus comes back to the same button.
+    peer->handleFocusLoss();
+    expect(Component::getCurrentlyFocusedComponent() == nullptr, "the window has lost focus");
+    peer->handleFocusGain();
+    pumpEditorEvents();
+    expect(Component::getCurrentlyFocusedComponent() == button,
+           "focus comes back to the button, focused " + focusedName());
+
+    // Rebuilt while the window had no focus: focus finds the new button.
+    Component::SafePointer<Component> old_button(button);
+    peer->handleFocusLoss();
+    editor.updateFullGui();
+    pumpEditorEvents();
+    expect(old_button == nullptr && showButton() != nullptr, "the rebuild replaced the button");
+    peer->handleFocusGain();
+    pumpEditorEvents();
+    auto* replacement = showButton();
+    expect(replacement != nullptr && Component::getCurrentlyFocusedComponent() == replacement,
+           "focus comes back to Oscillator 2's new Show wavetable editor button, focused " + focusedName());
+    expect(replacement != nullptr && replacement->getAccessibilityHandler() != nullptr &&
+           replacement->getAccessibilityHandler()->hasFocus(false),
+           "the screen reader is on the new button too");
+    editor.removeFromDesktop();
   }
 
   // A modulation amount typed in destination units keeps fractions on stepped
@@ -1915,7 +3239,9 @@ namespace {
       };
       visit(*section);
       // Multi-sample keeps its instrument controls on buttons; its parameter rows are few.
-      const int minimum_rows = type == vital::source_types::kMultiSample ? 8 : 10;
+      // Speech has its text box and two menus besides the slot's own rows.
+      const int minimum_rows = type == vital::source_types::kMultiSample ? 8
+                             : type == vital::source_types::kSpeech ? 7 : 10;
       expect(rows > minimum_rows, type_name + " shows its controls");
       expect(misnamed.isEmpty(), type_name + " rows read the oscillator number, not its name: " +
                                      misnamed.joinIntoString(", ").toStdString());

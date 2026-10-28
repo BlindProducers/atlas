@@ -229,6 +229,56 @@ namespace {
           set(plugin, slotId("spectral_stretch"), 1.5f);
           set(plugin, slotId("spectral_phase_randomize"), 0.0f);
         } },
+      // The Spectral settings of a bell keys patch: tilt, a full gate, a band
+      // edge and peak-locked phases with transient resets.
+      { "spectral_tilt_gate_peak_locked", [=](SynthPlugin& plugin) {
+          quiet_oscillators(plugin);
+          loadTestSample(plugin.getSample(6));
+          std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+          set(plugin, slotId("spectral_on"), 1.0f);
+          set(plugin, slotId("spectral_phase_randomize"), 0.0f);
+          set(plugin, slotId("spectral_tilt"), -2.88f);
+          set(plugin, slotId("spectral_effect"), 1.0f);
+          set(plugin, slotId("spectral_effect_amount"), 1.0f);
+          set(plugin, slotId("spectral_bin_low"), 0.51f);
+          set(plugin, slotId("spectral_phase_mode"), 2.0f);
+          set(plugin, slotId("spectral_preserve_transients"), 1.0f);
+          set(plugin, slotId("spectral_keep_fundamental"), 1.0f);
+          set(plugin, slotId("spectral_play_mode"), 1.0f);
+          set(plugin, slotId("spectral_tune"), 0.32f);
+        } },
+      // Tilt moving every hop, with locked phases and compression.
+      { "spectral_tilt_lfo_locked_compress", [=](SynthPlugin& plugin) {
+          quiet_oscillators(plugin);
+          loadTestSample(plugin.getSample(6));
+          std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+          set(plugin, slotId("spectral_on"), 1.0f);
+          set(plugin, slotId("spectral_phase_randomize"), 0.0f);
+          set(plugin, slotId("spectral_tilt"), 6.0f);
+          set(plugin, slotId("spectral_effect"), 2.0f);
+          set(plugin, slotId("spectral_effect_amount"), 0.6f);
+          set(plugin, slotId("spectral_phase_mode"), 1.0f);
+          set(plugin, slotId("spectral_position"), 0.2f);
+          set(plugin, "lfo_1_frequency", 2.0f);
+          plugin.connectModulation("lfo_1", slotId("spectral_tilt"));
+          const int connection = plugin.getConnectionIndex("lfo_1", slotId("spectral_tilt"));
+          expect(connection >= 0, "modulation to spectral_tilt connects");
+          if (connection >= 0)
+            set(plugin, "modulation_" + std::to_string(connection + 1) + "_amount", 0.5f);
+        } },
+      // Vocoder phases, which read the analysed phases only when they reset.
+      { "spectral_vocoder_transients", [=](SynthPlugin& plugin) {
+          quiet_oscillators(plugin);
+          loadTestSample(plugin.getSample(6));
+          std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+          set(plugin, slotId("spectral_on"), 1.0f);
+          set(plugin, slotId("spectral_phase_randomize"), 0.0f);
+          set(plugin, slotId("spectral_phase_mode"), 0.0f);
+          set(plugin, slotId("spectral_preserve_transients"), 1.0f);
+          set(plugin, slotId("spectral_effect"), 1.0f);
+          set(plugin, slotId("spectral_effect_amount"), 0.5f);
+          set(plugin, slotId("spectral_play_mode"), 1.0f);
+        } },
       { "noise_filtered", [=](SynthPlugin& plugin) {
           quiet_oscillators(plugin);
           set(plugin, slotId("noise_on"), 1.0f);
@@ -1634,7 +1684,7 @@ namespace {
 
 namespace {
   // Wall time of rendering `seconds` of a held note, best of three fresh plugins.
-  double renderMs(const std::function<void(SynthPlugin&)>& configure, double seconds) {
+  double renderMs(const std::function<void(SynthPlugin&)>& configure, double seconds, int notes = 1) {
     double best = 1.0e9;
     for (int run = 0; run < 3; ++run) {
       SynthPlugin plugin;
@@ -1646,13 +1696,34 @@ namespace {
       for (int offset = 0; offset < samples; offset += 128) {
         juce::MidiBuffer midi;
         audio.clear();
-        if (offset == 0)
-          midi.addEvent(juce::MidiMessage::noteOn(1, 60, 0.7f), 0);
+        if (offset == 0) {
+          for (int note = 0; note < notes; ++note)
+            midi.addEvent(juce::MidiMessage::noteOn(1, 60 + note, 0.7f), 0);
+        }
         plugin.processBlock(audio, midi);
       }
       best = std::min(best, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count());
     }
     return best;
+  }
+
+  // Time for two seconds of a 16-note chord on the Spectral settings of a bell
+  // keys patch at 2x oversampling. Prints only; a guide for optimising.
+  int spectralCpu() {
+    const auto all = fixtures();
+    const auto fixture = std::find_if(all.begin(), all.end(), [](const Fixture& candidate) {
+      return candidate.name == "spectral_tilt_gate_peak_locked";
+    });
+    const auto configure = [&](SynthPlugin& plugin) {
+      fixture->configure(plugin);
+      set(plugin, "polyphony", 16.0f);
+      set(plugin, "oversampling", 1.0f);
+      plugin.checkOversampling();
+    };
+    std::cout << std::fixed << std::setprecision(1);
+    for (int notes : { 1, 16 })
+      std::cout << notes << " Spectral voices: " << renderMs(configure, 2.0, notes) << " ms per 2 s\n";
+    return failures == 0 ? 0 : 1;
   }
 
   // Per-type render cost. The bounds are loose: they catch an inactive type
@@ -1740,10 +1811,12 @@ int main(int argc, char** argv) {
     return writePresets(juce::File(juce::String(argv[2])));
   if (argc > 1 && juce::String(argv[1]) == "--cpu")
     return cpu();
+  if (argc > 1 && juce::String(argv[1]) == "--spectral-cpu")
+    return spectralCpu();
   if (argc > 1 && juce::String(argv[1]) == "--behaviour")
     return behaviour();
   if (argc > 1) {
-    std::cerr << "usage: AtlasSourceSlotTests [--behaviour | --cpu | --write-presets <dir> | --capture <dir> | --compare <dir>]\n";
+    std::cerr << "usage: AtlasSourceSlotTests [--behaviour | --cpu | --spectral-cpu | --write-presets <dir> | --capture <dir> | --compare <dir>]\n";
     return 2;
   }
   return behaviour();

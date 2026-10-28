@@ -47,6 +47,28 @@ namespace vital {
       void readFrameInterpolated(double position, float* out_mag, float* out_freq,
                                  float* out_phase = nullptr, bool* transient = nullptr) const noexcept;
 
+      // The frames readFrameInterpolated blends at a position, so a caller can
+      // read the phases of only the bins it needs, as readFrameInterpolated
+      // would give them.
+      struct FramePair {
+        const Frame* frame_0 = nullptr;
+        const Frame* frame_1 = nullptr;
+        float t = 0.0f;
+      };
+      FramePair framePair(double position) const noexcept;
+
+      static float interpolatedPhase(const FramePair& frames, int bin) noexcept {
+        if (frames.frame_0 == nullptr)
+          return 0.0f;
+        if (frames.frame_1 == nullptr)
+          return frames.frame_0->phase[static_cast<size_t>(bin)];
+        const float phase_0 = frames.frame_0->phase[static_cast<size_t>(bin)];
+        const float expected = frames.frame_1->true_freq[static_cast<size_t>(bin)] * kHop;
+        const float delta = expected + std::remainder(frames.frame_1->phase[static_cast<size_t>(bin)] -
+            phase_0 - expected, juce::MathConstants<float>::twoPi);
+        return std::remainder(phase_0 + frames.t * delta, juce::MathConstants<float>::twoPi);
+      }
+
       int numFrames() const noexcept { return static_cast<int>(frames_.size()); }
       int numSourceSamples() const noexcept { return source_samples_; }
       double sourceSampleRate() const noexcept { return source_sample_rate_; }

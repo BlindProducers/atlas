@@ -131,11 +131,28 @@ namespace vital {
     poly_float* bus2_output = output(kBus2Out)->buffer;
     poly_float* bus3_output = output(kBus3Out)->buffer;
     poly_float* direct_output = output(kDirectOut)->buffer;
-    utils::zeroBuffer(main_output, num_samples);
-    utils::zeroBuffer(bus1_output, num_samples);
-    utils::zeroBuffer(bus2_output, num_samples);
-    utils::zeroBuffer(bus3_output, num_samples);
-    utils::zeroBuffer(direct_output, num_samples);
+    auto outputFor = [](int destination) {
+      if (destination == constants::kBus1) return kBus1Out;
+      if (destination == constants::kBus2) return kBus2Out;
+      if (destination == constants::kBus3) return kBus3Out;
+      if (destination == constants::kDirectOut) return kDirectOut;
+      return kMainOut;
+    };
+    // Clear only the outputs routed to this block, and the ones routed to last
+    // block (whole, as a later, longer block reads past this one's samples).
+    unsigned written = 0;
+    if (routing != FilterRouting::kSerialForward)
+      written |= 1u << outputFor(filter_1_destination_->value());
+    if (routing != FilterRouting::kSerialBackward)
+      written |= 1u << outputFor(filter_2_destination_->value());
+    for (int index : { kMainOut, kBus1Out, kBus2Out, kBus3Out, kDirectOut }) {
+      const unsigned bit = 1u << index;
+      if (written & bit)
+        utils::zeroBuffer(output(index)->buffer, num_samples);
+      else if (*written_outputs_ & bit)
+        utils::zeroBuffer(output(index)->buffer, output(index)->buffer_size);
+    }
+    *written_outputs_ = written;
 
     auto route = [this, num_samples, main_output, bus1_output, bus2_output, bus3_output, direct_output](
                      const poly_float* source, int destination, bool envelope_before) {
@@ -190,13 +207,24 @@ namespace vital {
     else
       processParallel(num_samples);
 
+    // Voice lifetime: a voice is alive while its envelope is, and, with a
+    // Reverb tail, while any output is audible or briefly after. Per sample,
+    // with every lane and output at once; only voice events and the per-lane
+    // counters are scalar.
     const auto* events = input(kVoiceEvent)->source;
     const int kill_samples = std::max(1, int(getSampleRate() * kVoiceKillTime));
     const int hold_samples = getSampleRate() / 2;
+    int event_offsets[poly_float::kSize];
+    for (int lane = 0; lane < poly_float::kSize; ++lane)
+      event_offsets[lane] = events->trigger_mask[lane] ? events->trigger_offset[lane] : -1;
+    poly_float* outputs[kDirectOut - kMainOut + 1];
+    for (int out = kMainOut; out <= kDirectOut; ++out) outputs[out - kMainOut] = output(out)->buffer;
+    poly_float* alive_output = output(kVoiceAlive)->buffer;
+    const poly_float audible = 1e-5f;
     for (int i = 0; i < num_samples; ++i) {
-      poly_float alive = voiceAmplitude(i);
+      bool any_killed = false;
       for (int lane = 0; lane < poly_float::kSize; ++lane) {
-        if (events->trigger_mask[lane] && events->trigger_offset[lane] == i) {
+        if (i == event_offsets[lane]) {
           if (events->trigger_value[lane] == kVoiceOn) {
             killed_[lane] = false;
             tail_hold_[lane] = 0;
@@ -206,22 +234,42 @@ namespace vital {
             kill_remaining_[lane] = kill_samples;
           }
         }
-        const float kill_gain = killed_[lane] ? float(kill_remaining_[lane]) / kill_samples : 1.f;
-        if (killed_[lane] && kill_remaining_[lane] > 0) --kill_remaining_[lane];
-        float peak = 0;
-        for (int out = kMainOut; out <= kDirectOut; ++out) {
-          const float sample = output(out)->buffer[i][lane];
-          peak = std::max(peak, std::abs(sample));
-          if (tail_enabled) output(out)->buffer[i].set(lane, sample * kill_gain);
-        }
-        // Cover silent gaps between long low-cutoff reflections, but retire
-        // inaudible tails. Forced voice steals still use the short kill fade.
-        if (!tail_enabled || (killed_[lane] && kill_remaining_[lane] == 0)) tail_hold_[lane] = 0;
-        else if (peak > 1e-5f || std::abs(alive[lane]) > 1e-5f) tail_hold_[lane] = hold_samples;
-        else if (tail_hold_[lane] > 0) --tail_hold_[lane];
-        if (tail_hold_[lane] > 0) alive.set(lane, 1);
+        any_killed = any_killed || killed_[lane];
       }
-      output(kVoiceAlive)->buffer[i] = alive;
+      // A killed voice fades out over kill_samples; the others keep gain 1.
+      poly_float kill_gain = 1.0f;
+      if (any_killed) {
+        for (int lane = 0; lane < poly_float::kSize; ++lane) {
+          if (!killed_[lane]) continue;
+          kill_gain.set(lane, float(kill_remaining_[lane]) / kill_samples);
+          if (kill_remaining_[lane] > 0) --kill_remaining_[lane];
+        }
+      }
+      // Whether any output's level exceeds -100 dB (NaN does not).
+      poly_mask loud = 0;
+      for (poly_float* buffer : outputs) {
+        const poly_float sample = buffer[i];
+        loud = loud | poly_float::greaterThan(poly_float::abs(sample), audible);
+        if (tail_enabled && any_killed) buffer[i] = sample * kill_gain;
+      }
+      poly_float alive = voiceAmplitude(i);
+      if (tail_enabled) {
+        loud = loud | poly_float::greaterThan(poly_float::abs(alive), audible);
+        poly_mask holding = 0;
+        for (int lane = 0; lane < poly_float::kSize; ++lane) {
+          // Cover silent gaps between long low-cutoff reflections, but retire
+          // inaudible tails. Forced voice steals still use the short kill fade.
+          if (killed_[lane] && kill_remaining_[lane] == 0) tail_hold_[lane] = 0;
+          else if (loud[lane]) tail_hold_[lane] = hold_samples;
+          else if (tail_hold_[lane] > 0) --tail_hold_[lane];
+          if (tail_hold_[lane] > 0) holding.set(lane, 0xFFFFFFFF);
+        }
+        alive = utils::reinterpretToFloat((utils::reinterpretToInt(alive) & ~holding) |
+                                          (utils::reinterpretToInt(1.0f) & holding));
+      }
+      else
+        tail_hold_.fill(0);
+      alive_output[i] = alive;
     }
   }
 } // namespace vital

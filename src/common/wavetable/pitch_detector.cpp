@@ -19,6 +19,7 @@
 #include "wave_frame.h"
 
 #include <climits>
+#include <limits>
 
 PitchDetector::PitchDetector() {
   size_ = 0;
@@ -27,16 +28,22 @@ PitchDetector::PitchDetector() {
 
 void PitchDetector::loadSignal(const float* signal, int size) {
   size_ = size;
-  signal_data_ = std::make_unique<float[]>(size);
+  // One more sample, a copy of the last: the last wave's final point
+  // interpolates towards the sample after it.
+  signal_data_ = std::make_unique<float[]>(size + 1);
 
   memcpy(signal_data_.get(), signal, sizeof(float) * size);
+  signal_data_[size] = size > 0 ? signal[size - 1] : 0.0f;
 }
 
 float PitchDetector::getPeriodError(float period) {
   static constexpr float kDcDeltaErrorMultiplier = 0.015f;
   float error = 0.0f;
   int waves = size_ / period - 1;
-  VITAL_ASSERT(waves > 0);
+  // Fewer than two whole periods leave no wave to compare with the next. (The
+  // division below would trap on x86, where dividing by zero is an exception.)
+  if (waves < 1)
+    return std::numeric_limits<float>::max();
   int points = kNumPoints / waves;
   for (int w = 0; w < waves; ++w) {
     float total_from = 0.0f;
@@ -72,6 +79,11 @@ float PitchDetector::getPeriodError(float period) {
 
 float PitchDetector::findYinPeriod(int max_period) {
   constexpr float kMinLength = 300.0f;
+
+  // A signal shorter than two of the shortest periods looked for holds no
+  // period to measure: 0 says so.
+  if (size_ / 2.0f <= kMinLength)
+    return 0.0f;
 
   float max_length = std::min<float>(size_ / 2.0f, max_period);
 

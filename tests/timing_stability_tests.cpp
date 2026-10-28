@@ -904,6 +904,76 @@ namespace {
     }
   }
 
+  // Free Running: voices share one stream, a note joins it where it is, and
+  // it keeps time through a stretch with no voice playing.
+  void testFreeRunningRandomSharedAcrossVoices() {
+    constexpr int kBlock = 64;
+    for (int style : { vital::RandomLfo::kPerlin, vital::RandomLfo::kSampleAndHold,
+                       vital::RandomLfo::kSinInterpolate, vital::RandomLfo::kLorenzAttractor }) {
+      RandomFixture graph_lfo(style);
+      RandomFixture continuous(style);
+      graph_lfo.controls[vital::RandomLfo::kSync].set(vital::RandomLfo::kFreeRunning);
+      continuous.controls[vital::RandomLfo::kSync].set(vital::RandomLfo::kFreeRunning);
+      graph_lfo.controls[vital::RandomLfo::kFrequency].set(40.0f);
+      continuous.controls[vital::RandomLfo::kFrequency].set(40.0f);
+      std::unique_ptr<vital::RandomLfo> first(static_cast<vital::RandomLfo*>(graph_lfo.lfo.clone()));
+      std::unique_ptr<vital::RandomLfo> second(static_cast<vital::RandomLfo*>(graph_lfo.lfo.clone()));
+      const std::string name = " (style " + std::to_string(style) + ")";
+
+      for (int block = 0; block < 40; ++block) {
+        const bool first_plays = block < 25;
+        const bool second_plays = (block >= 10 && block < 20) || block >= 32;
+        if (block == 10 || block == 32)
+          graph_lfo.trigger.trigger(vital::poly_mask(-1), vital::poly_float(vital::kVoiceOn), vital::poly_int(0));
+        // Bare clones share their outputs (a voice router gives each voice its
+        // own), so each one's block is copied before the next renders.
+        std::array<vital::poly_float, kBlock> first_out {}, second_out {};
+        if (first_plays) {
+          first->process(kBlock);
+          std::copy_n(first->output()->buffer, kBlock, first_out.begin());
+        }
+        if (second_plays) {
+          second->process(kBlock);
+          std::copy_n(second->output()->buffer, kBlock, second_out.begin());
+        }
+        graph_lfo.trigger.clearTrigger();
+        continuous.lfo.process(kBlock);
+        graph_lfo.lfo.advanceFreeClock(kBlock);
+        continuous.lfo.advanceFreeClock(kBlock);
+
+        for (int sample = 0; sample < kBlock; ++sample) {
+          for (int lane = 0; lane < vital::poly_float::kSize; ++lane) {
+            if (first_plays && second_plays)
+              expectClose(second_out[sample][lane], first_out[sample][lane], 1.0e-6f,
+                          "free-running random voices must share one stream" + name);
+            if (first_plays && lane >= 2)
+              expectClose(first_out[sample][lane], first_out[sample][lane - 2], 1.0e-6f,
+                          "both voices of a poly pair must hear the free-running stream" + name);
+            if (second_plays && block >= 32 && style != vital::RandomLfo::kLorenzAttractor)
+              expectClose(second_out[sample][lane], continuous.lfo.output()->buffer[sample][lane],
+                          1.0e-4f, "free-running random must keep time while no voice plays" + name);
+          }
+        }
+      }
+    }
+
+    // Trigger, by contrast, restarts each voice's own stream on its note.
+    RandomFixture graph_lfo(vital::RandomLfo::kPerlin);
+    graph_lfo.controls[vital::RandomLfo::kFrequency].set(40.0f);
+    std::unique_ptr<vital::RandomLfo> first(static_cast<vital::RandomLfo*>(graph_lfo.lfo.clone()));
+    std::unique_ptr<vital::RandomLfo> second(static_cast<vital::RandomLfo*>(graph_lfo.lfo.clone()));
+    bool differ = false;
+    for (int block = 0; block < 20; ++block) {
+      first->process(kBlock);
+      const float first_value = first->output()->buffer[0][0];
+      if (block >= 10) {
+        second->process(kBlock);
+        differ |= second->output()->buffer[0][0] != first_value;
+      }
+    }
+    expect(differ, "trigger-mode random voices keep streams of their own");
+  }
+
   void testNoteOnRandomHoldsPerVoice() {
     vital::TriggerRandom note_on_random;
     vital::Output note_on;
@@ -2887,12 +2957,15 @@ namespace {
 #include "analog_oscillator_tests.h"
 #include "distortion_filter_tests.h"
 #include "fourier_transform_tests.h"
+#include "maim_tests.h"
 
 int main(int argc, char** argv) {
   if (argc > 1 && std::string(argv[1]) == "--distortion-filter")
     return distortion_filter_tests::run();
   if (argc > 1 && std::string(argv[1]) == "--fourier-transform")
     return fourier_transform_tests::run();
+  if (argc > 1 && std::string(argv[1]) == "--maim")
+    return maim_tests::run();
   if (argc > 1 && std::string(argv[1]) == "--analog-oscillator")
     return analog_oscillator_tests::runDsp();
   if (argc > 1 && std::string(argv[1]) == "--analog-oscillator-controls")
@@ -3009,6 +3082,7 @@ int main(int argc, char** argv) {
   testLfoSyncClockReachesVoiceClones();
   testRandomBlockInvariance();
   testRandomSyncClockReachesVoiceClones();
+  testFreeRunningRandomSharedAcrossVoices();
   testNoteOnRandomHoldsPerVoice();
   testIndependentRandomLfoStreams();
   testModulationRandomCorrelationSelector();

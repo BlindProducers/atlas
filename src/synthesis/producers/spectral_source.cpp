@@ -453,8 +453,9 @@ namespace vital {
     auto& overlap = lane.overlap;
 
     bool transient = false;
+    // The analysed phases are read below, only for the bins that use them.
     analysis.readFrameInterpolated(lane.position, lane.magnitude.data(), lane.frequency.data(),
-                                   lane.phase.data(), &transient);
+                                   nullptr, &transient);
     lane.original_magnitude = lane.magnitude;
 
     const float root_frequency = noteToFrequency(root_note);
@@ -500,11 +501,19 @@ namespace vital {
 
     const float tilt = juce::jlimit(-24.0f, 24.0f, value(kSpectralTilt));
     if (std::abs(tilt) > 0.0001f) {
-      const float reference_bin = bins / 8.0f;
-      for (int bin = 1; bin < bins; ++bin) {
-        const float octaves = std::log2(bin / reference_bin);
-        lane.magnitude[static_cast<size_t>(bin)] *= std::pow(10.0f, tilt * octaves / 20.0f);
+      // A log and a power per bin cost more than the rest of the frame, and
+      // tilt rarely moves between hops.
+      if (!lane.tilt_gain_valid || tilt != lane.tilt_gain_tilt) {
+        const float reference_bin = bins / 8.0f;
+        for (int bin = 1; bin < bins; ++bin) {
+          const float octaves = std::log2(bin / reference_bin);
+          lane.tilt_gain[static_cast<size_t>(bin)] = std::pow(10.0f, tilt * octaves / 20.0f);
+        }
+        lane.tilt_gain_valid = true;
+        lane.tilt_gain_tilt = tilt;
       }
+      for (int bin = 1; bin < bins; ++bin)
+        lane.magnitude[static_cast<size_t>(bin)] *= lane.tilt_gain[static_cast<size_t>(bin)];
     }
 
     const float raw_effect_amount = juce::jlimit(0.0f, 1.0f, value(kEffectAmount));
@@ -685,6 +694,28 @@ namespace vital {
     // A frozen/slow transient must only reset once, not once per synthesis hop.
     lane.last_transient_frame = transient ? analysis_frame : -1;
 
+    // Each analysed phase costs two remainders. A reset takes every bin's; after
+    // that only the bins locked to a peak read theirs (and their peak's), and
+    // vocoder phases read none.
+    const SpectralAnalysis::FramePair frames = analysis.framePair(lane.position);
+    if (reset_phases) {
+      for (int bin = 0; bin < bins; ++bin)
+        lane.phase[bin] = SpectralAnalysis::interpolatedPhase(frames, bin);
+    }
+    else if (phase_mode != kVocoder) {
+      std::array<bool, bins> needed {};
+      for (int bin = 1; bin < bins; ++bin) {
+        if (lane.magnitude[bin] > 1.0e-9f && lane.peak_of[bin] >= 1) {
+          needed[bin] = true;
+          needed[lane.peak_of[bin]] = true;
+        }
+      }
+      for (int bin = 1; bin < bins; ++bin) {
+        if (needed[bin])
+          lane.phase[bin] = SpectralAnalysis::interpolatedPhase(frames, bin);
+      }
+    }
+
     for (int bin = 1; bin < bins; ++bin) {
       const int peak = lane.peak_of[bin] < 0 ? bin : lane.peak_of[bin];
       const bool preserve = keep_fundamental && peak == fundamental_bin;
@@ -734,10 +765,19 @@ namespace vital {
     }
     lane.work[1] = 0.0f;
     fft_->performRealOnlyInverseTransform(lane.work.data());
-    for (int i = 0; i < size; ++i) {
-      const int index = (lane.write_pos + i) % size;
-      const float sample_value = lane.work[(i + size / 2) % size] * window_[i];
-      overlap[index] += finite(sample_value) ? sample_value : 0.0f;
+    // Overlap-add in runs where neither ring index wraps, so the loop vectorises.
+    for (int start = 0; start < size;) {
+      const int overlap_start = (lane.write_pos + start) % size;
+      const int work_start = (start + size / 2) % size;
+      const int run = std::min({ size - start, size - overlap_start, size - work_start });
+      float* out = overlap.data() + overlap_start;
+      const float* in = lane.work.data() + work_start;
+      const float* window = window_.data() + start;
+      for (int i = 0; i < run; ++i) {
+        const float sample_value = in[i] * window[i];
+        out[i] += finite(sample_value) ? sample_value : 0.0f;
+      }
+      start += run;
     }
   }
 

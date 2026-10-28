@@ -17,7 +17,7 @@ Behaviour matches sfizz and FluidSynth where noted below.
 - `multisample_loader.*`: decoding (WAV, AIFF, FLAC, Ogg) to 16-bit, CRC32 and the content hash.
 - `multisample_container.*`: self-contained presets and the instrument cache.
 - `multisample_manager.*`: background loading, per-slot state, presets and host state.
-- Playback is in `src/synthesis/producers/multisample_{player,slot,source}.*` and `src/synthesis/modules/multisample_module.*`.
+- Playback is in `src/synthesis/producers/multisample_{player,slot,source}.*` and `src/synthesis/modules/multisample_module.*`. `MultiSamplePlayer::render` plays most of a note through `renderStretch`: wherever no start delay, note-off or fade falls, the envelope is decaying, sustaining or releasing, and every frame read is clear of the sample's ends and the loop's end, it skips the per-sample checks and interpolates both channels of a stereo sample in one SIMD register, with the same arithmetic per channel, so the output is bit-identical to the checked path.
 
 ## SFZ support
 
@@ -119,7 +119,8 @@ same way, from the preset's folder, ignoring case when the exact path is missing
 
 ## Presets, host state and the cache
 
-- **Preset files:** a preset whose Multi-sample oscillators have instruments is written as a zip:
+- **Presets in a bank:** a preset saved into a bank of the Atlas folder (`library_layout.h`: `<Library>/Banks/<bank>/...`) does not carry its instruments. They live in the library's `Multisamples` folder: an instrument already there is referred to where it is; one Atlas placed before is found by hash; otherwise it goes into `Multisamples/<name>/` once, in the layout the cache uses (the files at their `relative` paths, the entry file at `entry`), by hard link where the volume allows and by copy otherwise, beside `atlas-multisample.json`: the hash, the entry, the format, every file with its size and CRC, and the `path_overrides`. The preset stays plain JSON and names the entry file's path in Multisamples in `library_instrument`, beside the path and hash. Loading looks in the preset's own library first (`Manager::applySpec` gets it from `SynthBase::multiSampleLibrary`), then at the path, then in every library's Multisamples by hash (`findInstrumentAnywhere`), then in the cache. A library's instrument is loaded in place, never copied into the cache, and its SFZ is the one `editableFile` hands out. A container preset found in a bank, by a preset scan in a host or after a community download, is unpacked into the library the same way (`adoptContainerPreset`) and rewritten as plain JSON. Exporting a bank adds the instruments its presets play.
+- **Preset files outside a bank** (Export patch as preset file, Share patch, a save anywhere else): a preset whose Multi-sample oscillators have instruments is written as a zip:
   - `preset.json` comes first.
   - Then each instrument's files go under `multisample/<hash>/` in their original layout. Audio and SF2 files are stored uncompressed, exactly as they were; SFZ and DecentSampler text is compressed. Every sample file the instrument names and that exists is stored, including DecentSampler samples in groups and tags that are disabled at the time; only missing files are left out.
   - SFZ and DecentSampler text is never rewritten. Samples outside the library's folder go under `_external/` and are mapped back through `path_overrides`.
@@ -135,6 +136,7 @@ same way, from the preset's folder, ignoring case when the exact path is missing
   - It is trimmed, least recently used first, above 20 GB, never removing an instrument a slot uses.
   - Editing a cached SFZ or DecentSampler preset works on a copy of its text in `Working/<hash>`.
 - **Size limits:** JUCE's zip code has no ZIP64, so a container holds at most 4 GB and 65,000 files.
+  - A sample file has no length cap: DecentSampler instruments often slice one recording of most of an hour. A WAV or AIFF must hold every frame its header claims, and no file may decode to more than the instrument's memory budget (70% of RAM).
 
 ## Tests
 
@@ -147,12 +149,14 @@ same way, from the preset's folder, ignoring case when the exact path is missing
 - Ping-pong loops in the player: `--pingpong-loop`.
 - SFZ curves, spaces around `=` and `ampeg_dynamic` with the sustain pedal: `--dynamic-envelope`.
 - Saving and restoring: `--container`, `--host-state`, `--sf2-preset-switch`.
+- Instruments in the library (placed on save, shared by a library's banks, found by reference and by hash, a container unpacked into a library, an exported bank imported with its instrument): `--bank`.
 - Accessibility of the Instrument group: `--editor`.
 
-Five flags are for checking real libraries by hand and are not in ctest:
+Six flags are for checking real libraries by hand and are not in ctest:
 
 - `--manual <file> [preset]` prints what the loader found, including the instrument's controls.
 - `--controls <file>` plays a held C4 with each control at its lowest, file and highest setting (every option of a menu) and prints the levels.
 - `--compare <a> <b> [mapping]` lists, for every key and several velocities, the samples two files of one library play (an SFZ and its DecentSampler version) and how, and prints where they differ. `mapping` leaves out gain and envelope, which the two formats set differently.
 - `--hold <file> <note> <seconds>` holds a note and prints the level and largest sample step per 5 s window, to hear loops turn.
 - `--render <file> <out.wav> [preset]` plays a phrase and reports levels and speed.
+- `--cpu <file> [out.raw]` plays ten seconds of pedalled arpeggios and chords with the plugin's default settings and prints the load, the most voices sounding and a checksum of the output; `out.raw` keeps the output (interleaved 32-bit floats) to compare two builds.

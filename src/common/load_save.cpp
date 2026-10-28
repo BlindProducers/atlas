@@ -15,8 +15,10 @@
  */
 
 #include "load_save.h"
+#include "library_layout.h"
 #include "multisample_container.h"
 #include "multisample_manager.h"
+#include "speech_manager.h"
 #include <mutex>
 #include "source_types.h"
 #include "legacy_source_aliases.h"
@@ -313,6 +315,7 @@ const std::string LoadSave::kSampleFolderName = "Samples";
 const std::string LoadSave::kLfoFolderName = "LFOs";
 const std::string LoadSave::kFxFolderName = "FX";
 const std::string LoadSave::kIrFolderName = "Impulse Responses";
+const std::string LoadSave::kMultisampleFolderName = "Multisamples";
 
 const std::string LoadSave::kAdditionalWavetableFoldersName = "wavetable_folders";
 const std::string LoadSave::kAdditionalSampleFoldersName = "sample_folders";
@@ -390,6 +393,14 @@ json LoadSave::stateToJson(SynthBase* synth, const CriticalSection& critical_sec
       const vital::multisample::InstrumentSpec spec = multisample->spec(slot);
       if (!spec.empty())
         settings_data[prefix + "multisample"] = spec.toJson(false);
+    }
+
+    // A Speech slot's text, which espeak-ng renders again on load.
+    vital::speech::Manager* speech = synth->getSpeechManager();
+    if (speech != nullptr && type_value == vital::source_types::kSpeech) {
+      const std::string text = speech->text(slot);
+      if (!text.empty())
+        settings_data[prefix + "speech_text"] = text;
     }
   }
 
@@ -584,8 +595,19 @@ void LoadSave::loadSlotInstruments(SynthBase* synth, const json& settings) {
                                   static_cast<int>(type->get<float>() + 0.5f) == vital::source_types::kMultiSample;
     if (multisample_type && data.is_object() && !data.empty())
       spec = vital::multisample::InstrumentSpec::fromJson(data);
-    multisample->applySpec(slot, spec, synth->multiSampleContainer());
+    multisample->applySpec(slot, spec, synth->multiSampleContainer(), synth->multiSampleLibrary());
   }
+}
+
+void LoadSave::loadSlotSpeech(SynthBase* synth, const json& settings) {
+  vital::speech::Manager* speech = synth->getSpeechManager();
+  if (speech == nullptr)
+    return;
+  for (int slot = 0; slot < vital::kNumOscillators; ++slot) {
+    const auto text = settings.find(vital::source_types::slotPrefix(slot) + "speech_text");
+    speech->setText(slot, text != settings.end() && text->is_string() ? text->get<std::string>() : std::string());
+  }
+  speech->refresh();
 }
 
 void LoadSave::migrateFixedSourcesToSlots(json& settings, json& modulations) {
@@ -766,6 +788,19 @@ namespace {
       settings.erase(prefix + "age");
       settings.erase(prefix + "tracking");
     }
+  }
+
+  // Oscillators 1 and 2 played into Filter 1 and Filter 2 by default before
+  // every slot defaulted to the main effects. Atlas and Vital save every
+  // destination, so only a state written some other way leaves one out: it
+  // keeps the routing it was made with.
+  void migrateSourceDestinations(json& settings) {
+    if (!settings.is_object())
+      return;
+    if (!settings.count("osc_1_destination"))
+      settings["osc_1_destination"] = static_cast<float>(vital::constants::kFilter1);
+    if (!settings.count("osc_2_destination"))
+      settings["osc_2_destination"] = static_cast<float>(vital::constants::kFilter2);
   }
 }
 
@@ -1720,6 +1755,7 @@ bool LoadSave::jsonToState(SynthBase* synth, std::map<std::string, String>& save
   migrateFixedSourcesToSlots(settings, modulations);
   migrateSlotTypeLevels(settings, modulations);
   migrateAnalogAging(settings);
+  migrateSourceDestinations(settings);
   json wavetables = arrayFieldOrEmpty(settings, "wavetables");
   json lfos = arrayFieldOrEmpty(settings, "lfos");
 
@@ -1734,6 +1770,7 @@ bool LoadSave::jsonToState(SynthBase* synth, std::map<std::string, String>& save
   loadModulations(synth, modulations);
   loadSlotSamples(synth, settings);
   loadSlotInstruments(synth, settings);
+  loadSlotSpeech(synth, settings);
   loadConvolutionIrs(synth, objectFieldOrEmpty(settings, "convolution_irs"));
   loadWavetables(synth, wavetables);
   loadFilterTables(synth, objectFieldOrEmpty(settings, "filter_tables"));
@@ -1884,6 +1921,33 @@ String LoadSave::getTagsFromFile(const File& file) {
   return "";
 }
 
+String LoadSave::getPresetNameFromFile(const File& file) {
+  // The metadata keys sort before "settings", so they lead the file.
+  static constexpr int kMetadataScanSize = 16384;
+  std::unique_ptr<InputStream> stream_owner = openPresetStream(file);
+  if (stream_owner == nullptr)
+    return "";
+
+  MemoryBlock memory_block;
+  stream_owner->readIntoMemoryBlock(memory_block, kMetadataScanSize);
+  const std::string text = memory_block.toString().toStdString();
+  const std::string key = "\"preset_name\"";
+  const size_t key_index = text.find(key);
+  if (key_index == std::string::npos)
+    return "";
+  const size_t value_start = text.find_first_not_of(" \t\r\n:", key_index + key.size());
+  if (value_start == std::string::npos || text[value_start] != '"')
+    return "";
+  // The closing quote is the first one no backslash escapes.
+  size_t value_end = value_start + 1;
+  while (value_end < text.size() && text[value_end] != '"')
+    value_end += text[value_end] == '\\' ? 2 : 1;
+  if (value_end >= text.size())
+    return "";
+  const json name = json::parse(text.substr(value_start, value_end - value_start + 1), nullptr, false);
+  return name.is_string() ? String::fromUTF8(name.get<std::string>().c_str()) : String();
+}
+
 std::string LoadSave::getAuthor(json data) {
   if (data.count("author"))
     return data["author"];
@@ -1900,6 +1964,23 @@ namespace {
   File& configFileOverride() {
     static File file;
     return file;
+  }
+
+  // The last config read, kept while the file on disk is unchanged. The editor
+  // reads settings (such as hz_frequency) for every readout it refreshes, and
+  // parsing the file each time cost a large share of the idle editor's CPU.
+  struct ConfigCache {
+    std::mutex mutex;
+    bool valid = false;
+    File file;
+    Time modified;
+    int64 size = -1;
+    json data;
+  };
+
+  ConfigCache& configCache() {
+    static ConfigCache cache;
+    return cache;
   }
 
   void makeStringsUtf8(json& value) {
@@ -1938,9 +2019,26 @@ void LoadSave::setConfigFileForTesting(const File& file) {
   configFileOverride() = file;
 }
 
+namespace {
+  File& favoritesFileOverride() {
+    static File file;
+    return file;
+  }
+}
+
+void LoadSave::setFavoritesFileForTesting(const File& file) {
+  favoritesFileOverride() = file;
+}
+
 File LoadSave::getConfigFile() {
   if (configFileOverride() != File())
     return configFileOverride();
+  // The editor reads settings many times a second; work the path out once.
+  static const File file = defaultConfigFile();
+  return file;
+}
+
+File LoadSave::defaultConfigFile() {
 #if defined(JUCE_DATA_STRUCTURES_H_INCLUDED)
   PropertiesFile::Options config_options;
   config_options.applicationName = "Atlas";
@@ -1977,6 +2075,8 @@ void LoadSave::writeErrorLog(String error_log) {
 }
 
 File LoadSave::getFavoritesFile() {
+  if (favoritesFileOverride() != File())
+    return favoritesFileOverride();
 #if defined(JUCE_DATA_STRUCTURES_H_INCLUDED)
   PropertiesFile::Options config_options;
   config_options.applicationName = "Atlas";
@@ -2014,20 +2114,44 @@ File LoadSave::getDefaultSkin() {
 #endif
 }
 
-json LoadSave::getConfigJson() {
-  File config_file = getConfigFile();
-  if (!config_file.exists())
-    return json();
+namespace {
+  // The current config, read again only when the file has changed. Call with
+  // the cache's mutex held.
+  const json& currentConfig(ConfigCache& cache) {
+    static const json empty;
+    File config_file = LoadSave::getConfigFile();
+    if (!config_file.exists())
+      return empty;
 
-  try {
-    json parsed = json::parse(config_file.loadFileAsString().toStdString(), nullptr, false);
-    if (parsed.is_discarded() || !parsed.is_object())
-      return json();
-    return parsed;
+    // Another instance or process may have rewritten the file since; its time
+    // and size say whether the cached copy still matches it.
+    const Time modified = config_file.getLastModificationTime();
+    const int64 size = config_file.getSize();
+    if (cache.valid && cache.file == config_file && cache.modified == modified && cache.size == size)
+      return cache.data;
+
+    json parsed;
+    try {
+      parsed = json::parse(config_file.loadFileAsString().toStdString(), nullptr, false);
+      if (parsed.is_discarded() || !parsed.is_object())
+        parsed = json();
+    }
+    catch (const json::exception& e) {
+      parsed = json();
+    }
+    cache.valid = true;
+    cache.file = config_file;
+    cache.modified = modified;
+    cache.size = size;
+    cache.data = std::move(parsed);
+    return cache.data;
   }
-  catch (const json::exception& e) {
-    return json();
-  }
+}
+
+json LoadSave::getConfigJson() {
+  ConfigCache& cache = configCache();
+  std::lock_guard<std::mutex> lock(cache.mutex);
+  return currentConfig(cache);
 }
 
 json LoadSave::getFavoritesJson() {
@@ -2078,6 +2202,10 @@ void LoadSave::saveJsonToConfig(json config_state) {
   if (!config_file.exists())
     config_file.create();
   config_file.replaceWithText(config_state.dump());
+  // A rewrite within the file time's resolution could keep its time and size.
+  ConfigCache& cache = configCache();
+  std::lock_guard<std::mutex> lock(cache.mutex);
+  cache.valid = false;
 }
 
 void LoadSave::saveJsonToFavorites(json favorites_json) {
@@ -2447,12 +2575,12 @@ bool LoadSave::shouldScanDownloads() {
 }
 
 bool LoadSave::displayHzFrequency() {
-  json data = getConfigJson();
-
-  if (!data.count("hz_frequency"))
-    return false;
-
-  return data["hz_frequency"];
+  // Every frequency readout asks this, so read the cache without copying it.
+  ConfigCache& cache = configCache();
+  std::lock_guard<std::mutex> lock(cache.mutex);
+  const json& data = currentConfig(cache);
+  const auto found = data.is_object() ? data.find("hz_frequency") : data.end();
+  return found != data.end() && found->is_boolean() && found->get<bool>();
 }
 
 bool LoadSave::authenticated() {
@@ -2670,22 +2798,11 @@ File LoadSave::getDefaultDataDirectory() {
 }
 
 std::vector<File> LoadSave::getDirectories(const String& folder_name) {
-  File data_dir = getDataDirectory();
-  std::vector<File> directories;
-
-  if (!data_dir.exists() || !data_dir.isDirectory())
-    return directories;
-
-  Array<File> sub_folders;
-  sub_folders.add(data_dir);
-  data_dir.findChildFiles(sub_folders, File::findDirectories | File::ignoreHiddenFiles, false);
-  for (const File& sub_folder : sub_folders) {
-    File directory = sub_folder.getChildFile(folder_name);
-    if (directory.exists() && directory.isDirectory())
-      directories.push_back(directory);
-  }
-
-  return directories;
+  // Every bank's folder of this kind, library by library (library_layout.h).
+  atlas::library::Kind kind;
+  if (!atlas::library::kindFromFolderName(folder_name, kind))
+    return {};
+  return atlas::library::kindFolders(kind, getDataDirectory());
 }
 
 std::vector<File> LoadSave::getPresetDirectories() {
@@ -2723,53 +2840,41 @@ File LoadSave::getUserDirectory() {
   return directory;
 }
 
+namespace {
+  // Where the user's own files of a kind are saved, created if need be: the
+  // User library's kind folder, and for presets the default bank.
+  File defaultBankKindDirectory(atlas::library::Kind kind) {
+    return atlas::library::userKindDirectory(kind, LoadSave::getDataDirectory());
+  }
+}
+
 File LoadSave::getUserPresetDirectory() {
-  File directory = getUserDirectory().getChildFile(kPresetFolderName);
-  if (!directory.exists())
-    directory.createDirectory();
-  return directory;
+  return defaultBankKindDirectory(atlas::library::Kind::kPresets);
 }
 
 File LoadSave::getUserWavetableDirectory() {
-  File directory = getUserDirectory().getChildFile(kWavetableFolderName);
-  if (!directory.exists())
-    directory.createDirectory();
-  return directory;
+  return defaultBankKindDirectory(atlas::library::Kind::kWavetables);
 }
 
 File LoadSave::getUserSkinDirectory() {
-  File directory = getUserDirectory().getChildFile(kSkinFolderName);
-  if (!directory.exists())
-    directory.createDirectory();
-  return directory;
+  // Vital's skins; Atlas has no graphical interface and never makes the folder.
+  return getUserDirectory().getChildFile(kSkinFolderName);
 }
 
 File LoadSave::getUserSampleDirectory() {
-  File directory = getUserDirectory().getChildFile(kSampleFolderName);
-  if (!directory.exists())
-    directory.createDirectory();
-  return directory;
+  return defaultBankKindDirectory(atlas::library::Kind::kSamples);
 }
 
 File LoadSave::getUserLfoDirectory() {
-  File directory = getUserDirectory().getChildFile(kLfoFolderName);
-  if (!directory.exists())
-    directory.createDirectory();
-  return directory;
+  return defaultBankKindDirectory(atlas::library::Kind::kLfos);
 }
 
 File LoadSave::getUserFxDirectory() {
-  File directory = getUserDirectory().getChildFile(kFxFolderName);
-  if (!directory.exists())
-    directory.createDirectory();
-  return directory;
+  return defaultBankKindDirectory(atlas::library::Kind::kFx);
 }
 
 File LoadSave::getUserIrDirectory() {
-  File directory = getUserDirectory().getChildFile(kIrFolderName);
-  if (!directory.exists())
-    directory.createDirectory();
-  return directory;
+  return defaultBankKindDirectory(atlas::library::Kind::kImpulseResponses);
 }
 
 File LoadSave::getDownloadsDirectory() {
@@ -2777,6 +2882,10 @@ File LoadSave::getDownloadsDirectory() {
 }
 
 int LoadSave::scanDownloadsForPresets() {
+  // Not before the library has moved to its current layout: the default bank
+  // the downloads go to is named by the migration.
+  if (atlas::library::needsMigration())
+    return 0;
   File downloads = getDownloadsDirectory();
   if (!downloads.exists() || !downloads.isDirectory())
     return 0;
@@ -2833,44 +2942,31 @@ void LoadSave::getAllFx(Array<File>& fx) {
   getAllFilesOfTypeInDirectories(fx, String("*.") + vital::kFxExtension, getFxDirectories());
 }
 
+namespace {
+  void getAllUserFilesOfKind(Array<File>& files, const String& extensions, atlas::library::Kind kind) {
+    LoadSave::getAllFilesOfTypeInDirectories(
+        files, extensions, atlas::library::kindFolders(kind, atlas::library::Library::kUser, LoadSave::getDataDirectory()));
+  }
+}
+
 void LoadSave::getAllUserPresets(Array<File>& presets) {
-  std::vector<File> directories = {
-    getDataDirectory().getChildFile(kPresetFolderName),
-    getUserPresetDirectory()
-  };
-  getAllFilesOfTypeInDirectories(presets, vital::kPresetExtensionsList, directories);
+  getAllUserFilesOfKind(presets, vital::kPresetExtensionsList, atlas::library::Kind::kPresets);
 }
 
 void LoadSave::getAllUserWavetables(Array<File>& wavetables) {
-  std::vector<File> directories = {
-    getDataDirectory().getChildFile(kWavetableFolderName),
-    getUserWavetableDirectory()
-  };
-  getAllFilesOfTypeInDirectories(wavetables, vital::kWavetableExtensionsList, directories);
+  getAllUserFilesOfKind(wavetables, vital::kWavetableExtensionsList, atlas::library::Kind::kWavetables);
 }
 
 void LoadSave::getAllUserLfos(Array<File>& lfos) {
-  std::vector<File> directories = {
-    getDataDirectory().getChildFile(kLfoFolderName),
-    getUserLfoDirectory()
-  };
-  getAllFilesOfTypeInDirectories(lfos, vital::kLfoExtensionsList, directories);
+  getAllUserFilesOfKind(lfos, vital::kLfoExtensionsList, atlas::library::Kind::kLfos);
 }
 
 void LoadSave::getAllUserSamples(Array<File>& samples) {
-  std::vector<File> directories = {
-    getDataDirectory().getChildFile(kSampleFolderName),
-    getUserSampleDirectory()
-  };
-  getAllFilesOfTypeInDirectories(samples, vital::kSampleExtensionsList, directories);
+  getAllUserFilesOfKind(samples, vital::kSampleExtensionsList, atlas::library::Kind::kSamples);
 }
 
 void LoadSave::getAllUserFx(Array<File>& fx) {
-  std::vector<File> directories = {
-    getDataDirectory().getChildFile(kFxFolderName),
-    getUserFxDirectory()
-  };
-  getAllFilesOfTypeInDirectories(fx, String("*.") + vital::kFxExtension, directories);
+  getAllUserFilesOfKind(fx, String("*.") + vital::kFxExtension, atlas::library::Kind::kFx);
 }
 
 void LoadSave::getAllIrs(Array<File>& irs) {
@@ -2878,11 +2974,7 @@ void LoadSave::getAllIrs(Array<File>& irs) {
 }
 
 void LoadSave::getAllUserIrs(Array<File>& irs) {
-  std::vector<File> directories = {
-    getDataDirectory().getChildFile(kIrFolderName),
-    getUserIrDirectory()
-  };
-  getAllFilesOfTypeInDirectories(irs, vital::kIrExtensionsList, directories);
+  getAllUserFilesOfKind(irs, vital::kIrExtensionsList, atlas::library::Kind::kImpulseResponses);
 }
 
 int LoadSave::compareFeatureVersionStrings(String a, String b) {

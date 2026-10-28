@@ -1,0 +1,27 @@
+diff --git a/modules/juce_gui_basics/detail/juce_ComponentHelpers.h b/modules/juce_gui_basics/detail/juce_ComponentHelpers.h
+index 3872553..795768a 100644
+--- a/modules/juce_gui_basics/detail/juce_ComponentHelpers.h
++++ b/modules/juce_gui_basics/detail/juce_ComponentHelpers.h
+@@ -52,6 +52,22 @@ struct ComponentHelpers
+    #endif
+ 
+     static Identifier getColourPropertyID (int colourID)
++    {
++        // Atlas: every component asks for a few colours each time it is made or
++        // drawn, and making the Identifier searched the global string pool,
++        // under its lock, every time: a quarter of the time building a large
++        // editor took. Each colour's Identifier is now made once.
++        static SpinLock cacheLock;
++        static std::unordered_map<int, Identifier> cache;
++        const SpinLock::ScopedLockType hold (cacheLock);
++
++        if (const auto found = cache.find (colourID); found != cache.end())
++            return found->second;
++
++        return cache.emplace (colourID, makeColourPropertyID (colourID)).first->second;
++    }
++
++    static Identifier makeColourPropertyID (int colourID)
+     {
+         char buffer[32];
+         auto* end = buffer + numElementsInArray (buffer) - 1;

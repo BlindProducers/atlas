@@ -1,0 +1,536 @@
+desc: Multiband Dynamics (Live-style 3-band compressor / expander)
+author: Alessio Scala
+version: 1.0
+about:
+  A recreation of the Multiband Dynamics audio effect found in Ableton Live,
+  modelled from measurements of the original device (not from its code).
+  Three bands with two crossovers; per band Above and Below thresholds and
+  ratios (downward / upward compression and expansion), Attack, Release,
+  Input and Output gain, Active and Solo. Global Amount, Time, Output,
+  Peak / RMS detection, Soft Knee and an external sidechain on inputs 3/4.
+  Drag number boxes vertically (Shift = fine), double-click to reset, drag the
+  threshold handles in the band displays, click buttons to toggle.
+
+slider1:xo1=120<30,3000,0.01:log>-Split Low-Mid (Hz)
+slider2:xo2=2500<300,15000,0.01:log>-Split Mid-High (Hz)
+slider3:lo_on=1<0,1,1{Off,On}>-Low Band
+slider4:hi_on=1<0,1,1{Off,On}>-High Band
+slider5:l_act=1<0,1,1{Off,On}>-Low Active
+slider6:l_solo=0<0,1,1{Off,On}>-Low Solo
+slider7:l_athr=-20<-80,0,0.01>-Low Above Threshold (dB)
+slider8:l_arat=0<-1,1,0.001>-Low Above Ratio
+slider9:l_bthr=-60<-80,0,0.01>-Low Below Threshold (dB)
+slider10:l_brat=0<-3,1,0.001>-Low Below Ratio
+slider11:l_att=50<0.1,5000,0.01:log>-Low Attack (ms)
+slider12:l_rel=300<0.1,5000,0.01:log>-Low Release (ms)
+slider13:l_in=0<-24,24,0.01>-Low Input Gain (dB)
+slider14:l_out=0<-24,24,0.01>-Low Output Gain (dB)
+slider15:m_act=1<0,1,1{Off,On}>-Mid Active
+slider16:m_solo=0<0,1,1{Off,On}>-Mid Solo
+slider17:m_athr=-20<-80,0,0.01>-Mid Above Threshold (dB)
+slider18:m_arat=0<-1,1,0.001>-Mid Above Ratio
+slider19:m_bthr=-60<-80,0,0.01>-Mid Below Threshold (dB)
+slider20:m_brat=0<-3,1,0.001>-Mid Below Ratio
+slider21:m_att=10<0.1,5000,0.01:log>-Mid Attack (ms)
+slider22:m_rel=200<0.1,5000,0.01:log>-Mid Release (ms)
+slider23:m_in=0<-24,24,0.01>-Mid Input Gain (dB)
+slider24:m_out=0<-24,24,0.01>-Mid Output Gain (dB)
+slider25:h_act=1<0,1,1{Off,On}>-High Active
+slider26:h_solo=0<0,1,1{Off,On}>-High Solo
+slider27:h_athr=-20<-80,0,0.01>-High Above Threshold (dB)
+slider28:h_arat=0<-1,1,0.001>-High Above Ratio
+slider29:h_bthr=-60<-80,0,0.01>-High Below Threshold (dB)
+slider30:h_brat=0<-3,1,0.001>-High Below Ratio
+slider31:h_att=5<0.1,5000,0.01:log>-High Attack (ms)
+slider32:h_rel=100<0.1,5000,0.01:log>-High Release (ms)
+slider33:h_in=0<-24,24,0.01>-High Input Gain (dB)
+slider34:h_out=0<-24,24,0.01>-High Output Gain (dB)
+slider35:amount=100<0,100,0.01>-Amount (%)
+slider36:gtime=100<10,1000,0.1:log>-Time (%)
+slider37:outgain=0<-24,24,0.01>-Output (dB)
+slider38:peak=0<0,1,1{RMS,Peak}>-Peak / RMS
+slider39:knee=1<0,1,1{Off,On}>-Soft Knee
+slider40:sc_on=0<0,1,1{Off,On}>-Sidechain
+slider41:sc_gain=0<-70,24,0.01>-Sidechain Gain (dB)
+slider42:sc_mix=100<0,100,0.01>-Sidechain Mix (%)
+slider43:sc_listen=0<0,1,1{Off,On}>-Sidechain Listen
+
+in_pin:left input
+in_pin:right input
+in_pin:sidechain left
+in_pin:sidechain right
+out_pin:left output
+out_pin:right output
+
+@init
+// ---------------- measured constants ----------------
+XO_Q = 0.7071067811865476;
+KNEE_W = 20.0;
+GAIN_MAX = 36.12359947967774;
+// Everything runs at 2x the host rate through a polyphase IIR half-band (8 coefficients,
+// transition 0.01), identified from Live's band responses.
+HB_PER = 4; HB = 500;
+HB[0] = 0.0771150798324; HB[1] = 0.265968526521; HB[2] = 0.482070625061; HB[3] = 0.665104153263; HB[4] = 0.796820471332; HB[5] = 0.884101508551; HB[6] = 0.941251427774; HB[7] = 0.982005414189;
+
+// memory for the UI's parameter tables (read-only for the audio code)
+PRM_MIN = 10000; PRM_MAX = 10100; PRM_DEF = 10200; PRM_KIND = 10300;
+PRM_MIN[1] = 30; PRM_MAX[1] = 3000; PRM_DEF[1] = 120; PRM_KIND[1] = 1;
+PRM_MIN[2] = 300; PRM_MAX[2] = 15000; PRM_DEF[2] = 2500; PRM_KIND[2] = 1;
+PRM_MIN[3] = 0; PRM_MAX[3] = 1; PRM_DEF[3] = 1; PRM_KIND[3] = 5;
+PRM_MIN[4] = 0; PRM_MAX[4] = 1; PRM_DEF[4] = 1; PRM_KIND[4] = 5;
+PRM_MIN[5] = 0; PRM_MAX[5] = 1; PRM_DEF[5] = 1; PRM_KIND[5] = 5;
+PRM_MIN[6] = 0; PRM_MAX[6] = 1; PRM_DEF[6] = 0; PRM_KIND[6] = 5;
+PRM_MIN[7] = -80; PRM_MAX[7] = 0; PRM_DEF[7] = -20; PRM_KIND[7] = 0;
+PRM_MIN[8] = -1; PRM_MAX[8] = 1; PRM_DEF[8] = 0; PRM_KIND[8] = 6;
+PRM_MIN[9] = -80; PRM_MAX[9] = 0; PRM_DEF[9] = -60; PRM_KIND[9] = 0;
+PRM_MIN[10] = -3; PRM_MAX[10] = 1; PRM_DEF[10] = 0; PRM_KIND[10] = 7;
+PRM_MIN[11] = 0.1; PRM_MAX[11] = 5000; PRM_DEF[11] = 50; PRM_KIND[11] = 2;
+PRM_MIN[12] = 0.1; PRM_MAX[12] = 5000; PRM_DEF[12] = 300; PRM_KIND[12] = 2;
+PRM_MIN[13] = -24; PRM_MAX[13] = 24; PRM_DEF[13] = 0; PRM_KIND[13] = 0;
+PRM_MIN[14] = -24; PRM_MAX[14] = 24; PRM_DEF[14] = 0; PRM_KIND[14] = 0;
+PRM_MIN[15] = 0; PRM_MAX[15] = 1; PRM_DEF[15] = 1; PRM_KIND[15] = 5;
+PRM_MIN[16] = 0; PRM_MAX[16] = 1; PRM_DEF[16] = 0; PRM_KIND[16] = 5;
+PRM_MIN[17] = -80; PRM_MAX[17] = 0; PRM_DEF[17] = -20; PRM_KIND[17] = 0;
+PRM_MIN[18] = -1; PRM_MAX[18] = 1; PRM_DEF[18] = 0; PRM_KIND[18] = 6;
+PRM_MIN[19] = -80; PRM_MAX[19] = 0; PRM_DEF[19] = -60; PRM_KIND[19] = 0;
+PRM_MIN[20] = -3; PRM_MAX[20] = 1; PRM_DEF[20] = 0; PRM_KIND[20] = 7;
+PRM_MIN[21] = 0.1; PRM_MAX[21] = 5000; PRM_DEF[21] = 10; PRM_KIND[21] = 2;
+PRM_MIN[22] = 0.1; PRM_MAX[22] = 5000; PRM_DEF[22] = 200; PRM_KIND[22] = 2;
+PRM_MIN[23] = -24; PRM_MAX[23] = 24; PRM_DEF[23] = 0; PRM_KIND[23] = 0;
+PRM_MIN[24] = -24; PRM_MAX[24] = 24; PRM_DEF[24] = 0; PRM_KIND[24] = 0;
+PRM_MIN[25] = 0; PRM_MAX[25] = 1; PRM_DEF[25] = 1; PRM_KIND[25] = 5;
+PRM_MIN[26] = 0; PRM_MAX[26] = 1; PRM_DEF[26] = 0; PRM_KIND[26] = 5;
+PRM_MIN[27] = -80; PRM_MAX[27] = 0; PRM_DEF[27] = -20; PRM_KIND[27] = 0;
+PRM_MIN[28] = -1; PRM_MAX[28] = 1; PRM_DEF[28] = 0; PRM_KIND[28] = 6;
+PRM_MIN[29] = -80; PRM_MAX[29] = 0; PRM_DEF[29] = -60; PRM_KIND[29] = 0;
+PRM_MIN[30] = -3; PRM_MAX[30] = 1; PRM_DEF[30] = 0; PRM_KIND[30] = 7;
+PRM_MIN[31] = 0.1; PRM_MAX[31] = 5000; PRM_DEF[31] = 5; PRM_KIND[31] = 2;
+PRM_MIN[32] = 0.1; PRM_MAX[32] = 5000; PRM_DEF[32] = 100; PRM_KIND[32] = 2;
+PRM_MIN[33] = -24; PRM_MAX[33] = 24; PRM_DEF[33] = 0; PRM_KIND[33] = 0;
+PRM_MIN[34] = -24; PRM_MAX[34] = 24; PRM_DEF[34] = 0; PRM_KIND[34] = 0;
+PRM_MIN[35] = 0; PRM_MAX[35] = 100; PRM_DEF[35] = 100; PRM_KIND[35] = 3;
+PRM_MIN[36] = 10; PRM_MAX[36] = 1000; PRM_DEF[36] = 100; PRM_KIND[36] = 4;
+PRM_MIN[37] = -24; PRM_MAX[37] = 24; PRM_DEF[37] = 0; PRM_KIND[37] = 0;
+PRM_MIN[38] = 0; PRM_MAX[38] = 1; PRM_DEF[38] = 0; PRM_KIND[38] = 5;
+PRM_MIN[39] = 0; PRM_MAX[39] = 1; PRM_DEF[39] = 1; PRM_KIND[39] = 5;
+PRM_MIN[40] = 0; PRM_MAX[40] = 1; PRM_DEF[40] = 0; PRM_KIND[40] = 5;
+PRM_MIN[41] = -70; PRM_MAX[41] = 24; PRM_DEF[41] = 0; PRM_KIND[41] = 8;
+PRM_MIN[42] = 0; PRM_MAX[42] = 100; PRM_DEF[42] = 100; PRM_KIND[42] = 3;
+PRM_MIN[43] = 0; PRM_MAX[43] = 1; PRM_DEF[43] = 0; PRM_KIND[43] = 5;
+FLOOR = 10 ^ -30;
+OSR = 2 * srate;
+
+// ---------------- half-band (2x) ----------------
+// chain of first-order allpasses y = c*x + x1 - c*y1 over HB[first], HB[first + 2], ...; state in this.*
+function ap4(x, first) local(i, c, y) (
+  i = 0;
+  loop(HB_PER,
+    c = HB[first + 2 * i];
+    y = c * x + this.x[i] - c * this.y[i];
+    this.x[i] = x; this.y[i] = y; x = y;
+    i += 1;
+  );
+  x;
+);
+// one state block per allpass chain (x at +0, y at +8)
+function ap_init(base) ( this.x = base; this.y = base + 8; );
+
+// ---------------- crossover filters (at 2x) ----------------
+// biquad (TDF-II); coefficients in the namespace given as c*
+function bq(x, c*) local(y) (
+  y = c.b0 * x + this.s1;
+  this.s1 = c.b1 * x - c.a1 * y + this.s2;
+  this.s2 = c.b2 * x - c.a2 * y;
+  y;
+);
+function set_norm(b0, b1, b2, a0, a1, a2) (
+  this.b0 = b0 / a0; this.b1 = b1 / a0; this.b2 = b2 / a0; this.a1 = a1 / a0; this.a2 = a2 / a0;
+);
+// RBJ low pass (t = 0), high pass (t = 1) and all pass (t = 2) at the oversampled rate
+function set_rbj(t, fc, q) local(w0, cs, al) (
+  w0 = 2 * $pi * min(fc, 0.49 * OSR) / OSR; cs = cos(w0); al = sin(w0) / (2 * q);
+  t == 0 ? this.set_norm((1 - cs) / 2, 1 - cs, (1 - cs) / 2, 1 + al, -2 * cs, 1 - al) :
+  t == 1 ? this.set_norm((1 + cs) / 2, -(1 + cs), (1 + cs) / 2, 1 + al, -2 * cs, 1 - al) :
+           this.set_norm(1 - al, -2 * cs, 1 + al, 1 + al, -2 * cs, 1 - al);
+);
+// 3-way Linkwitz-Riley (4th order) split of one channel; this = channel state; bands in this.o0/o1/o2
+function split(x) local(r) (
+  lo_split ? (
+    this.o0 = this.l2.bq(this.l1.bq(x, CLP1), CLP1);
+    r = this.h2.bq(this.h1.bq(x, CHP1), CHP1);
+  ) : (this.o0 = 0; r = x);
+  hi_split ? (
+    this.o1 = this.m2.bq(this.m1.bq(r, CLP2), CLP2);
+    this.o2 = this.k2.bq(this.k1.bq(r, CHP2), CHP2);
+    lo_split ? (this.o0 = this.ap.bq(this.o0, CAP2));
+  ) : (this.o1 = r; this.o2 = 0);
+);
+
+// ---------------- dynamics ----------------
+// Attack / Release are the time for the follower to move 80 dB: tau = T / ln(1e4)
+function ms_coef(ms) ( 1 - exp(-log(10000) / (max(ms * gtime / 100, 0.001) * 0.001 * OSR)); );
+
+// static curve in dB; this = band; quadratic soft knee KNEE_W wide, centred on each threshold
+function gcomp(L) local(d, g, w) (
+  w = knee >= 0.5 ? KNEE_W : 0;
+  g = 0;
+  d = L - this.athr;
+  w > 0 && abs(d) <= w / 2 ? (g += this.ar * (d + w / 2) ^ 2 / (2 * w)) : d > 0 ? (g += this.ar * d);
+  d = this.bthr - L;
+  w > 0 && abs(d) <= w / 2 ? (g += this.br * (d + w / 2) ^ 2 / (2 * w)) : d > 0 ? (g += this.br * d);
+  min(g * amount / 100, GAIN_MAX);
+);
+
+// linked detector (mean of the channels' power for RMS, of their magnitude for Peak) -> gain in this.g
+function band_gain(dl, dr) local(e, L) (
+  e = peak >= 0.5 ? 0.5 * (abs(dl) + abs(dr)) : 0.5 * (dl * dl + dr * dr);
+  this.env += (e > this.env ? this.ca : this.cr) * (e - this.env);
+  L = peak >= 0.5 ? 20 * log10(max(this.env, FLOOR)) : 10 * log10(max(this.env, FLOOR));
+  this.gdb = this.gcomp(L);
+  this.g = 10 ^ (this.gdb / 20);
+  this.mlev = max(this.mlev, L);
+  abs(this.gdb) > abs(this.mgr) ? (this.mgr = this.gdb);
+);
+
+// Amount scales every gain in dB: the static curve, the band's Input and Output gains and the
+// global Output. An inactive band passes through untouched (no Input / Output gain).
+function band_setup(act, solo, athr, arat, bthr, brat, att, rel, ind, outd) (
+  this.act = act >= 0.5; this.solo = solo >= 0.5;
+  this.athr = athr; this.bthr = bthr;     // Live does not keep Below under Above
+  this.ar = arat;            // gain change per dB above the threshold
+  this.br = brat;            // gain change per dB below the threshold
+  this.ca = ms_coef(att); this.cr = ms_coef(rel);
+  this.gin = 10 ^ (ind * amount / 100 / 20);
+  this.gout = this.act ? 10 ^ (outd * amount / 100 / 20) : 1;
+  this.gsig = this.act ? this.gin : 1;   // input gain on the audio path
+);
+
+function update() (
+  lo_split = lo_on >= 0.5; hi_split = hi_on >= 0.5;
+  // a Low-Mid split above the Mid-High split is pulled down to it (closest match to Live)
+  xo1e = min(xo1, xo2);
+  CLP1.set_rbj(0, xo1e, XO_Q); CHP1.set_rbj(1, xo1e, XO_Q);
+  CLP2.set_rbj(0, xo2, XO_Q); CHP2.set_rbj(1, xo2, XO_Q); CAP2.set_rbj(2, xo2, XO_Q);
+  bL.band_setup(l_act, l_solo, l_athr, l_arat, l_bthr, l_brat, l_att, l_rel, l_in, l_out);
+  bM.band_setup(m_act, m_solo, m_athr, m_arat, m_bthr, m_brat, m_att, m_rel, m_in, m_out);
+  bH.band_setup(h_act, h_solo, h_athr, h_arat, h_bthr, h_brat, h_att, h_rel, h_in, h_out);
+  // as in Live, soloing a band whose split is off still mutes the other bands
+  any_solo = bL.solo || bM.solo || bH.solo;
+  w0 = (!any_solo || bL.solo) * bL.gout; w1 = (!any_solo || bM.solo) * bM.gout; w2 = (!any_solo || bH.solo) * bH.gout;
+  out_g = 10 ^ (outgain * amount / 100 / 20);
+  sc_use = sc_on >= 0.5; sc_g = 10 ^ (sc_gain / 20); sc_m = sc_mix / 100;
+  listen = sc_listen >= 0.5;
+);
+
+// half-band state blocks: up (E, O) and down (E, O) for L, R and the two sidechain channels
+memset(0, 0, 400);
+uLE.ap_init(0); uLO.ap_init(16); uRE.ap_init(32); uRO.ap_init(48);
+dLE.ap_init(64); dLO.ap_init(80); dRE.ap_init(96); dRO.ap_init(112);
+uSLE.ap_init(128); uSLO.ap_init(144); uSRE.ap_init(160); uSRO.ap_init(176);
+dlo_b = dro_b = 0;
+bL.mgr = bM.mgr = bH.mgr = 0;
+
+// one oversampled sample through crossovers, detectors and gains -> ol / or_
+function os_tick(xl, xr, scl, scr) local(l0, r0, l1, r1, l2, r2, d0l, d0r, d1l, d1r, d2l, d2r) (
+  cL.split(xl); cR.split(xr);
+  // detector inputs: the band after its input gain, blended with the sidechain band by Mix
+  d0l = cL.o0 * bL.gin; d0r = cR.o0 * bL.gin;
+  d1l = cL.o1 * bM.gin; d1r = cR.o1 * bM.gin;
+  d2l = cL.o2 * bH.gin; d2r = cR.o2 * bH.gin;
+  sc_use ? (
+    sL.split(scl); sR.split(scr);
+    d0l += sc_m * (sL.o0 - d0l); d0r += sc_m * (sR.o0 - d0r);
+    d1l += sc_m * (sL.o1 - d1l); d1r += sc_m * (sR.o1 - d1r);
+    d2l += sc_m * (sL.o2 - d2l); d2r += sc_m * (sR.o2 - d2r);
+  );
+  l0 = cL.o0 * bL.gsig; r0 = cR.o0 * bL.gsig;
+  l1 = cL.o1 * bM.gsig; r1 = cR.o1 * bM.gsig;
+  l2 = cL.o2 * bH.gsig; r2 = cR.o2 * bH.gsig;
+  lo_split ? bL.band_gain(d0l, d0r);
+  bM.band_gain(d1l, d1r);
+  hi_split ? bH.band_gain(d2l, d2r);
+  listen ? (
+    // Sidechain listen: hear the detector input of the bands
+    l0 = d0l; r0 = d0r; l1 = d1l; r1 = d1r; l2 = d2l; r2 = d2r;
+  ) : (
+    bL.act ? (l0 *= bL.g; r0 *= bL.g);
+    bM.act ? (l1 *= bM.g; r1 *= bM.g);
+    bH.act ? (l2 *= bH.g; r2 *= bH.g);
+  );
+  ol = w0 * l0 + w1 * l1 + w2 * l2;
+  or_ = w0 * r0 + w1 * r1 + w2 * r2;
+);
+
+@slider
+update();
+
+@block
+// parameter changes made in the UI are applied here, on the audio thread
+ui_dirty ? (ui_dirty = 0; update());
+// meters for the UI: peak-hold with a ~300 ms fall
+mfall = 20 * samplesblock / srate / 0.3;
+disp_lev0 = max(disp_lev0 - mfall, bL.mlev); disp_lev1 = max(disp_lev1 - mfall, bM.mlev); disp_lev2 = max(disp_lev2 - mfall, bH.mlev);
+disp_gr0 = bL.mgr; disp_gr1 = bM.mgr; disp_gr2 = bH.mgr;
+bL.mlev = bM.mlev = bH.mlev = -200;
+bL.mgr = bM.mgr = bH.mgr = 0;
+
+@sample
+// upsample: the two polyphase branches give the even and odd oversampled samples
+sc_use ? (
+  s0 = uSLE.ap4(spl2 * sc_g, 0); s1 = uSLO.ap4(spl2 * sc_g, 1);
+  t0 = uSRE.ap4(spl3 * sc_g, 0); t1 = uSRO.ap4(spl3 * sc_g, 1);
+) : (s0 = s1 = t0 = t1 = 0);
+os_tick(uLE.ap4(spl0, 0), uRE.ap4(spl1, 0), s0, t0);
+ea = dLE.ap4(ol, 0); eb = dRE.ap4(or_, 0);
+os_tick(uLO.ap4(spl0, 1), uRO.ap4(spl1, 1), s1, t1);
+oa = dLO.ap4(ol, 1); ob = dRO.ap4(or_, 1);
+// downsample: average the even branch with the previous odd branch
+spl0 = 0.5 * (ea + dlo_b) * out_g; dlo_b = oa;
+spl1 = 0.5 * (eb + dro_b) * out_g; dro_b = ob;
+
+@gfx 880 300
+// ---------------- UI ----------------
+// The UI only reads the sliders and the disp_* meter values the audio code publishes in
+// @block. It writes sliders (plus ui_dirty) and its own g_* / UI_* variables, nothing else:
+// EEL2 names are case-insensitive and function locals are shared statics.
+function g_rgb(r, g, b) ( gfx_r = r / 255; gfx_g = g / 255; gfx_b = b / 255; gfx_a = 1; );
+function g_clamp(v, lo, hi) ( min(max(v, lo), hi); );
+function g_in(x, y, w, h) ( mouse_x >= x && mouse_x < x + w && mouse_y >= y && mouse_y < y + h; );
+function g_txt(x, y, w, h, s, flags) ( gfx_x = x; gfx_y = y; gfx_drawstr(s, flags, x + w, y + h); );
+
+// slider access by number
+function g_get(id) ( slider(id); );
+function g_set(id, v) (
+  v = g_clamp(v, PRM_MIN[id], PRM_MAX[id]);
+  PRM_KIND[id] == 5 ? (v = v >= 0.5);
+  id == 1 ? (xo1 = v; slider_automate(xo1));
+  id == 2 ? (xo2 = v; slider_automate(xo2));
+  id == 3 ? (lo_on = v; slider_automate(lo_on));
+  id == 4 ? (hi_on = v; slider_automate(hi_on));
+  id == 5 ? (l_act = v; slider_automate(l_act));
+  id == 6 ? (l_solo = v; slider_automate(l_solo));
+  id == 7 ? (l_athr = v; slider_automate(l_athr));
+  id == 8 ? (l_arat = v; slider_automate(l_arat));
+  id == 9 ? (l_bthr = v; slider_automate(l_bthr));
+  id == 10 ? (l_brat = v; slider_automate(l_brat));
+  id == 11 ? (l_att = v; slider_automate(l_att));
+  id == 12 ? (l_rel = v; slider_automate(l_rel));
+  id == 13 ? (l_in = v; slider_automate(l_in));
+  id == 14 ? (l_out = v; slider_automate(l_out));
+  id == 15 ? (m_act = v; slider_automate(m_act));
+  id == 16 ? (m_solo = v; slider_automate(m_solo));
+  id == 17 ? (m_athr = v; slider_automate(m_athr));
+  id == 18 ? (m_arat = v; slider_automate(m_arat));
+  id == 19 ? (m_bthr = v; slider_automate(m_bthr));
+  id == 20 ? (m_brat = v; slider_automate(m_brat));
+  id == 21 ? (m_att = v; slider_automate(m_att));
+  id == 22 ? (m_rel = v; slider_automate(m_rel));
+  id == 23 ? (m_in = v; slider_automate(m_in));
+  id == 24 ? (m_out = v; slider_automate(m_out));
+  id == 25 ? (h_act = v; slider_automate(h_act));
+  id == 26 ? (h_solo = v; slider_automate(h_solo));
+  id == 27 ? (h_athr = v; slider_automate(h_athr));
+  id == 28 ? (h_arat = v; slider_automate(h_arat));
+  id == 29 ? (h_bthr = v; slider_automate(h_bthr));
+  id == 30 ? (h_brat = v; slider_automate(h_brat));
+  id == 31 ? (h_att = v; slider_automate(h_att));
+  id == 32 ? (h_rel = v; slider_automate(h_rel));
+  id == 33 ? (h_in = v; slider_automate(h_in));
+  id == 34 ? (h_out = v; slider_automate(h_out));
+  id == 35 ? (amount = v; slider_automate(amount));
+  id == 36 ? (gtime = v; slider_automate(gtime));
+  id == 37 ? (outgain = v; slider_automate(outgain));
+  id == 38 ? (peak = v; slider_automate(peak));
+  id == 39 ? (knee = v; slider_automate(knee));
+  id == 40 ? (sc_on = v; slider_automate(sc_on));
+  id == 41 ? (sc_gain = v; slider_automate(sc_gain));
+  id == 42 ? (sc_mix = v; slider_automate(sc_mix));
+  id == 43 ? (sc_listen = v; slider_automate(sc_listen));
+  ui_dirty = 1;   // applied by the audio thread in @block
+);
+// kinds: 0 dB, 1 Hz, 2 ms, 3 %, 4 time %, 5 switch, 6 Above ratio, 7 Below ratio, 8 sidechain dB
+function g_islog(id) ( PRM_KIND[id] == 1 || PRM_KIND[id] == 2 || PRM_KIND[id] == 4; );
+function g_norm(id, v) (
+  g_islog(id) ? log(v / PRM_MIN[id]) / log(PRM_MAX[id] / PRM_MIN[id])
+              : (v - PRM_MIN[id]) / (PRM_MAX[id] - PRM_MIN[id]);
+);
+function g_denorm(id, n) (
+  n = g_clamp(n, 0, 1);
+  g_islog(id) ? PRM_MIN[id] * (PRM_MAX[id] / PRM_MIN[id]) ^ n : PRM_MIN[id] + n * (PRM_MAX[id] - PRM_MIN[id]);
+);
+// number formats follow Live's: three significant digits, ratios as "1 : x" (x = dB in per dB out)
+function g_sig3(v, unit) (
+  abs(v) < 9.995 ? sprintf(#g_f, "%.2f%s", v, unit) : abs(v) < 99.95 ? sprintf(#g_f, "%.1f%s", v, unit) : sprintf(#g_f, "%.0f%s", v, unit);
+);
+function g_fmt(id, v) local(g_k, g_sl) (
+  g_k = PRM_KIND[id];
+  g_k == 0 || g_k == 8 ? g_sig3(v, " dB") :
+  g_k == 1 ? (v < 999.5 ? g_sig3(v, " Hz") : g_sig3(v / 1000, " kHz")) :
+  g_k == 2 ? (v < 999.5 ? g_sig3(v, " ms") : g_sig3(v / 1000, " s")) :
+  g_k == 3 || g_k == 4 ? sprintf(#g_f, "%.0f %%", v) :
+  g_k == 6 || g_k == 7 ? (
+    g_sl = g_k == 6 ? 1 + v : 1 - v;     // output dB per input dB
+    g_sl < 0.0005 ? strcpy(#g_f, "1 : inf") : sprintf(#g_f, "1 : %.2f", 1 / g_sl);
+  ) :
+  strcpy(#g_f, v >= 0.5 ? "On" : "Off");
+  #g_f;
+);
+
+// hit-test registry, rebuilt every frame (distinctive names: see note above)
+UI_X = 20000; UI_Y = 20100; UI_W = 20200; UI_H = 20300; UI_ID = 20400; UI_T = 20500;
+g_n = 0;
+function g_reg(x, y, w, h, id, t) (
+  UI_X[g_n] = x; UI_Y[g_n] = y; UI_W[g_n] = w; UI_H[g_n] = h; UI_ID[g_n] = id; UI_T[g_n] = t; g_n += 1;
+);
+// number box (t = 0)
+function g_box(x, y, w, h, id, dim) (
+  g_rgb(22, 22, 22); gfx_rect(x, y, w, h);
+  g_drag == id ? g_rgb(255, 170, 40) : g_rgb(70, 70, 70); gfx_rect(x, y, w, h, 0);
+  dim ? g_rgb(110, 110, 110) : g_rgb(230, 230, 230);
+  gfx_setfont(2); g_txt(x, y, w, h, g_fmt(id, g_get(id)), 5);
+  g_reg(x, y, w, h, id, 0);
+);
+// button (t = 1 toggles, t = 4 sets 1, t = 5 sets 0)
+function g_button(x, y, w, h, s, on, id, t) (
+  on ? g_rgb(255, 170, 40) : g_rgb(62, 62, 62); gfx_rect(x, y, w, h);
+  on ? g_rgb(20, 20, 20) : g_rgb(215, 215, 215);
+  gfx_setfont(2); g_txt(x, y, w, h, s, 5);
+  id ? g_reg(x, y, w, h, id, t);
+);
+function g_label(x, y, w, s) ( gfx_setfont(3); g_rgb(150, 150, 150); g_txt(x, y, w, 12 * g_s, s, 1); );
+
+// dB axis of the band displays
+G_DBLO = -80; G_DBHI = 6;
+function g_dbx(L) ( g_dx + (g_clamp(L, G_DBLO, G_DBHI) - G_DBLO) / (G_DBHI - G_DBLO) * g_dw; );
+
+// one band row; b = 0 Low, 1 Mid, 2 High; base = slider number of the band's Active switch
+function g_band(g_b, g_y, g_base, g_name, g_exists, g_lev, g_gr) local(g_bthr, g_athr, g_brat, g_arat, g_xb, g_xa, g_h, g_x, g_dim) (
+  g_dim = !g_exists;
+  g_h = g_rowh;
+  g_button(g_pad, g_y, 54 * g_s, 22 * g_s, g_name, g_get(g_base) >= 0.5 && g_exists, g_base, 1);
+  g_button(g_pad, g_y + 26 * g_s, 24 * g_s, 18 * g_s, "S", g_get(g_base + 1) >= 0.5, g_base + 1, 1);
+  g_x = g_pad + 62 * g_s;
+  g_box(g_x, g_y + 12 * g_s, 58 * g_s, 22 * g_s, g_base + 8, g_dim);
+  // display strip
+  g_bthr = g_get(g_base + 4); g_athr = g_get(g_base + 2); g_brat = g_get(g_base + 5); g_arat = g_get(g_base + 3);
+  g_rgb(16, 16, 16); gfx_rect(g_dx, g_y, g_dw, g_h);
+  g_xb = g_dbx(min(g_bthr, g_athr)); g_xa = g_dbx(g_athr);
+  abs(g_brat) > 0.0005 ? (g_brat > 0 ? g_rgb(40, 70, 110) : g_rgb(30, 50, 80); gfx_rect(g_dx, g_y, g_xb - g_dx, g_h));
+  abs(g_arat) > 0.0005 ? (g_arat < 0 ? g_rgb(110, 75, 25) : g_rgb(85, 60, 25); gfx_rect(g_xa, g_y, g_dx + g_dw - g_xa, g_h));
+  // grid every 12 dB
+  g_rgb(45, 45, 45); g_x = -72; loop(7, gfx_line(g_dbx(g_x), g_y, g_dbx(g_x), g_y + g_h - 1); g_x += 12);
+  g_exists ? (
+    // input level and the level after the gain change
+    g_rgb(150, 150, 150); gfx_rect(g_dx, g_y + g_h * 0.35, max(0, g_dbx(g_lev) - g_dx), g_h * 0.3);
+    g_rgb(255, 255, 255); g_x = g_dbx(g_lev + g_gr); gfx_rect(g_x - 1, g_y + g_h * 0.2, 2, g_h * 0.6);
+  );
+  g_rgb(90, 160, 255); gfx_rect(g_xb - 1, g_y, 3, g_h);
+  g_rgb(255, 170, 40); gfx_rect(g_xa - 1, g_y, 3, g_h);
+  g_reg(g_xb - 5, g_y, 10, g_h, g_base + 4, 3);
+  g_reg(g_xa - 5, g_y, 10, g_h, g_base + 2, 3);
+  gfx_setfont(3); g_rgb(200, 200, 200);
+  g_exists ? (abs(g_gr) > 0.05 ? (sprintf(#g_gr, "%+.1f dB", g_gr); g_txt(g_dx + 3, g_y + 2, 80, 12 * g_s, #g_gr, 0)))
+         : (g_rgb(120, 120, 120); g_txt(g_dx, g_y, g_dw, g_h, "band off", 5));
+  g_x = g_dx + g_dw + 8 * g_s;
+  g_box(g_x, g_y + 12 * g_s, 58 * g_s, 22 * g_s, g_base + 9, g_dim);
+  g_x += 66 * g_s;
+  g_box(g_x, g_y + 12 * g_s, 60 * g_s, 22 * g_s, g_base + 4, g_dim); g_x += 64 * g_s;
+  g_box(g_x, g_y + 12 * g_s, 60 * g_s, 22 * g_s, g_base + 5, g_dim); g_x += 64 * g_s;
+  g_box(g_x, g_y + 12 * g_s, 60 * g_s, 22 * g_s, g_base + 2, g_dim); g_x += 64 * g_s;
+  g_box(g_x, g_y + 12 * g_s, 60 * g_s, 22 * g_s, g_base + 3, g_dim); g_x += 64 * g_s;
+  g_box(g_x, g_y + 12 * g_s, 60 * g_s, 22 * g_s, g_base + 6, g_dim); g_x += 64 * g_s;
+  g_box(g_x, g_y + 12 * g_s, 60 * g_s, 22 * g_s, g_base + 7, g_dim);
+);
+
+g_s = max(0.7, min(gfx_w / 880, gfx_h / 300));
+gfx_setfont(1, "Arial", 13 * g_s);
+gfx_setfont(2, "Arial", 12 * g_s);
+gfx_setfont(3, "Arial", 10 * g_s);
+g_rgb(36, 36, 36); gfx_rect(0, 0, gfx_w, gfx_h);
+g_pad = 10 * g_s; g_rowh = 46 * g_s;
+g_dx = g_pad + 128 * g_s; g_dw = 280 * g_s;
+
+// column headings
+g_y = 8 * g_s;
+g_label(g_pad + 62 * g_s, g_y, 58 * g_s, "Input");
+g_label(g_dx, g_y, g_dw, "Below  |  level  |  Above");
+g_x = g_dx + g_dw + 8 * g_s;
+g_label(g_x, g_y, 58 * g_s, "Output"); g_x += 66 * g_s;
+g_label(g_x, g_y, 60 * g_s, "Below"); g_x += 64 * g_s;
+g_label(g_x, g_y, 60 * g_s, "Ratio"); g_x += 64 * g_s;
+g_label(g_x, g_y, 60 * g_s, "Above"); g_x += 64 * g_s;
+g_label(g_x, g_y, 60 * g_s, "Ratio"); g_x += 64 * g_s;
+g_label(g_x, g_y, 60 * g_s, "Attack"); g_x += 64 * g_s;
+g_label(g_x, g_y, 60 * g_s, "Release");
+
+// band rows, High at the top as in Live
+g_y0 = 24 * g_s; g_step = 60 * g_s;
+g_band(2, g_y0, 25, "High", hi_on >= 0.5, disp_lev2, disp_gr2);
+g_band(1, g_y0 + g_step, 15, "Mid", 1, disp_lev1, disp_gr1);
+g_band(0, g_y0 + 2 * g_step, 5, "Low", lo_on >= 0.5, disp_lev0, disp_gr0);
+
+// global row
+g_y = g_y0 + 3 * g_step + 6 * g_s;
+g_rgb(52, 52, 52); gfx_rect(0, g_y - 4 * g_s, gfx_w, 1);
+g_by = g_y + 16 * g_s; g_bh = 22 * g_s; g_x = g_pad;
+g_label(g_x, g_y, 116 * g_s, "Split Low-Mid");
+g_button(g_x, g_by, 40 * g_s, g_bh, "Low", lo_on >= 0.5, 3, 1);
+g_box(g_x + 44 * g_s, g_by, 72 * g_s, g_bh, 1, lo_on < 0.5); g_x += 126 * g_s;
+g_label(g_x, g_y, 116 * g_s, "Split Mid-High");
+g_button(g_x, g_by, 40 * g_s, g_bh, "High", hi_on >= 0.5, 4, 1);
+g_box(g_x + 44 * g_s, g_by, 72 * g_s, g_bh, 2, hi_on < 0.5); g_x += 132 * g_s;
+g_label(g_x, g_y, 60 * g_s, "Time"); g_box(g_x, g_by, 60 * g_s, g_bh, 36, 0); g_x += 66 * g_s;
+g_label(g_x, g_y, 60 * g_s, "Amount"); g_box(g_x, g_by, 60 * g_s, g_bh, 35, 0); g_x += 66 * g_s;
+g_label(g_x, g_y, 60 * g_s, "Output"); g_box(g_x, g_by, 60 * g_s, g_bh, 37, 0); g_x += 70 * g_s;
+g_label(g_x, g_y, 86 * g_s, "Envelope");
+g_button(g_x, g_by, 42 * g_s, g_bh, "Peak", peak >= 0.5, 38, 4);
+g_button(g_x + 44 * g_s, g_by, 42 * g_s, g_bh, "RMS", peak < 0.5, 38, 5); g_x += 92 * g_s;
+g_label(g_x, g_y, 70 * g_s, "Soft Knee");
+g_button(g_x, g_by, 70 * g_s, g_bh, "Soft Knee", knee >= 0.5, 39, 1); g_x += 80 * g_s;
+g_label(g_x, g_y, 196 * g_s, "Sidechain (inputs 3/4): Gain, Mix");
+g_button(g_x, g_by, 30 * g_s, g_bh, "SC", sc_on >= 0.5, 40, 1);
+g_box(g_x + 34 * g_s, g_by, 64 * g_s, g_bh, 41, sc_on < 0.5);
+g_box(g_x + 102 * g_s, g_by, 50 * g_s, g_bh, 42, sc_on < 0.5);
+g_button(g_x + 156 * g_s, g_by, 44 * g_s, g_bh, "Listen", sc_listen >= 0.5, 43, 1);
+
+// ---- mouse ----
+g_fine = (mouse_cap & 8) ? 0.1 : 1;
+g_click = (mouse_cap & 1) && !(g_lastcap & 1);
+g_click ? (
+  g_dbl = (time_precise() - g_lastt) < 0.3; g_lastt = time_precise();
+  g_drag = 0; g_hit = -1; g_i = 0;
+  loop(g_n, g_in(UI_X[g_i], UI_Y[g_i], UI_W[g_i], UI_H[g_i]) ? (g_hit = g_i); g_i += 1);
+  g_hit >= 0 ? (
+    g_id = UI_ID[g_hit]; g_t = UI_T[g_hit];
+    g_t == 1 ? g_set(g_id, g_get(g_id) >= 0.5 ? 0 : 1) :
+    g_t == 4 ? g_set(g_id, 1) : g_t == 5 ? g_set(g_id, 0) :
+    g_t == 0 || g_t == 3 ? (
+      g_dbl ? g_set(g_id, PRM_DEF[g_id]) : (
+        g_drag = g_id; g_dragt = g_t; g_dragn = g_norm(g_id, g_get(g_id)); g_lmy = mouse_y;
+      );
+    );
+  );
+);
+(mouse_cap & 1) && g_drag ? (
+  g_dragt == 3 ? (
+    // threshold handle: horizontal position on the dB axis
+    g_set(g_drag, g_clamp(G_DBLO + (mouse_x - g_dx) / g_dw * (G_DBHI - G_DBLO), -80, 0));
+  ) : (
+    g_dragn = g_clamp(g_dragn - (mouse_y - g_lmy) * 0.004 * g_fine, 0, 1); g_lmy = mouse_y;
+    g_set(g_drag, g_denorm(g_drag, g_dragn));
+  );
+);
+!(mouse_cap & 1) ? (g_drag = 0);
+g_lastcap = mouse_cap;
+mouse_wheel != 0 ? (
+  g_i = 0;
+  loop(g_n,
+    g_in(UI_X[g_i], UI_Y[g_i], UI_W[g_i], UI_H[g_i]) && UI_T[g_i] != 1 ? (
+      g_id = UI_ID[g_i];
+      g_set(g_id, g_denorm(g_id, g_norm(g_id, g_get(g_id)) + mouse_wheel / 120 * 0.01 * g_fine));
+    );
+    g_i += 1;
+  );
+  mouse_wheel = 0;
+);
+

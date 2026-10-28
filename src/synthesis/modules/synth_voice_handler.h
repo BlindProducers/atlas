@@ -51,6 +51,7 @@ namespace vital {
       void noteOff(int note, mono_float lift, int sample, int channel) override;
       bool shouldAccumulate(Output* output) override;
       void correctToTime(double seconds) override;
+      void advanceFreeClocks(int num_samples);
       void disableUnnecessaryModSources();
       void disableModSource(const std::string& source);
 
@@ -73,6 +74,10 @@ namespace vital {
       Output* getDirectOutput() { return getAccumulatedOutput(direct_output_->output()); }
       Output* getBusOutput(int index) { return getAccumulatedOutput(bus_outputs_[index]->output()); }
       Output* getIndependentRandomModulationSource(const std::string& source, int connection_index);
+      // The global stand-in for a per-voice source ("mod_wheel" and
+      // "pitch_wheel"), which a route to a parameter outside the voices reads
+      // instead of a voice's; null for every other source.
+      Output* getMonoModulationSource(const std::string& source);
 
       Output* note_retrigger() { return &note_retriggered_; }
 
@@ -102,6 +107,8 @@ namespace vital {
       // Mixes Multi-sample CC-triggered regions (pedal noises), which play
       // outside any voice, into the voice outputs.
       void mixMultiSampleTails(int num_samples, bool voices_rendered);
+      // Tells each Speech slot which keyboard notes are down in this block.
+      void prepareSpeechHolds(int num_samples);
 
       struct TailControls {
         Value* on = nullptr;
@@ -156,6 +163,7 @@ namespace vital {
       Output num_voices_;
 
       output_map poly_readouts_;
+      output_map mono_mod_sources_;
       poly_mask last_active_voice_mask_;
 
       JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SynthVoiceHandler)

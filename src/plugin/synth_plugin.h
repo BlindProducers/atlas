@@ -20,6 +20,7 @@
 
 #include "synth_base.h"
 #include "fx_automation_parameter.h"
+#include "undo_history.h"
 #include "value_bridge.h"
 
 #include <array>
@@ -53,15 +54,36 @@ class SynthPlugin : public SynthBase, public AudioProcessor, public ValueBridge:
     bool isProcessingPaused() const override { return isSuspended(); }
     // Tells the host the state changed where no host parameter shows it (a
     // preset load, an effect, a route, a wavetable or LFO edit), so it marks
-    // the project modified. Coalesced; message thread; never during a restore.
+    // the project modified, and records the change for undo. Coalesced;
+    // message thread; never during a restore.
     void markStateChanged() override;
+    // The same for a change in one part of the state, named as
+    // UndoHistory::noteStructureEdit names it ("settings/lfos/2"), which
+    // undo records at less cost than a change anywhere.
+    void markStateChanged(const std::string& undoBlock);
+    UndoHistory& undoHistory() { return undo_history_; }
+    // Parameter bridges the editor owns tell undo about their gestures here,
+    // as the host's parameters do.
+    AudioProcessorParameter::Listener& undoGestureListener() { return undo_gesture_listener_; }
 
     void prepareToPlay(double sample_rate, int buffer_size) override;
     void releaseResources() override;
     bool isBusesLayoutSupported(const BusesLayout& layouts) const override;
     void processBlock(AudioSampleBuffer&, MidiBuffer&) override;
+    // An audio source the editor plays through the output beside the synth
+    // (a community preset's preview). It must outlive its time here; null
+    // takes it out. Message thread: processBlock reads it only while it can
+    // take the lock without waiting, and prepareToPlay prepares it for the
+    // host's rate and block size.
+    void setAuditionSource(AudioSource* source);
 
     AudioProcessorEditor* createEditor() override;
+    // Whether a host loaded this plugin (VST3 or AU) rather than a test
+    // building it directly. Only then does Atlas reorganise the user's
+    // library: the migration when the editor opens, and the stray banks and
+    // container presets a preset scan files (library_layout.h). Only then
+    // does a new instance start from the user's default patch.
+    bool loadedByHost() const { return wrapperType != AudioProcessor::wrapperType_Undefined; }
     bool hasEditor() const override;
 
     const String getName() const override;
@@ -124,6 +146,8 @@ class SynthPlugin : public SynthBase, public AudioProcessor, public ValueBridge:
       String preset_bank;
       String preset_category;
       String preset_tag;
+      String preset_collection;   // All presets, Favourites, Community presets or Community banks
+      bool preset_browser_shown = true;   // the toolbar's Show preset browser
     };
     EditorMemory& getEditorMemory() { return editor_memory_; }
 
@@ -136,7 +160,21 @@ class SynthPlugin : public SynthBase, public AudioProcessor, public ValueBridge:
     StateChangeNotifier state_change_notifier_ { *this };
     bool restoring_state_ = false;
 
+    // The default patch (Save patch as default, or Settings' Browse default
+    // patch), which a new instance starts from; Atlas's own while there is none.
+    void loadDefaultPatch();
+
     EditorMemory editor_memory_;
+    // The editor's audition source (setAuditionSource), its scratch block and
+    // the lock the audio thread tries for it.
+    SpinLock audition_lock_;
+    AudioSource* audition_source_ = nullptr;
+    // Whether there is a source at all: with none, processBlock reads this
+    // one flag and nothing else, so the community browser costs the audio
+    // thread nothing until a preview plays.
+    std::atomic<bool> audition_active_ { false };
+    AudioBuffer<float> audition_buffer_ { 2, 1024 };
+    void mixAudition(AudioSampleBuffer& buffer);
     void updateFxSampleRate();
     std::atomic<double> fx_sample_rate_ { 44100.0 };
     void updateHostLatency();
@@ -170,6 +208,27 @@ class SynthPlugin : public SynthBase, public AudioProcessor, public ValueBridge:
     void clearFxAutomationAssignments(bool notifyHost);
     json fxAutomationAssignmentsToJson() const;
     void loadFxAutomationAssignments(const json& data);
+
+    // Undo reads and loads the state, and sets values back as the editor does.
+    friend class UndoHistory;
+    // markStateChanged's notice to the host, without recording anything for undo.
+    void notifyHostStateChanged();
+    // Sets a control as undo finds it, telling the host as an editor change does.
+    void applyUndoValue(const std::string& name, vital::mono_float value);
+    // Gestures on a control the editor changes mark the user's changes for undo.
+    struct UndoGestureListener : public AudioProcessorParameter::Listener {
+      explicit UndoGestureListener(UndoHistory& history) : history_(history) { }
+      void parameterValueChanged(int, float) override { }
+      void parameterGestureChanged(int, bool starting) override {
+        if (starting)
+          history_.beginUserEdit();
+        else
+          history_.endUserEdit();
+      }
+      UndoHistory& history_;
+    };
+    UndoHistory undo_history_ { *this };
+    UndoGestureListener undo_gesture_listener_ { undo_history_ };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SynthPlugin)
 };

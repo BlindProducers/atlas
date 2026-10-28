@@ -69,8 +69,8 @@ namespace {
       expectNavigationSpoken(*gate, spoken, KeyPress(KeyPress::rightKey), "Step 2,", "Trance gate editor");
       expectNavigationSpoken(*gate, spoken, KeyPress(KeyPress::rightKey), "Step 3,", "Trance gate editor");
       expectNavigationSpoken(*gate, spoken, KeyPress(KeyPress::leftKey), "Step 2,", "Trance gate editor");
-      expectNavigationSpoken(*gate, spoken, KeyPress(KeyPress::upKey), "", "Trance gate editor value");
-      expectNavigationSpoken(*gate, spoken, characterKey('h'), "", "Trance gate editor step shape");
+      expectNavigationSpoken(*gate, spoken, characterKey('h'), "Medium", "Trance gate editor step shape");
+      expectNavigationSpoken(*gate, spoken, characterKey('m'), "Muted", "Trance gate editor mute");
     }
 
     auto* show = dynamic_cast<Button*>(titled(*editorSection(editor, "Oscillator 1"), "Show wavetable editor"));
@@ -78,13 +78,18 @@ namespace {
     if (show != nullptr && show->onClick)
       show->onClick();
     pumpUntil([&] { return editorSection(editor, "Oscillator 1 wavetable editor") != nullptr; });
+    // Showing the editor rebuilt the rows, and the editor holds what it says
+    // until it has moved the screen reader back onto its control
+    // (kScreenReaderRefocusDelayMs). Wait for that, so each key below speaks at once.
+    pumpUntil([&] { return spoken.messages.joinIntoString(" ").contains("Wavetable editor shown"); });
     auto* wavetable_section = editorSection(editor, "Oscillator 1 wavetable editor");
     Component::SafePointer<Component> wavetable(
         wavetable_section != nullptr ? titled(*wavetable_section, "Wavetable keyboard editor") : nullptr);
     expect(wavetable != nullptr, "the wavetable editor has its keyboard editor");
     if (wavetable != nullptr) {
-      expectNavigationSpoken(*wavetable, spoken, KeyPress(KeyPress::endKey), "Frame 1 of 1", "Wavetable editor");
-      expectNavigationSpoken(*wavetable, spoken, KeyPress(KeyPress::rightKey), "Frame 1 of 1", "Wavetable editor");
+      // The default table, Basic Shapes, has a keyframe for each of its seven shapes.
+      expectNavigationSpoken(*wavetable, spoken, KeyPress(KeyPress::endKey), "Frame 7 of 7", "Wavetable editor");
+      expectNavigationSpoken(*wavetable, spoken, KeyPress(KeyPress::rightKey), "Frame 7 of 7", "Wavetable editor");
       expectNavigationSpoken(*wavetable, spoken, characterKey('.'), "Harmonic 2", "Wavetable editor next harmonic");
       expectNavigationSpoken(*wavetable, spoken, characterKey(','), "Harmonic 1", "Wavetable editor previous harmonic");
       expectNavigationSpoken(*wavetable, spoken, KeyPress(KeyPress::pageUpKey), "Harmonic 11", "Wavetable editor ten harmonics up");
@@ -129,15 +134,30 @@ namespace {
     if (autoload != nullptr)
       autoload->setToggleState(false, dontSendNotification);
 
+    // The Community rows fetch the library's lists; saved empty pages stand
+    // in for the library, so the test needs no network.
+    const File saved_library = File::getSpecialLocation(File::tempDirectory)
+                                   .getNonexistentChildFile("AtlasSpeechTestLibrary", "", false);
+    saved_library.createDirectory();
+    saved_library.getChildFile("presets.json").replaceWithText(R"({"count": 0, "next": null, "results": []})");
+    saved_library.getChildFile("banks.json").replaceWithText(R"({"count": 0, "next": null, "results": []})");
+    atlas::community::setLibraryUrlForTesting(URL(saved_library.getChildFile("presets.json")).toString(false));
     auto* collection = dynamic_cast<TableListBox*>(titled(editor, "Collection"));
-    expect(collection != nullptr && collection->getNumRows() == 2,
-           "the preset browser lists All presets and Favourites");
-    if (collection != nullptr && collection->getNumRows() == 2) {
+    expect(collection != nullptr && collection->getNumRows() == 4,
+           "the preset browser lists All presets, Favourites, Community presets and Community banks");
+    if (collection != nullptr && collection->getNumRows() == 4) {
       collection->selectRow(0);
-      expectListRowSpoken(*collection, spoken, KeyPress(KeyPress::downKey), "Favourites, 2 of 2", "Collection");
-      expectListRowSpoken(*collection, spoken, KeyPress(KeyPress::downKey), "Favourites, 2 of 2", "Collection at its end");
-      expectListRowSpoken(*collection, spoken, KeyPress(KeyPress::homeKey), "All presets, 1 of 2", "Collection");
+      expectListRowSpoken(*collection, spoken, KeyPress(KeyPress::downKey), "Favourites, 2 of 4", "Collection");
+      expectListRowSpoken(*collection, spoken, KeyPress(KeyPress::downKey), "Community presets, 3 of 4", "Collection");
+      expectListRowSpoken(*collection, spoken, KeyPress(KeyPress::downKey), "Community banks, 4 of 4", "Collection");
+      expectListRowSpoken(*collection, spoken, KeyPress(KeyPress::downKey), "Community banks, 4 of 4", "Collection at its end");
+      // The lists the Community rows asked for land and are said; not part of the rows.
+      pumpUntil([&] { return !editor.isCommunityLibraryBusy() && !editor.isCommunityBankLibraryBusy(); }, 10000);
+      spoken.messages.clear();
+      expectListRowSpoken(*collection, spoken, KeyPress(KeyPress::homeKey), "All presets, 1 of 4", "Collection");
     }
+    atlas::community::setLibraryUrlForTesting({});
+    saved_library.deleteRecursively();
 
     auto* results = dynamic_cast<TableListBox*>(titled(editor, "Preset results table"));
     expect(results != nullptr, "the preset browser has its results table");

@@ -1,0 +1,207 @@
+diff --git a/modules/juce_gui_basics/native/juce_VBlank_windows.cpp b/modules/juce_gui_basics/native/juce_VBlank_windows.cpp
+index 93e2bde..e569636 100644
+--- a/modules/juce_gui_basics/native/juce_VBlank_windows.cpp
++++ b/modules/juce_gui_basics/native/juce_VBlank_windows.cpp
+@@ -57,10 +57,22 @@ public:
+         cancelPendingUpdate();
+ 
+         state |= flagExit;
++        wantedEvent.signal();
+ 
+         stopThread (-1);
+     }
+ 
++    // Atlas: whether any window waits for a vblank. While none does, the thread
++    // sleeps until one asks rather than waking the message thread on every
++    // display refresh.
++    void setWanted (bool shouldDeliver)
++    {
++        if (! shouldDeliver)
++            wanted = false;
++        else if (! wanted.exchange (true))
++            wantedEvent.signal();
++    }
++
+     void updateMonitor()
+     {
+         monitor = getMonitorFromOutput (output);
+@@ -117,6 +129,15 @@ private:
+     {
+         for (;;)
+         {
++            if ((state & flagExit) != 0)
++                return;
++
++            if (! wanted)
++            {
++                wantedEvent.wait (-1.0);
++                continue;
++            }
++
+             if (output->WaitForVBlank() == S_OK)
+             {
+                 const auto now = Time::getMillisecondCounterHiRes();
+@@ -164,6 +185,8 @@ private:
+ 
+     std::atomic<double> lastVBlankEvent{};
+     std::atomic<int> state{};
++    std::atomic<bool> wanted { true };
++    WaitableEvent wantedEvent;
+ 
+     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (VBlankThread)
+     JUCE_DECLARE_NON_MOVEABLE (VBlankThread)
+@@ -232,6 +255,7 @@ public:
+                     continue;
+ 
+                 threads.emplace_back (std::make_unique<VBlankThread> (output, monitor, listener));
++                threads.back()->setWanted (! waitingListeners.empty());
+                 break;
+             }
+         }
+@@ -244,6 +268,22 @@ public:
+                 return;
+     }
+ 
++    // Atlas: a window says when it starts and stops waiting for a vblank (a
++    // paint pending, or a VBlankListener of its own), and the threads deliver
++    // vblanks only while one waits. Idle, the message thread is left alone.
++    void setWaiting (const ComponentPeer::VBlankListener& listener, bool waiting)
++    {
++        const auto found = std::find (waitingListeners.begin(), waitingListeners.end(), &listener);
++
++        if (waiting && found == waitingListeners.end())
++            waitingListeners.push_back (&listener);
++        else if (! waiting && found != waitingListeners.end())
++            waitingListeners.erase (found);
++
++        for (auto& thread : threads)
++            thread->setWanted (! waitingListeners.empty());
++    }
++
+     void reconfigureDisplays()
+     {
+         directX->adapters.updateAdapters();
+@@ -291,6 +331,7 @@ private:
+ 
+     //==============================================================================
+     Threads threads;
++    std::vector<const ComponentPeer::VBlankListener*> waitingListeners;
+     SharedResourcePointer<DirectX> directX;
+ 
+     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (VBlankDispatcher)
+diff --git a/modules/juce_gui_basics/native/juce_Windowing_windows.cpp b/modules/juce_gui_basics/native/juce_Windowing_windows.cpp
+index a5d39ec..08a728f 100644
+--- a/modules/juce_gui_basics/native/juce_Windowing_windows.cpp
++++ b/modules/juce_gui_basics/native/juce_Windowing_windows.cpp
+@@ -1230,6 +1230,9 @@ struct RenderContext
+     virtual void onVBlank() = 0;
+     virtual void handleShowWindow() = 0;
+ 
++    /*  Atlas: whether the next vblank has work to do (a paint is pending). */
++    virtual bool isWaitingForVBlank() const = 0;
++
+     /*  Gets a snapshot of whatever the render context is currently showing. */
+     virtual Image createSnapshot() = 0;
+ };
+@@ -1283,6 +1286,7 @@ public:
+         // Clean up that needs to happen on the calling thread
+         suspendResumeRegistration = {};
+ 
++        VBlankDispatcher::getInstance()->setWaiting (*this, false);
+         VBlankDispatcher::getInstance()->removeListener (*this);
+ 
+         // do this first to avoid messages arriving for this window before it's destroyed
+@@ -1686,12 +1690,16 @@ public:
+     {
+         if (renderContext != nullptr)
+             renderContext->repaint ((area.toDouble() * getPlatformScaleFactor()).getSmallestIntegerContainer());
++
++        syncVBlankClaim();
+     }
+ 
+     void performAnyPendingRepaintsNow() override
+     {
+         if (renderContext != nullptr)
+             renderContext->performAnyPendingRepaintsNow();
++
++        syncVBlankClaim();
+     }
+ 
+     Image createSnapshot()
+@@ -1709,6 +1717,32 @@ public:
+ 
+         if (renderContext != nullptr)
+             renderContext->onVBlank();
++
++        syncVBlankClaim();
++    }
++
++    // Atlas: JUCE woke the message thread on every vblank (60 or more times a
++    // second) for as long as a window was open, though a vblank only matters
++    // while a paint is pending or a VBlankListener listens. The window tells
++    // the dispatcher whenever that changes, and it delivers vblanks only while
++    // a window waits for one.
++    bool isWaitingForVBlank() const
++    {
++        return ! vBlankListeners.isEmpty() || (renderContext != nullptr && renderContext->isWaitingForVBlank());
++    }
++
++    void syncVBlankClaim()
++    {
++        const auto waiting = isWaitingForVBlank();
++
++        if (std::exchange (vBlankClaimed, waiting) != waiting)
++            if (auto* dispatcher = VBlankDispatcher::getInstanceWithoutCreating())
++                dispatcher->setWaiting (*this, waiting);
++    }
++
++    void vBlankListenerAdded() override
++    {
++        syncVBlankClaim();
+     }
+ 
+     //==============================================================================
+@@ -2459,6 +2493,8 @@ private:
+         if (renderContext != nullptr)
+             renderContext->handlePaintMessage();
+ 
++        syncVBlankClaim();
++
+         lastPaintTime = Time::getMillisecondCounter();
+     }
+ 
+@@ -4041,6 +4077,8 @@ private:
+ 
+                     if (renderContext != nullptr)
+                         renderContext->handleShowWindow();
++
++                    syncVBlankClaim();
+                 }
+ 
+                 break;
+@@ -4648,6 +4686,7 @@ private:
+ 
+     std::unique_ptr<RenderContext> renderContext;
+     std::optional<LPARAM> captionMouseDown;
++    bool vBlankClaimed = false;
+ 
+     //==============================================================================
+     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (HWNDComponentPeer)
+@@ -4771,6 +4810,8 @@ public:
+ 
+     void handleShowWindow() override {}
+ 
++    bool isWaitingForVBlank() const override { return ! deferredRepaints.isEmpty(); }
++
+ private:
+     // If we've called UpdateLayeredWindow to display the window contents, retrieving the
+     // contents of the window DC will fail.
+@@ -5071,6 +5112,8 @@ public:
+         handleDirect2DPaint();
+     }
+ 
++    bool isWaitingForVBlank() const override { return schedulePaintOnVblank; }
++
+ private:
+     struct WrappedD2DHwndContextBase
+     {

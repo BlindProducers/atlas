@@ -1,0 +1,511 @@
+desc: Saturator (Live-style waveshaping saturation)
+author: Alessio Scala
+version: 1.0
+about:
+  A recreation of the Saturator audio effect found in Ableton Live, modelled
+  from measurements of the original device (not from its code).
+  Eight curves (Analog Clip, Soft Sine, Bass Shaper, Medium Curve, Hard Curve,
+  Sinoid Fold, Digital Clip, Waveshaper), Color pre/post EQ, Post Clip, Output,
+  Dry/Wet, Pre-DC filter and 2x Hi-Quality oversampling.
+  Drag knobs vertically (Shift = fine), double-click to reset, click the curve
+  type or Post Clip boxes for a menu.
+
+slider1:drive=0<-36,36,0.01>-Drive (dB)
+slider2:ctype=0<0,7,1{Analog Clip,Soft Sine,Bass Shaper,Medium Curve,Hard Curve,Sinoid Fold,Digital Clip,Waveshaper}>-Type
+slider3:color=0<0,1,1{Off,On}>-Color
+slider4:amtlo=0<-36,36,0.01>-Amt Lo (dB)
+slider5:cfreq=1000<30,18500,1:log=1000>-Frequency (Hz)
+slider6:cwidth=30<0,100,0.1>-Width (%)
+slider7:amthi=0<-24,24,0.01>-Amt Hi (dB)
+slider8:postclip=0<0,2,1{Off,Soft Clip,Hard Clip}>-Post Clip
+slider9:outdb=0<-36,0,0.01>-Output (dB)
+slider10:drywet=100<0,100,0.1>-Dry/Wet (%)
+slider11:bthr=-50<-50,0,0.01>-Bass Shaper Threshold (dB)
+slider12:wsdrive=100<0,100,0.1>-WS Drive (%)
+slider13:wslin=50<0,100,0.1>-WS Linear (%)
+slider14:wscurve=0<0,100,0.1>-WS Curve (%)
+slider15:wsdamp=0<0,100,0.1>-WS Damp (%)
+slider16:wsperiod=0<0,100,0.1>-WS Period (%)
+slider17:wsdepth=0<0,100,0.1>-WS Depth (%)
+slider18:dcfilt=0<0,1,1{Off,On}>-Pre-DC Filter
+slider19:hiq=1<0,1,1{Off,On}>-Hi-Quality
+
+in_pin:left input
+in_pin:right input
+out_pin:left output
+out_pin:right output
+
+@init
+// ---------------- measured constants ----------------
+SHELF_FC = 405.4785; SHELF_K = -0.465936; SHELF_FDC = 2.715171;   // Amt Lo shelf
+BELL_Q0 = 1.71109; BELL_Q1 = 0.3008; BELL_QE = 2.22389;   // Width 0..1 -> bell Q
+DC_FC = 27.33; DC_Q = 0.486;                   // Pre-DC filter (2nd-order high-pass)
+WSDC_FC = 7.022;                               // Waveshaper output DC blockers (2 stages)
+WS_DAMP_K = 0.00624; WS_PERIOD_K = 60; WS_CLAMP = 10;
+UMAX_A = 8; UMAX_M = 4; UMAX_H = 16; LUTN = 128;
+
+// memory layout
+LUT_A = 0; LUT_M = 200; LUT_H = 400; HB = 600; ST = 1000; DRYL = 3000; DRYR = 4100;
+// measured curve tables (cubic Hermite knots, evenly spaced in sqrt(|u| / umax))
+  LUT_A[0]=0; LUT_A[1]=0.0004883; LUT_A[2]=0.0019531; LUT_A[3]=0.0043945; LUT_A[4]=0.0078125; LUT_A[5]=0.0122071; LUT_A[6]=0.0175782; LUT_A[7]=0.0239258;
+  LUT_A[8]=0.0312501; LUT_A[9]=0.0395509; LUT_A[10]=0.0488283; LUT_A[11]=0.0590822; LUT_A[12]=0.0703127; LUT_A[13]=0.0825198; LUT_A[14]=0.0957034; LUT_A[15]=0.1098636;
+  LUT_A[16]=0.1250004; LUT_A[17]=0.1411137; LUT_A[18]=0.1582036; LUT_A[19]=0.1762701; LUT_A[20]=0.1953131; LUT_A[21]=0.2153327; LUT_A[22]=0.2363288; LUT_A[23]=0.2583016;
+  LUT_A[24]=0.2812509; LUT_A[25]=0.3051767; LUT_A[26]=0.3300792; LUT_A[27]=0.3559581; LUT_A[28]=0.3828138; LUT_A[29]=0.4106456; LUT_A[30]=0.4394548; LUT_A[31]=0.4692391;
+  LUT_A[32]=0.5000022; LUT_A[33]=0.5317373; LUT_A[34]=0.5644607; LUT_A[35]=0.5981375; LUT_A[36]=0.6328284; LUT_A[37]=0.6684364; LUT_A[38]=0.7050696; LUT_A[39]=0.7410404;
+  LUT_A[40]=0.7740114; LUT_A[41]=0.8041927; LUT_A[42]=0.831471; LUT_A[43]=0.8559848; LUT_A[44]=0.8777833; LUT_A[45]=0.8970023; LUT_A[46]=0.9137659; LUT_A[47]=0.9282348;
+  LUT_A[48]=0.9405787; LUT_A[49]=0.9509877; LUT_A[50]=0.9596614; LUT_A[51]=0.9668091; LUT_A[52]=0.9726442; LUT_A[53]=0.97738; LUT_A[54]=0.9812244; LUT_A[55]=0.9843746;
+  LUT_A[56]=0.9870101; LUT_A[57]=0.9892871; LUT_A[58]=0.9913275; LUT_A[59]=0.9932184; LUT_A[60]=0.9949876; LUT_A[61]=0.9966217; LUT_A[62]=0.9980073; LUT_A[63]=0.9990026;
+  LUT_A[64]=0.9993225; LUT_A[65]=0.9992903; LUT_A[66]=0.999305; LUT_A[67]=0.9992957; LUT_A[68]=0.9993004; LUT_A[69]=0.9992984; LUT_A[70]=0.9992996; LUT_A[71]=0.9992989;
+  LUT_A[72]=0.9992992; LUT_A[73]=0.999299; LUT_A[74]=0.9992991; LUT_A[75]=0.999299; LUT_A[76]=0.9992991; LUT_A[77]=0.999299; LUT_A[78]=0.9992991; LUT_A[79]=0.999299;
+  LUT_A[80]=0.9992991; LUT_A[81]=0.999299; LUT_A[82]=0.999299; LUT_A[83]=0.999299; LUT_A[84]=0.999299; LUT_A[85]=0.999299; LUT_A[86]=0.999299; LUT_A[87]=0.999299;
+  LUT_A[88]=0.999299; LUT_A[89]=0.999299; LUT_A[90]=0.999299; LUT_A[91]=0.999299; LUT_A[92]=0.999299; LUT_A[93]=0.999299; LUT_A[94]=0.999299; LUT_A[95]=0.999299;
+  LUT_A[96]=0.999299; LUT_A[97]=0.999299; LUT_A[98]=0.999299; LUT_A[99]=0.999299; LUT_A[100]=0.999299; LUT_A[101]=0.999299; LUT_A[102]=0.999299; LUT_A[103]=0.999299;
+  LUT_A[104]=0.999299; LUT_A[105]=0.999299; LUT_A[106]=0.999299; LUT_A[107]=0.999299; LUT_A[108]=0.999299; LUT_A[109]=0.999299; LUT_A[110]=0.999299; LUT_A[111]=0.999299;
+  LUT_A[112]=0.999299; LUT_A[113]=0.999299; LUT_A[114]=0.999299; LUT_A[115]=0.999299; LUT_A[116]=0.999299; LUT_A[117]=0.999299; LUT_A[118]=0.999299; LUT_A[119]=0.999299;
+  LUT_A[120]=0.999299; LUT_A[121]=0.999299; LUT_A[122]=0.999299; LUT_A[123]=0.999299; LUT_A[124]=0.999299; LUT_A[125]=0.999299; LUT_A[126]=0.999299; LUT_A[127]=0.999299;
+  LUT_A[128]=0.999299;
+  LUT_M[0]=0; LUT_M[1]=0.0004883; LUT_M[2]=0.0019531; LUT_M[3]=0.0043945; LUT_M[4]=0.0078125; LUT_M[5]=0.0122071; LUT_M[6]=0.0175782; LUT_M[7]=0.0239258;
+  LUT_M[8]=0.0312501; LUT_M[9]=0.0395509; LUT_M[10]=0.0488282; LUT_M[11]=0.0590822; LUT_M[12]=0.0703126; LUT_M[13]=0.0825197; LUT_M[14]=0.0957033; LUT_M[15]=0.1098635;
+  LUT_M[16]=0.1250003; LUT_M[17]=0.1411136; LUT_M[18]=0.1582035; LUT_M[19]=0.1762699; LUT_M[20]=0.1953129; LUT_M[21]=0.2153325; LUT_M[22]=0.2363286; LUT_M[23]=0.2583013;
+  LUT_M[24]=0.2812506; LUT_M[25]=0.3051764; LUT_M[26]=0.3300788; LUT_M[27]=0.3559578; LUT_M[28]=0.3828132; LUT_M[29]=0.4106456; LUT_M[30]=0.4394536; LUT_M[31]=0.4692401;
+  LUT_M[32]=0.5000002; LUT_M[33]=0.5317426; LUT_M[34]=0.5644468; LUT_M[35]=0.5981565; LUT_M[36]=0.6327993; LUT_M[37]=0.6684506; LUT_M[38]=0.7039864; LUT_M[39]=0.7383307;
+  LUT_M[40]=0.7714101; LUT_M[41]=0.8029819; LUT_M[42]=0.8329111; LUT_M[43]=0.8610019; LUT_M[44]=0.8870812; LUT_M[45]=0.910958; LUT_M[46]=0.932442; LUT_M[47]=0.9513409;
+  LUT_M[48]=0.9674451; LUT_M[49]=0.9805724; LUT_M[50]=0.9904721; LUT_M[51]=0.9970132; LUT_M[52]=0.99984; LUT_M[53]=0.9999815; LUT_M[54]=1.000026; LUT_M[55]=0.9999847;
+  LUT_M[56]=1.000005; LUT_M[57]=0.9999969; LUT_M[58]=1.000001; LUT_M[59]=0.9999988; LUT_M[60]=1; LUT_M[61]=0.9999998; LUT_M[62]=1; LUT_M[63]=1;
+  LUT_M[64]=1; LUT_M[65]=1; LUT_M[66]=1; LUT_M[67]=1; LUT_M[68]=1; LUT_M[69]=1; LUT_M[70]=1; LUT_M[71]=1;
+  LUT_M[72]=1; LUT_M[73]=1; LUT_M[74]=1; LUT_M[75]=1; LUT_M[76]=1; LUT_M[77]=1; LUT_M[78]=1; LUT_M[79]=1;
+  LUT_M[80]=1; LUT_M[81]=1; LUT_M[82]=1; LUT_M[83]=1; LUT_M[84]=1; LUT_M[85]=1; LUT_M[86]=1; LUT_M[87]=1;
+  LUT_M[88]=1; LUT_M[89]=1; LUT_M[90]=1; LUT_M[91]=1; LUT_M[92]=1; LUT_M[93]=1; LUT_M[94]=1; LUT_M[95]=1;
+  LUT_M[96]=1; LUT_M[97]=1; LUT_M[98]=1; LUT_M[99]=1; LUT_M[100]=1; LUT_M[101]=1; LUT_M[102]=1; LUT_M[103]=1;
+  LUT_M[104]=1; LUT_M[105]=1; LUT_M[106]=1; LUT_M[107]=1; LUT_M[108]=1; LUT_M[109]=1; LUT_M[110]=1; LUT_M[111]=1;
+  LUT_M[112]=1; LUT_M[113]=1; LUT_M[114]=1; LUT_M[115]=1; LUT_M[116]=1; LUT_M[117]=1; LUT_M[118]=1; LUT_M[119]=1;
+  LUT_M[120]=1; LUT_M[121]=1; LUT_M[122]=1; LUT_M[123]=1; LUT_M[124]=1; LUT_M[125]=1; LUT_M[126]=1; LUT_M[127]=1;
+  LUT_M[128]=1;
+  LUT_H[0]=0; LUT_H[1]=0.0066379; LUT_H[2]=0.026539; LUT_H[3]=0.0595899; LUT_H[4]=0.1053586; LUT_H[5]=0.1627698; LUT_H[6]=0.2297999; LUT_H[7]=0.30338;
+  LUT_H[8]=0.3797108; LUT_H[9]=0.4549179; LUT_H[10]=0.5258166; LUT_H[11]=0.5903436; LUT_H[12]=0.6475651; LUT_H[13]=0.6974503; LUT_H[14]=0.7404894; LUT_H[15]=0.777433;
+  LUT_H[16]=0.8091016; LUT_H[17]=0.8362796; LUT_H[18]=0.8596677; LUT_H[19]=0.879869; LUT_H[20]=0.8973918; LUT_H[21]=0.9126599; LUT_H[22]=0.9260244; LUT_H[23]=0.9377758;
+  LUT_H[24]=0.9481545; LUT_H[25]=0.9573601; LUT_H[26]=0.9655585; LUT_H[27]=0.9728883; LUT_H[28]=0.9794659; LUT_H[29]=0.985389; LUT_H[30]=0.9907406; LUT_H[31]=0.9955909;
+  LUT_H[32]=1; LUT_H[33]=1.00402; LUT_H[34]=1.007694; LUT_H[35]=1.01106; LUT_H[36]=1.014153; LUT_H[37]=1.017; LUT_H[38]=1.019627; LUT_H[39]=1.022055;
+  LUT_H[40]=1.024305; LUT_H[41]=1.026393; LUT_H[42]=1.028335; LUT_H[43]=1.030143; LUT_H[44]=1.03183; LUT_H[45]=1.033406; LUT_H[46]=1.03488; LUT_H[47]=1.036262;
+  LUT_H[48]=1.037559; LUT_H[49]=1.038777; LUT_H[50]=1.039923; LUT_H[51]=1.041002; LUT_H[52]=1.04202; LUT_H[53]=1.042981; LUT_H[54]=1.043889; LUT_H[55]=1.044748;
+  LUT_H[56]=1.045562; LUT_H[57]=1.046333; LUT_H[58]=1.047065; LUT_H[59]=1.047759; LUT_H[60]=1.048421; LUT_H[61]=1.049046; LUT_H[62]=1.04965; LUT_H[63]=1.050213;
+  LUT_H[64]=1.050714; LUT_H[65]=1.050758; LUT_H[66]=1.050762; LUT_H[67]=1.050758; LUT_H[68]=1.05076; LUT_H[69]=1.050759; LUT_H[70]=1.05076; LUT_H[71]=1.05076;
+  LUT_H[72]=1.05076; LUT_H[73]=1.05076; LUT_H[74]=1.05076; LUT_H[75]=1.05076; LUT_H[76]=1.05076; LUT_H[77]=1.05076; LUT_H[78]=1.05076; LUT_H[79]=1.05076;
+  LUT_H[80]=1.05076; LUT_H[81]=1.05076; LUT_H[82]=1.05076; LUT_H[83]=1.05076; LUT_H[84]=1.05076; LUT_H[85]=1.05076; LUT_H[86]=1.05076; LUT_H[87]=1.05076;
+  LUT_H[88]=1.05076; LUT_H[89]=1.05076; LUT_H[90]=1.05076; LUT_H[91]=1.05076; LUT_H[92]=1.05076; LUT_H[93]=1.05076; LUT_H[94]=1.05076; LUT_H[95]=1.05076;
+  LUT_H[96]=1.05076; LUT_H[97]=1.05076; LUT_H[98]=1.05076; LUT_H[99]=1.05076; LUT_H[100]=1.05076; LUT_H[101]=1.05076; LUT_H[102]=1.05076; LUT_H[103]=1.05076;
+  LUT_H[104]=1.05076; LUT_H[105]=1.05076; LUT_H[106]=1.05076; LUT_H[107]=1.05076; LUT_H[108]=1.05076; LUT_H[109]=1.05076; LUT_H[110]=1.05076; LUT_H[111]=1.05076;
+  LUT_H[112]=1.05076; LUT_H[113]=1.05076; LUT_H[114]=1.05076; LUT_H[115]=1.05076; LUT_H[116]=1.05076; LUT_H[117]=1.05076; LUT_H[118]=1.05076; LUT_H[119]=1.05076;
+  LUT_H[120]=1.05076; LUT_H[121]=1.05076; LUT_H[122]=1.05076; LUT_H[123]=1.05076; LUT_H[124]=1.05076; LUT_H[125]=1.05076; LUT_H[126]=1.05076; LUT_H[127]=1.05076;
+  LUT_H[128]=1.05076;
+
+// 2x polyphase IIR half-band used by Hi-Quality (coefficients alternate between the two branches)
+HB_PER = 3; HB_LAT = 3;
+HB[0] = 0.017851445; HB[1] = 0.1322267; HB[2] = 0.37680127; HB[3] = 0.63756992; HB[4] = 0.87402887; HB[5] = 0.99554067;
+memset(ST, 0, 1500);
+memset(DRYL, 0, 2200);
+dwp = 0;
+
+function hermite(tab, s) local(p, i, f, p0, p1, p2, p3, m1, m2, f2, f3) (
+  p = min(max(s, 0), 1) * LUTN;
+  i = min(floor(p), LUTN - 1); f = p - i;
+  p1 = tab[i]; p2 = tab[i + 1];
+  p0 = i > 0 ? tab[i - 1] : -tab[1];
+  p3 = i < LUTN - 1 ? tab[i + 2] : 2 * tab[LUTN] - tab[LUTN - 1];
+  m1 = 0.5 * (p2 - p0); m2 = 0.5 * (p3 - p1);
+  f2 = f * f; f3 = f2 * f;
+  (2 * f3 - 3 * f2 + 1) * p1 + (f3 - 2 * f2 + f) * m1 + (-2 * f3 + 3 * f2) * p2 + (f3 - f2) * m2;
+);
+function lutcurve(tab, umax, u) local(a) (
+  a = abs(u);
+  a >= umax ? (u < 0 ? -tab[LUTN] : tab[LUTN]) : (u < 0 ? -1 : 1) * hermite(tab, sqrt(a / umax));
+);
+
+function waveshaper(u) local(s, u4) (
+  u = min(max(u, -WS_CLAMP), WS_CLAMP);
+  s = ws_lin * u + sin(ws_ca * u * u) + ws_dep * sin(ws_pf * u);
+  ws_damp > 0 ? (u4 = u * u * u * u; s *= u4 / (u4 + WS_DAMP_K * ws_damp));
+  (1 - ws_drv) * u + ws_drv * s;
+);
+
+function shape(u) local(a, t) (
+  ctype_i == 0 ? lutcurve(LUT_A, UMAX_A, u) :
+  ctype_i == 1 ? sin(0.5 * $pi * min(max(u, -1), 1)) :
+  ctype_i == 2 ? (
+    a = abs(u); t = bthr_lin;
+    a <= t ? u : (u < 0 ? -1 : 1) * (t + (1 - t) * (1 - exp(-(a - t) / max(1 - t, 0.000000001))));
+  ) :
+  ctype_i == 3 ? lutcurve(LUT_M, UMAX_M, u) :
+  ctype_i == 4 ? lutcurve(LUT_H, UMAX_H, u) :
+  ctype_i == 5 ? sin(0.5 * $pi * min(max(u, -9), 9)) :
+  ctype_i == 6 ? min(max(u, -1), 1) :
+  waveshaper(u);
+);
+
+// generic biquad (TDF-II); coefficients live in the namespace given as c*
+function bq(x, c*) local(y) (
+  y = c.b0 * x + this.s1;
+  this.s1 = c.b1 * x - c.a1 * y + this.s2;
+  this.s2 = c.b2 * x - c.a2 * y;
+  y;
+);
+function set_norm(b0, b1, b2, a0, a1, a2) (
+  this.b0 = b0 / a0; this.b1 = b1 / a0; this.b2 = b2 / a0; this.a1 = a1 / a0; this.a2 = a2 / a0;
+);
+// inverse of a biquad (swap numerator and denominator)
+function set_inverse(c*) (
+  this.set_norm(1, c.a1, c.a2, c.b0, c.b1, c.b2);
+);
+// Amt Lo: 1st-order low shelf whose corner moves with gain, with its boost/cut
+// returned to unity at DC by a 1st-order high-pass:  H = 1 + (S - 1) * HP_dc
+function set_shelf(gdb) local(g, K, a, bs0, bs1, Kd, bh, ad, n0, n1) (
+  g = 10 ^ (gdb / 20);
+  K = tan($pi * min(SHELF_FC * g ^ SHELF_K, 0.49 * srate) / srate);
+  a = (K - 1) / (K + 1);
+  bs0 = (g * K + 1) / (K + 1) - 1; bs1 = (g * K - 1) / (K + 1) - a;    // S - 1 numerator
+  Kd = tan($pi * SHELF_FDC / srate); bh = 1 / (1 + Kd); ad = (Kd - 1) / (Kd + 1);
+  n0 = bs0 * bh; n1 = bs1 * bh - bs0 * bh;                              // (S - 1) * HP_dc numerator
+  this.set_norm(1 + n0, a + ad + n1, a * ad - bs1 * bh, 1, a + ad, a * ad);
+);
+function set_peak(fc, gdb, q) local(A, w0, cs, al) (
+  A = 10 ^ (gdb / 40); w0 = 2 * $pi * min(fc, 0.49 * srate) / srate; cs = cos(w0); al = sin(w0) / (2 * q);
+  this.set_norm(1 + al * A, -2 * cs, 1 - al * A, 1 + al / A, -2 * cs, 1 - al / A);
+);
+function set_hp(fc, q) local(w0, cs, al) (
+  w0 = 2 * $pi * fc / srate; cs = cos(w0); al = sin(w0) / (2 * q);
+  this.set_norm((1 + cs) / 2, -(1 + cs), (1 + cs) / 2, 1 + al, -2 * cs, 1 - al);
+);
+function dcb(x) local(y) (
+  y = wsdc_b * (x - this.x1) - wsdc_a * this.y1;
+  this.x1 = x; this.y1 = y;
+  y;
+);
+
+// allpass chain over coefficients HB[first], HB[first+2], ...; st = state base
+function ap_chain(x, first, st) local(i, c, y) (
+  i = 0;
+  loop(HB_PER,
+    c = HB[first + 2 * i];
+    y = c * (x - st[2 * i + 1]) + st[2 * i];
+    st[2 * i] = x; st[2 * i + 1] = y; x = y;
+    i += 1;
+  );
+  x;
+);
+// one host-rate sample through the 2x oversampled shaper; base = state block for this channel
+function shape_os(u, base) local(a, b, y) (
+  a = ap_chain(shape(ap_chain(u, 0, base)), 0, base + 128);
+  b = ap_chain(shape(ap_chain(u, 1, base + 64)), 1, base + 192);
+  y = 0.5 * (a + base[300]); base[300] = b;
+  y;
+);
+
+k = tan($pi * WSDC_FC / srate); wsdc_b = 1 / (1 + k); wsdc_a = (k - 1) / (k + 1);
+dcc.set_hp(DC_FC, DC_Q);
+sm = 1 - exp(-1 / (0.02 * srate));
+sm_init = 0;
+last_key = -1;
+
+function update_targets() (
+  t_gain = 10 ^ (drive / 20);
+  t_out = 10 ^ (outdb / 20);
+  t_mix = drywet / 100;
+  ctype_i = floor(ctype + 0.5);
+  bthr_lin = 10 ^ (bthr / 20);
+  ws_drv = wsdrive / 100; ws_lin = wslin / 100; ws_damp = wsdamp / 100;
+  ws_ca = 2 * $pi * wscurve / 100;
+  ws_dep = 0.5 * (wsdepth / 100) ^ 2;
+  ws_pf = $pi * (1 + WS_PERIOD_K * (wsperiod / 100) ^ 2);
+  use_shelf = color >= 0.5 && abs(amtlo) > 0.0001;
+  use_peak  = color >= 0.5 && abs(amthi) > 0.0001;
+  key = amtlo * 7 + cfreq * 13 + cwidth * 17 + amthi * 19 + color;
+  key != last_key ? (
+    last_key = key;
+    shf.set_shelf(amtlo); shfi.set_inverse(shf);
+    pkf.set_peak(cfreq, amthi, BELL_Q0 * (BELL_Q1 / BELL_Q0) ^ ((cwidth / 100) ^ BELL_QE)); pkfi.set_inverse(pkf);
+  );
+  os_on = hiq >= 0.5;
+  lat = os_on ? HB_LAT : 0;
+  pdc_delay = lat; pdc_bot_ch = 0; pdc_top_ch = 2;
+);
+
+@slider
+update_targets();
+!sm_init ? (sm_init = 1; s_gain = t_gain; s_out = t_out; s_mix = t_mix);
+
+@block
+// parameter changes made in the UI are applied here, on the audio thread
+ui_dirty ? (ui_dirty = 0; update_targets());
+
+@sample
+s_gain += sm * (t_gain - s_gain);
+s_out  += sm * (t_out - s_out);
+s_mix  += sm * (t_mix - s_mix);
+
+xl = spl0; xr = spl1;
+dcfilt >= 0.5 ? (xl = dl.bq(xl, dcc); xr = dr.bq(xr, dcc));
+use_shelf ? (xl = sl.bq(xl, shf); xr = sr.bq(xr, shf));
+use_peak  ? (xl = pl.bq(xl, pkf); xr = pr.bq(xr, pkf));
+os_on ? (
+  yl = shape_os(s_gain * xl, ST);
+  yr = shape_os(s_gain * xr, ST + 400);
+) : (
+  yl = shape(s_gain * xl);
+  yr = shape(s_gain * xr);
+);
+ctype_i == 7 ? (yl = wl2.dcb(wl1.dcb(yl)); yr = wr2.dcb(wr1.dcb(yr)));
+use_peak  ? (yl = pli.bq(yl, pkfi); yr = pri.bq(yr, pkfi));
+use_shelf ? (yl = sli.bq(yl, shfi); yr = sri.bq(yr, shfi));
+postclip >= 1.5 ? (yl = min(max(yl, -1), 1); yr = min(max(yr, -1), 1)) :
+postclip >= 0.5 ? (yl = lutcurve(LUT_A, UMAX_A, yl); yr = lutcurve(LUT_A, UMAX_A, yr));
+yl *= s_out; yr *= s_out;
+
+// dry path delayed to match the oversampling latency
+DRYL[dwp] = spl0; DRYR[dwp] = spl1;
+rp = (dwp - lat + 1024) % 1024;
+dwp = (dwp + 1) % 1024;
+spl0 = (1 - s_mix) * DRYL[rp] + s_mix * yl;
+spl1 = (1 - s_mix) * DRYR[rp] + s_mix * yr;
+
+@gfx 640 340
+// ---------------- UI ----------------
+function rgb(r, g, b) ( gfx_r = r / 255; gfx_g = g / 255; gfx_b = b / 255; gfx_a = 1; );
+function clamp(v, lo, hi) ( min(max(v, lo), hi); );
+function inr(x, y, w, h) ( mouse_x >= x && mouse_x < x + w && mouse_y >= y && mouse_y < y + h; );
+function txt(x, y, w, h, s, flags) ( gfx_x = x; gfx_y = y; gfx_drawstr(s, flags, x + w, y + h); );
+
+// Private copies of the curve functions for drawing. JSFX function parameters and
+// locals are shared statics, so the UI thread must never call the functions the
+// audio thread is running (it would overwrite their values mid-sample).
+function g_hermite(tab, s) local(p, i, f, p0, p1, p2, p3, m1, m2, f2, f3) (
+  p = min(max(s, 0), 1) * LUTN;
+  i = min(floor(p), LUTN - 1); f = p - i;
+  p1 = tab[i]; p2 = tab[i + 1];
+  p0 = i > 0 ? tab[i - 1] : -tab[1];
+  p3 = i < LUTN - 1 ? tab[i + 2] : 2 * tab[LUTN] - tab[LUTN - 1];
+  m1 = 0.5 * (p2 - p0); m2 = 0.5 * (p3 - p1);
+  f2 = f * f; f3 = f2 * f;
+  (2 * f3 - 3 * f2 + 1) * p1 + (f3 - 2 * f2 + f) * m1 + (-2 * f3 + 3 * f2) * p2 + (f3 - f2) * m2;
+);
+function g_lutcurve(tab, umax, u) local(a) (
+  a = abs(u);
+  a >= umax ? (u < 0 ? -tab[LUTN] : tab[LUTN]) : (u < 0 ? -1 : 1) * g_hermite(tab, sqrt(a / umax));
+);
+function g_waveshaper(u) local(s, u4) (
+  u = min(max(u, -WS_CLAMP), WS_CLAMP);
+  s = d_wslin * u + sin(d_wsca * u * u) + d_wsdep * sin(d_wspf * u);
+  d_wsdamp > 0 ? (u4 = u * u * u * u; s *= u4 / (u4 + WS_DAMP_K * d_wsdamp));
+  (1 - d_wsdrv) * u + d_wsdrv * s;
+);
+function g_shape(u) local(a, t) (
+  d_ctype == 0 ? g_lutcurve(LUT_A, UMAX_A, u) :
+  d_ctype == 1 ? sin(0.5 * $pi * min(max(u, -1), 1)) :
+  d_ctype == 2 ? (
+    a = abs(u); t = d_bthr;
+    a <= t ? u : (u < 0 ? -1 : 1) * (t + (1 - t) * (1 - exp(-(a - t) / max(1 - t, 0.000000001))));
+  ) :
+  d_ctype == 3 ? g_lutcurve(LUT_M, UMAX_M, u) :
+  d_ctype == 4 ? g_lutcurve(LUT_H, UMAX_H, u) :
+  d_ctype == 5 ? sin(0.5 * $pi * min(max(u, -9), 9)) :
+  d_ctype == 6 ? min(max(u, -1), 1) :
+  g_waveshaper(u);
+);
+
+// parameter table: id -> slider value access
+function pget(id) (
+  id == 1 ? drive : id == 4 ? amtlo : id == 5 ? cfreq : id == 6 ? cwidth : id == 7 ? amthi :
+  id == 9 ? outdb : id == 10 ? drywet : id == 11 ? bthr : id == 12 ? wsdrive : id == 13 ? wslin :
+  id == 14 ? wscurve : id == 15 ? wsdamp : id == 16 ? wsperiod : wsdepth;
+);
+function pset(id, v) (
+  id == 1 ? (drive = clamp(v, -36, 36); slider_automate(drive));
+  id == 2 ? (ctype = clamp(floor(v + 0.5), 0, 7); slider_automate(ctype));
+  id == 3 ? (color = clamp(v, 0, 1); slider_automate(color));
+  id == 4 ? (amtlo = clamp(v, -36, 36); slider_automate(amtlo));
+  id == 5 ? (cfreq = clamp(v, 30, 18500); slider_automate(cfreq));
+  id == 6 ? (cwidth = clamp(v, 0, 100); slider_automate(cwidth));
+  id == 7 ? (amthi = clamp(v, -24, 24); slider_automate(amthi));
+  id == 8 ? (postclip = clamp(floor(v + 0.5), 0, 2); slider_automate(postclip));
+  id == 9 ? (outdb = clamp(v, -36, 0); slider_automate(outdb));
+  id == 10 ? (drywet = clamp(v, 0, 100); slider_automate(drywet));
+  id == 11 ? (bthr = clamp(v, -50, 0); slider_automate(bthr));
+  id == 12 ? (wsdrive = clamp(v, 0, 100); slider_automate(wsdrive));
+  id == 13 ? (wslin = clamp(v, 0, 100); slider_automate(wslin));
+  id == 14 ? (wscurve = clamp(v, 0, 100); slider_automate(wscurve));
+  id == 15 ? (wsdamp = clamp(v, 0, 100); slider_automate(wsdamp));
+  id == 16 ? (wsperiod = clamp(v, 0, 100); slider_automate(wsperiod));
+  id == 17 ? (wsdepth = clamp(v, 0, 100); slider_automate(wsdepth));
+  id == 18 ? (dcfilt = clamp(v, 0, 1); slider_automate(dcfilt));
+  id == 19 ? (hiq = clamp(v, 0, 1); slider_automate(hiq));
+  ui_dirty = 1;   // applied by the audio thread in @block
+
+);
+// knob ranges and defaults
+function pmin(id) ( id == 1 || id == 4 ? -36 : id == 5 ? 30 : id == 7 ? -24 : id == 9 ? -36 : id == 11 ? -50 : 0; );
+function pmax(id) ( id == 1 || id == 4 ? 36 : id == 5 ? 18500 : id == 7 ? 24 : id == 9 || id == 11 ? 0 : 100; );
+function pdef(id) ( id == 5 ? 1000 : id == 6 ? 30 : id == 10 || id == 12 ? 100 : id == 11 ? -50 : id == 13 ? 50 : 0; );
+function pnorm(id, v) ( id == 5 ? log(v / 30) / log(18500 / 30) : (v - pmin(id)) / (pmax(id) - pmin(id)); );
+function pdenorm(id, n) ( n = clamp(n, 0, 1); id == 5 ? 30 * (18500 / 30) ^ n : pmin(id) + n * (pmax(id) - pmin(id)); );
+function pfmt(id, v) (
+  id == 5 ? (v >= 1000 ? sprintf(#pf, "%.2f kHz", v / 1000) : sprintf(#pf, "%d Hz", v + 0.5)) :
+  id == 1 || id == 4 || id == 7 || id == 9 || id == 11 ? sprintf(#pf, "%.1f dB", v) :
+  sprintf(#pf, "%.0f %%", v);
+  #pf;
+);
+
+// knob registry for hit-testing this frame
+nk = 0;
+function knob(id, cx, cy, r, label) local(a0, a1, a, i, n, v) (
+  v = pget(id); n = pnorm(id, v);
+  a0 = -0.75 * $pi; a1 = 0.75 * $pi; a = a0 + (a1 - a0) * n;
+  rgb(65, 65, 65); gfx_circle(cx, cy, r, 1, 1);
+  rgb(36, 36, 36); gfx_circle(cx, cy, r - 3, 1, 1);
+  rgb(255, 170, 40); i = 0; loop(3, gfx_arc(cx, cy, r + 1 + i * 0.7, a0, a, 1); i += 1);
+  rgb(235, 235, 235); gfx_line(cx + sin(a) * (r - 9), cy - cos(a) * (r - 9), cx + sin(a) * (r - 2), cy - cos(a) * (r - 2), 1);
+  gfx_setfont(2); rgb(200, 200, 200);
+  txt(cx - 45, cy - r - 17 * sc, 90, 14 * sc, label, 1);
+  rgb(230, 230, 230); txt(cx - 45, cy + r + 3, 90, 14 * sc, pfmt(id, v), 1);
+  KNOB_X[nk] = cx; KNOB_Y[nk] = cy; KNOB_R[nk] = r; KNOB_ID[nk] = id; nk += 1;
+);
+function button(x, y, w, h, s, on) (
+  on ? rgb(255, 170, 40) : rgb(60, 60, 60); gfx_rect(x, y, w, h);
+  on ? rgb(20, 20, 20) : rgb(220, 220, 220);
+  gfx_setfont(2); txt(x, y, w, h, s, 5);
+);
+
+// curve name helper
+function tname(t) (
+  t == 0 ? "Analog Clip" : t == 1 ? "Soft Sine" : t == 2 ? "Bass Shaper" : t == 3 ? "Medium Curve" :
+  t == 4 ? "Hard Curve" : t == 5 ? "Sinoid Fold" : t == 6 ? "Digital Clip" : "Waveshaper";
+);
+function cname(c) ( c == 0 ? "Post Clip: Off" : c == 1 ? "Post Clip: Soft" : "Post Clip: Hard"; );
+
+// knob hit-test arrays (note: EEL2 names are case-insensitive, so these must not
+// reuse any other variable name such as kr / ky)
+KNOB_X = 8000; KNOB_Y = 8100; KNOB_R = 8200; KNOB_ID = 8300;
+// display values computed here from the sliders (the audio thread keeps its own)
+d_gain = 10 ^ (drive / 20); d_out = 10 ^ (outdb / 20); d_mix = drywet / 100;
+d_ctype = floor(ctype + 0.5); d_bthr = 10 ^ (bthr / 20);
+d_wsdrv = wsdrive / 100; d_wslin = wslin / 100; d_wsdamp = wsdamp / 100;
+d_wsca = 2 * $pi * wscurve / 100; d_wsdep = 0.5 * (wsdepth / 100) ^ 2;
+d_wspf = $pi * (1 + WS_PERIOD_K * (wsperiod / 100) ^ 2);
+sc = max(0.7, min(gfx_w / 640, gfx_h / 340));
+gfx_setfont(1, "Arial", 13 * sc);
+gfx_setfont(2, "Arial", 11 * sc);
+rgb(30, 30, 30); gfx_rect(0, 0, gfx_w, gfx_h);
+pad = 10 * sc;
+
+// ---- shaper curve display ----
+dx = pad; dy = pad; dw = 190 * sc; dh = 150 * sc;
+rgb(18, 18, 18); gfx_rect(dx, dy, dw, dh);
+rgb(50, 50, 50); gfx_line(dx, dy + dh / 2, dx + dw, dy + dh / 2); gfx_line(dx + dw / 2, dy, dx + dw / 2, dy + dh);
+// plot output vs input (-1..1 input, scaled by Drive), with the output section applied
+yr_ = 1.2; i = 0; prev = 0;
+rgb(255, 170, 40);
+loop(dw + 1,
+  xin = (i / dw) * 2 - 1;
+  yv = g_shape(d_gain * xin);
+  postclip >= 1.5 ? (yv = clamp(yv, -1, 1)) : (postclip >= 0.5 ? (yv = g_lutcurve(LUT_A, UMAX_A, yv)));
+  yv *= d_out;
+  yv = (1 - d_mix) * xin + d_mix * yv;
+  py = dy + dh / 2 - clamp(yv / yr_, -1, 1) * dh / 2;
+  i > 0 ? gfx_lineto(dx + i, py, 1) : (gfx_x = dx; gfx_y = py);
+  i += 1;
+);
+// type and post-clip choosers
+ty = dy + dh + 6 * sc; th = 20 * sc;
+button(dx, ty, dw, th, tname(d_ctype), 0);
+button(dx, ty + th + 4 * sc, dw, th, cname(floor(postclip + 0.5)), 0);
+button(dx, ty + 2 * (th + 4 * sc), dw / 2 - 2 * sc, th, "DC", dcfilt >= 0.5);
+button(dx + dw / 2 + 2 * sc, ty + 2 * (th + 4 * sc), dw / 2 - 2 * sc, th, "Hi-Q", hiq >= 0.5);
+
+// ---- color section ----
+cx0 = dx + dw + 14 * sc; cw = 230 * sc;
+button(cx0, dy, 60 * sc, 18 * sc, "Color", color >= 0.5);
+// color EQ display (pre-shaper EQ in dB)
+ex = cx0; ey = dy + 24 * sc; ew = cw; eh = 70 * sc;
+rgb(18, 18, 18); gfx_rect(ex, ey, ew, eh);
+rgb(50, 50, 50); gfx_line(ex, ey + eh / 2, ex + ew, ey + eh / 2);
+color >= 0.5 ? rgb(120, 200, 255) : rgb(80, 80, 80);
+i = 0;
+loop(ew + 1,
+  f = 30 * (18500 / 30) ^ (i / ew);
+  // analog approximations of the two filters (dB)
+  fcx = SHELF_FC * (10 ^ (amtlo / 20)) ^ SHELF_K;
+  g1 = amtlo / (1 + (f / fcx) ^ 2) ^ 0.5;
+  qq = BELL_Q0 * (BELL_Q1 / BELL_Q0) ^ ((cwidth / 100) ^ BELL_QE);
+  r_ = f / cfreq - cfreq / f;
+  g2 = amthi / (1 + (qq * r_) ^ 2);
+  gg = color >= 0.5 ? g1 + g2 : 0;
+  py = ey + eh / 2 - clamp(gg / 24, -1, 1) * eh / 2;
+  i > 0 ? gfx_lineto(ex + i, py, 1) : (gfx_x = ex; gfx_y = py);
+  i += 1;
+);
+kr = 17 * sc; ky = ey + eh + 34 * sc;
+knob(4, cx0 + cw * 0.125, ky, kr, "Amt Lo");
+knob(5, cx0 + cw * 0.375, ky, kr, "Frequency");
+knob(6, cx0 + cw * 0.625, ky, kr, "Width");
+knob(7, cx0 + cw * 0.875, ky, kr, "Amt Hi");
+
+// ---- main knobs ----
+mx0 = cx0 + cw + 14 * sc; mw = gfx_w - mx0 - pad;
+knob(1, mx0 + mw * 0.5, dy + 40 * sc, 24 * sc, "Drive");
+knob(9, mx0 + mw * 0.25, dy + 120 * sc, 18 * sc, "Output");
+knob(10, mx0 + mw * 0.75, dy + 120 * sc, 18 * sc, "Dry/Wet");
+
+// ---- type-specific controls ----
+by_ = ky + kr + 62 * sc;
+d_ctype == 2 ? knob(11, cx0 + cw * 0.125, by_, kr, "Threshold");
+d_ctype == 7 ? (
+  knob(12, cx0 + cw * 0.125, by_, kr, "WS Drive");
+  knob(13, cx0 + cw * 0.375, by_, kr, "Linear");
+  knob(14, cx0 + cw * 0.625, by_, kr, "Curve");
+  knob(15, cx0 + cw * 0.875, by_, kr, "Damp");
+  knob(16, mx0 + mw * 0.25, by_, kr, "Period");
+  knob(17, mx0 + mw * 0.75, by_, kr, "Depth");
+);
+
+// ---- mouse ----
+fine = (mouse_cap & 8) ? 0.1 : 1;
+clicked = (mouse_cap & 1) && !(last_cap & 1);
+clicked ? (
+  dbl = (time_precise() - last_t) < 0.3; last_t = time_precise();
+  drag = 0; i = 0;
+  loop(nk, (mouse_x - KNOB_X[i]) ^ 2 + (mouse_y - KNOB_Y[i]) ^ 2 <= (KNOB_R[i] + 4) ^ 2 ? (drag = KNOB_ID[i]); i += 1);
+  drag ? (
+    dbl ? (pset(drag, pdef(drag)); drag = 0);
+    dragn = pnorm(drag, pget(drag)); lmy = mouse_y;
+  ) : (
+    inr(dx, ty, dw, th) ? (
+      gfx_x = dx; gfx_y = ty + th;
+      m = gfx_showmenu("Analog Clip|Soft Sine|Bass Shaper|Medium Curve|Hard Curve|Sinoid Fold|Digital Clip|Waveshaper");
+      m > 0 ? pset(2, m - 1);
+    ) :
+    inr(dx, ty + th + 4 * sc, dw, th) ? (
+      gfx_x = dx; gfx_y = ty + 2 * th + 4 * sc;
+      m = gfx_showmenu("Off|Soft Clip|Hard Clip");
+      m > 0 ? pset(8, m - 1);
+    ) :
+    inr(dx, ty + 2 * (th + 4 * sc), dw / 2, th) ? pset(18, dcfilt >= 0.5 ? 0 : 1) :
+    inr(dx + dw / 2, ty + 2 * (th + 4 * sc), dw / 2, th) ? pset(19, hiq >= 0.5 ? 0 : 1) :
+    inr(cx0, dy, 60 * sc, 18 * sc) ? pset(3, color >= 0.5 ? 0 : 1);
+  );
+);
+(mouse_cap & 1) && drag ? (
+  dragn = clamp(dragn - (mouse_y - lmy) * 0.005 * fine, 0, 1); lmy = mouse_y;
+  pset(drag, pdenorm(drag, dragn));
+);
+!(mouse_cap & 1) ? (drag = 0);
+last_cap = mouse_cap;
+mouse_wheel != 0 ? (
+  i = 0;
+  loop(nk,
+    (mouse_x - KNOB_X[i]) ^ 2 + (mouse_y - KNOB_Y[i]) ^ 2 <= (KNOB_R[i] + 4) ^ 2 ? (
+      pset(KNOB_ID[i], pdenorm(KNOB_ID[i], pnorm(KNOB_ID[i], pget(KNOB_ID[i])) + mouse_wheel / 120 * 0.01 * fine));
+    );
+    i += 1;
+  );
+  inr(dx, ty, dw, th) ? pset(2, d_ctype + (mouse_wheel > 0 ? -1 : 1));
+  mouse_wheel = 0;
+);
+

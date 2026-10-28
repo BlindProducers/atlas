@@ -23,6 +23,10 @@
 #include "analogue_rotary_module.h"
 #include "analogue_spring_module.h"
 #include "analogue_wah_module.h"
+#include "analogue_compressor_module.h"
+#include "maim_module.h"
+#include "particles_module.h"
+#include "drive_dynamics_modules.h"
 #include "filter_fx_module.h"
 #include "spectral_balance_module.h"
 #include "glitch_delay_module.h"
@@ -220,6 +224,20 @@ namespace vital {
         return new OpenWurliAmpModule(module_prefix);
       case constants::kScannerVibrato:
         return new ScannerVibratoModule(module_prefix);
+      case constants::kAnalogueCompressor:
+        return new AnalogueCompressorModule(module_prefix);
+      case constants::kMaim:
+        return new MaimModule(module_prefix);
+      case constants::kParticles:
+        return new ParticlesModule(note_monitor_, module_prefix);
+      case constants::kSaturator:
+        return new SaturatorModule(module_prefix);
+      case constants::kDynamicTube:
+        return new DynamicTubeModule(module_prefix);
+      case constants::kOverdrive:
+        return new OverdriveModule(module_prefix);
+      case constants::kMultibandDynamics:
+        return new MultibandDynamicsModule(module_prefix);
       default:
         return nullptr;
     }
@@ -283,6 +301,15 @@ namespace vital {
   }
 
   namespace {
+    bool isQuiet(const poly_float* buffer, int num_samples) {
+      const poly_float peak = utils::peak(buffer, num_samples);
+      for (int i = 0; i < poly_float::kSize; ++i) {
+        if (!(peak[i] < ReorderableEffectChain::kSleepThreshold))
+          return false;
+      }
+      return true;
+    }
+
     bool isValidEffectOrder(const int* order) {
       bool seen[constants::kNumEffects] = {};
       for (int i = 0; i < constants::kNumEffects; ++i) {
@@ -307,6 +334,32 @@ namespace vital {
     filterFx(slot)->prepareFilterTable();
   }
 
+  int ReorderableEffectChain::silenceHoldSamples(int slot, int index) const {
+    // Delays can be silent between echoes far apart; wait out the longest.
+    float seconds = 1.0f;
+    switch (index) {
+      case constants::kDelay:              // 4 s line
+      case constants::kAnalogueEcho:       // three heads, up to 1.2 s each
+        seconds = 5.0f;
+        break;
+      case constants::kGlitchDelay:        // 10 s line
+        seconds = 11.0f;
+        break;
+      case constants::kFloatyDelay:        // 16 s line, played back slower
+        seconds = 40.0f;
+        break;
+      case constants::kConvolutionReverb:  // an impulse response's quiet start
+        seconds = 2.0f;
+        break;
+      case constants::kParticles:          // up to 7.4 s recorded, frozen or fed back
+        seconds = 9.0f;
+        break;
+      default:
+        break;
+    }
+    return static_cast<int>(seconds * getSampleRate()) + 2 * slot_effects_[slot][index]->getLatencySamples();
+  }
+
   int ReorderableEffectChain::getLatencySamples() const {
     static_assert(kMaxLatencySamples >= constants::kMaxEffectSlots * SpectralGateModule::kMaxFftSize);
     static_assert(kMaxLatencySamples >= constants::kMaxEffectSlots * SpectralCompressorModule::kLatencySamples);
@@ -315,6 +368,8 @@ namespace vital {
     // 32768 samples at 176.4 kHz and above), so the budget holds two of them
     // there; LatencyCompensatedSum clamps rather than overruns beyond it.
     static_assert(kMaxLatencySamples >= 2 * SpectralLockModule::kMaxSpectralLatencySamples);
+    static_assert(kMaxLatencySamples >= 2 * MaimModule::kMaxLatencySamples);
+    static_assert(kMaxLatencySamples >= 2 * ParticlesModule::kMaxLatencySamples);
     int latency = 0;
     for (int slot = 0; slot < constants::kMaxEffectSlots; ++slot) {
       const int index = utils::iclamp(static_cast<int>(slot_types_[slot]->value() + 0.5f) - 1,
@@ -342,7 +397,10 @@ namespace vital {
       else if (previous >= 0 && previous != index && slot_effects_[slot][previous]->enabled())
         slot_effects_[slot][previous]->enable(false);
       selected_effects_[slot] = index;
+      if (previous != index)
+        wakeSlot(slot);
       if (!on) {
+        wakeSlot(slot);
         if (index >= 0 && slot_effects_[slot][index]->enabled())
           slot_effects_[slot][index]->enable(false);
         continue;
@@ -353,8 +411,30 @@ namespace vital {
       if (on != enabled)
         slot_effects_[slot][index]->enable(on);
 
+      // Effects run whether or not anything plays, so a chain left on costs
+      // CPU in silence. Once a slot's input and output have stayed below
+      // -120 dB for longer than anything it holds can take to come out
+      // (silenceHoldSamples), it passes its silent input through instead.
+      const bool input_quiet = isQuiet(audio_in, num_samples);
+      if (!input_quiet)
+        wakeSlot(slot);
+      else if (asleep_[slot]) {
+        probe_samples_[slot] += num_samples;
+        if (probe_samples_[slot] < kSleepProbeSeconds * getSampleRate())
+          continue;
+        probe_samples_[slot] = 0;
+      }
+
       slot_effects_[slot][index]->processWithInput(audio_in, num_samples);
       audio_in = slot_effects_[slot][index]->output(0)->buffer;
+
+      if (input_quiet && isQuiet(audio_in, num_samples)) {
+        const int hold = silenceHoldSamples(slot, index);
+        quiet_samples_[slot] = std::min(quiet_samples_[slot] + num_samples, hold);
+        asleep_[slot] = quiet_samples_[slot] >= hold;
+      }
+      else
+        wakeSlot(slot);
     }
 
     VITAL_ASSERT(utils::isFinite(audio_in, num_samples));
@@ -448,6 +528,8 @@ namespace vital {
   }
 
   void ReorderableEffectChain::hardReset() {
+    for (int slot = 0; slot < constants::kMaxEffectSlots; ++slot)
+      wakeSlot(slot);
     for (int i = 0; i < constants::kNumEffects; ++i)
       effects_[i]->hardReset();
     for (int slot = 0; slot < constants::kMaxEffectSlots; ++slot)
@@ -459,6 +541,8 @@ namespace vital {
     if (on != enabled()) {
       SynthModule::enable(on);
       selected_effects_.fill(-2);
+      for (int slot = 0; slot < constants::kMaxEffectSlots; ++slot)
+        wakeSlot(slot);
     }
   }
 

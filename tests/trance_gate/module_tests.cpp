@@ -366,62 +366,36 @@ int main() {
         expect(announcements->size() == 1 && announcements->front() == expected,
                "one concise announcement: " + expected.toStdString());
       };
-      press(KeyPress(KeyPress::upKey), "0.01");
-      expect(std::abs(gate->read("step_1_value") - 0.01f) < 1.0e-6, "arrow changes the current step");
-      press(KeyPress(KeyPress::upKey, ModifierKeys::shiftModifier, 0), "0.06");
-      press(KeyPress(KeyPress::downKey, ModifierKeys::shiftModifier, 0), "0.01");
-      press(KeyPress(KeyPress::downKey), "0.00");
-      expect(!gate->statusText().contains("-0.00"), "zero is never announced as negative zero");
-      press(key('.'), "1%");
-      press(key(','), "0%");
-      press(key(','), "-1%");
-      press(key('.', true), "4%");
-      press(key('<', true), "-1%");
-      press(key('>', true), "4%");
-      press(key('i'), "5%");
-      press(key('k', true), "0%");
-      expect(std::abs(gate->read("step_1_curve")) < 1.0e-6 &&
-             gate->statusText().contains("Step 1") && gate->read("step_2_curve") == 0,
-             "comma and period edit the current curve without navigating or changing another step");
-      for (auto* shape : { "Medium", "Short", "Ramp Down (-inf)", "Ramp Up (0 dB)", "Long" }) press(key('m'), shape);
-      for (auto* shape : { "Ramp Up (0 dB)", "Ramp Down (-inf)", "Short", "Medium", "Long" }) press(key('m', true), shape);
-      // Preset browsing must wrap through the same five shapes.
-      press(key('g'), "Ramp Up (0 dB)");
-      press(key('h'), "Long");
-      press(key('m'), "Medium");
+      // G and H change the current step's shape straight away, through the five shapes.
+      for (auto* shape : { "Medium", "Short", "Ramp down", "Ramp up", "Whole" }) press(key('h'), shape);
+      for (auto* shape : { "Ramp up", "Ramp down", "Short", "Medium", "Whole" }) press(key('g'), shape);
       press(key('h'), "Medium");
       press(key('h'), "Short");
-      expect(gate->read("step_1_mode") == 1, "choosing a shape waits for Apply");
-      press(key('a'), "Short");
       expect(gate->read("step_1_mode") == 2 && gate->read("step_2_mode") == 0,
              "shape edits apply only to the current step");
       gate->write({ { "grid", 4 } });
-      press(KeyPress(KeyPress::rightKey), "Bar 1 beat 1 25%, Step 2, value 0.00, Long, curve 0%");
+      press(KeyPress(KeyPress::rightKey), "Bar 1 beat 1 25%, Step 2, Whole");
       expect(!gate->statusText().contains("grid") && !gate->statusText().contains("range") &&
-             !gate->statusText().contains("gain"), "navigation omits redundant global and gain information");
-      press(KeyPress(KeyPress::upKey), "0.01");
-      expect(std::abs(gate->read("step_1_value")) < 1.0e-6 &&
-             std::abs(gate->read("step_2_value") - 0.01f) < 1.0e-6,
-             "navigation alone chooses the step to edit, without point selection");
-      gate->write({ { "step_2_value", 0.99f }, { "step_2_curve", 0.99f } });
-      press(KeyPress(KeyPress::upKey, ModifierKeys::shiftModifier, 0), "1.00");
-      press(key('.', true), "100%");
-      expect(gate->read("step_2_value") == 1 && gate->read("step_2_curve") == 1,
-             "announcements report the actual clamped upper limits");
-      gate->write({ { "step_2_value", -0.99f }, { "step_2_curve", -0.99f } });
-      press(KeyPress(KeyPress::downKey, ModifierKeys::shiftModifier, 0), "-1.00");
-      press(key(',', true), "-100%");
-      expect(gate->read("step_2_value") == -1 && gate->read("step_2_curve") == -1,
-             "announcements report the actual clamped lower limits");
+             !gate->statusText().contains("gain") && !gate->statusText().contains("curve"),
+             "navigation omits global, gain and curve information");
+      // M mutes the step and brings it back at its full level.
+      press(key('m'), "Muted");
+      expect(gate->read("step_2_value") == -1 && std::abs(gate->read("step_1_value")) < 1.0e-6,
+             "M mutes only the current step");
+      expect(gate->statusText().endsWith("Step 2, Whole, muted"), "a muted step says so: " + gate->statusText().toStdString());
+      press(key('m'), "Unmuted");
+      expect(std::abs(gate->read("step_2_value")) < 1.0e-6, "M again brings it back at full level");
+      gate->write({ { "step_2_value", 0.5f } });
+      expect(gate->statusText().endsWith("Step 2, Whole, level 150%"),
+             "a level a preset set is read out: " + gate->statusText().toStdString());
+      press(key('m'), "Muted");
+      press(key('m'), "Unmuted");
+      expect(std::abs(gate->read("step_2_value")) < 1.0e-6, "unmuting a preset's level brings the step back at full level");
       gate->write({ { "grid", 2 } });
       press(key('='), "1/8");
       press(key(';'), "1 to 31");
       expect(gate->read("grid") == 3 && gate->read("stop") == 31,
              "grid and range are announced only when those globals change");
-      press(KeyPress(KeyPress::deleteKey), "Cleared step");
-      expect(gate->read("step_2_value") == -1 && gate->read("step_2_curve") == 0 &&
-             gate->read("step_1_mode") == 2 && gates[1]->read("step_2_value") == 0,
-             "Delete clears only the current step in this instance");
 
       auto snapshot = [&] {
         std::vector<float> result;
@@ -436,8 +410,12 @@ int main() {
       };
       const auto before = snapshot();
       const auto before_status = gate->statusText();
-      std::vector<KeyPress> removed;
-      for (char c : std::string("serjlcvd1234567890")) {
+      // Everything else is gone: the level, curve and apply keys, Shift M,
+      // Delete, and keys that were never the editor's.
+      std::vector<KeyPress> removed { KeyPress(KeyPress::upKey), KeyPress(KeyPress::downKey),
+                                      KeyPress(KeyPress::deleteKey),
+                                      key('m', true), key('g', true), key('h', true) };
+      for (char c : std::string("[],.<>ikaserjlcvd1234567890")) {
         removed.push_back(key(c)); removed.push_back(key(c, true));
       }
       for (char c : std::string("!@#$%^&*()")) removed.push_back(key(c, true));
@@ -451,10 +429,17 @@ int main() {
         expect(announcements->empty() && snapshot() == before && gate->statusText() == before_status,
                "removed/host shortcut leaves steps, globals and editor feedback unchanged");
       }
-      press(KeyPress(KeyPress::backspaceKey), "Cleared Trance gate");
-      expect(gate->read("step_32_value") == -1 && gate->read("step_32_mode") == 0 &&
-             gate->statusText().startsWith("Bar 1 beat 1 0%, Step 1"),
-             "Backspace clears the whole pattern and returns to the first step");
+      // Backspace resets the pattern to a new Trance gate's: steps, grid and range.
+      gate->write({ { "step_5_value", -1.0f }, { "step_5_mode", 3.0f }, { "step_5_curve", 0.5f }, { "mix", 0.4f } });
+      press(KeyPress(KeyPress::backspaceKey), "Reset pattern to default");
+      bool steps_default = true;
+      for (int i = 1; i <= 32; ++i)
+        for (auto* field : { "_value", "_mode", "_curve" })
+          steps_default = steps_default && gate->read("step_" + String(i) + field) == 0.0f;
+      expect(steps_default && gate->read("grid") == 2 && gate->read("start") == 1 && gate->read("stop") == 32,
+             "every step is Whole at full level, with the default grid and range");
+      expect(std::abs(gate->read("mix") - 0.4f) < 1.0e-6, "the Trance gate's other controls stay");
+      expect(gate->statusText().startsWith("Bar 1 beat 1 0%, Step 1, Whole"), "and the editor is back on step 1");
       expect(std::abs(gates[1]->read("step_32_value") + 0.34f) < 1.0e-6,
              "editing never changes another Trance gate instance");
     }

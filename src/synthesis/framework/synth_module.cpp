@@ -460,15 +460,18 @@ namespace vital {
   }
 
   void SynthModule::updateAllModulationSwitches() {
+    // Count modulations only. A per-voice total's note reset input counted
+    // too, which left every oscillator and filter parameter's totals running,
+    // per voice and in the mono router, with nothing to sum.
     for (auto& mod_switch : data_->mono_modulation_switches) {
-      bool enable = data_->mono_mod_destinations[mod_switch.first]->connectedInputs() > 1;
+      bool enable = data_->mono_mod_destinations[mod_switch.first]->connectedPluggedInputs() > 1;
       if (data_->poly_mod_destinations.count(mod_switch.first))
-        enable = enable || data_->poly_mod_destinations[mod_switch.first]->connectedInputs() > 0;
+        enable = enable || data_->poly_mod_destinations[mod_switch.first]->connectedPluggedInputs() > 0;
       mod_switch.second->set(enable ? 1.0f : 0.0f);
     }
 
     for (auto& mod_switch : data_->poly_modulation_switches)
-      mod_switch.second->set(data_->poly_mod_destinations[mod_switch.first]->connectedInputs() > 0);
+      mod_switch.second->set(data_->poly_mod_destinations[mod_switch.first]->connectedPluggedInputs() > 0);
 
     for (SynthModule* sub_module : data_->sub_modules)
       sub_module->updateAllModulationSwitches();

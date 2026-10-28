@@ -4,6 +4,8 @@
 #include "filter_table/filter_table_kernel.h"
 #include "table_filter.h"
 #include "spectral_lock_module.h"
+#include "maim_module.h"
+#include "drive_dynamics/drive_dynamics.h"
 #include "smooth_value.h"
 #include "value_switch.h"
 #include "operators.h"
@@ -35,7 +37,7 @@ bool resetsInPlace(int type) {
     case constants::kAnalogueFlanger: case constants::kAnalogueEcho:
     case constants::kAnalogueRotary: case constants::kAnalogueSpring:
     case constants::kAnalogueWah: case constants::kSpectralBalance:
-    case constants::kGlitchDelay: return false;
+    case constants::kGlitchDelay: case constants::kMaim: case constants::kParticles: return false;
     default: return true;
   }
 }
@@ -119,6 +121,11 @@ PreparedEffectModule::PreparedEffectModule(int type, std::string prefix, Factory
   pending_capacity_ = type_ == constants::kSpectralGate ? 8192 :
                       type_ == constants::kSpectralLock ? SpectralLockModule::kMaxSpectralLatencySamples :
                       type_ == constants::kFilterFx ? filterFxLatency(atlas::filter_table::kLinear) :
+                      type_ == constants::kMaim ? MaimModule::kMaxLatencySamples :
+                      type_ == constants::kSaturator ? atlas::drive_dynamics::Saturator::kHiQualityLatency :
+                      type_ == constants::kDynamicTube ? atlas::drive_dynamics::DynamicTube::kHiQualityLatency :
+                      // Overdrive's look-ahead grows with the rate: its most at 8 times 192 kHz.
+                      type_ == constants::kOverdrive ? atlas::drive_dynamics::Overdrive::latencyFor({}, 8 * 192000.0) :
                       description_.latency;
   // On Windows only a live shell has its dry history (reserveControls).
   if (!kReserveMemoryOnlyWhileUsed && pending_capacity_ > 0)
@@ -152,6 +159,14 @@ void PreparedEffectModule::init() {
     filter_model_control_ = parameter("filter_fx_model");
     filter_style_control_ = parameter("filter_fx_style");
   }
+  if (type_ == constants::kMaim) {
+    maim_encoder_control_ = parameter("maim_encoder");
+    maim_lpc_rate_control_ = parameter("maim_lpc_rate");
+  }
+  if (type_ == constants::kSaturator)
+    hi_quality_control_ = parameter("saturator_hi_quality");
+  if (type_ == constants::kDynamicTube)
+    hi_quality_control_ = parameter("dynamic_tube_hi_quality");
   SynthModule::init();
   worker_->add(this);
 }
@@ -530,6 +545,19 @@ int PreparedEffectModule::getLatencySamples() const {
     return filter_model_control_ != nullptr &&
            static_cast<int>(std::round(filter_model_control_->value())) == constants::kFilterTable ?
         filterFxLatency(static_cast<int>(filter_style_control_->value() + 0.5f)) : 0;
+  // Maim's depends on its Encoder, its LPC Sample Rate and the processing rate.
+  if (type_ == constants::kMaim)
+    return MaimModule::latencyFor(maim_encoder_control_ ? maim_encoder_control_->value() : 1.0f,
+                                  maim_lpc_rate_control_ ? maim_lpc_rate_control_->value() : 5.0f, getSampleRate());
+  // Saturator's and Dynamic Tube's Hi-Quality delays the dry path to match its filters.
+  if (type_ == constants::kSaturator)
+    return hi_quality_control_ != nullptr && hi_quality_control_->value() >= 0.5f ?
+        atlas::drive_dynamics::Saturator::kHiQualityLatency : 0;
+  if (type_ == constants::kDynamicTube)
+    return hi_quality_control_ != nullptr && hi_quality_control_->value() >= 0.5f ?
+        atlas::drive_dynamics::DynamicTube::kHiQualityLatency : 0;
+  if (type_ == constants::kOverdrive)
+    return atlas::drive_dynamics::Overdrive::latencyFor({}, getSampleRate());
   return description_.latency;
 }
 }

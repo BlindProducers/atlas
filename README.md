@@ -6,6 +6,39 @@ Accessibility is a core priority: every parameter can be navigated and adjusted 
 
 ---
 
+## The editor
+
+The editor shows the whole synth as labelled groups of controls. Tab and the arrow
+keys move between them, Enter types a value, and Backspace resets a control. Levels
+and modulation amounts read as percentages. Choices that change which controls are
+shown, such as an oscillator's Type or a filter's Model, are menus: the arrow keys
+step through the choices, and Enter or Space opens the list. Focus stays on the menu
+when the controls around it change.
+Shift M opens a control's context menu to add modulation, MIDI learn or reset it.
+Comma and period jump between sections. The Toolbar, the first group in the window, holds
+the Settings button, Undo and Redo, each named after the change it would undo or redo, and
+Show preset browser, which hides the preset search, filters and results when you don't need
+them. Settings holds the version and links to this repository, tuning, the MIDI learn
+mappings, the accessibility settings, the community library and the keyboard help, each a
+group a screen reader enters. The Preset menu saves,
+initialises, imports and exports patches and banks, and the preset browser searches
+and filters the library by bank, category, tag and favourites. The Community presets and
+Community banks rows of its Collection list show the patches and banks shared on
+[atlas.blindproducers.org](https://atlas.blindproducers.org), filtered the same way; Return
+downloads a patch into the Community library and loads it, or downloads a bank and unpacks
+it into the Atlas folder, and P plays the recording its uploader attached, when there is one.
+The Preset menu's Share patch and Share bank items upload the current patch or a folder of
+the user library to the same site; the first share asks you to log in with the API token
+from your account there. Settings logs in or out, or turns the community library off.
+
+Atlas's own announcements, such as the cursor position in the LFO, Trance gate and
+wavetable editors, are spoken by the screen reader. On Windows they go straight to
+NVDA's speech and braille. With another screen reader they are sent as UI Automation
+notifications. Atlas never speaks with the Windows SAPI voice. On macOS they go to
+VoiceOver. The Accessibility group of Settings chooses which kinds of announcement you hear.
+
+---
+
 ## Oscillators
 
 Atlas includes eight oscillator slots, each capable of running one of ten synthesis engines:
@@ -70,7 +103,7 @@ Atlas contains over 35 effects covering everything from EQ and compression to ad
 - **16 Macros & MIDI Sources**: Map velocity, channel aftertouch, mod wheel, pitch bend, key tracking, and 16 user macros.
 - **Audio-Rate Modulation**: Oscillators can be chosen as modulation sources to drive parameters like pitch, phase, shape, and filter cutoffs at audio rate (per-sample) directly through the matrix.
 - **Modulation Matrix**: Modulate nearly any parameter with bipolar/unipolar modes, remap curves, and stereo offsets. Parameter values can be typed directly in their native units (semitones, Hz, dB, etc.).
-- **Dual Arpeggiators**: Two independent arpeggiators with customizable pattern styles, step counts, octave ranges, gate, repeats, and swing, assignable to specific oscillators.
+- **Dual Arpeggiators**: Two independent arpeggiators with customizable pattern styles, step counts, octave ranges, gate, repeats, and swing, assignable to specific oscillators. An LFO, envelope, mod wheel, or other source can modulate the rate and time mode.
 
 ---
 
@@ -97,10 +130,10 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --config Release --parallel 4
 ```
 
-Compiled binaries are located in `build/Atlas_artefacts/Release`:
+Compiled binaries are located in `build/Atlas_artefacts/Release`, one folder per format (`VST3/Atlas.vst3`, and on macOS `AU/Atlas.component`):
 
-- **macOS**: Copy `Atlas.vst3` to `~/Library/Audio/Plug-Ins/VST3` and `Atlas.component` to `~/Library/Audio/Plug-Ins/Components` (or run `installer/macos/build_pkg.sh` to generate an installer package).
-- **Windows**: Copy the entire `Atlas.vst3` folder (including its internal asset bundle for the Tape effect) to `C:\Program Files\Common Files\VST3` (or compile `installer/windows/Atlas.iss` using Inno Setup).
+- **macOS**: Copy `VST3/Atlas.vst3` to `~/Library/Audio/Plug-Ins/VST3` and `AU/Atlas.component` to `~/Library/Audio/Plug-Ins/Components` (or run `installer/macos/build_pkg.sh` to generate an installer package).
+- **Windows**: Copy the entire `VST3/Atlas.vst3` folder (including its internal asset bundle for the Tape effect) to `C:\Program Files\Common Files\VST3` (or compile `installer/windows/Atlas.iss` using Inno Setup).
 
 Atlas stores user presets, wavetables, samples, and effect chains in
 `Documents/Blind Producers Plugins/Atlas`.

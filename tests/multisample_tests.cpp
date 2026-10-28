@@ -15,12 +15,14 @@
 #include "multisample_container.h"
 #include "multisample_manager.h"
 #include "load_save.h"
+#include "library_layout.h"
 #include "decentsampler_parser.h"
 #include "sf2_parser.h"
 #include "sfz_parser.h"
 
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <functional>
 #include <iostream>
 #include <string>
@@ -526,6 +528,40 @@ namespace {
     folder.getChildFile("f.flac").loadFileAsData(flac);
     auto flac_data = decodeSample(flac.getData(), flac.getSize(), error);
     expect(flac_data != nullptr && flac_data->frames == 4800, "FLAC decodes");
+
+    // A WAV longer than 2^27 frames (DecentSampler instruments slice one long
+    // recording) decodes; written raw as 8-bit mono to keep the file small.
+    {
+      const int64_t long_frames = (int64_t(1) << 27) + 480000;
+      juce::MemoryOutputStream header;
+      header.write("RIFF", 4);
+      header.writeInt(static_cast<int>(36 + long_frames));
+      header.write("WAVEfmt ", 8);
+      header.writeInt(16);
+      header.writeShort(1);
+      header.writeShort(1);
+      header.writeInt(48000);
+      header.writeInt(48000);
+      header.writeShort(1);
+      header.writeShort(8);
+      header.write("data", 4);
+      header.writeInt(static_cast<int>(long_frames));
+      juce::MemoryBlock long_bytes(header.getData(), header.getDataSize());
+      const size_t header_size = long_bytes.getSize();
+      long_bytes.setSize(header_size + static_cast<size_t>(long_frames), false);
+      std::memset(static_cast<char*>(long_bytes.getData()) + header_size, 128, static_cast<size_t>(long_frames));
+      static_cast<uint8_t*>(long_bytes.getData())[long_bytes.getSize() - 1] = 255;
+      auto long_data = decodeSample(long_bytes.getData(), long_bytes.getSize(), error);
+      expect(long_data != nullptr && long_data->frames == long_frames, "a WAV over 2^27 frames decodes: " + error);
+      if (long_data)
+        expect(long_data->channels[0].back() > 32000, "the last frame of a long WAV is read");
+
+      // A header claiming more frames than the file holds is refused.
+      juce::MemoryBlock truncated(long_bytes.getData(), header_size + 4800);
+      error.clear();
+      expect(decodeSample(truncated.getData(), truncated.getSize(), error) == nullptr && !error.empty(),
+             "a WAV whose header claims more data than the file holds is refused");
+    }
 
     // CRC32 of "123456789" is the standard check value.
     expect(crc32("123456789", 9) == 0xCBF43926u, "CRC32 check value");
@@ -1092,6 +1128,47 @@ namespace {
     expect(matches, "the loop runs 20 to 40 and back");
     expect(player.active(), "a held ping-pong loop keeps playing");
     return finish("pingpong loop");
+  }
+
+
+  // A loop that ends past the region's end (an SF2 zone's loop offsets can put
+  // it there) is never reached: the note stops at the region's end, also where
+  // the player renders a stretch without its per-sample checks.
+  int loopPastEnd() {
+    std::vector<int16_t> ramp(1000);
+    for (size_t i = 0; i < ramp.size(); ++i)
+      ramp[i] = static_cast<int16_t>(10 * i);
+    Region region;
+    region.left = ramp.data();
+    region.data_frames = static_cast<int64_t>(ramp.size());
+    region.end = 300;
+    region.loop_mode = LoopMode::kContinuous;
+    region.loop_start = 100;
+    region.loop_end = 600;
+    region.buildVelocityCurve();
+
+    vital::MultiSampleSlot slot;
+    vital::MultiSamplePlayer player;
+    vital::MultiSamplePlayer::Start start;
+    start.region = &region;
+    start.velocity = 127;
+    start.sample_rate = static_cast<float>(kRate);
+    player.start(start, slot);
+    constexpr int kFrames = 1000;
+    std::vector<float> left(kFrames, 0.0f);
+    std::vector<float> right(kFrames, 0.0f);
+    player.render(left.data(), right.data(), kFrames, 1.0, 1.0, 1.0f, 1.0f, 1.0f);
+
+    // At rate 1 sample i plays frame i, and frame 0 is silent.
+    int last = -1;
+    for (int i = 0; i < kFrames; ++i) {
+      if (left[static_cast<size_t>(i)] != 0.0f)
+        last = i;
+    }
+    expect(last == 299, "the note plays up to the region's end and no further (last sound at " +
+                        std::to_string(last) + ")");
+    expect(!player.active(), "the note stops at the region's end");
+    return finish("loop past end");
   }
 
 
@@ -2102,6 +2179,206 @@ namespace {
     return finish("container");
   }
 
+  // Instruments in the library (library_layout.h): a preset saved into a
+  // bank keeps its instrument in its library's Multisamples folder once and
+  // refers to it there; another bank of the library shares it and another
+  // library gets its own; the reference survives a bank's rename, host state
+  // finds the instrument by hash, a container preset dropped into a bank is
+  // unpacked into the library, and an exported bank brings its instrument.
+  int bankTest() {
+    namespace lib = atlas::library;
+    TempFolder temp;
+    container::setCacheRootForTesting(temp.folder.getChildFile("cache"));
+    const juce::File data = temp.folder.getChildFile("Atlas");
+    data.createDirectory();
+    juce::TemporaryFile config(".config");
+    {
+      nlohmann::json contents = nlohmann::json::object();
+      contents["data_directory"] = data.getFullPathName().toStdString();
+      contents["library_layout"] = lib::kLayoutVersion;
+      config.getFile().replaceWithText(juce::String(contents.dump()));
+    }
+    LoadSave::setConfigFileForTesting(config.getFile());
+    const bool isolated = LoadSave::getDataDirectory() == data;
+    expect(isolated, "the test's Atlas folder is its own");
+    if (!isolated) {
+      LoadSave::setConfigFileForTesting({});
+      container::setCacheRootForTesting({});
+      return finish("bank");
+    }
+    const juce::File library = temp.folder.getChildFile("Library");
+    const juce::File outside = temp.folder.getChildFile("Elsewhere");
+    const juce::File main = writeLibrary(library, outside);
+    const juce::File user = lib::libraryDirectory(lib::Library::kUser, data);
+    const juce::File bank = lib::bankDirectory(lib::Library::kUser, "Alpha", data);
+    const juce::File preset = bank.getChildFile("Piano.atp");
+    const juce::File instrument = user.getChildFile("Multisamples/main");
+
+    std::vector<float> reference;
+    std::string hash;
+    juce::MemoryBlock state;
+    {
+      SynthPlugin plugin;
+      preparePlayback(plugin);
+      manager(plugin).loadFromUser(0, main);
+      settle(plugin);
+      const auto status = manager(plugin).status(0);
+      expect(status.state == vital::multisample::SlotStatus::kLoaded, "user load succeeds: " + status.error);
+      auto result = manager(plugin).result(0);
+      hash = result ? result->hash : "";
+      reference = renderPhrase(plugin);
+      expect(rms(reference, 0, kRate / 4) > 0.01, "the instrument plays");
+
+      expect(plugin.saveToFile(preset), "the preset saves into the bank");
+      expect(!container::isContainer(preset), "a preset in a bank is plain JSON");
+      expect(instrument.getChildFile("Programs/main.sfz").existsAsFile() &&
+             instrument.getChildFile("Programs/parts/high.sfz").existsAsFile() &&
+             instrument.getChildFile("Samples/low.flac").existsAsFile() &&
+             instrument.getChildFile("_external/0/far away.wav").existsAsFile(),
+             "the instrument's files are in the library's Multisamples folder in their layout");
+      const auto manifest = lib::readInstrumentManifest(instrument);
+      expect(manifest.valid && manifest.hash == juce::String(hash) && manifest.entry == "Programs/main.sfz" &&
+             manifest.files.size() == 5 && manifest.path_overrides.size() == 1 && manifest.format == "sfz",
+             "the manifest records the hash, the entry, the files and the outside sample");
+      const juce::String text = preset.loadFileAsString();
+      expect(text.contains("\"library_instrument\":\"main/Programs/main.sfz\"") && !text.contains("\"files\":"),
+             "the preset refers to the library's instrument and stores no files");
+      const juce::File entry = instrument.getChildFile("Programs/main.sfz");
+      expect(lib::findInstrumentByHash(hash, user) == entry && lib::findInstrumentAnywhere(hash, data) == entry,
+             "the instrument is found by its hash");
+      expect(plugin.saveToFile(preset) && !user.getChildFile("Multisamples/main 2").exists(),
+             "saving again places nothing twice");
+
+      // Another bank of the library shares it; another library gets its own.
+      expect(plugin.saveToFile(lib::bankDirectory(lib::Library::kUser, "Beta", data).getChildFile("Copy.atp")) &&
+             !user.getChildFile("Multisamples/main 2").exists(),
+             "a save into another User bank shares the instrument");
+      const juce::File third_party = lib::libraryDirectory(lib::Library::kThirdParty, data);
+      expect(plugin.saveToFile(lib::bankDirectory(lib::Library::kThirdParty, "Beta", data).getChildFile("Copy.atp")) &&
+             lib::findInstrumentByHash(hash, third_party) == third_party.getChildFile("Multisamples/main/Programs/main.sfz"),
+             "a save into another library places it in that library");
+      plugin.getStateInformation(state);
+    }
+
+    // The original library and the cache go away: the preset plays from its library.
+    library.deleteRecursively();
+    outside.deleteRecursively();
+    lib::libraryDirectory(lib::Library::kThirdParty, data).deleteRecursively();
+    container::setCacheRootForTesting(temp.folder.getChildFile("cache2"));
+    {
+      SynthPlugin plugin;
+      preparePlayback(plugin);
+      std::string error;
+      expect(plugin.loadFromFile(preset, error), "the bank preset loads: " + error);
+      settle(plugin);
+      const auto status = manager(plugin).status(0);
+      expect(status.state == vital::multisample::SlotStatus::kLoaded, "the instrument loads from the library: " + status.error);
+      plugin.checkOversampling();
+      expect(same(renderPhrase(plugin), reference), "it plays exactly like the original");
+      expect(manager(plugin).editableFile(0).isAChildOf(instrument), "the library's own SFZ is the one to edit");
+      expect(!container::isCached(hash), "a library's instrument is not copied into the cache");
+    }
+
+    // The bank is renamed: the reference, into the library's Multisamples,
+    // still holds. Host state, which names the original path, finds the
+    // instrument by its hash.
+    const juce::File gamma = lib::bankDirectory(lib::Library::kUser, "Gamma", data);
+    expect(bank.moveFileTo(gamma), "the bank is renamed");
+    lib::bankDirectory(lib::Library::kUser, "Beta", data).deleteRecursively();
+    const juce::File moved_preset = gamma.getChildFile("Piano.atp");
+    {
+      SynthPlugin plugin;
+      preparePlayback(plugin);
+      std::string error;
+      expect(plugin.loadFromFile(moved_preset, error), "the preset loads from the renamed bank: " + error);
+      settle(plugin);
+      expect(manager(plugin).status(0).state == vital::multisample::SlotStatus::kLoaded,
+             "the reference holds across the rename: " + manager(plugin).status(0).error);
+      plugin.checkOversampling();
+      expect(same(renderPhrase(plugin), reference), "and plays the same");
+    }
+    {
+      SynthPlugin plugin;
+      preparePlayback(plugin);
+      plugin.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+      settle(plugin);
+      expect(manager(plugin).status(0).state == vital::multisample::SlotStatus::kLoaded,
+             "host state finds the instrument in the library by its hash: " + manager(plugin).status(0).error);
+      plugin.checkOversampling();
+      expect(same(renderPhrase(plugin), reference), "and plays the same");
+    }
+
+    // A preset saved outside the library is self-contained; dropped into a
+    // bank of another library, it is unpacked into that library.
+    const juce::File elsewhere = temp.folder.getChildFile("Exported/Piano.atp");
+    {
+      SynthPlugin plugin;
+      preparePlayback(plugin);
+      std::string error;
+      plugin.loadFromFile(moved_preset, error);
+      settle(plugin);
+      expect(plugin.saveToFile(elsewhere) && container::isContainer(elsewhere),
+             "a preset saved outside the library carries its instrument");
+    }
+    const juce::File community = lib::libraryDirectory(lib::Library::kCommunity, data);
+    const juce::File dropped = lib::bankDirectory(lib::Library::kCommunity, "Delta", data).getChildFile("Dropped.atp");
+    expect(dropped.getParentDirectory().createDirectory().wasOk() && elsewhere.copyFileTo(dropped),
+           "the container is dropped into a Community bank");
+    juce::String adopt_error;
+    expect(lib::adoptContainerPreset(dropped, data, adopt_error) && !container::isContainer(dropped),
+           "the container is unpacked: " + adopt_error.toStdString());
+    expect(community.getChildFile("Multisamples/main/Programs/main.sfz").existsAsFile() &&
+           lib::readInstrumentManifest(community.getChildFile("Multisamples/main")).hash == juce::String(hash),
+           "into the Community library's Multisamples, once");
+    expect(!lib::adoptContainerPreset(dropped, data, adopt_error) && adopt_error.isEmpty(),
+           "a plain preset is left alone");
+    {
+      SynthPlugin plugin;
+      preparePlayback(plugin);
+      std::string error;
+      expect(plugin.loadFromFile(dropped, error), "the unpacked preset loads: " + error);
+      settle(plugin);
+      expect(manager(plugin).status(0).state == vital::multisample::SlotStatus::kLoaded,
+             "from the library's copy: " + manager(plugin).status(0).error);
+      plugin.checkOversampling();
+      expect(same(renderPhrase(plugin), reference), "and plays the same");
+    }
+
+    // An exported bank brings its instrument into a library that lacks it.
+    const juce::File archive = temp.folder.getChildFile("Gamma.atb");
+    expect(lib::writeBankArchive(gamma, archive).ok(), "the bank exports");
+    {
+      juce::ZipFile zip(archive);
+      expect(zip.getIndexOfFileName("Gamma/Presets/Piano.atp") >= 0 &&
+             zip.getIndexOfFileName("Gamma/Multisamples/main/Samples/low.flac") >= 0 &&
+             zip.getIndexOfFileName("Gamma/Multisamples/main/atlas-multisample.json") >= 0,
+             "the archive holds the preset and the instrument it plays");
+    }
+    const auto imported = lib::importBankArchive(archive, lib::Library::kFactory, data, "Gamma");
+    const juce::File imported_preset = lib::bankDirectory(lib::Library::kFactory, "Gamma", data).getChildFile("Piano.atp");
+    expect(imported.ok() && imported_preset.existsAsFile() &&
+           data.getChildFile("Factory/Multisamples/main/Samples/low.flac").existsAsFile(),
+           "the archive imports with the instrument: " + imported.error.toStdString());
+    gamma.deleteRecursively();
+    user.getChildFile("Multisamples").deleteRecursively();
+    community.getChildFile("Multisamples").deleteRecursively();
+    {
+      SynthPlugin plugin;
+      preparePlayback(plugin);
+      std::string error;
+      expect(plugin.loadFromFile(imported_preset, error), "the imported preset loads: " + error);
+      settle(plugin);
+      expect(manager(plugin).status(0).state == vital::multisample::SlotStatus::kLoaded,
+             "from the importing library's copy: " + manager(plugin).status(0).error);
+      plugin.checkOversampling();
+      expect(same(renderPhrase(plugin), reference), "and plays the same");
+    }
+
+    LoadSave::setConfigFileForTesting({});
+    container::setCacheRootForTesting({});
+    return finish("bank");
+  }
+
   int hostState() {
     TempFolder temp;
     container::setCacheRootForTesting(temp.folder.getChildFile("cache"));
@@ -2771,6 +3048,83 @@ namespace {
     return 0;
   }
 
+  // Times a sustained piano-style passage with the plugin's default settings:
+  // arpeggios and chords under the sustain pedal, so many notes and their
+  // layers ring at once. Prints the load (processing time over audio time),
+  // the voices sounding and a checksum of the output; with `raw`, also writes
+  // the output as interleaved 32-bit floats for comparison between builds.
+  int manualCpu(const juce::File& file, const juce::File& raw) {
+    SynthPlugin plugin;
+    plugin.setPlayConfigDetails(0, 2, kRate, 128);
+    plugin.prepareToPlay(kRate, 128);
+    plugin.parameterChanged("osc_1_type", static_cast<float>(vital::source_types::kMultiSample));
+    setControl(plugin, "osc_1_on", 1.0f);
+    manager(plugin).loadFromUser(0, file);
+    settle(plugin);
+    if (manager(plugin).status(0).state != vital::multisample::SlotStatus::kLoaded) {
+      std::cout << "error: " << manager(plugin).status(0).error << "\n";
+      return 1;
+    }
+    std::vector<MidiEvent> events;
+    int at = kRate / 10;
+    const int chords[][4] = { { 48, 55, 60, 64 }, { 45, 52, 57, 60 }, { 41, 48, 53, 57 }, { 43, 50, 55, 59 } };
+    for (int bar = 0; bar < 8; ++bar) {
+      const int* chord = chords[bar % 4];
+      events.push_back({ at, juce::MidiMessage::controllerEvent(1, 64, 127) });
+      for (int i = 0; i < 4; ++i)
+        events.push_back({ at + 1 + i, juce::MidiMessage::noteOn(1, chord[i] - 12, 0.75f) });
+      for (int step = 0; step < 8; ++step) {
+        const int note = chord[step % 4] + 12 * (step / 4);
+        const int when = at + step * kRate / 8;
+        events.push_back({ when, juce::MidiMessage::noteOn(1, note, 0.55f + 0.05f * (step % 3)) });
+        events.push_back({ when + kRate / 10, juce::MidiMessage::noteOff(1, note) });
+      }
+      for (int i = 0; i < 4; ++i)
+        events.push_back({ at + kRate - 200, juce::MidiMessage::noteOff(1, chord[i] - 12) });
+      events.push_back({ at + kRate - 100, juce::MidiMessage::controllerEvent(1, 64, 0) });
+      at += kRate;
+    }
+    const int length = at + kRate * 2;
+    std::vector<float> output(static_cast<size_t>(length) * 2);
+    double busy = 0.0;
+    int most_voices = 0;
+    uint64_t checksum = 1469598103934665603ull;
+    for (int offset = 0; offset < length;) {
+      const int count = std::min(128, length - offset);
+      juce::AudioBuffer<float> audio(2, count);
+      audio.clear();
+      juce::MidiBuffer midi;
+      for (const MidiEvent& event : events) {
+        if (event.sample >= offset && event.sample < offset + count)
+          midi.addEvent(event.message, event.sample - offset);
+      }
+      const auto start = std::chrono::steady_clock::now();
+      plugin.processBlock(audio, midi);
+      busy += std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+      most_voices = std::max(most_voices, plugin.getEngine()->getNumActiveVoices());
+      for (int i = 0; i < count; ++i) {
+        for (int channel = 0; channel < 2; ++channel) {
+          const float value = audio.getSample(channel, i);
+          output[static_cast<size_t>(offset + i) * 2 + channel] = value;
+          uint32_t bits;
+          std::memcpy(&bits, &value, sizeof(bits));
+          checksum = (checksum ^ bits) * 1099511628211ull;
+        }
+      }
+      offset += count;
+    }
+    const double seconds = length / double(kRate);
+    std::cout << "audio " << seconds << " s, processing " << busy << " s, load " << 100.0 * busy / seconds
+              << " %, most voices " << most_voices << ", checksum " << std::hex << checksum << std::dec << "\n";
+    if (raw != juce::File()) {
+      juce::FileOutputStream stream(raw);
+      stream.setPosition(0);
+      stream.truncate();
+      stream.write(output.data(), output.size() * sizeof(float));
+    }
+    return 0;
+  }
+
   int manual(const juce::File& file, int preset) {
     LoadRequest request;
     request.file = file;
@@ -2846,6 +3200,8 @@ int main(int argc, char** argv) {
                       juce::String(argv[4]).getIntValue());
   if (flag == "--controls" && argc > 2)
     return manualControls(juce::File(juce::String(argv[2])));
+  if (flag == "--cpu" && argc > 2)
+    return manualCpu(juce::File(juce::String(argv[2])), argc > 3 ? juce::File(juce::String(argv[3])) : juce::File());
   if (flag == "--manual" && argc > 2)
     return manual(juce::File(juce::String(argv[2])), argc > 3 ? juce::String(argv[3]).getIntValue() : -1);
   if (flag == "--render" && argc > 3)
@@ -2861,6 +3217,8 @@ int main(int argc, char** argv) {
     return dynamicEnvelope();
   if (flag == "--pingpong-loop")
     return pingpongLoop();
+  if (flag == "--loop-past-end")
+    return loopPastEnd();
   if (flag == "--decentsampler-controls")
     return decentSamplerControls();
   if (flag == "--decentsampler-load")
@@ -2883,6 +3241,8 @@ int main(int argc, char** argv) {
     return containerTest();
   if (flag == "--host-state")
     return hostState();
+  if (flag == "--bank")
+    return bankTest();
   if (flag == "--sf2-preset-switch")
     return sf2PresetSwitch();
   if (flag == "--sf2-encoding")

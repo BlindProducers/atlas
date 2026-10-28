@@ -655,7 +655,7 @@ namespace {
       } else {
         expect(false, "a Pitch and unison group");
       }
-      expect(findTitled(*section, [](const String& t) { return t.contains("Braids") || t.contains("Wave Frame"); }) == nullptr,
+      expect(findTitled(*section, [](const String& t) { return t.contains("Macro ") || t.contains("Wave Frame"); }) == nullptr,
              "other types' rows are hidden");
       expect(findTitled(*section, [](const String& t) { return t.startsWith("Oscillator 1") &&
                                                                  t.contains("openwurli"); }) != nullptr,

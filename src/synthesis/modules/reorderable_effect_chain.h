@@ -60,6 +60,13 @@ namespace vital {
       virtual Processor* clone() const override { return new ReorderableEffectChain(*this); }
 
       virtual void correctToTime(double seconds) override;
+      // Silent for longer than this, a slot sleeps (see processWithInput).
+      static constexpr mono_float kSleepThreshold = 1.0e-6f;  // -120 dB
+      static constexpr mono_float kSleepProbeSeconds = 0.25f;
+      bool isSlotAsleep(int slot) const { return asleep_[slot]; }
+      int silenceHoldSamples(int slot, int index) const;
+      void wakeSlot(int slot) { asleep_[slot] = false; quiet_samples_[slot] = 0; probe_samples_[slot] = 0; }
+
       int getLatencySamples() const override;
       // Largest supported spectral FFT, in each of the twenty serial slots.
       static constexpr int kMaxLatencySamples = constants::kMaxEffectSlots * 8192;
@@ -118,6 +125,12 @@ namespace vital {
       std::array<int, constants::kMaxEffectSlots> selected_effects_;
       std::array<std::array<int, constants::kNumEffects>, constants::kMaxEffectSlots> slot_rates_ {}, slot_oversamples_ {};
       bool buffers_prepared_ = false;
+      // A slot whose input and output have stayed silent for its hold time
+      // sleeps: its input passes through and the effect only runs a block now
+      // and then, to notice it making sound again (a noise control turned up).
+      std::array<int, constants::kMaxEffectSlots> quiet_samples_ {};
+      std::array<int, constants::kMaxEffectSlots> probe_samples_ {};
+      std::array<bool, constants::kMaxEffectSlots> asleep_ {};
       Value* post_effect_order_;
       int effect_order_[constants::kNumEffects];
       float last_order_;

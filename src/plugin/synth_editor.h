@@ -22,7 +22,10 @@
 #include "sequence_keyboard_component.h"
 #include "trance_gate_editor.h"
 #include "synth_gui_interface.h"
+#include "community_library.h"
+#include "library_layout.h"
 
+#include <array>
 #include <map>
 #include <memory>
 #include <set>
@@ -33,6 +36,7 @@
 class AccessibleParameterRow;
 class AccessibleSectionHeader;
 class CpuUsageMeter;
+class TransferProgressBar;
 class LineGenerator;
 class WaveSource;
 class WavetableComponent;
@@ -78,6 +82,29 @@ struct PresetBrowserItem {
   String style;
   String label;
   String searchable;
+  // A preset shared on the community library (atlas.blindproducers.org)
+  // rather than one on disk: where to fetch it, what the download must hash
+  // to, and what the site says about it. `file` is where the download lands,
+  // which may not exist yet; `downloaded` says whether it does.
+  String remote_url;
+  String remote_sha256;
+  String remote_uploader;
+  int remote_downloads = 0;
+  bool downloaded = false;
+  bool isRemote() const { return remote_url.isNotEmpty(); }
+  // Its audio preview on the library, when the uploader added one: where to
+  // fetch it, where the fetched copy is kept, its size and its length.
+  String remote_preview_url;
+  File preview_file;
+  int64 preview_size = 0;
+  double preview_seconds = 0.0;
+  bool hasPreview() const { return remote_preview_url.isNotEmpty(); }
+  // A bank shared on the library rather than a preset: `file` is its .atb
+  // archive, `downloaded` says it was fetched and unpacked, and the row says
+  // what it holds ("62 presets") and how much room that takes.
+  bool remote_bank = false;
+  String bank_contents;
+  int64 unpacked_bytes = 0;
 };
 
 struct PresetFacetItem {
@@ -87,6 +114,10 @@ struct PresetFacetItem {
   int count = 0;
   bool active = false;
 };
+
+// The Collection facet: every preset on disk, the favourites among them, or
+// the community library's presets or banks, listed from its JSON API.
+enum class PresetCollection { kAll, kFavourites, kCommunity, kCommunityBanks };
 
 // A list keeps the keyboard focus while the arrow, Page and Home/End keys move
 // its selection. JUCE reports the new selection to Windows screen readers on
@@ -162,6 +193,8 @@ class AccessibleComboBox : public ComboBox {
     }
 
     bool keyPressed(const KeyPress& key) override {
+      if (isArrowKeyFromAnOpenMenu(*this, key))
+        return true;
       if (onKeyPressed && onKeyPressed(key))
         return true;
       return ComboBox::keyPressed(key);
@@ -173,6 +206,42 @@ class AccessibleComboBox : public ComboBox {
 class AccessibleTextButton : public TextButton {
   public:
     using TextButton::TextButton;
+
+    std::unique_ptr<AccessibilityHandler> createAccessibilityHandler() override;
+};
+
+// A text box VoiceOver reaches while it is scrolled out of view. JUCE leaves
+// a control out of its group's accessibility children when it is not in view
+// unless its handler reports it accessible offscreen, as the rows, buttons and
+// menus here do, and VoiceOver's own navigation never scrolls the editor: a
+// plain TextEditor only turned up once Tab had scrolled it into view. Its
+// help is the help text, where JUCE's handler reads the tooltip.
+class AccessibleTextEditor : public TextEditor {
+  public:
+    using TextEditor::TextEditor;
+
+    std::unique_ptr<AccessibilityHandler> createAccessibilityHandler() override;
+};
+
+// The modulation amount prompt's slider, after its text box. It moves through the values the modulation can take its destination to, and
+// steps and reads them as the destination's own slider does; the route plays
+// each amount at once. Return keeps the amount, as OK does; Escape is Cancel.
+class ModulationAmountSlider : public ParameterSlider {
+  public:
+    std::function<void()> onReturnKey;
+    std::function<void()> onEscapeKey;
+
+    bool keyPressed(const KeyPress& key) override {
+      if (key.getKeyCode() == KeyPress::returnKey && onReturnKey) {
+        onReturnKey();
+        return true;
+      }
+      if (key.getKeyCode() == KeyPress::escapeKey && onEscapeKey) {
+        onEscapeKey();
+        return true;
+      }
+      return ParameterSlider::keyPressed(key);
+    }
 
     std::unique_ptr<AccessibilityHandler> createAccessibilityHandler() override;
 };
@@ -297,6 +366,23 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void paint(Graphics&) override;
     void resized() override;
     void updateFullGui() override;
+    // The Browse menus' lists of LFO presets, FX presets, FX bus presets and
+    // multisample instruments: every library's folder of the kind, scanned on
+    // first use, again after Rescan and after a save of that kind.
+    enum class PresetFileList { kLfoPresets, kFxPresets, kFxBusPresets, kInstruments };
+    const std::vector<File>& presetFiles(PresetFileList list);
+    // The FX presets saved for `effectId`, in the Browse menu's order.
+    std::vector<File> effectPresetFiles(const String& effectId);
+    // Loads an FX preset into the effect in a chain's slot; false when it is
+    // for another effect or sets nothing.
+    bool loadEffectPresetIntoSlot(const String& sectionName, int slot, const File& file);
+    // Previous and Next: the preset before or after the one last loaded,
+    // through every library, wrapping at either end.
+    void loadShiftedEffectPreset(const String& sectionName, int slot, int direction);
+    void loadShiftedLfoPreset(int lfoIndex, int direction);
+    // Says what the library migration did (SynthPlugin::createEditor runs it
+    // before the editor is made), once the editor is up.
+    void announceLibraryMigration(const atlas::library::MigrationReport& migration);
     // The SF2 preset menu: flat for a few presets, otherwise grouped by bank and
     // into runs of 16 programs so every submenu fits on screen (a screen reader
     // reaches only the menu items that are visible). Item ids are list positions + 1.
@@ -307,6 +393,8 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     bool keyStateChanged(bool isKeyDown) override;
     std::unique_ptr<ComponentTraverser> createFocusTraverser() override;
     std::unique_ptr<ComponentTraverser> createKeyboardFocusTraverser() override;
+    void focusGained(FocusChangeType cause) override;
+    void focusOfChildComponentChanged(FocusChangeType cause) override;
 
     const std::vector<Component*>& getAccessibleFocusOrder() const { return accessibility_focus_order_; }
     const std::vector<Component*>& getKeyboardFocusOrder() const { return focus_order_; }
@@ -314,8 +402,6 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     // The context menu of an effect slot header: copy, paste to another bus, replace, remove.
     // Each item carries its own action, so the menu can be exercised without showing it.
     PopupMenu createEffectSlotContextMenu(const String& sectionName, int slot, const String& focusedTitle);
-    // The Editor menu's MIDI learn mappings: one item per mapping removes it.
-    PopupMenu createMidiLearnMenu();
     // Runs one poll of the 20 Hz state timer now (tests interleave it with actions).
     void pollStateNow() { timerCallback(); }
     // What a row's Assign modulation does, with `amountText` typed into the amount prompt.
@@ -328,6 +414,16 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
       applyInlineTextPrompt();
       return modulationAmountSummary(sourceId, destinationId, amount);
     }
+    // Tests: Assign modulation's amount prompt left open, with its text box
+    // and its slider.
+    void openModulationAmountPromptForTesting(const String& sourceId, const String& destinationId,
+                                              Component* target = nullptr) {
+      connectModulationAndPromptForAmount(sourceId, destinationId, target != nullptr ? *target : *this);
+    }
+    bool isModulationAmountPromptOpen() const { return modulation_amount_prompt_visible_; }
+    TextEditor& modulationAmountEditorForTesting() { return modulation_amount_editor_; }
+    ParameterSlider& modulationAmountSliderForTesting() { return modulation_amount_slider_; }
+    ToggleButton& modulationBipolarToggleForTesting() { return modulation_bipolar_toggle_; }
     // The focusable control of the row showing `parameterId`, and the focused row's parameter.
     Component* controlForParameter(const String& parameterId) const;
     String focusedRowParameterId() const { return focusedParameterId(); }
@@ -342,6 +438,64 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     File presetFileAtRow(int row) const {
       return isPositiveAndBelow(row, filtered_presets_.size()) ? filtered_presets_[row] : File();
     }
+    int presetRowCount() const { return filtered_presets_.size(); }
+    // Community library: whether its list is being fetched or a preset is being
+    // downloaded, whether the list arrived, and why it did not.
+    bool isCommunityLibraryBusy() const { return community_list_loading_; }
+    bool isCommunityLibraryLoaded() const { return community_list_loaded_; }
+    bool isCommunityDownloadBusy() const { return !community_downloads_.empty(); }
+    // The download bar's percentage, -1 before anything has landed or while
+    // no download is on.
+    int downloadProgressPercentForTesting() const;
+    String communityLibraryError() const { return community_list_error_; }
+    // Settings, for the tests: the window it opened, or null.
+    DialogWindow* showSettingsForTesting() {
+      showSettings();
+      return settings_window_.getComponent();
+    }
+    // The Settings window, if open (the Settings button opens it).
+    DialogWindow* settingsWindowForTesting() const { return settings_window_.getComponent(); }
+    bool isPresetBrowserShown() const { return preset_browser_shown_; }
+    // "2.0.0 beta 2": the version and, for a pre-release, the beta the
+    // release workflow builds (ATLAS_PRERELEASE in .github/workflows/release.yml).
+    static String versionText();
+    // The Preset menu's Share patch and Share bank, for the tests: the form,
+    // or first the login dialog while this DAW is not logged in.
+    void sharePatchForTesting() { shareOnCommunity(false); }
+    void shareBankForTesting() { shareOnCommunity(true); }
+    bool isShareFormVisible() const { return share_form_visible_; }
+    bool isShareBusy() const { return share_busy_; }
+    // The login dialog (showCommunityLogin) while it is open, or null.
+    DialogWindow* communityLoginWindowForTesting() const { return login_window_.getComponent(); }
+    bool isCommunityBankLibraryBusy() const { return community_banks_loading_; }
+    bool isCommunityBankLibraryLoaded() const { return community_banks_loaded_; }
+    String communityBankLibraryError() const { return community_banks_error_; }
+    // Community previews: the cached file of the preview playing or being
+    // fetched (none when idle), and whether one is being fetched or plays.
+    File communityPreviewFile() const { return preview_file_; }
+    bool isCommunityPreviewBusy() const { return preview_fetching_; }
+    bool isCommunityPreviewPlaying() const { return preview_transport_.isPlaying(); }
+    // Tests: what a message box, file chooser or dialog window does once it
+    // closes, having opened while `returnTo` had the focus.
+    void closeOsWindowForTesting(Component& returnTo) {
+      FocusReturn focus;
+      focus.component = &returnTo;
+      focus.title = returnTo.getTitle();
+      closeOsWindow(openOsWindow(std::move(focus)), {});
+    }
+    // Tests: a rebuild's focus restore for a control titled `title` in `section`.
+    bool restoreFocusForTesting(const String& title, const String& section) {
+      return restoreFocusAfterRebuild({}, nullptr, title, section, false);
+    }
+    // Tests: what moving a preset to Trash does to its file (a test
+    // deletes the presets it made instead). Empty for the real move.
+    static std::function<bool(const File&)>& trashFileForTesting();
+    // Tests: the Preset menu's Save patch as default and Initialize patch.
+    void savePatchAsDefaultForTesting() { savePatchAsDefault(); }
+    bool chooseDefaultPatchForTesting(const File& preset) { return chooseDefaultPatch(preset, nullptr); }
+    bool resetDefaultPatchForTesting() { return resetDefaultPatch(nullptr); }
+    String defaultPatchNameForTesting() const { return defaultPatchName(); }
+    void initializePatchForTesting() { initializePatch(); }
     // The grouped source menu a parameter row offers (tests walk it like the slot menus).
     PopupMenu createModulationSourceSubmenu(const String& destinationId, std::map<int, String>& choices,
                                             int firstItemId);
@@ -371,6 +525,14 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     bool shouldShowParameterInSection(const String& sectionName, AudioProcessorParameter* parameter) const;
     bool refreshFilterRowsIfNeeded();
     bool refreshRandomAmplitudeRowsIfNeeded();
+    // An LFO's Simple and Custom views show different rows, and the Simple
+    // view shows the one rate row its Sync uses.
+    static int lfoIndexForParameterId(const String& parameterId);
+    bool isLfoSimpleView(int lfo) const;
+    int lfoSyncOption(int lfo) const;
+    int lfoRowLayout(int lfo) const;
+    void setLfoView(int lfo, int view);
+    bool refreshLfoRowsIfNeeded();
     bool isAnalogOscillator(int oscillator) const;
     int sourceSlotType(int oscillator) const;
     void setAutomationProxyCallbacks(AccessibleParameterRow& row);
@@ -387,13 +549,71 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     Component* persistentFocusedComponent() const;
     // Focuses the control a rebuild replaced; false when there is none to focus.
     // refocusScreenReader moves the screen reader to it again once the rows
-    // settle; callers that announce the change leave it off so the move does
-    // not cut the announcement short.
+    // settle. Announcements made meanwhile wait for that move, which would
+    // otherwise cut them short.
     bool restoreFocusAfterRebuild(const String& parameterId, Component* persistentComponent,
                                   const String& accessibleTitle = {}, const String& preferredSection = {},
                                   bool refocusScreenReader = false);
     Component* findRebuildFocusTarget(const String& parameterId, Component* persistentComponent,
                                       const String& accessibleTitle, const String& preferredSection) const;
+    // The heading of `section`, or of the nearest section whose key it starts
+    // with ("Oscillator 1" for "Oscillator 1 pitch and unison"); null if none.
+    Component* sectionHeadingFor(const String& section) const;
+    // On Windows, once a rebuild has settled with no control focused while the
+    // plugin's window still has the keyboard (JUCE would give every key to the
+    // host), focuses `section`'s heading, or else the editor.
+    void refocusIfFocusOrphaned(const String& section);
+    // A control to give focus back to. Its parameter, title and section find
+    // its replacement when a rebuild has deleted it.
+    struct FocusReturn {
+      String parameter_id, title, section;
+      Component::SafePointer<Component> component;
+      bool isEmpty() const { return parameter_id.isEmpty() && title.isEmpty() && component == nullptr; }
+    };
+    // The focused control or, when the window has lost focus to a file
+    // chooser, a menu or the host, the control it will give focus back to.
+    FocusReturn focusToReturnTo() const;
+    // Opens a file chooser and, once it closes, puts keyboard and screen reader
+    // focus back on the control that opened it, or on its replacement.
+    void launchFileChooser(FileChooser& chooser, int flags, std::function<void(const FileChooser&)> callback);
+    // Shows a native message box and, once it closes and `callback` has run,
+    // puts focus back on `returnTo` (else the control focused when it opened)
+    // or its replacement. On Windows JUCE runs the box on a thread of its own,
+    // and when it closes Windows gives the focus to the host's window, not
+    // back to the plugin's, so NVDA ends up in the host. The callback gets the
+    // plain index of the button pressed (0 for the first).
+    void showMessageBox(const MessageBoxOptions& options, std::function<void(int)> callback = {},
+                        Component* returnTo = nullptr);
+    void showWarningBox(const String& title, const String& message, Component* returnTo = nullptr);
+    // Opens a dialog window (keyboard help, accessibility settings) and puts
+    // focus back once it has closed, as for a file chooser.
+    DialogWindow* launchDialogWindow(DialogWindow::LaunchOptions& options);
+    // A file chooser, message box or dialog window that has not closed yet,
+    // and the control to give focus back to when it does.
+    struct OpenOsWindow;
+    std::shared_ptr<OpenOsWindow> openOsWindow(FocusReturn focus);
+    // Runs a window's callback once it has closed; when no other window is
+    // still open, gives focus back. A window the callback opens (an error box
+    // after a file chooser) gives focus back to the same control instead.
+    // Static: the editor may be gone by the time the window closes.
+    static void closeOsWindow(const std::shared_ptr<OpenOsWindow>& window, const std::function<void()>& callback);
+    void restoreFocusAfterOsWindow(const FocusReturn& focus);
+    // The control a message box should give focus back to: the focused one,
+    // or the one an inline prompt that is closing returns to.
+    FocusReturn focusForMessageBox() const;
+    // Asks a yes or no question in the editor, in the inline prompt with its
+    // text box hidden: the first button (`confirmLabel`) runs `confirm`,
+    // Cancel (`cancelLabel`) and Escape do nothing and say nothing, and both go
+    // back to `target`.
+    // Used on Windows in place of a native box, which would take focus out of the plugin.
+    void promptForConfirmation(const String& question, const String& confirmLabel, Component& target,
+                               std::function<void()> confirm, const String& cancelLabel = "Cancel");
+    // Gives the inline prompt back its text box and OK button after a question.
+    void endConfirmationPrompt();
+    bool isConfirmationButtonFocused() const {
+      return confirmation_prompt_visible_ &&
+             (modulation_amount_ok_.hasKeyboardFocus(false) || modulation_amount_cancel_.hasKeyboardFocus(false));
+    }
     // On Windows a rebuild that a choice deciding the rows starts (an
     // oscillator's Type, a filter's Model, an effect's mode, or Envelope 1's
     // Analog switch) keeps the focused row of such a choice and the groups
@@ -416,13 +636,42 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     // Focuses the header of the effect at `position` (0 for Slot 1) in the
     // chain `sectionName`; false when there is none.
     bool focusEffectSlotHeader(const String& sectionName, int position);
-    void showNavigationMenu();
+    // Where comma and period stop in the chain `sectionName`, in order: each
+    // occupied slot's header and, on Windows, the grouping headings inside it
+    // (kSectionKeysStepThroughEffectGroups).
+    std::vector<Component*> effectChainStops(const String& sectionName) const;
+    void focusEffectChainStop(Component& stop);
     void armOrCancelMidiLearn(const String& parameterId);
-    void showAccessibilitySettingsMenu();
-    void showKeyboardHelp();
+    // The Settings window, which the toolbar's Settings button opens: Plugin
+    // info, Tuning, MIDI learn mappings, Accessibility, Online community
+    // browser and Keyboard help, each a group a screen reader enters.
+    void showSettings();
+    // The toolbar's Undo and Redo name the change they would undo or redo.
+    // With `evenIfPending` false (the timer) they wait while a change is still
+    // becoming a step, since describing the history would end it early.
+    void updateToolbarUndoButtons(bool evenIfPending);
+    // Shows or hides the preset browser in the Presets group, for this instance.
+    void setPresetBrowserShown(bool shown);
+    // Shows or hides the community library in the preset browser and the
+    // Preset menu, for every editor from now on (community_library.h).
+    void setCommunityBrowserShown(bool shown);
+    // Every keyboard shortcut, with this platform's key names, as the Keyboard
+    // help group of Settings shows it.
+    static String keyboardHelpText();
     void initializePatch();
     void savePatchAsDefault();
+    // Settings' Default patch group. Browse copies the chosen patch to the
+    // default patch, and Reset default patch moves it to Trash; undo takes
+    // either back. False when the file could not be read, written or moved.
+    bool chooseDefaultPatch(const File& preset, Component* returnTo);
+    bool resetDefaultPatch(Component* returnTo);
+    // The default patch's name, "Untitled" when it has none; empty with no default patch.
+    String defaultPatchName() const;
     File defaultPatchFile() const;
+    // Command Z and Shift Command Z (or Command Y): undoes or redoes the last
+    // change, shows the patch as it is then and says what was undone.
+    void undoOrRedo(bool redo);
+    String undoAnnouncement(const UndoHistory::Outcome& outcome, bool redo) const;
     void rebuildFocusOrder();
     void ensurePresetListLoaded();
     void startPresetListLoad(bool announce, bool forceRefresh = false);
@@ -430,6 +679,100 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
                          bool stillScanning = false);
     const PresetBrowserItem* presetItemForFile(const File& file) const;
     void refreshPresetList(bool announce = true);
+    // The Collection facet's rows. Its Community presets row lists the presets
+    // shared on the community library, fetched from its JSON API on a
+    // background thread and shown like the local ones; Return on one
+    // downloads it into the Community library folder, checks it against the
+    // library's checksum and loads it. Its Community banks row lists the
+    // shared banks the same way; Return on one downloads the archive into
+    // Community/Banks, checks it and unpacks it into the Community library.
+    PresetCollection presetCollection() const;
+    void setPresetCollection(PresetCollection collection);
+    String presetCollectionName() const;
+    bool inCommunityCollection() const { return presetCollection() == PresetCollection::kCommunity; }
+    bool inCommunityBankCollection() const { return presetCollection() == PresetCollection::kCommunityBanks; }
+    bool inAnyCommunityCollection() const { return inCommunityCollection() || inCommunityBankCollection(); }
+    // The browser's lists and columns as the collection names them: on the
+    // community library's side the Bank list and column are its Author (the
+    // uploader), Category is Style for presets and Genre for banks, and the
+    // Library list and column, which would name only Community, are left out.
+    void namePresetBrowserForCollection();
+    void namePresetFacetTable(PresetTableListBox& table, const String& title);
+    // The facet lists side by side in `preset_facet_area_`, without the hidden ones.
+    void layoutPresetFacets();
+    // The items the facets and the table are built from: a community list in
+    // its collection, the local index otherwise.
+    const std::vector<PresetBrowserItem>& activePresetIndex() const;
+    bool activePresetListLoaded() const {
+      return inCommunityBankCollection() ? community_banks_loaded_
+           : inCommunityCollection() ? community_list_loaded_ : preset_list_loaded_;
+    }
+    void ensureCommunityListLoaded();
+    void startCommunityListLoad(bool announce, bool forceRefresh = false);
+    void applyCommunityList(std::vector<PresetBrowserItem> items, const String& error, bool announce,
+                            bool fetched, int generation);
+    void rebuildCommunityLookup();
+    void downloadCommunityPreset(const PresetBrowserItem& item, bool loadAfter);
+    void finishCommunityDownload(const File& file, const String& name, const String& error, bool loadAfter,
+                                 int generation);
+    void ensureCommunityBankListLoaded();
+    void startCommunityBankListLoad(bool announce, bool forceRefresh = false);
+    void applyCommunityBankList(std::vector<PresetBrowserItem> items, const String& error, bool announce,
+                                bool fetched, int generation);
+    void rebuildCommunityBankLookup();
+    // Fetches a bank's archive (unless the copy here is the one the library
+    // lists) and unpacks it into the Atlas folder, both in the background.
+    void downloadCommunityBank(const PresetBrowserItem& item);
+    void finishCommunityBankImport(const File& file, const String& name, const String& error, int generation);
+    struct CommunityDownload {
+      String name;
+      int generation = 0;
+      int64 received = 0;
+      int64 total = -1;   // the library's size, or -1 while unknown
+      std::shared_ptr<std::atomic<bool>> cancelled;
+    };
+    // A download's life in `community_downloads_`: begun with its name and the
+    // size the library lists (the bar and Cancel download show), its progress
+    // as its thread reports it, and ended when it lands or fails. `end` says
+    // whether the download was still current, since Cancel download drops it
+    // first and its thread's news then counts for nothing.
+    CommunityDownload& beginCommunityDownload(const std::string& key, const String& name, int64 total);
+    void setCommunityDownloadProgress(const std::string& key, int generation, int64 received, int64 total);
+    // What a download's thread reports with: the progress above, posted as the
+    // percentage changes, and false once Cancel download has set its flag.
+    atlas::community::DownloadProgress communityDownloadProgress(const std::string& key,
+                                                                 const CommunityDownload& download);
+    bool endCommunityDownload(const std::string& key, int generation);
+    // Cancel download: every download under way stops, and is said to.
+    void cancelCommunityDownloads();
+    // The bar and Cancel download follow the downloads: shown while any is on,
+    // with the percentage of all of them together, said now and then while
+    // one of the two has the focus.
+    void updateDownloadProgress();
+    // Adds a file that just appeared (a download) to the local index and the
+    // process-wide cache ahead of the next scan.
+    void addPresetToLocalIndex(const File& file);
+    // A community row's audio preview, played through the plugin's output
+    // beside the synth (SynthPlugin::setAuditionSource). P on the row, or its
+    // context menu, fetches the preview into Community/Previews the first
+    // time, decodes it with a JUCE AudioFormatReader read ahead on
+    // preview_thread_ and plays it from preview_transport_; the same key,
+    // another row's preview or closing the editor stops it, and the end of
+    // the recording is said.
+    void toggleCommunityPreview();
+    void startCommunityPreview(const PresetBrowserItem& item);
+    void playCommunityPreview(const File& file, const String& name, int generation);
+    void stopCommunityPreview(bool announce);
+    // Lets go of the preview: stops it, takes it out of the plugin's output
+    // and drops a fetch under way.
+    void detachCommunityPreview();
+    // Whether `item`'s preview is the one playing or being fetched.
+    bool isCommunityPreviewOf(const PresetBrowserItem& item) const;
+    // From the timer: lets go of a preview that has reached its end and says so.
+    void finishCommunityPreviewIfEnded();
+    // Runs `task` on a thread that is joined when the editor closes, as the
+    // preset scans are; `task` stops when the flag it is given is set.
+    void runPresetBackgroundTask(std::function<void(const std::shared_ptr<std::atomic<bool>>&)> task);
     void populatePresetFilters();
     void filterPresetList();
     void schedulePresetFilterUpdate(bool rebuildFilters);
@@ -447,6 +790,25 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void renameSelectedPreset();
     void showPresetMetadataDialog();
     void deleteSelectedPreset();
+    // Moves `file` to Trash and selects the
+    // preset after it in the list, or the one before when it was the last.
+    void movePresetToTrash(const File& file);
+    // The browser drops `file`, or shows `to` in place of `from`, at once,
+    // ahead of the rescan that a trash, rename or metadata edit starts, so
+    // the list never offers a preset file that is gone. When `to` no longer
+    // passes the filters (moved to another bank), the preset after `from` is
+    // selected, as after a trash.
+    void forgetPreset(const File& file);
+    void replacePresetInBrowser(const File& from, const File& to);
+    void rebuildPresetLookup();
+    // The preset after `file` in the shown list, or the one before when it is
+    // the last; empty when it is the only one.
+    String presetPathAfter(const File& file) const;
+    // What populatePresetFilters gave up, given the filters before it ran: a
+    // library, bank, category or tag with no presets left goes back to All,
+    // and this says so ("No presets left in X. Showing all banks"); empty if none.
+    String presetFilterFallbackNotice(const String& library, const String& bank, const String& category,
+                                      const String& tag) const;
     void revealSelectedPreset();
     void updatePresetManagementControls();
     void showPresetMenu();
@@ -458,9 +820,14 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void loadPresetFile(File file, bool preview = false, bool updateBrowserFilters = false);
     void chooseBankFile();
     void importBankFile(const File& file);
-    void chooseFolderToExportBank();
+    // Export bank: a menu of every bank in every library, then Other folder,
+    // then where to write the archive.
+    void chooseBankToExport();
+    void chooseFolderToExport();
+    void chooseBankExportDestination(const File& sourceFolder);
     void exportFolderAsBank(const File& sourceFolder, const File& destinationFile);
-    void loadTuningFile();
+    // Loads a tuning chosen in Settings and says so.
+    void loadTuningFile(const File& file);
     void clearTuning();
     void exportPreset();
     void savePresetToUserDirectory();
@@ -469,11 +836,63 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void showSavePresetDialog();
     void hideSavePresetDialog();
     void commitSavePresetDialog();
+    // The Save form's Bank list: the User banks, then New bank, which shows
+    // the name box; `select` is chosen, or typed as the new bank's name when
+    // it is no bank yet.
+    void populateSaveBanks(const String& select);
+    bool newSaveBankChosen() const;
+    // The bank the form names: the chosen one, or the new name made legal;
+    // empty when New bank is chosen and no name is typed.
+    String chosenSaveBank() const;
+    // Share patch / Share bank on the community library (the Preset menu):
+    // the Share form, or first the login dialog while this DAW is not logged
+    // in, which opens the form once a token is accepted.
+    void shareOnCommunity(bool bank);
+    // The login dialog (CommunityLoginContent): `message` says why it is
+    // here, with a box for the API token, a button that opens the site's API
+    // tokens page, Log in and Cancel. Log in checks the token with the
+    // library and keeps it (checkCommunityToken); `on_logged_in` then runs,
+    // once the dialog has closed and the focus is back.
+    void showCommunityLogin(const String& message, std::function<void()> on_logged_in);
+    // Asks the library whose `token` is, in the background, and keeps the
+    // token with its account (community_library.h, storeApiToken) when the
+    // library accepts it; `done` then gets the account, or what went wrong,
+    // on the message thread. Settings' Log in and the login dialog share it.
+    void checkCommunityToken(const String& token,
+                             std::function<void(const atlas::community::Account&, const String& error)> done);
+    // The Share form: an inline form like Save patch's. For a patch, its name,
+    // style, tags and description; for a bank, the library folder to share,
+    // its name, genre, tags and description. Share writes the patch or
+    // exports the folder to a temporary file and posts it on a background
+    // thread with the saved API token, with the upload's progress in a bar the
+    // focus moves to (ShareProgressBar); the library's answer is said, and the
+    // form stays open on its field errors. A token the store will not give,
+    // or one the library refuses, brings up the login dialog, and Share goes
+    // on once a new one is accepted. Cancel or Escape while it uploads stops
+    // the upload. `preface` opens what the form says ("Logged in as ...").
+    void showShareForm(bool bank, const String& preface = {});
+    void hideShareForm();
+    void commitShareForm();
+    void populateShareFolders(const File& select);
+    void chooseShareFolder();
+    void loadShareGenres();
+    // The upload is under way: the bar shows, focused, and says what is being shared.
+    void startShareUpload(const String& message);
+    // What the upload's thread reports: -1 before the library has taken any of
+    // it; said now and then while the bar has the focus.
+    void setShareProgress(int percent, int generation);
+    void stopShareUpload();
+    // The form's Cancel is Cancel upload while the upload is on, since it
+    // stops the upload then, and Cancel sharing otherwise.
+    void nameShareCancel(bool uploading);
+    void finishShare(const atlas::community::UploadResult& result, const String& name, bool bank, int generation);
+    bool shareFormHasFocus() const;
     void savePresetFile(const File& file);
     void showPresetControls();
     void updatePresetSummary();
     void refreshWavetableNameLabel(int oscillator);
     void refreshSampleNameLabel(int sampleTarget);
+    void refreshOscillatorHeaderTitles();
     String sourceStatusTitleForSection(const String& sectionName) const;
     void loadShiftedWavetable(int oscillator, int direction);
     void updateRoutingSummary();
@@ -573,6 +992,8 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
                                      int& focus_order, const String& section_name,
                                      const GroupRowAppender& appendRows = {});
     void chooseInstrumentFile(int oscillator);
+    void loadInstrumentFile(int oscillator, const File& file);
+    void showInstrumentBrowserMenu(int oscillator, Component& target);
     // Moves an SF2 slot to the previous (-1) or next (1) preset, wrapping.
     void stepInstrumentPreset(int oscillator, int direction);
     void openInstrumentInTextEditor(int oscillator);
@@ -594,6 +1015,17 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
                                   const String& section_name);
     // Keeps those rows on the values the slot plays; another instrument rebuilds them.
     void syncInstrumentControls(int oscillator);
+    // Speech oscillators: the Speech controls group, with the text box for
+    // the words to sing above the language and variant menus.
+    void addSpeechControlsGroup(int oscillator, Component& parent, int& y, int x, int width,
+                                int& focus_order, const String& section_name,
+                                const GroupRowAppender& appendRows = {});
+    // Hands the text box's words to the slot when they changed.
+    void commitSpeechText(int oscillator, const String& text);
+    // Announces a finished render the text box asked for and keeps the text
+    // boxes on the slots' text.
+    void refreshSpeechStatus();
+    String speechStatusDescription(int oscillator);
     // The Braids synthesis mode a slot has selected, 0 to 47.
     int braidsModel(int oscillator) const;
     // A section row with every callback wired (modulation, MIDI learn, value entry, automation).
@@ -608,6 +1040,12 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void loadShiftedSample(int direction, int sample_target = 0);
     void chooseLfoPresetFile(int lfoIndex);
     void loadLfoPresetFile(int lfoIndex, const File& file);
+    void showLfoPresetBrowserMenu(int lfoIndex, Component& target);
+    // A Browse menu of `files`: library, then packs and folders, then file,
+    // and Rescan, which scans `list` again and opens the menu again.
+    void showPresetFileMenu(PresetFileList list, const std::vector<File>& files, const String& emptyText,
+                            Component& target, std::function<void(const File&)> choose,
+                            std::function<void()> reopen);
     void saveLfoPresetFile(int lfoIndex);
     vital::ConvolutionReverbModule* convolutionModuleForPrefix(const String& modulePrefix);
     void chooseConvolutionIrFile(const String& modulePrefix);
@@ -620,10 +1058,30 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void chooseEffectPresetFile(const String& sectionName);
     void loadEffectPresetFile(const String& sectionName, const File& file);
     void saveEffectPresetFile(const String& sectionName);
+    // The FX presets group of an effect slot in a chain: Browse, Previous,
+    // Next, Import and Save, acting on that slot's effect.
+    void showEffectPresetBrowserMenu(const String& sectionName, int slot, Component& target);
+    void chooseEffectPresetFileForSlot(const String& sectionName, int slot);
+    void saveEffectPresetFromSlot(const String& sectionName, int slot);
     void chooseFxBusPresetFile(const String& sectionName, bool save);
+    void loadFxBusPresetFile(const String& sectionName, const File& file,
+                             const String& focusTitle = "Load bus FX preset");
+    // A group a screen reader enters, holding a column of buttons, placed in
+    // `parent` at `y`, which moves past it. Each button's action gets the
+    // button, for a menu to open from.
+    struct GroupButton {
+      String title;
+      String description;
+      std::function<void(Component&)> action;
+    };
+    AccessibleSectionHeader* addButtonGroup(const String& title, const String& key, AccessibleSectionHeader& parent,
+                                            int x, int& y, int width, int& focusOrder, int rank,
+                                            const std::vector<GroupButton>& buttons);
+    void showFxBusPresetBrowserMenu(const String& sectionName, Component& target);
     void addFxBusControlsGroup(const String& sectionName, Component& parent, int& y, int x,
                                int width, int& focusOrder);
     int effectSlotType(const String& sectionName, int slot) const;
+    int effectSlotTypeInChain(int chain, int slot) const;
     int firstEmptyEffectSlot(const String& sectionName) const;
     std::vector<int> activeEffectSlots(const String& sectionName) const;
     String effectSlotPrefix(const String& sectionName, int slot) const;
@@ -633,6 +1091,9 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     // keyed by the slot prefixes along with a swapped pair of slots.
     void swapEffectSlotModuleState(const String& firstPrefix, const String& secondPrefix);
     void clearEffectSlot(const String& sectionName, int slot);
+    // Removes a slot. The focus then goes to the slot before it (or after it,
+    // for the first) on Windows, and to focusedTitle on the Mac or once the
+    // chain is empty.
     void removeEffectSlot(const String& sectionName, int slot, const String& focusedTitle);
     void replaceEffectSlot(const String& sectionName, int slot, int effect);
     void showEffectSlotContextMenu(const String& sectionName, int slot, Component& target);
@@ -669,11 +1130,14 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void cancelInitialModulationAmount();
     // Where the inline text prompt sends focus back when it closes.
     void rememberPromptFocus(Component& target);
-    // Focuses that control again, after rebuilding the sections if `rebuild`.
+    // Focuses that control again, after rebuilding the sections if `rebuild`,
+    // and moves the screen reader back onto it once the prompt is hidden.
     // Call before hiding the prompt: hiding the focused text field first hands
     // focus to the top of the window. Falls back to fallbackParameterId's row.
     void returnFocusFromPrompt(bool rebuild, const String& fallbackParameterId);
+    // Hides the prompt once the screen reader has followed focus off it.
     void hideInlineTextPrompt();
+    void hideInlineTextPromptNow();
     ValueBridge* parameterBridge(const String& id) const;
     void setParameterEngineValue(const String& id, float engineValue);
     void randomizeAmplitudeSeed(const String& id);
@@ -740,6 +1204,11 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void setLfoPointCurve(int curveIndex);
     LineGenerator* lfoGeneratorForIndex(int lfoIndex) const;
     LineGenerator* activeLfoGenerator() const;
+    // The part of the state an LFO, wavetable or filter table edit changes,
+    // for SynthPlugin::markStateChanged (UndoHistory::noteStructureEdit).
+    std::string lfoUndoBlock(const LineGenerator* generator) const;
+    std::string wavetableUndoBlock(int oscillator) const;
+    std::string wavetableUndoBlock(const WavetableCreator* creator) const;
     int selectedLfoPointIndex() const;
     int lfoPointIndexAtPhase(float phase) const;
     int currentLfoPointIndex() const;
@@ -781,6 +1250,19 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     bool moveEffectInSection(const String& sectionName, const String& effectId, int direction,
                              const String& focusedTitle);
     float modulationAmountFromPeakText(const String& destinationId, const String& text) const;
+    // The amount that takes the destination from where it is now to
+    // `targetValue`, a value of its own (0 to 1, as its host parameter).
+    float modulationAmountForTarget(const ValueBridge& destination, double targetValue) const;
+    // Shows the amount prompt's slider for `destination`, at `peakValue`, when
+    // the setting is on, and hides it otherwise.
+    void setUpModulationAmountSlider(ValueBridge* destination, double peakValue);
+    // The slider moved: the route plays its new amount at once, so it can be
+    // heard while the prompt is open. OK keeps it; anything else puts back
+    // the amount the route had when the prompt opened (revertModulationAudition).
+    void auditionModulationAmount();
+    void revertModulationAudition();
+    void setUpModulationBipolarToggle();
+    void toggleModulationBipolar();
     String modulationAmountSummary(const String& sourceId, const String& destinationId, float amount) const;
     bool isMacroBipolar(int macroIndex) const;
     void setMacroBipolar(int macroIndex, bool bipolar);
@@ -803,10 +1285,22 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     String& last_preset_bank_;
     String& last_preset_category_;
     String& last_preset_tag_;
+    String& last_preset_collection_;
+    // Whether the Presets group shows the preset browser (search, filters,
+    // results, details and autoload) or only the summary and Preset menu.
+    bool& preset_browser_shown_;
     void addCpuMeter(Component& parent, int x, int& y, int width, int& focusOrder);
     std::unique_ptr<CpuUsageMeter> cpu_meter_;
     Label title_;
-    TextButton menu_button_ { "Menu" };
+    TextButton settings_button_ { "Settings" };
+    // Named after what they would do (updateToolbarUndoButtons).
+    AccessibleTextButton undo_button_ { "Undo" };
+    AccessibleTextButton redo_button_ { "Redo" };
+    SpokenToggleButton preset_browser_toggle_ { "Show preset browser" };
+    // The Toolbar group, before every other group: Settings, Undo, Redo and
+    // Show preset browser. Built once and kept outside the scrolling rows, so
+    // its controls keep the focus through every rebuild.
+    std::unique_ptr<AccessibleSectionHeader> toolbar_;
     // The group that number keys 1 to 9 choose an element from.
     String current_group_;
     Label preset_summary_;
@@ -818,17 +1312,35 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     PresetTableListBox preset_bank_table_ { "Bank" };
     PresetTableListBox preset_category_table_ { "Category" };
     PresetTableListBox preset_tag_table_ { "Tags" };
+    Rectangle<int> preset_facet_area_;
     PresetTableListBox preset_table_ { "Preset table" };
     ToggleButton preset_preview_ { "Autoload preset when scrolling" };
+    // A community download's progress and its Cancel, after the Autoload
+    // toggle while a download is on (updateDownloadProgress).
+    std::unique_ptr<TransferProgressBar> download_progress_;
+    AccessibleTextButton download_cancel_ { "Cancel download" };
     Label save_patch_prompt_;
     TextEditor save_patch_name_;
     TextEditor save_patch_author_;
-    TextEditor save_patch_bank_;
+    // The User banks to save into, and a name box for a new one.
+    AccessibleComboBox save_patch_bank_;
+    TextEditor save_patch_new_bank_;
+    StringArray save_patch_banks_;
     TextEditor save_patch_category_;
     TextEditor save_patch_tags_;
     TextEditor save_patch_comments_;
     TextButton save_patch_ok_ { "Save" };
     TextButton save_patch_cancel_ { "Cancel" };
+    Label share_prompt_;
+    AccessibleComboBox share_folder_;
+    AccessibleTextEditor share_name_;
+    AccessibleComboBox share_style_;
+    AccessibleComboBox share_genre_;
+    AccessibleTextEditor share_tags_;
+    AccessibleTextEditor share_description_;
+    AccessibleTextButton share_ok_ { "Share" };
+    AccessibleTextButton share_cancel_ { "Cancel" };
+    std::unique_ptr<TransferProgressBar> share_progress_;
     Label routing_summary_;
     AccessibleComboBox routing_mode_;
     TextButton routing_default_ { "Default routing" };
@@ -836,6 +1348,20 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     TextButton routing_serial_backward_ { "Serial filters 2 into 1" };
     Label modulation_amount_prompt_;
     TextEditor modulation_amount_editor_;
+    ModulationAmountSlider modulation_amount_slider_;
+    // What the slider last wrote into the text box: while the box still says
+    // it, OK sets the slider's own value, which the text may round.
+    String modulation_slider_text_;
+    // The route's amount when the prompt opened, and whether the slider has
+    // changed it since (auditionModulationAmount).
+    float modulation_amount_at_open_ = 0.0f;
+    bool modulation_amount_auditioned_ = false;
+    // Bipolar, after the slider: switches the route's polarity at once, and
+    // Cancel puts back the one it had when the prompt opened. A macro's routes
+    // follow the macro's own Bipolar, so its prompt has none.
+    SpokenToggleButton modulation_bipolar_toggle_ { "Bipolar" };
+    bool modulation_bipolar_at_open_ = false;
+    bool modulation_bipolar_changed_ = false;
     TextButton modulation_amount_ok_ { "OK" };
     TextButton modulation_amount_cancel_ { "Cancel" };
     Viewport viewport_;
@@ -859,6 +1385,15 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     std::map<String, std::vector<AudioProcessorParameter*>> sections_;
     std::map<String, StringArray> group_sections_;
     std::map<String, ValueBridge*> parameters_by_id_;
+    // Each effect slot's type control by chain (0 is the main chain) and slot,
+    // looked up once: the timer reads every slot's type several times a tick.
+    // Cleared with parameters_by_id_, whose bridges it may point to.
+    struct EffectSlotTypeControl {
+      ValueBridge* bridge = nullptr;
+      vital::Value* control = nullptr;
+    };
+    mutable std::array<std::array<EffectSlotTypeControl, vital::constants::kMaxEffectSlots>, vital::kNumBuses + 1>
+        effect_slot_type_controls_ {};
     StringArray group_names_;
     StringArray section_names_;
     Array<File> all_presets_;
@@ -995,12 +1530,17 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
       uint32 announced_at = 0;
     };
     std::array<InstrumentAnnouncementState, vital::kNumOscillators> instrument_announcements_ {};
+    struct SpeechAnnouncementState {
+      uint32_t revision = 0;
+      // The text box committed new words: say how the render went.
+      bool announce = false;
+    };
+    std::array<SpeechAnnouncementState, vital::kNumOscillators> speech_announcements_ {};
     std::unique_ptr<FileChooser> lfo_chooser_;
     std::unique_ptr<FileChooser> fx_chooser_;
     std::unique_ptr<FileChooser> fx_bus_chooser_;
     std::unique_ptr<FileChooser> ir_chooser_;
     std::unique_ptr<FileChooser> bank_chooser_;
-    std::unique_ptr<FileChooser> tuning_chooser_;
     std::unique_ptr<FileChooser> export_chooser_;
     String pending_modulation_source_;
     String pending_modulation_destination_;
@@ -1018,6 +1558,7 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     int active_lfo_index_ = 0;
     std::map<String, std::pair<int, int>> last_filter_states_;
     std::map<String, bool> last_random_amplitude_modes_;
+    std::map<int, int> last_lfo_layouts_;
     std::map<String, int> last_oscillator_modes_;
     // An SF2 preset menu lists another SoundFont than its slot plays.
     bool instrument_preset_menu_stale_ = false;
@@ -1033,15 +1574,72 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     bool preset_autoload_scheduled_ = false;
     bool preset_filter_update_pending_ = false;
     bool preset_filter_rebuild_pending_ = false;
-    bool preset_favorites_only_ = false;
+    // The community library's presets, as PresetBrowserItems whose files may
+    // not exist yet, and what is known about fetching them.
+    std::vector<PresetBrowserItem> community_index_;
+    std::unordered_map<std::string, size_t> community_index_by_path_;
+    bool community_list_loaded_ = false;
+    bool community_list_loading_ = false;
+    String community_list_error_;
+    int community_list_generation_ = 0;
+    // The downloads under way, by the local path each lands at: what the
+    // progress bar sums up, and what Cancel download stops. A download's
+    // thread reports under its generation, so one cancelled and started again
+    // is not confused with its earlier self.
+    std::map<std::string, CommunityDownload> community_downloads_;
+    int community_download_generation_ = 0;
+    uint32 download_progress_said_ms_ = 0;
+    int download_progress_said_ = -1;
+    // The same for the library's banks.
+    std::vector<PresetBrowserItem> community_bank_index_;
+    std::unordered_map<std::string, size_t> community_bank_index_by_path_;
+    bool community_banks_loaded_ = false;
+    bool community_banks_loading_ = false;
+    String community_banks_error_;
+    int community_banks_generation_ = 0;
+    // The community preview playing or being fetched (toggleCommunityPreview).
+    AudioFormatManager preview_formats_;
+    bool preview_formats_registered_ = false;
+    TimeSliceThread preview_thread_ { "Atlas preview" };
+    std::unique_ptr<AudioFormatReaderSource> preview_reader_;
+    AudioTransportSource preview_transport_;
+    File preview_file_;
+    String preview_name_;
+    bool preview_fetching_ = false;
+    int preview_generation_ = 0;
     int preset_sort_column_ = 1;
     bool preset_sort_ascending_ = true;
     bool preset_metadata_edit_mode_ = false;
     File preset_metadata_file_;
     int preset_list_generation_ = 0;
+    // A preset saved while the list was being rescanned, to select once the
+    // rescan lands (selectPresetFile); cleared when the user picks another.
+    String select_after_refresh_;
     bool save_patch_dialog_visible_ = false;
-    // Where focus was when the save or metadata form opened; it goes back there when the form closes.
-    Component::SafePointer<Component> save_patch_return_focus_;
+    // The Share form (showShareForm): whether it shows and for a bank, the
+    // folders its menu offers, the genres the library lists, whether a share
+    // is under way (with the flag that stops its upload, and when and at what
+    // percentage its progress was last said), and where focus goes back to
+    // when it closes.
+    bool share_form_visible_ = false;
+    bool share_bank_ = false;
+    bool share_busy_ = false;
+    int share_generation_ = 0;
+    std::shared_ptr<std::atomic<bool>> share_cancelled_;
+    uint32 share_progress_said_ms_ = 0;
+    int share_progress_said_ = -1;
+    Array<File> share_folders_;
+    std::vector<atlas::community::Genre> share_genres_;
+    bool share_genres_loading_ = false;
+    std::unique_ptr<FileChooser> share_folder_chooser_;
+    FocusReturn share_return_focus_;
+    // The Settings window while it is open; closed with the editor.
+    Component::SafePointer<DialogWindow> settings_window_;
+    // The login dialog (showCommunityLogin) while it is open.
+    Component::SafePointer<DialogWindow> login_window_;
+    // Where focus was when the save or metadata form opened; it goes back
+    // there, or to its replacement after a rebuild, when the form closes.
+    FocusReturn save_patch_return_focus_;
     bool updating_preset_list_ = false;
     bool updating_routing_controls_ = false;
     bool wavetable_browser_cache_valid_ = false;
@@ -1049,6 +1647,15 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     bool preset_to_wavetable_rendering_ = false;
     bool sample_browser_cache_valid_ = false;
     bool ir_browser_cache_valid_ = false;
+    struct PresetFileCache {
+      bool valid = false;
+      std::vector<File> roots;
+      std::vector<File> files;
+      std::vector<String> effects;   // FX presets: each file's effect id, empty when it names none
+    };
+    std::array<PresetFileCache, 4> preset_file_caches_;
+    // The FX preset last loaded into each effect slot, by its slot prefix.
+    std::map<String, File> last_effect_preset_files_;
     int active_modulation_remap_connection_ = -1;
     int modulation_remap_point_index_ = 0;
     bool lfo_multi_selection_mode_ = false;
@@ -1076,8 +1683,25 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     bool effect_chain_rebuild_queued_ = false;
     // Bumped by each rebuild so only the last one re-focuses the screen reader.
     int screen_reader_refocus_generation_ = 0;
+    // Bumped by each restoreFocusAfterRebuild so only the last one's delayed grab runs.
+    int rebuild_focus_grab_generation_ = 0;
     // Set when a queued rebuild should re-focus the screen reader once it runs.
     bool screen_reader_refocus_requested_ = false;
+    // The control the window had when it lost focus, until focus comes back.
+    FocusReturn window_focus_return_;
+    // File choosers, message boxes and dialog windows (openOsWindow) that have
+    // not closed yet.
+    int open_os_windows_ = 0;
+    // While a closed window's callback runs, the control that window gives
+    // focus back to (closeOsWindow).
+    const FocusReturn* os_window_callback_focus_ = nullptr;
+    // The inline prompt is asking a yes or no question (promptForConfirmation).
+    bool confirmation_prompt_visible_ = false;
+    // The inline prompt's action is running (applyParameterValue): a box it
+    // opens returns to the control the prompt returns to (focusForMessageBox).
+    bool inline_prompt_applying_ = false;
+    // Bumped by each hideInlineTextPrompt so only the last one hides the prompt.
+    int inline_prompt_hide_generation_ = 0;
     String queued_effect_chain_rebuild_section_;
     String queued_effect_chain_rebuild_title_;
     String queued_effect_chain_rebuild_parameter_;
@@ -1088,5 +1712,7 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(SynthEditor)
 
     friend class PresetFacetTableModel;
+    friend class AtlasSettingsContent;
+    friend class CommunityLoginContent;
     friend class PresetResultsTableModel;
 };

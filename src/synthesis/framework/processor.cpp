@@ -183,6 +183,18 @@ namespace vital {
     return count;
   }
 
+  int Processor::connectedPluggedInputs() {
+    int count = 0;
+    int num_inputs = static_cast<int>(inputs_->size());
+    for (int i = plugging_start_; i < num_inputs; ++i) {
+      Input* input = inputs_->at(i);
+      if (input && input->source != &Processor::null_source_)
+        count++;
+    }
+
+    return count;
+  }
+
   void Processor::unplugIndex(unsigned int input_index) {
     if (inputs_->at(input_index))
       inputs_->at(input_index)->source = &Processor::null_source_;

@@ -35,6 +35,8 @@ namespace vital {
       void init() override;
       virtual Processor* clone() const override { return new RandomLfoModule(*this); }
       void correctToTime(double seconds) override;
+      void advanceFreeClock(int num_samples);
+      bool runsFreely() const override;
       Output* independentOutput(int connection_index);
 
     protected:

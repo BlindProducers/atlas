@@ -439,7 +439,7 @@ namespace {
     if (section() == nullptr)
       return finish("editor");
 
-    auto* menu = dynamic_cast<ComboBox*>(titledExactly(*section(), "1 Braids Synthesis Mode"));
+    auto* menu = dynamic_cast<ComboBox*>(titledExactly(*section(), "1 Macro Synthesis Mode"));
     expect(menu != nullptr, "the synthesis mode is a menu");
     if (menu != nullptr) {
       expect(menu->getNumItems() == vital::braids_engine::kNumModels, "the menu lists every mode");
@@ -447,9 +447,9 @@ namespace {
              menu->getItemText(47) == "Question mark", "modes read by name");
       expect(menu->getWantsKeyboardFocus() && menu->getDescription().isNotEmpty(), "the menu is accessible");
     }
-    expect(titledExactly(*section(), "Braids controls") != nullptr, "a Braids controls group");
-    expect(titledExactly(*section(), "1 Braids Bit Depth") != nullptr &&
-           titledExactly(*section(), "1 Braids Sample Rate") != nullptr, "bit depth and sample rate rows");
+    expect(titledExactly(*section(), "Macro controls") != nullptr, "a Braids controls group");
+    expect(titledExactly(*section(), "1 Macro Bit Depth") != nullptr &&
+           titledExactly(*section(), "1 Macro Sample Rate") != nullptr, "bit depth and sample rate rows");
     expect(titledExactly(*section(), "CS-80 sawtooth parameters") != nullptr, "a group named after the mode");
     auto* timbre = titledExactly(*section(), "1 Notch width (Timbre)");
     expect(timbre != nullptr, "Timbre is named after what it does");
@@ -460,11 +460,11 @@ namespace {
     expect(findTitled(*section(), [](const String& t) { return t.contains("Multi-sample") || t.contains("Noise Type") ||
                                                                t.contains("Wave Frame"); }) == nullptr,
            "other types' rows are hidden");
-    expect(findTitled(*section(), [](const String& t) { return t.startsWith("1 Braids Transpose"); }) != nullptr,
+    expect(findTitled(*section(), [](const String& t) { return t.startsWith("1 Macro Transpose"); }) != nullptr,
            "transpose sits with pitch");
     if (auto* pitch = titledExactly(*section(), "Pitch and unison")) {
-      auto* tune = titledExactly(*pitch, "1 Braids Tune");
-      auto* random_phase = titledExactly(*pitch, "1 Braids Phase Randomization");
+      auto* tune = titledExactly(*pitch, "1 Macro Tune");
+      auto* random_phase = titledExactly(*pitch, "1 Macro Phase Randomization");
       expect(random_phase != nullptr, "random phase sits with pitch");
       if (random_phase != nullptr) {
         expect(random_phase->getWantsKeyboardFocus() && random_phase->getDescription().contains("starts its cycle"),
@@ -495,7 +495,7 @@ namespace {
              "the old mode's group is gone");
       expect(synth.getControls()["osc_1_braids_model"]->value() == 28.0f, "the menu sets the mode");
       auto* focused = Component::getCurrentlyFocusedComponent();
-      expect(focused == nullptr || focused->getTitle() == "1 Braids Synthesis Mode",
+      expect(focused == nullptr || focused->getTitle() == "1 Macro Synthesis Mode",
              "focus stays on the mode menu after the rebuild");
     }
     return finish("editor");

@@ -58,6 +58,17 @@ namespace multisample {
     // asks `cancelled` between pieces of a few megabytes.
     bool populateCache(const std::string& hash, const std::vector<FileInfo>& files, int64_t max_copy_bytes,
                        const std::function<bool()>& cancelled = {});
+    // Extracts an instrument's files from a container preset into `folder`,
+    // made fresh, checking each file's CRC; on failure the folder is removed.
+    // `progress` returns false to cancel.
+    bool extractTo(const juce::File& container, const std::string& hash, const std::vector<FileInfo>& files,
+                   const juce::File& folder, const std::function<bool(float)>& progress, std::string& error);
+    // Places an instrument's files under `folder` (made if need be) by hard
+    // link, or by copy when linking fails and the copies total at most
+    // `max_copy_bytes` (negative for no limit). A copy asks `cancelled`
+    // between pieces of a few megabytes.
+    bool placeFiles(const std::vector<FileInfo>& files, const juce::File& folder, int64_t max_copy_bytes,
+                    const std::function<bool()>& cancelled, std::string& error);
     // Removes least recently used instruments until the cache fits the budget.
     // `cancelled` is asked between folders.
     void pruneCache(int64_t budget_bytes, const std::set<std::string>& in_use,

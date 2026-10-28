@@ -47,6 +47,14 @@ namespace vital {
     lfo_->correctToTime(seconds);
   }
 
+  void RandomLfoModule::advanceFreeClock(int num_samples) {
+    lfo_->advanceFreeClock(num_samples);
+  }
+
+  bool RandomLfoModule::runsFreely() const {
+    return lfo_->runsFreely();
+  }
+
   Output* RandomLfoModule::independentOutput(int connection_index) {
     return lfo_->independentOutput(connection_index);
   }

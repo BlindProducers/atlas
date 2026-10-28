@@ -1,0 +1,19 @@
+diff --git a/modules/juce_gui_basics/native/accessibility/juce_Accessibility_windows.cpp b/modules/juce_gui_basics/native/accessibility/juce_Accessibility_windows.cpp
+index 6a385c2..a80e94a 100644
+--- a/modules/juce_gui_basics/native/accessibility/juce_Accessibility_windows.cpp
++++ b/modules/juce_gui_basics/native/accessibility/juce_Accessibility_windows.cpp
+@@ -202,6 +202,14 @@ void sendAccessibilityPropertyChangedEvent (const AccessibilityHandler& handler,
+ 
+ void detail::AccessibilityHelpers::notifyAccessibilityEvent (const AccessibilityHandler& handler, Event eventType)
+ {
++    // Atlas: UI Automation's focus event says the focus is now on its sender.
++    // JUCE sends one for the element losing the focus too (giveAwayFocus), when
++    // no element has it, so a screen reader that then asks where the focus is
++    // finds the window: NVDA said "Atlas Settings dialog" again before every
++    // control Tab moved to. As on iOS, only the element with the focus says so.
++    if (eventType == Event::focusChanged && ! handler.hasFocus (false))
++        return;
++
+     if (eventType == Event::elementCreated
+         || eventType == Event::elementDestroyed)
+     {

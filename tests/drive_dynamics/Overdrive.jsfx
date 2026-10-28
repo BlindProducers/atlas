@@ -1,0 +1,411 @@
+desc: Overdrive (Live-style band-pass overdrive with Dynamics)
+author: Alessio Scala
+version: 1.0
+about:
+  A recreation of the Overdrive audio effect found in Ableton Live, modelled
+  from measurements of the original device (not from its code).
+  Signal flow: band-pass filter -> 2x oversampled drive stage: clipper whose
+  ceiling follows the input envelope (Dynamics) -> tilt Tone -> make-up
+  -> DC blockers -> equal-power Dry/Wet.
+  The X-Y display sets the filter: drag horizontally for Freq, vertically for
+  Width. Double-click any control to reset it, hold Shift for fine changes.
+
+slider1:freq=1250<50,20000,1:log=1000>-Freq (Hz)
+slider2:width=6.5<0.5,9,0.01>-Width
+slider3:drive=50<0,100,0.1>-Drive (%)
+slider4:tone=50<0,100,0.1>-Tone (%)
+slider5:dynamics=50<0,100,0.1>-Dynamics (%)
+slider6:drywet=50<0,100,0.1>-Dry/Wet (%)
+
+in_pin:left input
+in_pin:right input
+out_pin:left output
+out_pin:right output
+
+@init
+// ---- model constants (fitted against the original at 48 kHz) ----
+DRIVE_DB0   = -3.4863;   // pre-gain at 0 % drive (dB)
+DRIVE_DBPCT = 0.36;    // dB of pre-gain per % drive
+OUT_GAIN    = 0.69123;  // clipper output scale
+BIAS        = 0.11856;   // clipper asymmetry, relative to the ceiling floor
+DYN_EXP     = 0.88206;   // envelope -> ceiling power law
+DYN_T0      = -0.0019;     // dynamics threshold (dB) at 0 %
+DYN_TK      = -31.984;     // threshold change (dB) from 0 to 100 %
+DYN_N0K     = -18.066;     // ceiling floor change (dB) from 0 to 100 %
+ATT_M96     = 0.74884;    // make-up envelope attack coefficient @96k
+REL_M96     = 0.30915;    // make-up envelope release coefficient @96k
+REL_D96     = 0.30134;    // clipper-input envelope release coefficient @96k
+SMO_D96     = 0.93876;    // clipper-input envelope smoothing coefficient @96k
+LOOK96      = 8;       // make-up envelope look-ahead (samples @96k)
+LIVE_LAT    = 4;       // latency reported for the oversampling filters
+TONE_FC     = 320;     // tone tilt corner (Hz)
+DC_FC       = 7;       // DC blockers (two 1st-order stages)
+FMIN = 50; FMAX = 20000;
+
+// coefficients follow the analysis rate (96k at 48k host rate)
+osr = 2 * srate;
+function rate_coef(c96) ( 1 - (1 - c96) ^ (96000 / osr); );
+attM = rate_coef(ATT_M96);
+relM = rate_coef(REL_M96);
+relD = rate_coef(REL_D96);
+smoD = rate_coef(SMO_D96);
+look = 2 * floor(LOOK96 * osr / 96000 / 2 + 0.5);   // even, so the delay is whole host samples
+look_base = look / 2;
+lat = LIVE_LAT + look_base;
+pdc_delay = lat;
+pdc_bot_ch = 0;
+pdc_top_ch = 2;
+
+// 2x polyphase IIR half-band (two chains of 1st-order allpass sections)
+HB0 = 0.0098; HB1 = 0.97431; HB2 = 0.24303; HB3 = 0.47357; HB4 = 0.77317; HB5 = 0.07963;
+
+function onepole_k(fc, rate) ( tan($pi * min(fc, 0.49 * rate) / rate); );
+k = onepole_k(TONE_FC, srate); tone_b = k / (1 + k); tone_a = (k - 1) / (k + 1);
+k = onepole_k(DC_FC, srate); dc_b = 1 / (1 + k);  dc_a = (k - 1) / (k + 1);
+
+// RBJ Butterworth (Q = 1/sqrt 2) high-pass / low-pass, bilinear with pre-warping
+function hp_set(fc) local(w, cs, al, a0) (
+  w = 2 * $pi * min(fc, 0.49 * srate) / srate; cs = cos(w); al = sin(w) * 0.5 * sqrt(2);
+  a0 = 1 + al;
+  this.b0 = (1 + cs) * 0.5 / a0; this.b1 = -(1 + cs) / a0; this.b2 = this.b0;
+  this.a1 = -2 * cs / a0; this.a2 = (1 - al) / a0;
+);
+function lp_set(fc) local(w, cs, al, a0) (
+  w = 2 * $pi * min(fc, 0.49 * srate) / srate; cs = cos(w); al = sin(w) * 0.5 * sqrt(2);
+  a0 = 1 + al;
+  this.b0 = (1 - cs) * 0.5 / a0; this.b1 = (1 - cs) / a0; this.b2 = this.b0;
+  this.a1 = -2 * cs / a0; this.a2 = (1 - al) / a0;
+);
+// transposed direct form II biquad with per-instance state
+function bq(x, c*) local(y) (
+  y = c.b0 * x + this.s1;
+  this.s1 = c.b1 * x - c.a1 * y + this.s2;
+  this.s2 = c.b2 * x - c.a2 * y;
+  y;
+);
+// 1st-order allpass (c + z^-1) / (1 + c z^-1)
+function ap1(x, c) local(y) (
+  y = c * (x - this.y1) + this.x1;
+  this.x1 = x; this.y1 = y;
+  y;
+);
+function chain0(x) ( this.p0.ap1(this.p2.ap1(this.p4.ap1(x, HB4), HB2), HB0); );
+function chain1(x) ( this.p1.ap1(this.p3.ap1(this.p5.ap1(x, HB5), HB3), HB1); );
+// 1st-order DC blocker
+function dcb(x) local(y) (
+  y = dc_b * (x - this.x1) - dc_a * this.y1;
+  this.x1 = x; this.y1 = y;
+  y;
+);
+
+function band_edges(f, w) (
+  this.lo = min(max(f * 2 ^ (-w / 2), FMIN), FMAX);
+  this.hi = min(max(f * 2 ^ ( w / 2), FMIN), FMAX);
+);
+
+function shaper(v) (
+  v = min(max(v, -1), 1);
+  1.5 * v - 0.5 * v * v * v;
+);
+
+// one 2x-rate step of the drive stage for one channel.
+// u: signal, dm/dd: make-up / clipper-input detector inputs,
+// buf/dbuf: look-ahead delay lines for the signal and the clipper-input detector
+function core(u, dm, dd, buf, dbuf) local(a, main, d, m, rp) (
+  buf[this.wp] = u; dbuf[this.wp] = dd;
+  rp = (this.wp - look + 64) % 64;
+  main = buf[rp]; a = dbuf[rp];
+  this.wp = (this.wp + 1) % 64;
+  // clipper-input envelope is aligned with the main path, then smoothed
+  a > this.ed ? (this.ed = a) : (this.ed += relD * (a - this.ed));
+  this.eds += smoD * (this.ed - this.eds);
+  // make-up envelope sees the signal "look" samples ahead of the main path
+  dm > this.em ? (this.em += attM * (dm - this.em)) : (this.em += relM * (dm - this.em));
+  d = n0 * max(1, this.eds * ithr) ^ DYN_EXP;
+  m = n0 * max(1, this.em  * ithr) ^ DYN_EXP;
+  this.m = m;
+  shaper((s_gain * main + bias_n0) / d);
+);
+
+// both channels share one envelope detector: the average of |L| and |R|
+function core_pair(ul, ur) local(det) (
+  det = 0.5 * (abs(ul) + abs(ur));
+  out_l = cl.core(ul, det, det, BUFL, DBUFL);
+  out_r = cr.core(ur, det, det, BUFR, DBUFR);
+);
+
+// half-band decimation of one 2x-rate pair (even, odd) -> one host-rate sample
+function dec(even, odd) local(a, b, y) (
+  a = this.d0.chain0(even);
+  b = this.d1.chain1(odd);
+  y = 0.5 * (a + this.bprev); this.bprev = b;
+  y;
+);
+
+// tilt tone: equal-power blend of complementary 1-pole low/high-pass
+function tilt(x) local(lp) (
+  lp = tone_b * (x + this.x1) - tone_a * this.y1; this.x1 = x; this.y1 = lp;
+  gl * lp + gh * (x - lp);
+);
+
+// one host-rate stereo sample through the drive stage -> out_l, out_r.
+// The clipper runs at 2x; its output and the make-up gain are decimated, then
+// the tone filter sits between them at the host rate.
+function drive_os(xl, xr) local(sl0, sr0, ml0, mr0) (
+  core_pair(cl.up0.chain0(xl), cr.up0.chain0(xr));
+  sl0 = out_l; sr0 = out_r; ml0 = cl.m; mr0 = cr.m;
+  core_pair(cl.up1.chain1(xl), cr.up1.chain1(xr));
+  out_l = OUT_GAIN * cl.gm.dec(ml0, cl.m) * cl.tn.tilt(cl.gs.dec(sl0, out_l));
+  out_r = OUT_GAIN * cr.gm.dec(mr0, cr.m) * cr.tn.tilt(cr.gs.dec(sr0, out_r));
+);
+
+// delay lines
+BUFL = 0; BUFR = 64; DBUFL = 128; DBUFR = 192; DRYL = 256; DRYR = 1280;   // dry lines are 1024 long
+memset(0, 0, 2304);
+dwp = 0;
+
+// smoothed parameters
+sm_init = 0;
+smc = 1 - exp(-1 / (0.02 * srate));
+coef_cnt = 0;
+
+function update_targets() (
+  t_freq  = min(max(freq, FMIN), FMAX);
+  t_width = min(max(width, 0.5), 9);
+  t_gain  = 10 ^ ((DRIVE_DB0 + DRIVE_DBPCT * min(max(drive, 0), 100)) / 20);
+  t_dyn   = min(max(dynamics, 0), 100) / 100;
+  t_tone  = min(max(tone, 0), 100) / 100;
+  t_wet   = min(max(drywet, 0), 100) / 100;
+  t_lfreq = log(t_freq);
+);
+
+@slider
+update_targets();
+!sm_init ? (
+  sm_init = 1;
+  s_lfreq = log(t_freq); s_width = t_width; s_gain = t_gain; s_dyn = t_dyn; s_tone = t_tone; s_wet = t_wet;
+  bnd.band_edges(t_freq, t_width); hpc.hp_set(bnd.lo); lpc.lp_set(bnd.hi);
+);
+
+@block
+// parameter changes made in the UI are applied here, on the audio thread
+ui_dirty ? (ui_dirty = 0; update_targets());
+
+@sample
+// --- parameter smoothing ---
+s_lfreq += smc * (t_lfreq - s_lfreq);
+s_width += smc * (t_width - s_width);
+s_gain  += smc * (t_gain  - s_gain);
+s_dyn   += smc * (t_dyn   - s_dyn);
+s_tone  += smc * (t_tone  - s_tone);
+s_wet   += smc * (t_wet   - s_wet);
+(coef_cnt -= 1) <= 0 ? (
+  coef_cnt = 16;
+  bnd.band_edges(exp(s_lfreq), s_width);
+  hpc.hp_set(bnd.lo); lpc.lp_set(bnd.hi);
+  n0      = 10 ^ (DYN_N0K * s_dyn / 20);
+  ithr    = 10 ^ (-(DYN_T0 + DYN_TK * s_dyn) / 20);
+  bias_n0 = BIAS * n0;
+  gl = sqrt(2) * cos(s_tone * $pi / 2);
+  gh = sqrt(2) * sin(s_tone * $pi / 2);
+  gdry = cos(s_wet * $pi / 2);
+  gwet = sin(s_wet * $pi / 2);
+);
+
+// --- wet path: band-pass, oversampled drive stage, DC blockers ---
+xl = hl.bq(spl0, hpc); xl = ll.bq(xl, lpc);
+xr = hr.bq(spl1, hpc); xr = lr.bq(xr, lpc);
+drive_os(xl, xr);
+yl = out_l; yr = out_r;
+yl = dl2.dcb(dl1.dcb(yl));
+yr = dr2.dcb(dr1.dcb(yr));
+
+// --- dry path delayed to line up with the reported latency ---
+DRYL[dwp] = spl0; DRYR[dwp] = spl1;
+rp = (dwp - lat + 1024) % 1024;
+dl = DRYL[rp]; dr = DRYR[rp];
+dwp = (dwp + 1) % 1024;
+
+spl0 = gdry * dl + gwet * yl;
+spl1 = gdry * dr + gwet * yr;
+
+@gfx 560 240
+// ---------------- UI: Live-style layout ----------------
+function rgb(r, g, b) ( gfx_r = r / 255; gfx_g = g / 255; gfx_b = b / 255; gfx_a = 1; );
+function clamp(v, lo, hi) ( min(max(v, lo), hi); );
+function inrect(x, y, w, h) ( mouse_x >= x && mouse_x < x + w && mouse_y >= y && mouse_y < y + h; );
+
+function fmt_freq(f) (
+  f >= 1000 ? sprintf(#fs, "%.2f kHz", f / 1000) : sprintf(#fs, "%d Hz", f + 0.5);
+  #fs;
+);
+
+function value_box(x, y, w, h, str, active) (
+  active ? rgb(255, 170, 40) : rgb(60, 60, 60);
+  gfx_rect(x, y, w, h);
+  active ? rgb(20, 20, 20) : rgb(225, 225, 225);
+  gfx_x = x; gfx_y = y;
+  gfx_drawstr(str, 5, x + w, y + h);
+);
+
+function bar(x, y, w, h, val, str) (
+  rgb(55, 55, 55); gfx_rect(x, y, w, h);
+  rgb(255, 170, 40); gfx_rect(x, y, max(1, w * val / 100), h);
+  rgb(235, 235, 235);
+  gfx_x = x; gfx_y = y; gfx_drawstr(str, 5, x + w, y + h);
+);
+
+function knob(cx, cy, r, val) local(a0, a1, a, i) (
+  a0 = -0.75 * $pi; a1 = 0.75 * $pi;
+  a = a0 + (a1 - a0) * val / 100;
+  rgb(70, 70, 70);
+  gfx_circle(cx, cy, r, 1, 1);
+  rgb(40, 40, 40);
+  gfx_circle(cx, cy, r - 3, 1, 1);
+  // value arc
+  rgb(255, 170, 40);
+  i = 0;
+  loop(4, gfx_arc(cx, cy, r + 1 + i * 0.7, a0, a, 1); i += 1; );
+  rgb(235, 235, 235);
+  gfx_line(cx + sin(a) * (r - 12), cy - cos(a) * (r - 12), cx + sin(a) * (r - 3), cy - cos(a) * (r - 3), 1);
+);
+
+function band_db(f, lo, hi) local(rh, rl) (
+  rh = f / lo; rl = f / hi;
+  20 * log10(max(rh * rh / sqrt(1 + rh ^ 4) / sqrt(1 + rl ^ 4), 0.000001));
+);
+
+// ---- layout ----
+sc = max(0.6, min(gfx_w / 560, gfx_h / 240));
+gfx_setfont(1, "Arial", 13 * sc);
+gfx_setfont(2, "Arial", 11 * sc);
+pad = 12 * sc;
+rgb(30, 30, 30); gfx_rect(0, 0, gfx_w, gfx_h);
+
+// X-Y filter display
+xy_x = pad; xy_y = pad + 4 * sc; xy_w = 250 * sc; xy_h = gfx_h - xy_y - 40 * sc;
+rgb(18, 18, 18); gfx_rect(xy_x, xy_y, xy_w, xy_h);
+// frequency grid
+rgb(48, 48, 48);
+gf = 100; loop(3,
+  gx = xy_x + xy_w * log(gf / FMIN) / log(FMAX / FMIN);
+  gfx_line(gx, xy_y, gx, xy_y + xy_h);
+  gf *= 10;
+);
+// curve
+// UI-private copy of band_edges (JSFX function parameters are shared statics,
+// so the UI thread must not call functions the audio thread uses)
+g_f = min(max(freq, FMIN), FMAX); g_w = min(max(width, 0.5), 9);
+g_lo = min(max(g_f * 2 ^ (-g_w / 2), FMIN), FMAX);
+g_hi = min(max(g_f * 2 ^ ( g_w / 2), FMIN), FMAX);
+gfx_x = xy_x; prev_ok = 0;
+rgb(255, 170, 40);
+i = 0;
+loop(xy_w + 1,
+  f = FMIN * (FMAX / FMIN) ^ (i / xy_w);
+  m = band_db(f, g_lo, g_hi);
+  cy = xy_y + xy_h * 0.15 + (-m / 36) * xy_h * 0.8;
+  cy = clamp(cy, xy_y, xy_y + xy_h);
+  prev_ok ? gfx_lineto(xy_x + i, cy, 1) : (gfx_x = xy_x + i; gfx_y = cy; prev_ok = 1);
+  i += 1;
+);
+// handle: x = freq, y = width (top = narrow)
+hx = xy_x + xy_w * log(g_f / FMIN) / log(FMAX / FMIN);
+hy = xy_y + xy_h * (g_w - 0.5) / 8.5;
+rgb(255, 255, 255); gfx_circle(hx, hy, 4 * sc, 1, 1);
+rgb(255, 170, 40); gfx_circle(hx, hy, 6 * sc, 0, 1);
+
+// value boxes under the display
+bw = (xy_w - 6 * sc) / 2; bh = 18 * sc; by = xy_y + xy_h + 8 * sc;
+gfx_setfont(2);
+value_box(xy_x, by, bw, bh, fmt_freq(freq), drag == 1 || drag == 7);
+value_box(xy_x + bw + 6 * sc, by, bw, bh, sprintf(#ws, "%.2f", width), drag == 1 || drag == 8);
+
+// knobs
+kx0 = xy_x + xy_w + 50 * sc; kr = 24 * sc; ky = xy_y + 40 * sc;
+kx1 = kx0 + 90 * sc;
+gfx_setfont(1);
+rgb(200, 200, 200);
+gfx_x = kx0 - 40 * sc; gfx_y = xy_y - 2 * sc; gfx_drawstr("Drive", 1, kx0 + 40 * sc, xy_y + 14 * sc);
+gfx_x = kx1 - 40 * sc; gfx_y = xy_y - 2 * sc; gfx_drawstr("Tone",  1, kx1 + 40 * sc, xy_y + 14 * sc);
+knob(kx0, ky, kr, drive);
+knob(kx1, ky, kr, tone);
+gfx_setfont(2);
+rgb(225, 225, 225);
+gfx_x = kx0 - 40 * sc; gfx_y = ky + kr + 6 * sc; gfx_drawstr(sprintf(#ds, "%.0f %%", drive), 1, kx0 + 40 * sc, ky + kr + 20 * sc);
+gfx_x = kx1 - 40 * sc; gfx_y = ky + kr + 6 * sc; gfx_drawstr(sprintf(#ts, "%.0f %%", tone),  1, kx1 + 40 * sc, ky + kr + 20 * sc);
+
+// bars
+bx = xy_x + xy_w + 18 * sc; bw2 = gfx_w - bx - pad; bh2 = 20 * sc;
+by1 = ky + kr + 40 * sc; by2 = by1 + bh2 + 26 * sc;
+gfx_setfont(1); rgb(200, 200, 200);
+gfx_x = bx; gfx_y = by1 - 16 * sc; gfx_drawstr("Dynamics");
+gfx_x = bx; gfx_y = by2 - 16 * sc; gfx_drawstr("Dry/Wet");
+gfx_setfont(2);
+bar(bx, by1, bw2, bh2, dynamics, sprintf(#ys, "%.0f %%", dynamics));
+bar(bx, by2, bw2, bh2, drywet,   sprintf(#zs, "%.0f %%", drywet));
+
+// ---- mouse ----
+function set_param(idx, v) (
+  idx == 1 ? (freq = clamp(v, FMIN, FMAX); slider_automate(freq));
+  idx == 2 ? (width = clamp(v, 0.5, 9); slider_automate(width));
+  idx == 3 ? (drive = clamp(v, 0, 100); slider_automate(drive));
+  idx == 4 ? (tone = clamp(v, 0, 100); slider_automate(tone));
+  idx == 5 ? (dynamics = clamp(v, 0, 100); slider_automate(dynamics));
+  idx == 6 ? (drywet = clamp(v, 0, 100); slider_automate(drywet));
+  ui_dirty = 1;   // applied by the audio thread in @block
+);
+
+fine = (mouse_cap & 8) ? 0.1 : 1;   // shift for fine adjustment
+clicked = (mouse_cap & 1) && !(last_cap & 1);
+clicked ? (
+  dbl = (time_precise() - last_click_t) < 0.3;
+  last_click_t = time_precise();
+  drag = 0;
+  inrect(xy_x, xy_y, xy_w, xy_h) ? (drag = 1) :
+  inrect(kx0 - kr, ky - kr, 2 * kr, 2 * kr) ? (drag = 3) :
+  inrect(kx1 - kr, ky - kr, 2 * kr, 2 * kr) ? (drag = 4) :
+  inrect(bx, by1, bw2, bh2) ? (drag = 5) :
+  inrect(bx, by2, bw2, bh2) ? (drag = 6) :
+  inrect(xy_x, by, bw, bh) ? (drag = 7) :
+  inrect(xy_x + bw + 6 * sc, by, bw, bh) ? (drag = 8);
+  dbl ? (
+    drag == 1 ? (set_param(1, 1250); set_param(2, 6.5));
+    drag == 3 ? set_param(3, 50);
+    drag == 4 ? set_param(4, 50);
+    drag == 5 ? set_param(5, 50);
+    drag == 6 ? set_param(6, 50);
+    drag == 7 ? set_param(1, 1250);
+    drag == 8 ? set_param(2, 6.5);
+    drag = 0;
+  );
+  lmx = mouse_x; lmy = mouse_y;
+);
+(mouse_cap & 1) && drag ? (
+  dx = mouse_x - lmx; dy = mouse_y - lmy;
+  drag == 1 ? (
+    set_param(1, FMIN * (FMAX / FMIN) ^ clamp((mouse_x - xy_x) / xy_w, 0, 1));
+    set_param(2, 0.5 + 8.5 * clamp((mouse_y - xy_y) / xy_h, 0, 1));
+  );
+  drag == 3 ? set_param(3, drive - dy * 0.5 * fine);
+  drag == 4 ? set_param(4, tone - dy * 0.5 * fine);
+  drag == 5 ? set_param(5, dynamics + dx * 100 / bw2 * fine);
+  drag == 6 ? set_param(6, drywet + dx * 100 / bw2 * fine);
+  drag == 7 ? set_param(1, freq * 2 ^ (-dy * 0.02 * fine));
+  drag == 8 ? set_param(2, width - dy * 0.03 * fine);
+  lmx = mouse_x; lmy = mouse_y;
+);
+!(mouse_cap & 1) ? drag = 0;
+last_cap = mouse_cap;
+
+mouse_wheel != 0 ? (
+  w = mouse_wheel / 120 * fine;
+  inrect(xy_x, xy_y, xy_w, xy_h) ? set_param(1, freq * 2 ^ (w / 12)) :
+  inrect(kx0 - kr, ky - kr, 2 * kr, 2 * kr) ? set_param(3, drive + w) :
+  inrect(kx1 - kr, ky - kr, 2 * kr, 2 * kr) ? set_param(4, tone + w) :
+  inrect(bx, by1, bw2, bh2) ? set_param(5, dynamics + w) :
+  inrect(bx, by2, bw2, bh2) ? set_param(6, drywet + w) :
+  inrect(xy_x + bw + 6 * sc, by, bw, bh) ? set_param(2, width + w * 0.05) :
+  inrect(xy_x, by, bw, bh) ? set_param(1, freq * 2 ^ (w / 12));
+  mouse_wheel = 0;
+);

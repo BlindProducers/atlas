@@ -251,10 +251,11 @@ namespace {
     std::vector<float> out(sine.size());
     int rebuilds = 0; float last = before.cutoff_hz;
     for (int offset = 0; offset < int(sine.size()); offset += 128) {
+      const int count = std::min(128, int(sine.size()) - offset);
       module.set("cutoff", 60.0f + 50.0f * offset / float(sine.size()));
-      for (int i = 0; i < 128; ++i) module.audio.buffer[i] = sine[offset + i];
-      module.filter.process(128);
-      for (int i = 0; i < 128; ++i) out[offset + i] = module.filter.output()->buffer[i][0];
+      for (int i = 0; i < count; ++i) module.audio.buffer[i] = sine[offset + i];
+      module.filter.process(count);
+      for (int i = 0; i < count; ++i) out[offset + i] = module.filter.output()->buffer[i][0];
       if (table->installedParameters(0).cutoff_hz != last) { ++rebuilds; last = table->installedParameters(0).cutoff_hz; }
     }
     std::cout << "sweep: " << rebuilds << " kernel rebuilds over " << sine.size() << " samples\n";

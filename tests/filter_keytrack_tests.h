@@ -147,6 +147,11 @@ namespace filter_keytrack {
         set(prefix + "_style", 0); set(prefix + "_cutoff", 60);
         set(prefix + "_resonance", .85f); set(prefix + "_keytrack", 1);
       }
+      // The slots' Filter FX are made on a background thread. Have them ready
+      // before the first block, as prepareToPlay does for the effects already
+      // chosen: the blocks below no longer always outlast that thread, and a
+      // slot whose effect is not ready yet passes its audio through untracked.
+      plugin.getEngine()->prepareSelectedEffects();
       AudioSampleBuffer audio(2, 128);
       MidiBuffer midi;
       bool finite = true;

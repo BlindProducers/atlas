@@ -27,6 +27,9 @@ namespace multisample {
     std::string hash;
     // The entry file relative to the instrument's root folder.
     std::string entry;
+    // In a preset saved into a bank: the entry file's path in its library's
+    // Multisamples folder (library_layout.h), where it is looked for first.
+    std::string library_instrument;
     int sf2_index = -1;
     int sf2_bank = -1;
     int sf2_program = -1;
@@ -81,8 +84,12 @@ namespace multisample {
       void clear(int slot);
       void clearAll();
       // A preset or host state names this slot's instrument. `container` is
-      // the preset file when it holds the instrument's files.
-      void applySpec(int slot, const InstrumentSpec& spec, const juce::File& container);
+      // the preset file when it holds the instrument's files; `library` is the
+      // library folder of a preset in a bank, whose Multisamples folder is
+      // looked in first. The instrument is then looked for at its path, in
+      // every library's Multisamples by its hash, and in the cache.
+      void applySpec(int slot, const InstrumentSpec& spec, const juce::File& container,
+                     const juce::File& library = juce::File());
 
       InstrumentSpec spec(int slot) const;
       std::shared_ptr<const LoadResult> result(int slot) const;
@@ -150,6 +157,9 @@ namespace multisample {
       void setStatus(int slot, SlotStatus::State state, const std::string& phase, float progress,
                      const std::string& error = {});
       SfzParser::Options cacheOptions(const InstrumentSpec& spec, const juce::File& entry) const;
+      // Makes `job` load the instrument whose entry file in a library's
+      // Multisamples is `entry`, as it is there; false when it is not there.
+      bool libraryJob(Job& job, const juce::File& entry) const;
 
       ApplyCallback apply_;
       mutable std::mutex mutex_;
