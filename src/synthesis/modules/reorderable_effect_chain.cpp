@@ -51,7 +51,6 @@
 #include "spectral_compressor_module.h"
 #include "spectral_lock_module.h"
 #include "resonator_module.h"
-#include "scream_module.h"
 #include "tremolo_pan_module.h"
 #include "trance_gate_module.h"
 #include "tape_module.h"
@@ -66,15 +65,29 @@
 
 namespace vital {
 
+  namespace {
+    // The number the removed Scream effect had: it stays reserved so every
+    // later effect keeps its saved number, and a slot that still names it
+    // passes its input through. Scream lives on as a filter model.
+    class RemovedEffectModule : public SynthModule {
+      public:
+        RemovedEffectModule() : SynthModule(0, 1) { }
+        void processWithInput(const poly_float* input, int num_samples) override {
+          SynthModule::process(num_samples);
+          utils::copyBuffer(output()->buffer, input, num_samples);
+        }
+        Processor* clone() const override { VITAL_ASSERT(false); return nullptr; }
+    };
+  }
+
   ReorderableEffectChain::ReorderableEffectChain(const Output* beats_per_second, const Output* keytrack,
                                                  std::string prefix,
                                                  std::shared_ptr<ConvolutionIrWorker> convolution_worker,
-                                                 const Output* scream_midi_note,
                                                  const TranceGateClock* trance_gate_clock,
                                                  std::shared_ptr<EffectPreparationWorker> preparation_worker,
                                                  const NoteMonitor* note_monitor) :
       vital::SynthModule(kNumInputs, 1), equalizer_memory_(nullptr),
-      beats_per_second_(beats_per_second), keytrack_(keytrack), scream_midi_note_(scream_midi_note),
+      beats_per_second_(beats_per_second), keytrack_(keytrack),
       trance_gate_clock_(trance_gate_clock), note_monitor_(note_monitor), prefix_(prefix),
       convolution_worker_(convolution_worker ? std::move(convolution_worker) :
                                               std::make_shared<ConvolutionIrWorker>()),
@@ -192,8 +205,8 @@ namespace vital {
         return new TranceGateModule(beats_per_second_, trance_gate_clock_, module_prefix);
       case constants::kTremoloPan:
         return new TremoloPanModule(beats_per_second_, module_prefix);
-      case constants::kScream:
-        return new ScreamModule(module_prefix, scream_midi_note_);
+      case constants::kRemovedScream:
+        return new RemovedEffectModule();
       case constants::kSpectralLock:
         return new SpectralLockModule(module_prefix);
       case constants::kResonator:

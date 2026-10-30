@@ -364,7 +364,7 @@ namespace {
     vital::Value bpm(2.0f), keytrack(0.0f);
     vital::TranceGateClock clock;
     for (const std::string prefix : { "", "bus_2_" }) {
-      vital::ReorderableEffectChain chain(bpm.output(), keytrack.output(), prefix, nullptr, nullptr, &clock, nullptr, nullptr);
+      vital::ReorderableEffectChain chain(bpm.output(), keytrack.output(), prefix, nullptr, &clock, nullptr, nullptr);
       chain.init();
       chain.setSampleRate(kRate);
       auto controls = chain.getControls();

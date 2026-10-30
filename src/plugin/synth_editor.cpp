@@ -1696,7 +1696,6 @@ namespace {
         "Analogue Wah",
         "Spectral Balance",
         "Spectral Compressor",
-        "Scream",
         "Erosion",
         "Floaty Delay",
         "Glitch Delay",
@@ -1779,7 +1778,7 @@ namespace {
         section == "Equalizer" || section == "Compressor" || section == "Limiter" ||
         section == "Frequency Shifter" || section == "Dimension Expander" || section == "Waveshaper" ||
         section == "Convolution Reverb" || section == "Mid Side EQ" || section == "Spectral Gate" ||
-        section == "Erosion" || section == "Floaty Delay" || section == "Spectral Lock" || section == "Spectral Compressor" || section == "Scream" || section == "Trance gate" ||
+        section == "Erosion" || section == "Floaty Delay" || section == "Spectral Lock" || section == "Spectral Compressor" || section == "Trance gate" ||
         section == "Resonator" || section == "Analogue Chorus" ||
         section == "Analogue Flanger" || section == "Analogue Echo" ||
         section == "Analogue Rotary" || section == "Analogue Spring" ||
@@ -1981,9 +1980,6 @@ namespace {
       return rank({ "mix", "trigger", "grid", "start", "stop", "attack", "decay", "sustain" });
     if (effect_id == "tremolo_pan")
       return rank({ "sync", "frequency", "tempo", "shape", "stereo_phase", "offset", "depth", "smoothing", "mix" });
-    if (effect_id == "scream")
-      return rank({ "cutoff", "scream", "resonance", "input_gain", "wet", "output_gain",
-                    "gate_release", "autogain", "keytracking" });
     if (effect_id == "spectral_lock")
       return rank({ "amount", "isolate", "shimmer", "bend", "bend_range", "range_high", "range_low",
                     "mute_high", "mute_low", "spray", "tilt", "pitch", "root", "scale", "mix" });
@@ -2754,7 +2750,7 @@ namespace {
     static const std::vector<int> order = [] {
       std::vector<int> result;
       for (int effect = 0; effect < vital::constants::kNumEffects; ++effect)
-        if (effect != vital::constants::kScream) // Retained for old presets; new instances use Filter -> Scream.
+        if (effect != vital::constants::kRemovedScream) // Retired; Scream is a filter model.
           result.push_back(effect);
       std::sort(result.begin(), result.end(), [](int a, int b) {
         return effectName(a).compareIgnoreCase(effectName(b)) < 0;
@@ -4119,16 +4115,6 @@ namespace {
     if (tremolo_suffix == "depth") return "Set the volume modulation depth. Zero is unchanged audio; 100 percent allows full attenuation.";
     if (tremolo_suffix == "smoothing") return "Soften the modulation edges from zero to 20 ms, especially for Square and Ramp shapes. Arrows change 0.1 ms.";
     if (tremolo_suffix == "mix") return "Blend dry audio with Tremolo Pan. Zero percent is dry; 100 percent uses the full effect.";
-    const String scream_suffix = effectSuffix("scream_");
-    if (scream_suffix == "cutoff") return "Set the Scream filter cutoff from 20 Hz to 20 kHz using BP Scream's original frequency scale.";
-    if (scream_suffix == "scream") return "Move the high-pass filter in the nonlinear feedback path relative to Cutoff.";
-    if (scream_suffix == "resonance") return "Set feedback gain and feedback filter resonance.";
-    if (scream_suffix == "input_gain") return "Set the filter input gain from minus 72 to plus 24 dB.";
-    if (scream_suffix == "wet") return "Blend dry and filtered audio before BP Scream's autogain and output gain stages.";
-    if (scream_suffix == "output_gain") return "Set final output gain from minus 24 to zero dB.";
-    if (scream_suffix == "gate_release") return "Set the output gate release from 5 to 500 ms to control the resonance tail.";
-    if (scream_suffix == "autogain") return "Enable BP Scream's automatic level compensation after the filter.";
-    if (scream_suffix == "keytracking") return "Offset Cutoff relative to the last MIDI note. MIDI note 24 adds no offset; each octave transposes the filter by one octave.";
     const String lock_suffix = effectSuffix("spectral_lock_");
     if (lock_suffix == "amount") return "Set how far each band's pitch snaps to the scale: zero plays the bands at their own notes, 100 percent fully on the scale.";
     if (lock_suffix == "isolate") return "Gate the weaker bands relative to the loudest one, so only the strongest tones are re-played.";
@@ -5461,13 +5447,6 @@ namespace {
         return displayAccessibleFrequencyValuesInHz() ? 10.0
             : (slider.getMaximum() - slider.getMinimum()) / 100.0;
       };
-    }
-    if (bridge != nullptr && vital::scream::parameterIs(bridge->getDetails().name, "cutoff")) {
-      slider.toAdjustmentValue = [](double value) { return vital::scream::cutoffToHz(value); };
-      slider.fromAdjustmentValue = [](double hz) {
-        return hz >= 20000.0 ? 1.0 : static_cast<double>(vital::scream::cutoffFromHz(hz));
-      };
-      slider.adjustmentStep = [] { return 10.0; };
     }
     if (bridge != nullptr && spectral_lock_control && interval == 0.0) {
       const auto& details = bridge->getDetails();

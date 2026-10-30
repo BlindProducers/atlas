@@ -194,7 +194,7 @@ int main() {
   for (const std::string prefix : { std::string(), std::string("bus_1_"), std::string("bus_2_"), std::string("bus_3_") }) {
     vital::Value bps {2.0f}, note {60.0f}, order {0.0f};
     vital::TranceGateClock clock; clock.setPlaying(true);
-    vital::ReorderableEffectChain chain(bps.output(), note.output(), prefix, nullptr, nullptr, &clock);
+    vital::ReorderableEffectChain chain(bps.output(), note.output(), prefix, nullptr, &clock);
     chain.init(); chain.setSampleRate(48000); chain.setOversampleAmount(1);
     chain.plug(order.output(), vital::ReorderableEffectChain::kOrder);
     auto controls = chain.getControls();

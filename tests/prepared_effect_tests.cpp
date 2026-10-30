@@ -31,7 +31,6 @@
 #include "waveshaper_module.h"
 #include "mid_side_eq_module.h"
 #include "jsfx_effect_modules.h"
-#include "scream_module.h"
 #include "tremolo_pan_module.h"
 #include "defuse_module.h"
 #include "trance_gate_module.h"
@@ -157,8 +156,8 @@ void expect(bool ok, const std::string& message) {
   if (!ok) { ++failures; std::cerr << "FAIL: " << message << '\n'; }
 }
 // Inputs the light effects read: Filter FX keytracking (offset from middle C,
-// so the cutoff moves), Scream's MIDI note and the Resonator's held notes.
-vital::cr::Value keytrack_input(7.0f), scream_note_input(52.0f);
+// so the cutoff moves) and the Resonator's held notes.
+vital::cr::Value keytrack_input(7.0f);
 vital::NoteMonitor note_monitor;
 std::unique_ptr<vital::SynthModule> create(int type, vital::Output* bpm) {
   using namespace vital;
@@ -176,7 +175,6 @@ std::unique_ptr<vital::SynthModule> create(int type, vital::Output* bpm) {
     case constants::kMidSideEq: return std::make_unique<MidSideEqModule>("");
     case constants::kErosion: return std::make_unique<ErosionModule>("");
     case constants::kFloatyDelay: return std::make_unique<FloatyDelayModule>(bpm, "");
-    case constants::kScream: return std::make_unique<ScreamModule>("", scream_note_input.output());
     case constants::kTremoloPan: return std::make_unique<TremoloPanModule>(bpm, "");
     case constants::kDefuse: return std::make_unique<DefuseModule>("");
     case constants::kTranceGate: return std::make_unique<TranceGateModule>(bpm, nullptr, "");
@@ -503,7 +501,7 @@ void compareEffects() {
   // Every effect a slot can hold is prepared on demand (Convolution Reverb has
   // its own IR tests in --ir-switching).
   for (int type = 0; type < constants::kNumEffects; ++type) {
-    if (type == constants::kConvolutionReverb) continue;
+    if (type == constants::kConvolutionReverb || type == constants::kRemovedScream) continue;
     if (!create(type, bpm.output())) { expect(false, "test factory covers effect " + std::to_string(type)); continue; }
     for (int factor : { 1, 2, 4, 8 }) {
       auto original = create(type, bpm.output());

@@ -47,7 +47,6 @@ namespace vital {
       ReorderableEffectChain(const Output* beats_per_second, const Output* keytrack,
                              std::string prefix = "",
                              std::shared_ptr<ConvolutionIrWorker> convolution_worker = nullptr,
-                             const Output* scream_midi_note = nullptr,
                              const TranceGateClock* trance_gate_clock = nullptr,
                              std::shared_ptr<EffectPreparationWorker> preparation_worker = nullptr,
                              const NoteMonitor* note_monitor = nullptr);
@@ -107,7 +106,6 @@ namespace vital {
       const StereoMemory* equalizer_memory_;
       const Output* beats_per_second_;
       const Output* keytrack_;
-      const Output* scream_midi_note_;
       const TranceGateClock* trance_gate_clock_;
       const NoteMonitor* note_monitor_;
       std::string prefix_;

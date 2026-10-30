@@ -464,7 +464,7 @@ namespace {
   void testChorusChains() {
     vital::Value bpm(2.0f), keytrack(0.0f);
     for (const std::string prefix : { "", "bus_1_", "bus_2_", "bus_3_" }) {
-      vital::ReorderableEffectChain chain(bpm.output(), keytrack.output(), prefix, nullptr, nullptr, nullptr,
+      vital::ReorderableEffectChain chain(bpm.output(), keytrack.output(), prefix, nullptr, nullptr,
                                           nullptr, nullptr);
       chain.init();
       chain.setSampleRate(48000);
@@ -631,7 +631,7 @@ namespace {
   void testEffectChains(int effect, const std::string& id) {
     vital::Value bpm(2.0f), keytrack(0.0f);
     for (const std::string prefix : { "", "bus_1_", "bus_2_", "bus_3_" }) {
-      vital::ReorderableEffectChain chain(bpm.output(), keytrack.output(), prefix, nullptr, nullptr, nullptr,
+      vital::ReorderableEffectChain chain(bpm.output(), keytrack.output(), prefix, nullptr, nullptr,
                                           nullptr, nullptr);
       chain.init();
       chain.setSampleRate(48000);

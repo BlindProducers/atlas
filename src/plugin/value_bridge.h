@@ -20,7 +20,6 @@
 #include "JuceHeader.h"
 #include "value.h"
 #include "synth_parameters.h"
-#include "scream_parameter_utils.h"
 #include "envelope_time_utils.h"
 #include "drive_dynamics_controls.h"
 
@@ -92,8 +91,6 @@ class ValueBridge : public AudioProcessorParameterWithID {
       float adjusted = convertToEngineValue(value);
       if (vital::suppressor::isFrequency(details_.name))
         return (String(vital::suppressor::positionHz(adjusted, getSuppressorSampleRate()), 2) + " Hz").substring(0, maximumStringLength);
-      if (vital::scream::parameterIs(details_.name, "cutoff"))
-        return formatDisplayValue(vital::scream::cutoffToHz(adjusted)).substring(0, maximumStringLength).trim();
       if (String text; destroyDisplay(details_, adjusted, text))
         return text.substring(0, maximumStringLength);
       if (const int ratio = multibandRatio(details_.name); ratio != 0) {
@@ -137,10 +134,6 @@ class ValueBridge : public AudioProcessorParameterWithID {
         const double slope = after.startsWithIgnoreCase("inf") ? 0.0 : 1.0 / std::max(0.001, after.getDoubleValue());
         const double stored = ratio > 0 ? slope - 1.0 : 1.0 - slope;
         return convertToPluginValue(std::clamp(static_cast<float>(stored), details_.min, details_.max));
-      }
-      if (vital::scream::parameterIs(details_.name, "cutoff")) {
-        float hz = trimmed.getFloatValue() * (trimmed.containsIgnoreCase("kHz") ? 1000.0f : 1.0f);
-        return convertToPluginValue(vital::scream::cutoffFromHz(hz));
       }
       if (details_.string_lookup) {
         // The names are indexed by engine value, as getText reads them.

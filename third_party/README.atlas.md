@@ -123,9 +123,11 @@ Kept in this repository:
   Audio) with the ADAA (BSD-3) and Polylogarithm (MIT) notices in
   `scream/LICENSE`. This JUCE version of the DSP is not published upstream (the
   released Scream at https://github.com/Cure-Audio/Scream is a separate C
-  codebase), so it stays here. Only the DSP and what the regression test needs
-  are kept. `LFO/LFOProcessor.h` gains the `<algorithm>` and `<cmath>` includes
-  it relied on transitively, which MSVC does not provide.
+  codebase), so it stays here. Only the DSP is kept: the Scream filter model
+  (`src/synthesis/filters/scream_filter.cpp`) uses its header-only parts, and
+  `AtlasTimingTests --scream-filter` compares the model with `ScreamDSP.cpp`.
+  The Scream effect that wrapped the whole DSP was retired in favour of the
+  filter model, along with the plugin, LFO and UI sources its test needed.
 - `nvda_controller/`: NVDA's controller interface definition
   (`nvdaController.idl` and `.acf`, LGPL 2.1, NV Access,
   https://github.com/nvaccess/nvda). On Windows, MIDL turns it into the RPC

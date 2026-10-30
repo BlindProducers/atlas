@@ -72,5 +72,5 @@ AD2 reaches about 1e-5 at the output in either implementation.
   tone, slow ramps and held values (the ill-conditioned branches) and noise,
   within 16 times ADAA2's own rounding noise, and each lane independent of the
   others;
-- a steady tone against the BP Scream effect, rates and oversampling, voice
+- a steady tone against BP Scream's own DSP, rates and oversampling, voice
   resets, Env 1 release and preset recall.

@@ -163,7 +163,9 @@ namespace vital {
       kErosion,
       kFloatyDelay,
       kSpectralCompressor,
-      kScream,
+      // Retired: the Scream effect became a filter model. The number stays
+      // so later effects keep theirs; nothing is built for it.
+      kRemovedScream,
       kTremoloPan,
       kTape,
       kDefuse,

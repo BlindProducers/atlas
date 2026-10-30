@@ -211,13 +211,10 @@ target_sources(Atlas PRIVATE
   # Spectral effects keep IEEE semantics outside the fast-math synthesis unity build.
   src/synthesis/effects/suppressor/suppressor_engine.cpp
   src/synthesis/effects/spectral_compressor/spectral_compressor_engine.cpp
-  # Compile BP Scream and its adapter outside the fast-math synthesis unity build.
-  "third_party/scream/Source/DSP/ScreamDSP.cpp"
   src/plugin/trance_gate_editor.cpp
   src/common/tape_noise_library.cpp
   src/synthesis/modules/tape_module.cpp
   src/synthesis/modules/defuse_module.cpp
-  src/synthesis/modules/scream_module.cpp
   src/synthesis/filters/scream_filter.cpp
   src/synthesis/filters/scream_tanh.cpp
   src/synthesis/modules/spectral_compressor_module.cpp
@@ -657,7 +654,8 @@ if(ATLAS_BUILD_TIMING_TESTS)
   enable_testing()
   juce_add_console_app(AtlasTimingTests PRODUCT_NAME "Atlas Timing Tests")
   juce_generate_juce_header(AtlasTimingTests)
-  target_sources(AtlasTimingTests PRIVATE tests/timing_stability_tests.cpp)
+  # BP Scream's own DSP, which the Scream filter model's test compares it with.
+  target_sources(AtlasTimingTests PRIVATE tests/timing_stability_tests.cpp "third_party/scream/Source/DSP/ScreamDSP.cpp")
   target_include_directories(AtlasTimingTests PRIVATE
     src/common
     src/common/wavetable
@@ -1284,21 +1282,6 @@ if(ATLAS_BUILD_TIMING_TESTS)
   add_test(NAME atlas_analogue_compressor COMMAND AtlasAnalogueTests --compressor)
   add_test(NAME atlas_analogue_cpu COMMAND AtlasAnalogueTests --cpu)
   set_tests_properties(atlas_analogue_cpu PROPERTIES LABELS cpu)
-
-  juce_add_console_app(AtlasScreamTests PRODUCT_NAME "Atlas Scream Tests")
-  juce_generate_juce_header(AtlasScreamTests)
-  target_sources(AtlasScreamTests PRIVATE
-    tests/scream_tests.cpp tests/scream_reference_processor.cpp
-    "third_party/scream/Source/LFO/LFOData.cpp"
-    "third_party/scream/Source/LFO/LFOProcessor.cpp")
-  target_include_directories(AtlasScreamTests PRIVATE
-    "third_party/scream/Source"
-    src/common src/common/wavetable src/synthesis/framework src/synthesis/modules src/synthesis/effects third_party)
-  target_compile_definitions(AtlasScreamTests PRIVATE
-    VITAL_ACCESSIBLE_UI=1 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_DSP_USE_SHARED_FFTW=0)
-  target_link_libraries(AtlasScreamTests PRIVATE
-    Atlas juce::juce_audio_utils juce::juce_dsp juce::juce_recommended_config_flags)
-  add_test(NAME atlas_scream COMMAND AtlasScreamTests)
 
   juce_add_console_app(AtlasJsfxTests PRODUCT_NAME "Atlas JSFX Tests")
   juce_generate_juce_header(AtlasJsfxTests)

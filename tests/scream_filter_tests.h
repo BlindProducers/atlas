@@ -2,7 +2,7 @@
 #pragma once
 #include "filter_module.h"
 #include "scream_filter.h"
-#include "scream_module.h"
+#include "../third_party/scream/Source/DSP/ScreamDSP.h"
 #include "scream_tanh.h"
 #include "../third_party/scream/Source/DSP/FastMath.h"
 #include "../third_party/scream/Source/DSP/TanhADAA2.h"
@@ -75,24 +75,36 @@ void testWaveshaper() {
 
 void testReferenceTone() {
   vital::FilterModule filter("filter_1");
-  vital::ScreamModule reference;
   vital::Output audio;
   filter.plug(&audio, vital::FilterModule::kAudio);
-  filter.init(); reference.init(); filter.setSampleRate(48000); reference.setSampleRate(48000);
-  auto c = filter.getControls(), r = reference.getControls();
+  filter.init(); filter.setSampleRate(48000);
+  auto c = filter.getControls();
   c.at("filter_1_on")->set(1); c.at("filter_1_model")->set(vital::constants::kScreamFilter);
-  c.at("filter_1_scream_autogain")->set(0); r.at("scream_autogain")->set(0);
+  c.at("filter_1_scream_autogain")->set(0);
   const float normalized = .65f;
   c.at("filter_1_cutoff")->set(FastMath::lerpf(normalized, FastMath::MIDI_NOTE_NUM_20Hz, FastMath::MIDI_NOTE_NUM_20kHz));
-  r.at("scream_cutoff")->set(normalized);
-  c.at("filter_1_resonance")->set(.2f); r.at("scream_resonance")->set(.2f);
+  c.at("filter_1_resonance")->set(.2f);
+  // BP Scream itself, as the plugin runs it with autogain off: cutoff,
+  // scream, resonance, input gain and wet normalised, unity output gain.
+  ScreamDSP reference;
+  reference.prepare(48000);
+  float parameters[5] = { normalized, .5f, .2f, .75f, 1.0f };
+  const float mod_amounts[5][2] {};
+  std::array<std::array<float, 128>, 2> scratch {};
   double difference = 0, energy = 0;
   for (int b = 0; b < 700; ++b) {
-    for (int i = 0; i < 128; ++i) audio.buffer[i] = .3f * std::sin((b * 128 + i) * .09f);
-    filter.process(128); reference.processWithInput(audio.buffer, 128);
+    for (int i = 0; i < 128; ++i) {
+      audio.buffer[i] = .3f * std::sin((b * 128 + i) * .09f);
+      scratch[0][size_t(i)] = scratch[1][size_t(i)] = audio.buffer[i][0];
+    }
+    float* channels[] = { scratch[0].data(), scratch[1].data() };
+    reference.processBlock(channels, 128, parameters, 0.0f, nullptr, nullptr, mod_amounts, 0, 0, 30.0f);
+    reference.applyAutogain(channels, 128, false);
+    reference.applyOutputGain(channels, 128, .75f);
+    filter.process(128);
     if (b < 600) continue;
     for (int i = 0; i < 128; ++i) {
-      double x = filter.output()->buffer[i][0], y = reference.output()->buffer[i][0];
+      double x = filter.output()->buffer[i][0], y = scratch[0][size_t(i)];
       difference += (x-y)*(x-y); energy += y*y;
     }
   }
