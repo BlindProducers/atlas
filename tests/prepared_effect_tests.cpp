@@ -208,10 +208,11 @@ std::unique_ptr<vital::SynthModule> create(int type, vital::Output* bpm) {
     case constants::kDynamicTube: return std::make_unique<DynamicTubeModule>();
     case constants::kOverdrive: return std::make_unique<OverdriveModule>();
     case constants::kMultibandDynamics: return std::make_unique<MultibandDynamicsModule>();
+    case constants::kDestroy: return std::make_unique<DestroyModule>();
   }
   return {};
 }
-// Saturator, Dynamic Tube, Overdrive and Multiband Dynamics hand every control
+// Saturator, Dynamic Tube, Overdrive, Multiband Dynamics and Destroy hand every control
 // to their ports unchanged: each module's output equals its port's, run here
 // with parameters looked up by name, through a change of every control.
 void driveDynamicsModules() {
@@ -319,6 +320,119 @@ void driveDynamicsModules() {
       core.setParameters(p);
     }, [&](double& l, double& r) { core.process(l, r); }, "Multiband Dynamics");
   }
+  {
+    DestroyModule module;
+    atlas::destroy::Destroy core;
+    core.prepare(48000);
+    run(module, [&](const auto& v) {
+      atlas::destroy::Destroy::Parameters p;
+      p.drive = v("destroy_drive"); p.stack = v("destroy_stack"); p.filter = v("destroy_filter");
+      p.frequency = v("destroy_filter_frequency"); p.q = v("destroy_filter_q"); p.morph = v("destroy_filter_morph");
+      p.mix = v("destroy_mix"); p.level = v("destroy_level");
+      core.setParameters(p);
+    }, [&](double& l, double& r) { core.process(l, r); }, "Destroy");
+  }
+}
+
+// Destroy leaves no DC offset: its port of the script alone turns an
+// asymmetric pulse into a wet signal with an offset, which Atlas's DC blocker
+// removes, at every stack depth and filter position, while the dry path passes
+// unchanged.
+void destroyDc() {
+  using atlas::destroy::Destroy;
+  struct Setting { const char* name; Destroy::Parameters p; };
+  std::vector<Setting> settings;
+  { Destroy::Parameters p; p.drive = 100; settings.push_back({ "Drive 100", p }); }
+  { Destroy::Parameters p; p.drive = 60; p.stack = 16; settings.push_back({ "Stack 16", p }); }
+  { Destroy::Parameters p; p.drive = 80; p.filter = 2; p.frequency = 0.3; settings.push_back({ "Post low-pass", p }); }
+  { Destroy::Parameters p; p.drive = 50; p.filter = 1; p.frequency = 0.6; p.q = 5; settings.push_back({ "Pre filter", p }); }
+  { Destroy::Parameters p; p.drive = 100; p.mix = 50; p.level = 1; settings.push_back({ "Mix 50 Level 1", p }); }
+  const double rate = 48000;
+  for (const auto& setting : settings) {
+    Destroy atlas_core, script(atlas::destroy::Eel2Build::reaper(), false);
+    atlas_core.prepare(rate); script.prepare(rate);
+    atlas_core.setParameters(setting.p); script.setParameters(setting.p);
+    // A 120 Hz pulse, high for a fifth of each 400-sample cycle, so its mean
+    // is exactly zero, for 3 s; the mean is taken over the last 2 s, 240 cycles.
+    double sum = 0, script_sum = 0, peak = 0;
+    const int total = int(3 * rate), skip = int(rate);
+    for (int i = 0; i < total; ++i) {
+      const double x = i % 400 < 80 ? 0.8 : -0.2;
+      double l = x, r = x, sl = x, sr = x;
+      atlas_core.process(l, r);
+      script.process(sl, sr);
+      if (i >= skip) { sum += l; script_sum += sl; peak = std::max(peak, std::abs(l)); }
+    }
+    const double mean = sum / (total - skip), script_mean = script_sum / (total - skip);
+    std::cout << "Destroy " << setting.name << ": DC " << mean << " (the script alone " << script_mean << "), peak "
+              << peak << '\n';
+    expect(std::abs(mean) < 1.0e-4, std::string("Destroy ") + setting.name + " leaves no DC offset");
+    expect(peak > 0.1, std::string("Destroy ") + setting.name + " still plays");
+  }
+  // At Mix 0 the output is the input, 7 samples late, DC included.
+  Destroy dry_only;
+  dry_only.prepare(rate);
+  Destroy::Parameters p;
+  p.mix = 0;
+  dry_only.setParameters(p);
+  bool delayed = true;
+  std::vector<double> history;
+  for (int i = 0; i < 2000; ++i) {
+    const double x = 0.25 + 0.5 * std::sin(i * 0.01);
+    double l = x, r = -x;
+    dry_only.process(l, r);
+    history.push_back(x);
+    const double expected = i >= Destroy::kLatency ? history[size_t(i - Destroy::kLatency)] : 0.0;
+    delayed = delayed && l == expected && r == -expected;
+  }
+  expect(delayed, "Destroy at Mix 0 is its input, 7 samples late");
+}
+
+// Saturator leaves no DC offset either: every curve but the Waveshaper is
+// symmetric, so the script alone turns an asymmetric pulse into a wet signal
+// with an offset (up to about -0.6), which Atlas's DC blocker removes, with
+// Hi-Quality, Post Clip and Color too.
+void saturatorDc() {
+  using atlas::drive_dynamics::Saturator;
+  const double rate = 48000;
+  const auto measure = [&](Saturator::Parameters p, const std::string& name) {
+    Saturator atlas_core, script(false);
+    atlas_core.prepare(rate); script.prepare(rate);
+    atlas_core.setParameters(p); script.setParameters(p);
+    // The zero-mean 400-sample pulse destroyDc uses, for 5 s; the mean over
+    // the last 2 s, once Color's 2.7 Hz shelf section has settled.
+    double sum = 0, script_sum = 0, peak = 0;
+    const int total = int(5 * rate), skip = int(3 * rate);
+    for (int i = 0; i < total; ++i) {
+      const double x = i % 400 < 80 ? 0.8 : -0.2;
+      double l = x, r = x, sl = x, sr = x;
+      atlas_core.process(l, r);
+      script.process(sl, sr);
+      if (i >= skip) { sum += l; script_sum += sl; peak = std::max(peak, std::abs(l)); }
+    }
+    const double mean = sum / (total - skip), script_mean = script_sum / (total - skip);
+    std::cout << "Saturator " << name << ": DC " << mean << " (the script alone " << script_mean << "), peak "
+              << peak << '\n';
+    expect(std::abs(mean) < 1.0e-4, "Saturator " + name + " leaves no DC offset");
+    expect(peak > 0.1, "Saturator " + name + " still plays");
+  };
+  const char* types[] = { "Analog Clip", "Soft Sine", "Bass Shaper", "Medium Curve", "Hard Curve", "Sinoid Fold",
+                          "Digital Clip", "Waveshaper" };
+  for (int type = 0; type < 8; ++type) {
+    Saturator::Parameters p;
+    p.type = type; p.drive = 24;
+    measure(p, std::string(types[type]) + " +24 dB");
+  }
+  {
+    Saturator::Parameters p;
+    p.drive = 36; p.hi_quality = 0; p.post_clip = 1; p.dry_wet = 60;
+    measure(p, "Post Clip, no Hi-Quality, Mix 60");
+  }
+  {
+    Saturator::Parameters p;
+    p.drive = 12; p.color = 1; p.amt_lo = 12; p.amt_hi = -6; p.dc_filter = 1;
+    measure(p, "Color and Pre-DC");
+  }
 }
 
 // Multiband Dynamics' factory presets: every key one of its parameters and in
@@ -360,12 +474,13 @@ void driveDynamicsPresets(const String& folder) {
       expect(value >= details.min && value <= details.max, name + ": " + it.key() + " is in range");
       controls.at(it.key())->set(value);
     }
-    std::vector<poly_float> input(256);
+    // Blocks of kMaxBufferSize, the most a module's output holds.
+    std::vector<poly_float> input(kMaxBufferSize);
     double peak = 0;
     bool finite = true;
-    for (int block = 0; block < 375; ++block) {
+    for (int block = 0; block < 750; ++block) {
       for (int i = 0; i < int(input.size()); ++i) {
-        const float x = .5f * std::sin((block * 256 + i) * .0287f) * (block % 50 < 25 ? 1.0f : .03f);
+        const float x = .5f * std::sin((block * kMaxBufferSize + i) * .0287f) * (block % 100 < 50 ? 1.0f : .03f);
         input[size_t(i)] = poly_float(x, x, x, x);
       }
       module.processWithInput(input.data(), int(input.size()));
@@ -2143,6 +2258,8 @@ int main(int argc, char** argv) {
   }
   if (argc > 1 && String(argv[1]) == "--drive-dynamics") {
     driveDynamicsModules();
+    destroyDc();
+    saturatorDc();
     if (argc > 2) driveDynamicsPresets(argv[2]);
     return failures ? 1 : 0;
   }

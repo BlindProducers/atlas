@@ -187,6 +187,10 @@ set(ATLAS_DRIVE_DYNAMICS_SOURCES
 # output sample identical to the script's.
 set(ATLAS_BODE_SOURCES src/synthesis/effects/bode/bode_shifter.cpp)
 
+# Destroy: Alessio Scala's Serum 2 Overdrive JSFX, ported the same way, so that
+# AtlasDestroyReferenceTests finds every output sample identical to the script's.
+set(ATLAS_DESTROY_SOURCES src/synthesis/effects/destroy/destroy.cpp)
+
 # PFFFT (third_party/pffft) is every FFT in Atlas on every platform: the
 # oscillators' (src/common/fourier_transform.h) and, through
 # third_party/patches/juce8-pffft-fft-engine.patch, every juce::dsp::FFT and
@@ -283,6 +287,8 @@ target_sources(Atlas PRIVATE
   src/synthesis/modules/drive_dynamics_modules.cpp
   # The Frequency Shifter's Mode 2 (Alessio Scala's Serum 2 Bode JSFX).
   ${ATLAS_BODE_SOURCES}
+  # Destroy (Alessio Scala's Serum 2 Overdrive JSFX).
+  ${ATLAS_DESTROY_SOURCES}
   # ZL Compressor by zsliu98 (AGPL v3): the Analogue Compressor effect.
   ${ATLAS_ZL_COMPRESSOR_SOURCES}
   # Maim by Arden Butterfield (GPL v3): the Maim effect.
@@ -318,7 +324,8 @@ set_source_files_properties(${ATLAS_OPENB3_SOURCES} src/synthesis/producers/open
   src/synthesis/modules/openb3_module.cpp src/synthesis/modules/scanner_vibrato_module.cpp PROPERTIES
   COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:precise>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffp-contract=off;-fno-fast-math>")
 set_source_files_properties(${ATLAS_ZL_COMPRESSOR_SOURCES} ${ATLAS_MAIM_SOURCES}
-  ${ATLAS_DRIVE_DYNAMICS_SOURCES} src/synthesis/modules/drive_dynamics_modules.cpp ${ATLAS_BODE_SOURCES} PROPERTIES
+  ${ATLAS_DRIVE_DYNAMICS_SOURCES} src/synthesis/modules/drive_dynamics_modules.cpp ${ATLAS_BODE_SOURCES}
+  ${ATLAS_DESTROY_SOURCES} PROPERTIES
   COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:precise>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffp-contract=off;-fno-fast-math>")
 # The Scream filter's feedback loop amplifies any rounding difference, so its
 # SVFs and waveshaper round alike on arm64 and x64.
@@ -1363,6 +1370,17 @@ if(ATLAS_BUILD_TIMING_TESTS)
     target_link_libraries(AtlasBodeReferenceTests PRIVATE AtlasEelReference)
     if(EXISTS "${ATLAS_BODE_JSFX}")
       add_test(NAME atlas_bode_reference COMMAND AtlasBodeReferenceTests "${ATLAS_BODE_JSFX}")
+    endif()
+    # Destroy against the Serum 2 Overdrive JSFX, which is not in the
+    # repository either: the test is added once ATLAS_DESTROY_JSFX names it.
+    set(ATLAS_DESTROY_JSFX "" CACHE FILEPATH "Path to Serum2Overdrive.jsfx for the Destroy reference test")
+    add_executable(AtlasDestroyReferenceTests tests/destroy/reference_tests.cpp ${ATLAS_DESTROY_SOURCES})
+    target_include_directories(AtlasDestroyReferenceTests PRIVATE src/synthesis/effects/destroy)
+    set_source_files_properties(tests/destroy/reference_tests.cpp PROPERTIES
+      COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:precise>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffp-contract=off;-fno-fast-math>")
+    target_link_libraries(AtlasDestroyReferenceTests PRIVATE AtlasEelReference)
+    if(EXISTS "${ATLAS_DESTROY_JSFX}")
+      add_test(NAME atlas_destroy_reference COMMAND AtlasDestroyReferenceTests "${ATLAS_DESTROY_JSFX}")
     endif()
     add_executable(AtlasResonatorReferenceTests tests/resonator/reference_tests.cpp)
     target_include_directories(AtlasResonatorReferenceTests PRIVATE src/synthesis/effects)

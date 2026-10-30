@@ -188,6 +188,7 @@ namespace vital {
       kDynamicTube,
       kOverdrive,
       kMultibandDynamics,
+      kDestroy,
       kNumEffects
     };
 

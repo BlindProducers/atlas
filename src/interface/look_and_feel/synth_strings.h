@@ -663,7 +663,8 @@ namespace strings {
     "saturator",
     "dynamic_tube",
     "overdrive",
-    "multiband_dynamics"
+    "multiband_dynamics",
+    "destroy"
   };
 
   const std::string kEffectSlotTypeNames[] = {
@@ -713,7 +714,8 @@ namespace strings {
     "Saturator",
     "Dynamic Tube",
     "Overdrive",
-    "Multiband Dynamics"
+    "Multiband Dynamics",
+    "Destroy"
   };
 
   // Both tables are indexed by effect; a missing entry would read out of bounds.
@@ -789,6 +791,8 @@ namespace strings {
   const std::string kSaturatorPostClipNames[] = { "Off", "Soft Clip", "Hard Clip" };
   const std::string kDynamicTubeTypeNames[] = { "A", "B", "C" };
   const std::string kMultibandDetectionNames[] = { "RMS", "Peak" };
+  // Destroy's Filter: off, before the stages or after them.
+  const std::string kDestroyFilterNames[] = { "Off", "Pre", "Post" };
   const std::string kAnalogueWahModelNames[] = { "Cry Baby", "V846", "Mu-Tron III" };
   const std::string kAnalogueWahModeNames[] = { "LP", "BP", "HP" };
   const std::string kAnalogueWahRangeNames[] = { "Lo", "Hi" };
@@ -1121,6 +1125,7 @@ namespace strings {
     "DYNAMIC TUBE",
     "OVERDRIVE",
     "MULTIBAND DYNAMICS",
+    "DESTROY",
   };
 
   const std::string kDestinationMenuNames[vital::constants::kNumDestinations] = {
@@ -1178,6 +1183,7 @@ namespace strings {
     "Dynamic Tube",
     "Overdrive",
     "Multiband Dynamics",
+    "Destroy",
   };
 
   const std::string kBusDestinationNames[vital::constants::kNumBusDestinations] = {

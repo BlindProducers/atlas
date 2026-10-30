@@ -133,6 +133,14 @@ namespace vital {
       return p;
     }
 
+    atlas::destroy::Destroy::Parameters destroyParameters(const std::array<double, kNumDestroyControls>& v) {
+      atlas::destroy::Destroy::Parameters p;
+      p.drive = v[kDestroyDrive]; p.stack = v[kDestroyStack]; p.filter = v[kDestroyFilter];
+      p.frequency = v[kDestroyFilterFrequency]; p.q = v[kDestroyFilterQ]; p.morph = v[kDestroyFilterMorph];
+      p.mix = v[kDestroyMix]; p.level = v[kDestroyLevel];
+      return p;
+    }
+
     std::array<DriveDynamicsModule<dd::MultibandDynamics, kNumMultibandControls>::Control, kNumMultibandControls>
     multibandControls() {
       std::array<DriveDynamicsModule<dd::MultibandDynamics, kNumMultibandControls>::Control, kNumMultibandControls> c;
@@ -158,6 +166,7 @@ namespace vital {
   template class DriveDynamicsModule<dd::DynamicTube, kNumDynamicTubeControls>;
   template class DriveDynamicsModule<dd::Overdrive, kNumOverdriveControls>;
   template class DriveDynamicsModule<dd::MultibandDynamics, kNumMultibandControls>;
+  template class DriveDynamicsModule<atlas::destroy::Destroy, kNumDestroyControls>;
 
   SaturatorModule::SaturatorModule(std::string prefix) :
       DriveDynamicsModule(std::move(prefix), controlsFor<dd::Saturator>("saturator_", kSaturatorControls),
@@ -170,4 +179,7 @@ namespace vital {
                           overdriveParameters) { }
   MultibandDynamicsModule::MultibandDynamicsModule(std::string prefix) :
       DriveDynamicsModule(std::move(prefix), multibandControls(), multibandParameters) { }
+  DestroyModule::DestroyModule(std::string prefix) :
+      DriveDynamicsModule(std::move(prefix), controlsFor<atlas::destroy::Destroy>("destroy_", kDestroyControls),
+                          destroyParameters) { }
 }

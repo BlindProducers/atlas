@@ -68,7 +68,7 @@ namespace {
       "analoguechorus_", "analogueflanger_", "analogueecho_",
       "analoguerotary_", "analoguespring_", "analoguewah_", "spectral_balance_", "glitch_delay_",
       "openwurli_amp_", "scanner_vibrato_", "analoguecompressor_", "maim_", "particles_",
-      "saturator_", "dynamic_tube_", "overdrive_", "multiband_dynamics_"
+      "saturator_", "dynamic_tube_", "overdrive_", "multiband_dynamics_", "destroy_"
     };
     for (const auto& prefix : prefixes) {
       if (name.rfind(prefix, 0) == 0)

@@ -29,6 +29,16 @@ Nothing in the DSP. `drive_dynamics.h` declares one class per script, and each c
   `@serialize` before running `@init` again.
 - The sources are built outside the fast-math unity file, without FMA contraction.
 
+Added: a DC blocker on Saturator's wet signal, which Atlas always runs (the `remove_dc`
+constructor argument, on by default). Every curve but the Waveshaper is symmetric, so
+material that is not (a pulse wave, a sine with its second harmonic) leaves an offset on
+the wet signal that nothing in the script removes: a zero-mean 20 % pulse driven +24 dB
+comes out about 0.6 below zero, and the script's Pre-DC filter, which cleans only the
+input, barely changes that. The blocker is the scripts' own first-order DC blocker form at
+5 Hz, unity at Nyquist, placed after Output and before Dry/Wet, so the curves, the Color
+EQ, Post Clip, the dry path and the mix are the script's. The Waveshaper's own two 7 Hz
+blockers stay as they are. The reference test runs Saturator with the blocker off.
+
 Left out: each script's `@gfx` drawing code and the meters it feeds, and Multiband
 Dynamics' sidechain (input pins 3/4 and sliders 40 to 43: Sidechain, Gain, Mix and
 Listen), since Atlas has no audio input. The port runs as the script does with Sidechain
@@ -68,7 +78,8 @@ The twelve presets in `MultibandDynamics.jsfx.rpl` are the factory FX presets
 when the WDL submodule is present) runs each unmodified script through WDL's EEL2 next to
 its port and compares every output sample, at 44.1, 48, 88.2, 96 and 192 kHz, through
 parameter changes that reach every curve, tube, switch, band, solo and detection mode,
-and checks that each port's latency equals the script's `pdc_delay`. The largest
+and checks that each port's latency equals the script's `pdc_delay` (Saturator without
+Atlas's DC blocker). The largest
 differences are about 1e-15 for Saturator and 3e-11 for the others, against a tolerance
 of 1e-9.
 
@@ -77,3 +88,6 @@ git submodule update --init --checkout third_party/WDL
 cmake --build build --config Release --parallel 4 --target AtlasDriveDynamicsReferenceTests
 ctest --test-dir build -C Release -R atlas_drive_dynamics_reference --output-on-failure
 ```
+
+`AtlasPreparedEffectTests --drive-dynamics` checks each module against its port and that
+Saturator leaves no DC offset with any curve, where the script alone leaves one.

@@ -1,10 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 
+#include <algorithm>
+#include <cmath>
 #include <string>
 
 // The controls of Saturator, Dynamic Tube, Overdrive and Multiband Dynamics
-// (src/synthesis/effects/drive_dynamics), in the order the editor shows them.
+// (src/synthesis/effects/drive_dynamics) and Destroy (src/synthesis/effects/destroy),
+// in the order the editor shows them.
 // Every value is stored in its script's own units and range, so the modules
 // hand it over unchanged. A modulated control is a modulation destination; the
 // rest (menus and switches) are base controls. step is the arrow-key step in
@@ -134,6 +137,39 @@ namespace vital::drive_dynamics {
     const int band = (control - kMultibandFirstBandControl) / kNumBandControls;
     return std::string(kMultibandBandNames[band]) + "_" + multibandSpec(control).suffix;
   }
+
+  // Destroy (the Serum 2 Overdrive JSFX): Filter Frequency and Level hold the
+  // script's 0 to 1 sliders and read in Hz and dB, as its own display does.
+  enum DestroyControl {
+    kDestroyDrive, kDestroyStack, kDestroyFilter, kDestroyFilterFrequency, kDestroyFilterQ, kDestroyFilterMorph,
+    kDestroyMix, kDestroyLevel, kNumDestroyControls
+  };
+  inline constexpr ControlSpec kDestroyControls[kNumDestroyControls] = {
+    { "drive", 0.0f, 100.0f, 1.0f, true },
+    { "stack", 1.0f, 16.0f, 1.0f, false },
+    { "filter", 0.0f, 2.0f, 1.0f, false },
+    { "filter_frequency", 0.0f, 1.0f, 0.01f, true },
+    { "filter_q", 0.05f, 7.6f, 0.05f, true },
+    { "filter_morph", 0.0f, 100.0f, 1.0f, true },
+    { "mix", 0.0f, 100.0f, 1.0f, true },
+    { "level", 0.0f, 1.0f, 0.01f, true },
+  };
+  // Whether a parameter is Destroy's control with this suffix, in a slot or a bus.
+  inline bool destroyParameterIs(const std::string& name, const std::string& suffix) {
+    const std::string id = "destroy_" + suffix;
+    return name == id || (name.size() > id.size() &&
+        name.compare(name.size() - id.size() - 1, id.size() + 1, "_" + id) == 0);
+  }
+  // The filter's cutoff in Hz, as the script shows it: 8.1758 Hz times 2697 to the slider.
+  inline double destroyFrequencyHz(double value) { return 8.1758 * std::pow(2697.0, value); }
+  inline double destroyFrequencyValue(double hz) {
+    return std::log(std::max(hz, 1.0e-6) / 8.1758) / std::log(2697.0);
+  }
+  // The output level in dB: (2 Level)^2 in amplitude. The script shows
+  // minus infinity at Level 0.0005 and below, where destroyLevelSilent holds.
+  inline bool destroyLevelSilent(double value) { return value <= 0.0005; }
+  inline double destroyLevelDb(double value) { return 40.0 * std::log10(2.0 * std::max(value, 0.0005)); }
+  inline double destroyLevelValue(double db) { return 0.5 * std::pow(10.0, db / 40.0); }
 
   // A band's ratio as the script's own display reads it: output dB per input
   // dB above (Above Ratio, 1 + value) or below (Below Ratio, 1 - value) the

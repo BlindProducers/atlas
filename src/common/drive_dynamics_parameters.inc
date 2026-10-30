@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Saturator, Dynamic Tube, Overdrive and Multiband Dynamics (Alessio Scala's
-// JSFX, src/synthesis/effects/drive_dynamics). Every control keeps its
+// JSFX, src/synthesis/effects/drive_dynamics) and Destroy (his Serum 2
+// Overdrive JSFX, src/synthesis/effects/destroy). Every control keeps its
 // script's slider range, default and units, so the value reaches the port
 // unchanged; drive_dynamics_controls.h lists which are modulation
 // destinations. Multiband Dynamics' sidechain controls are not ported.
@@ -172,3 +173,25 @@
       ValueDetails::kLinear, false, "%", "Multiband Dynamics Amount", nullptr },
     { "effect_chain_slot_46", 0x02012a, 0.0, constants::kNumEffects - 1, constants::kMultibandDynamics, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Effect Chain Slot 46", nullptr },
+    // Destroy: the Serum 2 Overdrive JSFX, up to 16 stages of high-pass, gain control and soft clipper,
+    // with a filter before or after them.
+    { "destroy_on", 0x02012d, 0.0, 1.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Destroy Switch", strings::kOffOnNames },
+    { "destroy_drive", 0x02012d, 0.0, 100.0, 25.0, 0.0, 1.0,
+      ValueDetails::kLinear, false, "%", "Destroy Drive", nullptr },
+    { "destroy_stack", 0x02012d, 1.0, 16.0, 1.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Destroy Stack", nullptr },
+    { "destroy_filter", 0x02012d, 0.0, 2.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Destroy Filter", strings::kDestroyFilterNames },
+    { "destroy_filter_frequency", 0x02012d, 0.0, 1.0, 0.5, 0.0, 1.0,
+      ValueDetails::kLinear, false, " Hz", "Destroy Filter Frequency", nullptr },
+    { "destroy_filter_q", 0x02012d, 0.05, 7.6, 1.9, 0.0, 1.0,
+      ValueDetails::kLinear, false, "", "Destroy Filter Q", nullptr },
+    { "destroy_filter_morph", 0x02012d, 0.0, 100.0, 0.0, 0.0, 1.0,
+      ValueDetails::kLinear, false, "%", "Destroy Filter LP-HP", nullptr },
+    { "destroy_mix", 0x02012d, 0.0, 100.0, 100.0, 0.0, 1.0,
+      ValueDetails::kLinear, false, "%", "Destroy Mix", nullptr },
+    { "destroy_level", 0x02012d, 0.0, 1.0, 0.5, 0.0, 1.0,
+      ValueDetails::kLinear, false, " dB", "Destroy Level", nullptr },
+    { "effect_chain_slot_47", 0x02012d, 0.0, constants::kNumEffects - 1, constants::kDestroy, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Effect Chain Slot 47", nullptr },

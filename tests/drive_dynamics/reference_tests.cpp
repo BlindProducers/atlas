@@ -18,6 +18,7 @@ void NSEEL_HOSTSTUB_LeaveMutex() {}
 #include <map>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -98,7 +99,8 @@ namespace {
     for (double rate : { 44100.0, 48000.0, 88200.0, 96000.0, 192000.0 }) {
       const Parameters start = p;
       Reference ref(path, rate);
-      Core core;
+      // Saturator runs without Atlas's DC blocker here, which is not part of the script.
+      Core core = [] { if constexpr (std::is_same_v<Core, Saturator>) return Saturator(false); else return Core(); }();
       core.prepare(rate);
       auto update = [&] {
         for (const auto& binding : bindings) ref.set(binding.first, *binding.second);

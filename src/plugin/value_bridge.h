@@ -94,6 +94,8 @@ class ValueBridge : public AudioProcessorParameterWithID {
         return (String(vital::suppressor::positionHz(adjusted, getSuppressorSampleRate()), 2) + " Hz").substring(0, maximumStringLength);
       if (vital::scream::parameterIs(details_.name, "cutoff"))
         return formatDisplayValue(vital::scream::cutoffToHz(adjusted)).substring(0, maximumStringLength).trim();
+      if (String text; destroyDisplay(details_, adjusted, text))
+        return text.substring(0, maximumStringLength);
       if (const int ratio = multibandRatio(details_.name); ratio != 0) {
         // Multiband Dynamics reads its ratios as its own display does: "1 : x".
         const double denominator = vital::drive_dynamics::multibandRatioDenominator(adjusted, ratio > 0);
@@ -127,6 +129,8 @@ class ValueBridge : public AudioProcessorParameterWithID {
           if (division_text == vital::envelope_time::divisions[i].name)
             return valueForEnvelopeTimeDivision(i + 1);
       }
+      if (float engine_value = 0.0f; destroyEngineValue(details_, trimmed, engine_value))
+        return convertToPluginValue(engine_value);
       if (const int ratio = multibandRatio(details_.name); ratio != 0 && trimmed.contains(":")) {
         // "1 : x" back to the stored gain change per dB; a plain number is the stored value itself.
         const String after = trimmed.fromFirstOccurrenceOf(":", false, false).trim();
@@ -211,6 +215,35 @@ class ValueBridge : public AudioProcessorParameterWithID {
         return name.size() >= end.size() && name.compare(name.size() - end.size(), end.size(), end) == 0;
       };
       return ends("_above_ratio") ? 1 : ends("_below_ratio") ? -1 : 0;
+    }
+
+    // Destroy's Filter Frequency and Level hold its script's 0 to 1 sliders and
+    // read as its display does: whole Hz below 1 kHz, kHz above, and dB.
+    static bool destroyDisplay(const vital::ValueDetails& details, float engine_value, String& text) {
+      if (vital::drive_dynamics::destroyParameterIs(details.name, "filter_frequency")) {
+        const double hz = vital::drive_dynamics::destroyFrequencyHz(engine_value);
+        text = hz < 999.5 ? String(roundToInt(hz)) + " Hz" : String(hz / 1000.0, 2) + " kHz";
+        return true;
+      }
+      if (vital::drive_dynamics::destroyParameterIs(details.name, "level")) {
+        text = vital::drive_dynamics::destroyLevelSilent(engine_value) ? String("-inf dB")
+            : compactFloat(static_cast<float>(vital::drive_dynamics::destroyLevelDb(engine_value)), 1) + " dB";
+        return true;
+      }
+      return false;
+    }
+
+    static bool destroyEngineValue(const vital::ValueDetails& details, const String& text, float& engine_value) {
+      double value = 0.0;
+      if (vital::drive_dynamics::destroyParameterIs(details.name, "filter_frequency"))
+        value = vital::drive_dynamics::destroyFrequencyValue(
+            text.getDoubleValue() * (text.containsIgnoreCase("k") ? 1000.0 : 1.0));
+      else if (vital::drive_dynamics::destroyParameterIs(details.name, "level"))
+        value = text.containsIgnoreCase("inf") ? 0.0 : vital::drive_dynamics::destroyLevelValue(text.getDoubleValue());
+      else
+        return false;
+      engine_value = std::clamp(static_cast<float>(value), details.min, details.max);
+      return true;
     }
 
     static bool usesRangePercentDisplay(const vital::ValueDetails& details) {

@@ -4,13 +4,15 @@
 #include "synth_module.h"
 #include "drive_dynamics_controls.h"
 #include "drive_dynamics/drive_dynamics.h"
+#include "destroy/destroy.h"
 
 #include <array>
 #include <string>
 
 namespace vital {
   // Atlas controls around the Saturator, Dynamic Tube, Overdrive and Multiband
-  // Dynamics ports (src/synthesis/effects/drive_dynamics). Each control holds
+  // Dynamics ports (src/synthesis/effects/drive_dynamics) and Destroy's
+  // (src/synthesis/effects/destroy). Each control holds
   // its script's slider value, which is passed to the port unchanged; the
   // port runs at the effect chain's rate, as the script would in a project at
   // that rate. Only the left and right lanes reach the host, so those are
@@ -51,6 +53,7 @@ namespace vital {
   using drive_dynamics::kNumDynamicTubeControls;
   using drive_dynamics::kNumOverdriveControls;
   using drive_dynamics::kNumMultibandControls;
+  using drive_dynamics::kNumDestroyControls;
 
   class SaturatorModule : public DriveDynamicsModule<atlas::drive_dynamics::Saturator, kNumSaturatorControls> {
     public:
@@ -68,5 +71,9 @@ namespace vital {
       : public DriveDynamicsModule<atlas::drive_dynamics::MultibandDynamics, kNumMultibandControls> {
     public:
       explicit MultibandDynamicsModule(std::string prefix = "");
+  };
+  class DestroyModule : public DriveDynamicsModule<atlas::destroy::Destroy, kNumDestroyControls> {
+    public:
+      explicit DestroyModule(std::string prefix = "");
   };
 }

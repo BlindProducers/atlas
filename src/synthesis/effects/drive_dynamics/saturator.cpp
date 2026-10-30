@@ -95,11 +95,15 @@ namespace atlas::drive_dynamics {
   }
 
   void Saturator::prepare(double sample_rate) {
-    *this = Saturator();
+    *this = Saturator(remove_dc_);
     srate_ = sample_rate;
     const double k = std::tan(kPi * WSDC_FC / srate_);
     wsdc_b_ = 1 / (1 + k);
     wsdc_a_ = (k - 1) / (k + 1);
+    // Atlas's wet DC blocker, the scripts' DC blocker form at kDcBlockerHz: unity at Nyquist.
+    const double kd = std::tan(kPi * kDcBlockerHz / srate_);
+    out_dc_b_ = 1 / (1 + kd);
+    out_dc_a_ = (kd - 1) / (kd + 1);
     setHighPass(dcc_, DC_FC, DC_Q);
     sm_ = 1 - std::exp(-1 / (0.02 * srate_));
     sm_init_ = false;
@@ -159,6 +163,7 @@ namespace atlas::drive_dynamics {
     if (p_.post_clip >= 1.5) { yl = std::min(std::max(yl, -1.0), 1.0); yr = std::min(std::max(yr, -1.0), 1.0); }
     else if (p_.post_clip >= 0.5) { yl = lutcurve(kSaturatorLutA, UMAX_A, yl); yr = lutcurve(kSaturatorLutA, UMAX_A, yr); }
     yl *= s_out_; yr *= s_out_;
+    if (remove_dc_) { yl = out_dc_l_.process(yl, out_dc_b_, out_dc_a_); yr = out_dc_r_.process(yr, out_dc_b_, out_dc_a_); }
 
     // dry path delayed to match the oversampling latency
     dry_l_[dwp_] = spl0; dry_r_[dwp_] = spl1;

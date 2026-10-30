@@ -78,6 +78,8 @@ class FxAutomationParameter : public AudioProcessorParameterWithID {
             ? binding->suppressor_sample_rate->load(std::memory_order_relaxed) : 44100.0), 2) + " Hz").substring(0, maximumStringLength);
       if (vital::scream::parameterIs(details.name, "cutoff"))
         return formatDisplayValue(details, vital::scream::cutoffToHz(adjusted)).substring(0, maximumStringLength).trim();
+      if (String text; ValueBridge::destroyDisplay(details, adjusted, text))
+        return text.substring(0, maximumStringLength);
       if (ValueBridge::usesRangePercentDisplay(details))
         return ValueBridge::rangePercentText(adjusted).substring(0, maximumStringLength);
       String result;
@@ -111,6 +113,8 @@ class FxAutomationParameter : public AudioProcessorParameterWithID {
         float hz = trimmed.getFloatValue() * (trimmed.containsIgnoreCase("kHz") ? 1000.0f : 1.0f);
         return convertToPluginValue(details, vital::scream::cutoffFromHz(hz));
       }
+      if (float engine_value = 0.0f; ValueBridge::destroyEngineValue(details, trimmed, engine_value))
+        return convertToPluginValue(details, engine_value);
       if (details.string_lookup != nullptr) {
         const int first = static_cast<int>(std::round(details.min));
         const int last = static_cast<int>(std::round(details.max));

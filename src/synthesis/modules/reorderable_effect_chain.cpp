@@ -238,6 +238,8 @@ namespace vital {
         return new OverdriveModule(module_prefix);
       case constants::kMultibandDynamics:
         return new MultibandDynamicsModule(module_prefix);
+      case constants::kDestroy:
+        return new DestroyModule(module_prefix);
       default:
         return nullptr;
     }

@@ -1708,7 +1708,8 @@ namespace {
         "Saturator",
         "Dynamic Tube",
         "Overdrive",
-        "Multiband Dynamics"
+        "Multiband Dynamics",
+        "Destroy"
       };
       for (int envelope = 1; envelope <= vital::kNumEnvelopes; ++envelope)
         result.push_back("Envelope " + String(envelope));
@@ -1785,7 +1786,7 @@ namespace {
         section == "Analogue Wah" || section == "Spectral Balance" || section == "Glitch Delay" ||
         section == "OpenWurli Amp" || section == "Scanner Vibrato" || section == "Analogue Compressor" ||
         section == "Maim" || section == "Particles" || section == "Saturator" || section == "Dynamic Tube" ||
-        section == "Overdrive" || section == "Multiband Dynamics")
+        section == "Overdrive" || section == "Multiband Dynamics" || section == "Destroy")
       return "Effects";
     if (section == "Modulation routing")
       return "Modulation";
@@ -1868,7 +1869,7 @@ namespace {
     return 900;
   }
 
-  // Saturator, Dynamic Tube, Overdrive and Multiband Dynamics (drive_dynamics_controls.h).
+  // Saturator, Dynamic Tube, Overdrive, Multiband Dynamics and Destroy (drive_dynamics_controls.h).
   const vital::drive_dynamics::ControlSpec* driveDynamicsSpec(const String& effect_id, const String& suffix,
                                                               int* index = nullptr) {
     using namespace vital::drive_dynamics;
@@ -1884,6 +1885,7 @@ namespace {
     if (effect_id == "saturator") return find(kSaturatorControls, kNumSaturatorControls);
     if (effect_id == "dynamic_tube") return find(kDynamicTubeControls, kNumDynamicTubeControls);
     if (effect_id == "overdrive") return find(kOverdriveControls, kNumOverdriveControls);
+    if (effect_id == "destroy") return find(kDestroyControls, kNumDestroyControls);
     if (effect_id == "multiband_dynamics") {
       for (int i = 0; i < kNumMultibandControls; ++i)
         if (suffix == String(multibandSuffix(i))) {
@@ -1896,7 +1898,7 @@ namespace {
 
   // The control a parameter ID names in one of those effects, in a slot or a bus.
   const vital::drive_dynamics::ControlSpec* driveDynamicsSpecForId(const String& id) {
-    for (const char* effect : { "saturator", "dynamic_tube", "overdrive", "multiband_dynamics" }) {
+    for (const char* effect : { "saturator", "dynamic_tube", "overdrive", "multiband_dynamics", "destroy" }) {
       const String prefix = String(effect) + "_";
       int start = id.startsWith(prefix) ? 0 : -1;
       if (start < 0) {
@@ -1918,6 +1920,10 @@ namespace {
     if (suffix == "bass_threshold") return type == vital::drive_dynamics::kBassShaper;
     if (suffix.startsWith("ws_")) return type == vital::drive_dynamics::kWaveshaper;
     return true;
+  }
+  // Destroy shows its filter's Frequency, Q and LP-HP only while Filter is Pre or Post.
+  bool isDestroyParameterRelevant(const String& suffix, int filter) {
+    return !suffix.startsWith("filter_") || filter != 0;
   }
 
   int effectSlotParameterRank(const String& effect_id, const String& suffix) {
@@ -2102,7 +2108,7 @@ namespace {
     for (const char* variant : { "dimension_expander_mode", "frequency_shifter_mode", "resonator_model", "analoguechorus_model",
                                  "analogueecho_medium", "analoguerotary_model", "analoguewah_model",
                                  "convolution_reverb_predelay_sync", "spectral_lock_mode",
-                                 "glitch_delay_tap_view", "maim_encoder", "saturator_type" }) {
+                                 "glitch_delay_tap_view", "maim_encoder", "saturator_type", "destroy_filter" }) {
       if (id == variant || id.endsWith(String("_") + variant))
         return true;
     }
@@ -2774,7 +2780,7 @@ namespace {
         { "Modulation", { kChorus, kFlanger, kPhaser, kTremoloPan, kDimensionExpander, kPhaseShift,
                           kFrequencyShifter, kTranceGate } },
         { "Distortion and character", { kDistortion, kWaveShaper, kErosion, kResonator, kMaim, kSaturator,
-                                        kDynamicTube, kOverdrive } },
+                                        kDynamicTube, kOverdrive, kDestroy } },
         { "Filter and EQ", { kFilterFx, kEq, kMidSideEq, kDefuse } },
         { "Spectral", { kSpectralGate, kSpectralCompressor, kSpectralLock, kSpectralBalance } },
       };
@@ -2869,6 +2875,7 @@ namespace {
     if (rest.startsWith("dynamic_tube_")) return "Dynamic Tube";
     if (rest.startsWith("overdrive_")) return "Overdrive";
     if (rest.startsWith("multiband_dynamics_")) return "Multiband Dynamics";
+    if (rest.startsWith("destroy_")) return "Destroy";
     if (rest.startsWith("spectral_compressor_")) return "Spectral Compressor";
     if (rest.startsWith("spectral_gate_")) return "Spectral Gate";
     if (rest.startsWith("erosion_")) return "Erosion";
@@ -3027,6 +3034,7 @@ namespace {
     if (id.startsWith("dynamic_tube_")) return "Dynamic Tube";
     if (id.startsWith("overdrive_")) return "Overdrive";
     if (id.startsWith("multiband_dynamics_")) return "Multiband Dynamics";
+    if (id.startsWith("destroy_")) return "Destroy";
     if (id.startsWith("spectral_compressor_")) return "Spectral Compressor";
     if (id.startsWith("spectral_gate_")) return "Spectral Gate";
     if (const int arp = arpeggiatorForId(id); arp > 0) return "Arpeggiator " + String(arp);
@@ -3437,6 +3445,29 @@ namespace {
     if (suffix == "mix")
       return "Blend the dry signal with the overdriven signal at equal power. 100 percent is the overdriven signal "
              "alone.";
+    return {};
+  }
+
+  String destroyHelpText(const String& suffix) {
+    if (suffix == "drive")
+      return "Set the gain into each stage's clipper, from 0.9 dB at zero to 39.9 dB at 100 percent. A gain control "
+             "ahead of the clipper holds its level steady, so higher settings add grit rather than loudness.";
+    if (suffix == "stack")
+      return "Repeat the whole stage, high-pass, gain control and clipper, from 1 to 16 times. Each stage drives "
+             "the next.";
+    if (suffix == "filter")
+      return "Place a 12 dB per octave filter before the stages (Pre) or after them (Post), or turn it off.";
+    if (suffix == "filter_frequency")
+      return "Set the filter's cutoff, from 8 Hz to 22 kHz.";
+    if (suffix == "filter_q")
+      return "Set the filter's resonance, from 0.05 to 7.6.";
+    if (suffix == "filter_morph")
+      return "Morph the filter from low-pass at zero through band-pass at 50 percent to high-pass at 100 percent.";
+    if (suffix == "mix")
+      return "Blend the dry signal, delayed by 7 samples to line up, with the distorted signal. 100 percent is the "
+             "distorted signal alone.";
+    if (suffix == "level")
+      return "Set the distorted signal's output level, from silent to plus 12 dB. 0 dB is unity.";
     return {};
   }
 
@@ -4286,6 +4317,11 @@ namespace {
       if (help.isNotEmpty())
         return help;
     }
+    if (const String destroy_suffix = effectSuffix("destroy_"); destroy_suffix.isNotEmpty()) {
+      const String help = destroyHelpText(destroy_suffix);
+      if (help.isNotEmpty())
+        return help;
+    }
     if (const String multiband_suffix = effectSuffix("multiband_dynamics_"); multiband_suffix.isNotEmpty()) {
       const String help = multibandHelpText(multiband_suffix);
       if (help.isNotEmpty())
@@ -4390,7 +4426,7 @@ namespace {
       "reverb_", "utility_", "waveshaper_", "spectral_gate_", "erosion_", "floaty_delay_", "spectral_compressor_", "scream_", "tremolo_pan_", "tape_", "defuse_", "suppressor_", "trance_gate_", "spectral_lock_", "resonator_",
       "analoguechorus_", "analogueflanger_", "analogueecho_", "analoguerotary_", "analoguespring_", "analoguewah_",
       "spectral_balance_", "openwurli_amp_", "scanner_vibrato_", "analoguecompressor_", "maim_", "particles_",
-      "saturator_", "dynamic_tube_", "overdrive_", "multiband_dynamics_"
+      "saturator_", "dynamic_tube_", "overdrive_", "multiband_dynamics_", "destroy_"
     };
     for (const auto& prefix : effect_prefixes) {
       effect_suffix = effectSuffix(prefix);
@@ -18049,6 +18085,12 @@ void SynthEditor::addEffectSlotGroups(const String& sectionName, Component& pare
         maim_encoder = jlimit(0, atlas::maim::kNumEncoders - 1, roundToInt(found->second->value()));
       effect_slot_modes_[effect_prefix + "encoder"] = effectSlotRowVariant(effect_prefix + "encoder", float(maim_encoder));
     }
+    int destroy_filter = 0;
+    if (effect_id == "destroy") {
+      const auto found = synth_.getControls().find((effect_prefix + "filter").toStdString());
+      if (found != synth_.getControls().end()) destroy_filter = jlimit(0, 2, roundToInt(found->second->value()));
+      effect_slot_modes_[effect_prefix + "filter"] = effectSlotRowVariant(effect_prefix + "filter", float(destroy_filter));
+    }
     int saturator_type = 0;
     if (effect_id == "saturator") {
       const auto found = synth_.getControls().find((effect_prefix + "type").toStdString());
@@ -18108,6 +18150,8 @@ void SynthEditor::addEffectSlotGroups(const String& sectionName, Component& pare
       if (effect_id == "maim" && !isMaimParameterRelevant(suffix, maim_encoder))
         continue;
       if (effect_id == "saturator" && !isSaturatorParameterRelevant(suffix, saturator_type))
+        continue;
+      if (effect_id == "destroy" && !isDestroyParameterRelevant(suffix, destroy_filter))
         continue;
       if (shouldExposeEffectSlotParameter(effect_id, suffix) &&
           shouldShowParameterInSection(sectionName, parameter))
