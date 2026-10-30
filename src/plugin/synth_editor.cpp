@@ -2029,7 +2029,8 @@ namespace {
     if (effect_id == "spectral_gate")
       return rank({ "fft_size", "cutoff", "balance", "tilt_enabled", "tilt", "mix" });
     if (effect_id == "frequency_shifter")
-      return rank({ "shift", "delay", "feedback", "dry_wet" });
+      return rank({ "mode", "shift", "delay", "feedback", "dry_wet", "bode_shift", "bode_range", "bode_direction",
+                    "bode_width", "bode_mono_input", "bode_delay", "bode_feedback", "bode_blur", "bode_mix" });
     if (effect_id == "limiter")
       return rank({ "gain", "ceiling", "release", "dry_wet" });
     if (effect_id == "dimension_expander")
@@ -2098,7 +2099,7 @@ namespace {
     if (id.startsWith("lfo_") && id.endsWith("_sync") &&
         id.fromFirstOccurrenceOf("lfo_", false, false).upToFirstOccurrenceOf("_", false, false).containsOnly("0123456789"))
       return true;
-    for (const char* variant : { "dimension_expander_mode", "resonator_model", "analoguechorus_model",
+    for (const char* variant : { "dimension_expander_mode", "frequency_shifter_mode", "resonator_model", "analoguechorus_model",
                                  "analogueecho_medium", "analoguerotary_model", "analoguewah_model",
                                  "convolution_reverb_predelay_sync", "spectral_lock_mode",
                                  "glitch_delay_tap_view", "maim_encoder", "saturator_type" }) {
@@ -4345,6 +4346,17 @@ namespace {
     if (dimension_suffix == "quorax_low_cut") return "Filter low frequencies from the generated side signal only. Zero bypasses the filter.";
     if (dimension_suffix == "quorax_high_cut") return "Filter high frequencies from the generated side signal only. Twenty thousand Hz bypasses the filter.";
     if (dimension_suffix == "quorax_slope") return "Choose the Mode 2 wet filter slope in dB per octave.";
+    const String shifter_suffix = effectSuffix("frequency_shifter_");
+    if (shifter_suffix == "mode") return "Choose Mode 1 or Mode 2. Each mode retains its own settings. Mode 2 adds 11 samples of latency.";
+    if (shifter_suffix == "bode_shift") return "Set the Mode 2 shift as a percentage of Range, from minus 100 to 100. The left output is the left input shifted down, the right output the right input shifted up.";
+    if (shifter_suffix == "bode_range") return "Set the Mode 2 shift in Hz at 100 percent Shift, from 0.1 Hz to 5 kHz.";
+    if (shifter_suffix == "bode_direction") return "Crossfade one Mode 2 output towards the other. Positive values move the left output towards the up shift, and 100 percent shifts both up. Negative values move the right output towards the down shift, and minus 100 percent shifts both down.";
+    if (shifter_suffix == "bode_width") return "Blend the two Mode 2 outputs, from mono at zero to full stereo at 100 percent.";
+    if (shifter_suffix == "bode_mono_input") return "Sum the input to mono before the Mode 2 shifter.";
+    if (shifter_suffix == "bode_delay") return "Set the Mode 2 feedback delay, up to five seconds. Feedback above zero makes it heard.";
+    if (shifter_suffix == "bode_feedback") return "Feed the delayed Mode 2 output back into the shifter, so each repeat shifts again.";
+    if (shifter_suffix == "bode_blur") return "Smear the Mode 2 output with a random multitap.";
+    if (shifter_suffix == "bode_mix") return "Blend the dry signal, delayed by Mode 2's 11 samples to line up, with the shifted signal. At 50 percent both play at full level; below it the shifted signal fades out, above it the dry signal.";
     const String erosion_suffix = effectSuffix("erosion_");
     if (erosion_suffix == "mode") return "Choose filtered Noise or Sine delay modulation.";
     if (erosion_suffix == "frequency") return "Set the noise band center or sine modulator frequency in Hz.";
@@ -5378,6 +5390,7 @@ namespace {
     const bool maim_control = continuous && (parameter_id.startsWith("maim_") || parameter_id.contains("_maim_"));
     const bool particles_control = continuous && (parameter_id.startsWith("particles_") ||
                                                   parameter_id.contains("_particles_"));
+    const bool frequency_shifter_mode_2_control = continuous && parameter_id.contains("frequency_shifter_bode_");
     if (parameter_id == "release_velocity_glide_time") {
       slider.toAdjustmentValue = [](double value) { return value * 10.0; };
       slider.fromAdjustmentValue = [](double seconds) { return seconds / 10.0; };
@@ -5496,6 +5509,17 @@ namespace {
       slider.toAdjustmentValue = [minimum, span, scale](double v) { return (minimum + span * v) * scale; };
       slider.fromAdjustmentValue = [minimum, span, scale](double v) { return (v / scale - minimum) / span; };
       const double step = String(details.display_units).trim() == "dB" ? 0.5 : 1.0;
+      slider.adjustmentStep = [step] { return step; };
+    }
+    if (bridge != nullptr && frequency_shifter_mode_2_control && interval == 0.0 &&
+        bridge->getDetails().value_scale == vital::ValueDetails::kLinear) {
+      // The Frequency Shifter's Mode 2 keeps its script's units: keys move one
+      // percent, or ten milliseconds of Delay. Range steps along its logarithmic scale.
+      const auto& details = bridge->getDetails();
+      const double minimum = details.min, span = details.max - minimum, scale = details.display_multiply;
+      slider.toAdjustmentValue = [minimum, span, scale](double v) { return (minimum + span * v) * scale; };
+      slider.fromAdjustmentValue = [minimum, span, scale](double v) { return (v / scale - minimum) / span; };
+      const double step = parameter_id.endsWith("_bode_delay") ? 10.0 : 1.0;
       slider.adjustmentStep = [step] { return step; };
     }
     if (const auto* spec = continuous ? driveDynamicsSpecForId(parameter_id) : nullptr;
@@ -8016,6 +8040,7 @@ std::unique_ptr<AccessibleParameterRow> SynthEditor::buildAccessibleParameterRow
 
   if (parameter_id == "release_velocity_mode" || parameter_id == "release_velocity_target" ||
       isEffectChoiceParameter(parameter_id, "dimension_expander_mode") ||
+      isEffectChoiceParameter(parameter_id, "frequency_shifter_mode") ||
       isEffectChoiceParameter(parameter_id, "erosion_mode") ||
       isEffectChoiceParameter(parameter_id, "resonator_note_priority")) {
     // These are named two-way choices, not On/Off switches.
@@ -17964,6 +17989,12 @@ void SynthEditor::addEffectSlotGroups(const String& sectionName, Component& pare
       if (found != synth_.getControls().end()) dimension_mode = found->second->value() >= 0.5f ? 1 : 0;
       effect_slot_modes_[effect_prefix + "mode"] = dimension_mode;
     }
+    int frequency_shifter_mode = 0;
+    if (effect_id == "frequency_shifter") {
+      const auto found = synth_.getControls().find((effect_prefix + "mode").toStdString());
+      if (found != synth_.getControls().end()) frequency_shifter_mode = found->second->value() >= 0.5f ? 1 : 0;
+      effect_slot_modes_[effect_prefix + "mode"] = frequency_shifter_mode;
+    }
     int resonator_model = 0;
     if (effect_id == "resonator") {
       const auto found = synth_.getControls().find((effect_prefix + "model").toStdString());
@@ -18054,6 +18085,9 @@ void SynthEditor::addEffectSlotGroups(const String& sectionName, Component& pare
       const String suffix = id.substring(effect_prefix.length());
       if (effect_id == "dimension_expander" && suffix != "mode" && suffix != "on" &&
           (suffix.startsWith("quorax_") != (dimension_mode == 1)))
+        continue;
+      if (effect_id == "frequency_shifter" && suffix != "mode" && suffix != "on" &&
+          (suffix.startsWith("bode_") != (frequency_shifter_mode == 1)))
         continue;
       if (effect_id == "resonator" && !isResonatorParameterRelevant(suffix, resonator_model))
         continue;

@@ -454,7 +454,8 @@ void SynthPlugin::updateLatencyAfterControlChange(const std::string& name) {
           name.compare(start, std::string::npos, "maim_encoder") == 0 ||
           name.compare(start, std::string::npos, "maim_lpc_rate") == 0 ||
           name.compare(start, std::string::npos, "saturator_hi_quality") == 0 ||
-          name.compare(start, std::string::npos, "dynamic_tube_hi_quality") == 0;
+          name.compare(start, std::string::npos, "dynamic_tube_hi_quality") == 0 ||
+          name.compare(start, std::string::npos, "frequency_shifter_mode") == 0;
     }
   }
   if (affects_latency) {

@@ -124,7 +124,7 @@ private:
   // Gives new wiring the room for every quality setting the controls have.
   void reserveProcessor(Processor* processor);
   uint64_t configuration() const;
-  void updateFilterTableNeed();
+  void updateBufferNeeds();
   void requestPreparation();
   void prepareOnWorker();
   void acceptPrepared();
@@ -153,11 +153,15 @@ private:
   Value* maim_lpc_rate_control_ = nullptr;
   // Saturator's and Dynamic Tube's Hi-Quality, which adds latency.
   Value* hi_quality_control_ = nullptr;
+  // The Frequency Shifter's Mode, whose Mode 2 adds latency and buffers.
+  Value* frequency_shifter_mode_control_ = nullptr;
   std::atomic<Wavetable*> filter_table_ { nullptr };
   std::atomic<bool> filter_table_requested_ { false };
   // Once a Filter FX has used its table model it keeps the buffers, as the
   // filter did before effects were prepared on demand. Audio/control thread only.
   bool filter_table_needed_ = false;
+  // Likewise a Frequency Shifter keeps its Mode 2 buffers once it has used Mode 2.
+  bool frequency_shifter_mode_2_needed_ = false;
   const bool reset_in_place_;
   std::atomic<bool> controls_reserved_ { false };
   // Set once the parameter controls' buffers have grown; parking keeps them.

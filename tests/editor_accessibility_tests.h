@@ -1092,6 +1092,53 @@ namespace {
     }
   }
 
+  // The Frequency Shifter's Mode menu shows Mode 1's rows or Mode 2's, each
+  // labelled, and stepping it swaps them.
+  void testFrequencyShifterModeRows() {
+    SynthPlugin synth;
+    synth.parameterChanged("fx_slot_1_type", vital::constants::kFrequencyShifter + 1);
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    editor.toFront(true);
+    pumpEditorEvents();
+
+    const String prefix = "fx_slot_1_frequency_shifter_";
+    const char* mode_1[] = { "shift", "delay", "feedback", "dry_wet" };
+    const char* mode_2[] = { "bode_shift", "bode_range", "bode_direction", "bode_width", "bode_mono_input",
+                             "bode_delay", "bode_feedback", "bode_blur", "bode_mix" };
+    const auto shown = [&](const char* suffix) { return editor.controlForParameter(prefix + suffix) != nullptr; };
+    auto* mode = dynamic_cast<ComboBox*>(editor.controlForParameter(prefix + "mode"));
+    expect(mode != nullptr, "Frequency Shifter Mode is a menu");
+    if (mode == nullptr)
+      return;
+    expect(mode->getNumItems() == 2 && mode->getItemText(0) == "Mode 1" && mode->getItemText(1) == "Mode 2",
+           "Frequency Shifter Mode offers Mode 1 and Mode 2");
+    expect(mode->getText() == "Mode 1", "Frequency Shifter starts in Mode 1");
+    for (const char* suffix : mode_1)
+      expect(shown(suffix), std::string("Mode 1 shows ") + suffix);
+    for (const char* suffix : mode_2)
+      expect(!shown(suffix), std::string("Mode 1 hides ") + suffix);
+
+    editor.ensureComponentVisible(mode);
+    mode->grabKeyboardFocus();
+    mode->keyPressed(KeyPress(KeyPress::downKey));
+    editor.pollStateNow();
+    pumpEditorEvents();
+    close(synth.getControls().at((prefix + "mode").toStdString())->value(), 1.0f, "Down steps Mode to Mode 2");
+    for (const char* suffix : mode_1)
+      expect(!shown(suffix), std::string("Mode 2 hides ") + suffix);
+    for (const char* suffix : mode_2) {
+      auto* control = editor.controlForParameter(prefix + suffix);
+      expect(control != nullptr, std::string("Mode 2 shows ") + suffix);
+      if (control != nullptr)
+        expect(control->getTitle().startsWith("Mode 2 "),
+               std::string("Mode 2's ") + suffix + " is labelled: " + control->getTitle().toStdString());
+    }
+    editor.removeFromDesktop();
+  }
+
   // Stepping a choice that decides which rows show (an oscillator's Type, a
   // filter's Model, an effect's mode) rebuilds the rows around it. The rebuild
   // used to replace the focused menu and every group around it, so NVDA read

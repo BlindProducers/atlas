@@ -182,6 +182,11 @@ set(ATLAS_DRIVE_DYNAMICS_SOURCES
   src/synthesis/effects/drive_dynamics/overdrive.cpp
   src/synthesis/effects/drive_dynamics/multiband_dynamics.cpp)
 
+# The Frequency Shifter's Mode 2: Alessio Scala's Serum 2 Bode JSFX, ported the
+# same way, statement for statement, so that AtlasBodeReferenceTests finds every
+# output sample identical to the script's.
+set(ATLAS_BODE_SOURCES src/synthesis/effects/bode/bode_shifter.cpp)
+
 # PFFFT (third_party/pffft) is every FFT in Atlas on every platform: the
 # oscillators' (src/common/fourier_transform.h) and, through
 # third_party/patches/juce8-pffft-fft-engine.patch, every juce::dsp::FFT and
@@ -276,6 +281,8 @@ target_sources(Atlas PRIVATE
   # Saturator, Overdrive, Dynamic Tube and Multiband Dynamics (Alessio Scala's JSFX).
   ${ATLAS_DRIVE_DYNAMICS_SOURCES}
   src/synthesis/modules/drive_dynamics_modules.cpp
+  # The Frequency Shifter's Mode 2 (Alessio Scala's Serum 2 Bode JSFX).
+  ${ATLAS_BODE_SOURCES}
   # ZL Compressor by zsliu98 (AGPL v3): the Analogue Compressor effect.
   ${ATLAS_ZL_COMPRESSOR_SOURCES}
   # Maim by Arden Butterfield (GPL v3): the Maim effect.
@@ -311,7 +318,7 @@ set_source_files_properties(${ATLAS_OPENB3_SOURCES} src/synthesis/producers/open
   src/synthesis/modules/openb3_module.cpp src/synthesis/modules/scanner_vibrato_module.cpp PROPERTIES
   COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:precise>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffp-contract=off;-fno-fast-math>")
 set_source_files_properties(${ATLAS_ZL_COMPRESSOR_SOURCES} ${ATLAS_MAIM_SOURCES}
-  ${ATLAS_DRIVE_DYNAMICS_SOURCES} src/synthesis/modules/drive_dynamics_modules.cpp PROPERTIES
+  ${ATLAS_DRIVE_DYNAMICS_SOURCES} src/synthesis/modules/drive_dynamics_modules.cpp ${ATLAS_BODE_SOURCES} PROPERTIES
   COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:precise>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffp-contract=off;-fno-fast-math>")
 # The Scream filter's feedback loop amplifies any rounding difference, so its
 # SVFs and waveshaper round alike on arm64 and x64.
@@ -1346,6 +1353,17 @@ if(ATLAS_BUILD_TIMING_TESTS)
     target_link_libraries(AtlasDriveDynamicsReferenceTests PRIVATE AtlasEelReference)
     add_test(NAME atlas_drive_dynamics_reference COMMAND AtlasDriveDynamicsReferenceTests
       "${CMAKE_SOURCE_DIR}/tests/drive_dynamics")
+    # The Frequency Shifter's Mode 2 against the Serum 2 Bode JSFX, which is not
+    # in the repository: the test is added once ATLAS_BODE_JSFX names the script.
+    set(ATLAS_BODE_JSFX "" CACHE FILEPATH "Path to Serum2Bode.jsfx for the Frequency Shifter Mode 2 reference test")
+    add_executable(AtlasBodeReferenceTests tests/bode/reference_tests.cpp ${ATLAS_BODE_SOURCES})
+    target_include_directories(AtlasBodeReferenceTests PRIVATE src/synthesis/effects/bode)
+    set_source_files_properties(tests/bode/reference_tests.cpp PROPERTIES
+      COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:precise>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffp-contract=off;-fno-fast-math>")
+    target_link_libraries(AtlasBodeReferenceTests PRIVATE AtlasEelReference)
+    if(EXISTS "${ATLAS_BODE_JSFX}")
+      add_test(NAME atlas_bode_reference COMMAND AtlasBodeReferenceTests "${ATLAS_BODE_JSFX}")
+    endif()
     add_executable(AtlasResonatorReferenceTests tests/resonator/reference_tests.cpp)
     target_include_directories(AtlasResonatorReferenceTests PRIVATE src/synthesis/effects)
     target_link_libraries(AtlasResonatorReferenceTests PRIVATE AtlasEelReference Atlas)

@@ -72,8 +72,55 @@ namespace vital {
     feedback_ = createMonoModControl(prefix_ + "frequency_shifter_feedback");
     delay_ = createMonoModControl(prefix_ + "frequency_shifter_delay");
     mix_ = createMonoModControl(prefix_ + "frequency_shifter_dry_wet");
+    mode_ = createBaseControl(prefix_ + "frequency_shifter_mode");
+    mode_2_mono_input_ = createBaseControl(prefix_ + "frequency_shifter_bode_mono_input");
+    // Range is stored as its base-2 logarithm. The module raises 2 to it
+    // exactly, where the shared exponential scale approximates.
+    const char* names[] = { "shift", "range", "direction", "width", "delay", "feedback", "blur", "mix" };
+    for (size_t i = 0; i < mode_2_controls_.size(); ++i) {
+      const std::string name = prefix_ + "frequency_shifter_bode_" + names[i];
+      mode_2_controls_[i] = i == 1 ? createBaseModControl(name) : createMonoModControl(name);
+    }
 
     SynthModule::init();
+  }
+
+  void FrequencyShifterModule::prepareMode2() {
+    if (!mode_2_)
+      mode_2_ = std::make_unique<atlas::bode::Shifter>();
+    mode_2_->prepare(getSampleRate());
+  }
+
+  void FrequencyShifterModule::processMode2(const poly_float* audio_in, int num_samples) {
+    poly_float* audio_out = output()->buffer;
+    if (!mode_2_) {
+      utils::copyBuffer(audio_out, audio_in, num_samples);
+      return;
+    }
+    // Controls are read once per block, when the script's @slider would run.
+    auto control = [this](int index, double low, double high) {
+      return std::clamp(static_cast<double>(mode_2_controls_[index]->buffer[0][0]), low, high);
+    };
+    atlas::bode::Shifter::Parameters parameters;
+    parameters.shift = control(0, -100, 100);
+    parameters.range = std::clamp(std::exp2(static_cast<double>(mode_2_controls_[1]->buffer[0][0])), 0.1, 5000.0);
+    parameters.direction = control(2, -100, 100);
+    parameters.width = control(3, 0, 100);
+    parameters.delay = control(4, 0, 5);
+    parameters.feedback = control(5, 0, 100);
+    parameters.blur = control(6, 0, 100);
+    parameters.mix = control(7, 0, 100);
+    parameters.mono_input = mode_2_mono_input_->value() >= 0.5f ? 1 : 0;
+    if (parameters != mode_2_->parameters())
+      mode_2_->setParameters(parameters);
+
+    // Lanes 2-3 repeat lanes 0-1, so one stereo pass serves both.
+    for (int i = 0; i < num_samples; ++i) {
+      double left = audio_in[i][0], right = audio_in[i][1];
+      mode_2_->process(left, right);
+      const mono_float out_left = static_cast<mono_float>(left), out_right = static_cast<mono_float>(right);
+      audio_out[i] = poly_float(out_left, out_right, out_left, out_right);
+    }
   }
 
   void FrequencyShifterModule::updateHilbertCoefficients() {
@@ -199,6 +246,16 @@ namespace vital {
     static constexpr float kParameterSmoothingSeconds = 0.01f;
 
     SynthModule::process(num_samples);
+    // Each mode starts from silence, with its own settings.
+    const int mode = mode_->value() >= 0.5f ? 1 : 0;
+    if (mode != last_mode_) {
+      hardReset();
+      last_mode_ = mode;
+    }
+    if (mode == 1) {
+      processMode2(audio_in, num_samples);
+      return;
+    }
 
     poly_float target_feedback = utils::clamp(feedback_->buffer[0], -0.95f, 0.95f);
     poly_float target_delay = utils::clamp(delay_->buffer[0], 0.0f, kMaxDelayMilliseconds);
@@ -261,6 +318,9 @@ namespace vital {
     feedback_amount_ = 0.0f;
     mix_amount_ = 1.0f;
     delay_milliseconds_ = 0.0f;
+    if (mode_2_)
+      mode_2_->reset();
+    last_mode_ = -1;
   }
 
   void FrequencyShifterModule::enable(bool enable) {
@@ -276,6 +336,8 @@ namespace vital {
     resetDownshiftFilters();
     resizeDelayBuffer();
     feedback_sample_ = 0.0f;
+    if (mode_2_)
+      mode_2_->prepare(getSampleRate());
   }
 
   void FrequencyShifterModule::setOversampleAmount(int oversample) {
@@ -285,5 +347,7 @@ namespace vital {
     resetDownshiftFilters();
     resizeDelayBuffer();
     feedback_sample_ = 0.0f;
+    if (mode_2_)
+      mode_2_->prepare(getSampleRate());
   }
 } // namespace vital

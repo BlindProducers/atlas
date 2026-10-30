@@ -1258,6 +1258,7 @@ int main(int argc, char** argv) {
     testWavetableEditingOnASlotSwitchedToWavetable();
     testSwitchingChoiceKeepsItsControl();
     testAnalogueCompressorRows();
+    testFrequencyShifterModeRows();
     testMaimRows();
     testDriveDynamicsRows();
     testAnalogSwitchKeepsItsControl();

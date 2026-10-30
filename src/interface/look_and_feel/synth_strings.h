@@ -814,6 +814,7 @@ namespace strings {
   const std::string kSpectralGateFftSizeNames[] = { "256", "512", "1024", "2048", "4096", "8192" };
 
   const std::string kDimensionModeNames[] = { "Mode 1", "Mode 2" };
+  const std::string kFrequencyShifterModeNames[] = { "Mode 1", "Mode 2" };
   const std::string kQuoraxSlopeNames[] = { "12 dB/oct", "24 dB/oct", "36 dB/oct", "48 dB/oct" };
   const std::string kErosionModeNames[] = { "Noise", "Sine" };
 
