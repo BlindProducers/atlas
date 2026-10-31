@@ -698,6 +698,12 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     // Library list and column, which would name only Community, are left out.
     void namePresetBrowserForCollection();
     void namePresetFacetTable(PresetTableListBox& table, const String& title);
+    // The Sort presets list beside the search: its choices for the collection
+    // (Most downloaded only on the community's side), the name of a sort, and
+    // choosing one, which a column header pressed with the mouse also does.
+    void updatePresetSortChoices();
+    String presetSortName(int column, bool ascending) const;
+    void setPresetSort(int column, bool ascending);
     // The facet lists side by side in `preset_facet_area_`, without the hidden ones.
     void layoutPresetFacets();
     // The items the facets and the table are built from: a community list in
@@ -1307,6 +1313,7 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     Label preset_details_;
     TextButton preset_menu_ { "Preset menu" };
     TextEditor preset_search_;
+    AccessibleComboBox preset_sort_;
     PresetTableListBox preset_collection_table_ { "Collection" };
     PresetTableListBox preset_library_table_ { "Library" };
     PresetTableListBox preset_bank_table_ { "Bank" };
@@ -1607,8 +1614,12 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     String preview_name_;
     bool preview_fetching_ = false;
     int preview_generation_ = 0;
-    int preset_sort_column_ = 1;
-    bool preset_sort_ascending_ = true;
+    // The results' sort: a table column, or kPresetDownloadsSort, which no
+    // column shows. Remembered for the instance like the filters.
+    int& preset_sort_column_;
+    bool& preset_sort_ascending_;
+    // The Sort presets list's choices, its item ID less one indexing them.
+    std::vector<std::pair<int, bool>> preset_sort_choices_;
     bool preset_metadata_edit_mode_ = false;
     File preset_metadata_file_;
     int preset_list_generation_ = 0;

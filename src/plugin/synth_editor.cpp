@@ -210,8 +210,8 @@ namespace {
   // The preset results table's keys, said after the selected preset.
   String presetTableKeysHelp() {
     return String("Press Return to load, F to change favourite, R to rename, E to edit metadata, P to play or stop a "
-                  "community preset's preview, S to choose the next sort column, Shift S to reverse the sort, or "
-                  "Delete to move an editable preset to Trash.");
+                  "community preset's preview, or Delete to move an editable preset to Trash. Sort presets, beside the "
+                  "search, chooses the order.");
   }
 
   enum PresetFacetKind {
@@ -232,6 +232,9 @@ namespace {
     kPresetLibraryColumn,
     kPresetModifiedColumn,
   };
+  // A sort the Sort presets list offers on the community's side, by how often
+  // a preset or bank was downloaded, which no column shows.
+  constexpr int kPresetDownloadsSort = 100;
 
   using AccessibilitySpeechSettings = atlas::speech::Settings;
 
@@ -5913,10 +5916,13 @@ class PresetResultsTableModel final : public TableListBoxModel {
       editor_.loadSelectedPreset();
     }
 
+    // A column header pressed. The header also reports the sorts the editor
+    // set itself, which are already applied, and none (column 0) for Most
+    // downloaded, which no column shows.
     void sortOrderChanged(int column, bool forwards) override {
-      editor_.preset_sort_column_ = column;
-      editor_.preset_sort_ascending_ = forwards;
-      editor_.filterPresetList();
+      if (column == 0 || (column == editor_.preset_sort_column_ && forwards == editor_.preset_sort_ascending_))
+        return;
+      editor_.setPresetSort(column, forwards);
     }
 
     void deleteKeyPressed(int) override { editor_.deleteSelectedPreset(); }
@@ -7018,7 +7024,9 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
     last_preset_category_(synth.getEditorMemory().preset_category),
     last_preset_tag_(synth.getEditorMemory().preset_tag),
     last_preset_collection_(synth.getEditorMemory().preset_collection),
-    preset_browser_shown_(synth.getEditorMemory().preset_browser_shown) {
+    preset_browser_shown_(synth.getEditorMemory().preset_browser_shown),
+    preset_sort_column_(synth.getEditorMemory().preset_sort_column),
+    preset_sort_ascending_(synth.getEditorMemory().preset_sort_ascending) {
   // A new instance's preset browser starts unfiltered.
   if (last_preset_library_.isEmpty()) last_preset_library_ = kAllLibraries;
   if (last_preset_bank_.isEmpty()) last_preset_bank_ = kAllBanks;
@@ -7140,13 +7148,26 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   };
   addChildComponent(preset_search_);
 
+  // Sorts the preset table only, not the lists of libraries, banks and the like.
+  preset_sort_.setTitle("Sort presets");
+  preset_sort_.setDescription("The order of the preset table");
+  preset_sort_.setHelpText("Up and Down choose the order of the preset table, Return or Space opens the list");
+  preset_sort_.setWantsKeyboardFocus(true);
+  preset_sort_.onChange = [this] {
+    const int index = preset_sort_.getSelectedId() - 1;
+    if (isPositiveAndBelow(index, static_cast<int>(preset_sort_choices_.size())))
+      setPresetSort(preset_sort_choices_[static_cast<size_t>(index)].first,
+                    preset_sort_choices_[static_cast<size_t>(index)].second);
+  };
+  addChildComponent(preset_sort_);
+
   preset_table_model_ = std::make_unique<PresetResultsTableModel>(*this);
   preset_table_.setModel(preset_table_model_.get());
   preset_table_.setTitle("Preset results table");
   const String command = atlas::keys::commandName();
   preset_table_.setDescription("Sortable preset results with Name first. " + presetTableKeysHelp() + " " +
                                command + " S saves the patch, Shift " + command + " S saves it as a new preset.");
-  preset_table_.setHelpText("Use arrow keys to select a preset. Return loads, F toggles favourite, R renames, E edits metadata, P plays or stops a community preset's preview, S chooses the next sort column, Shift S reverses the sort, and column headers can also be pressed to sort. " +
+  preset_table_.setHelpText("Use arrow keys to select a preset. Return loads, F toggles favourite, R renames, E edits metadata, P plays or stops a community preset's preview. Sort presets, beside the search, chooses the order, and column headers can also be pressed to sort. " +
                             command + " S saves the patch and Shift " + command + " S saves it as a new preset.");
   preset_table_.setWantsKeyboardFocus(true);
   preset_table_.setRowHeight(30);
@@ -7162,7 +7183,8 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   preset_header.addColumn("Library", kPresetLibraryColumn, 100, 70, 180);
   preset_header.addColumn("Modified", kPresetModifiedColumn, 160, 110, 230);
   preset_header.setSortColumnId(preset_sort_column_, preset_sort_ascending_);
-  setPresetCollection(presetCollection());   // names the Favourite column for the remembered collection
+  // Names the Favourite column for the remembered collection, and fills Sort presets.
+  setPresetCollection(presetCollection());
   preset_table_.onFocusGained = [this] { ensurePresetListLoaded(); };
   preset_table_.onKeyPressed = [this](const KeyPress& key) {
     if (key.getKeyCode() == KeyPress::returnKey) {
@@ -7197,22 +7219,6 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
     }
     if (isContextMenuKey(key)) {
       showSelectedPresetMenu(preset_table_);
-      return true;
-    }
-    if (character_shortcut && character == 's') {
-      if (key.getModifiers().isShiftDown())
-        preset_sort_ascending_ = !preset_sort_ascending_;
-      else {
-        // The next column shown: the community's collections leave Bank and Library out.
-        auto& header = preset_table_.getHeader();
-        do
-          preset_sort_column_ = preset_sort_column_ >= kPresetModifiedColumn ? kPresetNameColumn : preset_sort_column_ + 1;
-        while (!header.isColumnVisible(preset_sort_column_) && preset_sort_column_ != kPresetNameColumn);
-      }
-      preset_table_.getHeader().setSortColumnId(preset_sort_column_, preset_sort_ascending_);
-      postPluginAnnouncement("Sorted by " + preset_table_.getHeader().getColumnName(preset_sort_column_) +
-                               (preset_sort_ascending_ ? ", ascending" : ", descending"),
-                             AccessibilityHandler::AnnouncementPriority::medium);
       return true;
     }
     return false;
@@ -9741,10 +9747,14 @@ void SynthEditor::showAllSections(bool announce) {
         group_y += 42;
       }
       else {
-        preset_search_.setBounds(172, group_y, available_width - 156, 38);
-        group_ptr->addAndMakeVisible(preset_search_);
-        group_ptr->addAccessibleChild(&preset_search_);
-        row_focus_order_.push_back(&preset_search_);
+        constexpr int kSortWidth = 220;
+        preset_search_.setBounds(172, group_y, available_width - 156 - kSortWidth - 6, 38);
+        preset_sort_.setBounds(preset_search_.getRight() + 6, group_y, kSortWidth, 38);
+        for (Component* control : { static_cast<Component*>(&preset_search_), static_cast<Component*>(&preset_sort_) }) {
+          group_ptr->addAndMakeVisible(control);
+          group_ptr->addAccessibleChild(control);
+          row_focus_order_.push_back(control);
+        }
         group_y += 42;
         for (auto* table : { &preset_collection_table_, &preset_library_table_, &preset_bank_table_,
                              &preset_category_table_, &preset_tag_table_ }) {
@@ -11456,8 +11466,7 @@ String SynthEditor::keyboardHelpText() {
       "Presets and browsers\n"
       "  Collection, Library, Bank, Category, and Tags tables: Up / Down selects and applies a value\n"
       "  Preset table: Up / Down chooses a preset; Enter loads it; F changes its favourite state\n"
-      "  S - Sort the preset table by the next column\n"
-      "  Shift+S - Reverse the preset table sort direction\n"
+      "  Sort presets (after the search): Up / Down chooses the order of the preset table; Return or Space opens the list\n"
       "  R - Rename the selected editable user preset\n"
       "  E - Edit the selected editable preset's metadata\n"
       "  P - Play or stop the selected community preset's or bank's preview\n"
@@ -11935,6 +11944,7 @@ void SynthEditor::showPresetControls() {
   preset_menu_.setVisible(true);
   // The browser itself follows the toolbar's Show preset browser.
   for (Component* control : { static_cast<Component*>(&preset_details_), static_cast<Component*>(&preset_search_),
+                              static_cast<Component*>(&preset_sort_),
                               static_cast<Component*>(&preset_collection_table_),
                               static_cast<Component*>(&preset_library_table_),
                               static_cast<Component*>(&preset_bank_table_),
@@ -12266,12 +12276,54 @@ void SynthEditor::namePresetBrowserForCollection() {
   header.setColumnName(kPresetCategoryColumn, category);
   header.setColumnVisible(kPresetBankColumn, !community);
   header.setColumnVisible(kPresetLibraryColumn, !community);
-  // A sort by a column left out goes back to the name.
-  if (!header.isColumnVisible(preset_sort_column_)) {
+  // A sort by a column left out, or by downloads away from the community's
+  // side, goes back to the name.
+  if (preset_sort_column_ == kPresetDownloadsSort ? !community : !header.isColumnVisible(preset_sort_column_)) {
     preset_sort_column_ = kPresetNameColumn;
+    preset_sort_ascending_ = true;
     header.setSortColumnId(preset_sort_column_, preset_sort_ascending_);
   }
+  updatePresetSortChoices();
   layoutPresetFacets();
+}
+
+String SynthEditor::presetSortName(int column, bool ascending) const {
+  if (column == kPresetModifiedColumn)
+    return ascending ? "Oldest first" : "Newest first";
+  if (column == kPresetDownloadsSort)
+    return ascending ? "Least downloaded" : "Most downloaded";
+  return preset_table_.getHeader().getColumnName(column) + (ascending ? ", A to Z" : ", Z to A");
+}
+
+void SynthEditor::updatePresetSortChoices() {
+  preset_sort_choices_ = { { kPresetNameColumn, true }, { kPresetNameColumn, false },
+                           { kPresetModifiedColumn, false }, { kPresetModifiedColumn, true },
+                           { kPresetAuthorColumn, true }, { kPresetCategoryColumn, true } };
+  if (inAnyCommunityCollection())
+    preset_sort_choices_.push_back({ kPresetDownloadsSort, false });
+  preset_sort_.clear(dontSendNotification);
+  int selected = 0;
+  for (size_t i = 0; i < preset_sort_choices_.size(); ++i) {
+    const auto& choice = preset_sort_choices_[i];
+    preset_sort_.addItem(presetSortName(choice.first, choice.second), static_cast<int>(i) + 1);
+    if (choice.first == preset_sort_column_ && choice.second == preset_sort_ascending_)
+      selected = static_cast<int>(i) + 1;
+  }
+  // A column header pressed may sort by what the list does not offer: the
+  // list then says so (Tags, A to Z) without an item chosen.
+  if (selected > 0)
+    preset_sort_.setSelectedId(selected, dontSendNotification);
+  else
+    preset_sort_.setText(presetSortName(preset_sort_column_, preset_sort_ascending_), dontSendNotification);
+}
+
+void SynthEditor::setPresetSort(int column, bool ascending) {
+  preset_sort_column_ = column;
+  preset_sort_ascending_ = ascending;
+  // No column shows the downloads, so the header shows no sort for them.
+  preset_table_.getHeader().setSortColumnId(column, ascending);
+  updatePresetSortChoices();
+  filterPresetList();
 }
 
 void SynthEditor::layoutPresetFacets() {
@@ -13237,13 +13289,20 @@ void SynthEditor::filterPresetList() {
       else if (first->modified_time > second->modified_time)
         comparison = 1;
     }
+    else if (preset_sort_column_ == kPresetDownloadsSort) {
+      if (first->remote_downloads < second->remote_downloads)
+        comparison = -1;
+      else if (first->remote_downloads > second->remote_downloads)
+        comparison = 1;
+    }
     else {
       comparison = valueForColumn(*first, preset_sort_column_)
                        .compareNatural(valueForColumn(*second, preset_sort_column_));
     }
-    if (comparison == 0)
-      comparison = first->file.getFileNameWithoutExtension().compareNatural(second->file.getFileNameWithoutExtension());
-    return preset_sort_ascending_ ? comparison < 0 : comparison > 0;
+    if (comparison != 0)
+      return preset_sort_ascending_ ? comparison < 0 : comparison > 0;
+    // Ties go by name, A to Z, whichever way the sort runs.
+    return first->file.getFileNameWithoutExtension().compareNatural(second->file.getFileNameWithoutExtension()) < 0;
   });
   for (const auto& match : matches)
     filtered_presets_.add(match);

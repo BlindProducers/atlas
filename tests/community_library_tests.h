@@ -322,6 +322,9 @@ namespace {
                                                   { "glow", "test" }));
     page["results"].push_back(communityPresetJson(2, "Broken Bass", broken, String::repeatedString("0", 64), "bass",
                                                   "Bass", { "test" }));
+    // The bass is older than the lead and downloaded more, for Sort presets.
+    page["results"][1]["downloads"] = 5;
+    page["results"][1]["updated_at"] = "2026-10-18T04:05:06.007Z";
     const File page_file = saved.getChildFile("presets.json");
     page_file.replaceWithText(String(page.dump()));
     atlas::community::setLibraryUrlForTesting(URL(page_file).toString(false));
@@ -344,9 +347,10 @@ namespace {
     auto* results = dynamic_cast<TableListBox*>(titled(editor, "Preset results table"));
     auto* search = dynamic_cast<TextEditor*>(titled(editor, "Preset search"));
     auto* autoload = dynamic_cast<Button*>(titled(editor, "Autoload preset when scrolling"));
+    auto* sort = dynamic_cast<ComboBox*>(titled(editor, "Sort presets"));
     const bool browser = made && collection != nullptr && libraries != nullptr && authors != nullptr &&
                          categories != nullptr && tags != nullptr && results != nullptr && search != nullptr &&
-                         autoload != nullptr;
+                         autoload != nullptr && sort != nullptr;
     expect(browser, "the editor has its preset browser");
     if (!browser) {
       editor.removeFromDesktop();
@@ -437,6 +441,52 @@ namespace {
       return;
     }
 
+    // Sort presets, beside the search, orders the rows; S no longer does.
+    auto sortItems = [&] {
+      StringArray items;
+      for (int i = 0; i < sort->getNumItems(); ++i)
+        items.add(sort->getItemText(i));
+      return items;
+    };
+    auto chooseSort = [&](const String& name) {
+      const int index = sortItems().indexOf(name);
+      expect(index >= 0, "Sort presets offers " + name.toStdString());
+      sort->setSelectedItemIndex(jmax(0, index), sendNotificationSync);
+      pumpEditorEvents();
+    };
+    auto firstName = [&] { return editor.presetFileAtRow(0).getFileNameWithoutExtension(); };
+    expect(sort->getText() == "Name, A to Z" &&
+               sortItems() == StringArray { "Name, A to Z", "Name, Z to A", "Newest first", "Oldest first",
+                                            "Author, A to Z", "Style, A to Z", "Most downloaded" },
+           "Sort presets starts at Name, A to Z, with Most downloaded on the community's side: " +
+               sort->getText().toStdString() + " / " + sortItems().joinIntoString(", ").toStdString());
+    chooseSort("Newest first");
+    expect(firstName() == "Shared Lead", "Newest first puts the lead first");
+    chooseSort("Oldest first");
+    expect(firstName() == "Broken Bass", "Oldest first puts the bass first");
+    chooseSort("Name, Z to A");
+    expect(firstName() == "Shared Lead", "Name, Z to A puts the lead first");
+    chooseSort("Most downloaded");
+    expect(firstName() == "Broken Bass" && results->getHeader().getSortColumnId() == 0,
+           "Most downloaded puts the bass first, with no column marked");
+    expect(synth.getEditorMemory().preset_sort_column != kName, "the sort is remembered for the instance");
+    results->selectRow(0);
+    results->grabKeyboardFocus();
+    results->keyPressed(KeyPress('s'));
+    results->keyPressed(KeyPress('s', ModifierKeys::shiftModifier, 'S'));
+    pumpEditorEvents();
+    expect(sort->getText() == "Most downloaded" && firstName() == "Broken Bass",
+           "S and Shift S in the preset table leave the sort alone");
+    results->getHeader().setSortColumnId(kTags, true);
+    pumpEditorEvents();
+    pumpEditorEvents();
+    expect(sort->getText() == "Tags, A to Z", "a column header sorts, and Sort presets names it: " +
+                                                  sort->getText().toStdString());
+    chooseSort("Name, A to Z");
+    expect(firstName() == "Broken Bass" && results->getHeader().getSortColumnId() == kName &&
+               results->getHeader().isSortedForwards(),
+           "Name, A to Z puts the bass first again, the Name column marked");
+
     // Return downloads the lead into the Community library and loads it.
     results->selectRow(1);
     pumpEditorEvents();
@@ -483,6 +533,17 @@ namespace {
                results->getHeader().isColumnVisible(kBank) && results->getHeader().isColumnVisible(kLibrary) &&
                results->getHeader().getColumnName(kCategory) == "Category",
            "and the Library, Bank and Category lists and columns are back");
+
+    // Most downloaded is the community's alone: among all presets it goes back to the name.
+    collection->selectRow(2);
+    pumpEditorEvents();
+    chooseSort("Most downloaded");
+    collection->selectRow(0);
+    pumpEditorEvents();
+    expect(sort->getText() == "Name, A to Z" && !sortItems().contains("Most downloaded") &&
+               sortItems().contains("Category, A to Z"),
+           "among all presets the sort is the name again, and the list has Category rather than Most downloaded: " +
+               sort->getText().toStdString() + " / " + sortItems().joinIntoString(", ").toStdString());
     finish();
   }
 

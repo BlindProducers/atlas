@@ -148,6 +148,8 @@ class SynthPlugin : public SynthBase, public AudioProcessor, public ValueBridge:
       String preset_tag;
       String preset_collection;   // All presets, Favourites, Community presets or Community banks
       bool preset_browser_shown = true;   // the toolbar's Show preset browser
+      int preset_sort_column = 1;         // the preset browser's Sort presets (Name, A to Z)
+      bool preset_sort_ascending = true;
     };
     EditorMemory& getEditorMemory() { return editor_memory_; }
 
