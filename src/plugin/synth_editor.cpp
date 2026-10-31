@@ -745,6 +745,27 @@ namespace {
     return suffixes.contains(suffix);
   }
 
+  // Whether an oscillator mode's value shows the seed row it decides: Random
+  // Amplitudes for a frequency morph, Frozen for phase randomization.
+  bool modeShowsSeed(const String& mode_id, int value) {
+    if (mode_id.endsWith("_random_phase_mode"))
+      return value == vital::SynthOscillator::kRandomPhaseFrozen;
+    return value == vital::SynthOscillator::kRandomAmplitudes;
+  }
+
+  // The Randomize button that follows an oscillator seed row, as title and
+  // description; an empty title for any other row.
+  std::pair<String, String> seedButtonFor(const String& id) {
+    if (!id.startsWith("osc_"))
+      return {};
+    if (id.endsWith("_spectral_morph_seed"))
+      return { id.contains("_secondary_") ? "Randomize secondary amplitudes seed" : "Randomize amplitudes seed",
+               "Choose a new random amplitudes pattern for this morph slot" };
+    if (id.endsWith("_random_phase_seed"))
+      return { "Randomize phase seed", "Choose a new frozen phase pattern for this oscillator" };
+    return {};
+  }
+
   bool isOscillatorDistortionSuffix(const String& suffix) {
     return suffix == "distortion_type" || suffix == "distortion_amount" || suffix == "distortion_spread" ||
            suffix == "secondary_distortion_type" || suffix == "secondary_distortion_amount" ||
@@ -779,7 +800,7 @@ namespace {
     static const StringArray pitch_and_unison {
       "transpose", "tune", "fixed_frequency_mode", "fixed_frequency", "midi_track", "unison_voices",
       "unison_detune", "unison_blend", "stack_style", "detune_power", "detune_range", "stereo_spread",
-      "phase", "random_phase"
+      "phase", "random_phase", "random_phase_mode", "random_phase_seed"
     };
     if (pitch_and_unison.contains(suffix))
       return OscillatorRowGroup::kPitch;
@@ -2095,7 +2116,7 @@ namespace {
     if (const int slot = sourceSlotForId(id); slot >= 0) {
       const String suffix = id.substring(String("osc_" + String(slot + 1) + "_").length());
       return suffix == "type" || suffix == "analog_waveform" || suffix == "braids_model" ||
-             suffix.endsWith("spectral_morph_type");
+             suffix.endsWith("spectral_morph_type") || suffix == "random_phase_mode";
     }
     const String filter_suffix = filterSuffixForParameter(id);
     if (filter_suffix == "model" || filter_suffix == "style")
@@ -2312,7 +2333,7 @@ namespace {
                                             "transpose_quantize", "level", "pan" });
 
     auto oscillator_suffix_rank = [](const String& suffix) {
-      static const std::array<const char*, 59> oscillator_order = {{
+      static const std::array<const char*, 61> oscillator_order = {{
         "on",
         "type",
         "level",
@@ -2351,6 +2372,8 @@ namespace {
         "stereo_spread",
         "phase",
         "random_phase",
+        "random_phase_mode",
+        "random_phase_seed",
         "midi_track",
         "smooth_interpolation",
         "distortion_type",
@@ -3737,6 +3760,12 @@ namespace {
       if (suffix == "stereo_spread") return "Spread unison voices across the stereo field.";
       if (suffix == "phase") return "Set the oscillator start phase.";
       if (suffix == "random_phase") return "Randomize oscillator start phase on each triggered note.";
+      if (suffix == "random_phase_mode")
+        return "New Each Note draws new random phases for every note. Frozen starts every note from the same "
+               "random phases, chosen by the seed, like a rendered unison sample played back.";
+      if (suffix == "random_phase_seed")
+        return "Choose the frozen phase pattern from 0 to 65535. The seed is saved with the preset. "
+               "Use the following Randomize button to try a new pattern.";
       if (suffix == "midi_track") return "Choose how strongly this oscillator follows MIDI note pitch.";
       if (suffix == "smooth_interpolation") return "Smooth movement between wavetable frames.";
       if (suffix == "secondary_distortion_type") return "Choose a second warp, FM or ring modulation mode after the primary distortion. None bypasses this stage.";
@@ -5389,8 +5418,9 @@ namespace {
     const auto* bridge = dynamic_cast<const ValueBridge*>(&parameter);
     const String parameter_id = bridge != nullptr ? bridge->getParameterId() : String();
     const int steps = parameter.getNumSteps();
-    const bool amplitude_seed = parameter_id.startsWith("osc_") && parameter_id.endsWith("_spectral_morph_seed");
-    double interval = steps > 1 && (steps < 10000 || amplitude_seed) ? 1.0 / (steps - 1) : 0.0;
+    const bool seed = parameter_id.startsWith("osc_") && (parameter_id.endsWith("_spectral_morph_seed") ||
+                                                          parameter_id.endsWith("_random_phase_seed"));
+    double interval = steps > 1 && (steps < 10000 || seed) ? 1.0 / (steps - 1) : 0.0;
     slider.setRange(minNormalizedValue, maxNormalizedValue, interval);
     // The effects whose sliders step in display units of their own, all
     // continuous: alone ("tape_drive") or in an effect slot ("fx_slot_2_tape_drive").
@@ -8346,11 +8376,12 @@ std::unique_ptr<AccessibleParameterRow> SynthEditor::buildAccessibleParameterRow
     }
   }
 
-  if (parameter_id.startsWith("osc_") && parameter_id.endsWith("_spectral_morph_type"))
-    last_random_amplitude_modes_[parameter_id] =
-        static_cast<int>(engineValueFor(bridge)) == vital::SynthOscillator::kRandomAmplitudes;
+  if (parameter_id.startsWith("osc_") && (parameter_id.endsWith("_spectral_morph_type") ||
+                                          parameter_id.endsWith("_random_phase_mode")))
+    last_seed_modes_[parameter_id] = modeShowsSeed(parameter_id, static_cast<int>(engineValueFor(bridge)));
 
-  if (parameter_id.startsWith("osc_") && parameter_id.endsWith("_spectral_morph_seed"))
+  if (parameter_id.startsWith("osc_") && (parameter_id.endsWith("_spectral_morph_seed") ||
+                                          parameter_id.endsWith("_random_phase_seed")))
     return std::make_unique<AccessibleParameterRow>(parameter, bridge->getDetails().local_description);
 
   if (parameter_id.startsWith("osc_") && parameter_id.contains("_secondary_"))
@@ -8567,6 +8598,11 @@ bool SynthEditor::shouldShowParameterInSection(const String& sectionName, AudioP
   if (parameter_id.startsWith("osc_") && parameter_id.endsWith("_spectral_morph_seed")) {
     const String mode_id = parameter_id.dropLastCharacters(4) + "type";
     return static_cast<int>(engineValueFor(parameterBridge(mode_id))) == vital::SynthOscillator::kRandomAmplitudes;
+  }
+
+  if (parameter_id.startsWith("osc_") && parameter_id.endsWith("_random_phase_seed")) {
+    const String mode_id = parameter_id.dropLastCharacters(4) + "mode";
+    return static_cast<int>(engineValueFor(parameterBridge(mode_id))) == vital::SynthOscillator::kRandomPhaseFrozen;
   }
 
   const String suffix = filterSuffixForParameter(parameter_id);
@@ -8869,18 +8905,19 @@ void SynthEditor::addOscillatorSectionContent(int oscillator, const String& sect
     row_y += 48;
 
     auto* bridge = dynamic_cast<ValueBridge*>(&parameter);
-    if (bridge == nullptr || !bridge->getParameterId().endsWith("_spectral_morph_seed"))
+    if (bridge == nullptr)
       return;
     const String id = bridge->getParameterId();
-    const String title = id.contains("_secondary_") ? "Randomize secondary amplitudes seed" : "Randomize amplitudes seed";
-    const String description = "Choose a new random amplitudes pattern for this morph slot";
+    const auto [title, description] = seedButtonFor(id);
+    if (title.isEmpty())
+      return;
     auto button = std::make_unique<OffscreenTextButton>(title);
     auto* button_ptr = button.get();
     button_ptr->setTitle(title);
     button_ptr->setDescription(description);
     button_ptr->setHelpText("Press Enter to " + description.toLowerCase());
     button_ptr->setWantsKeyboardFocus(true);
-    button_ptr->onClick = [this, id] { randomizeAmplitudeSeed(id); };
+    button_ptr->onClick = [this, id] { randomizeSeed(id); };
     button_ptr->setExplicitFocusOrder(focus_order++);
     button_ptr->setBounds(row_x, row_y, row_width, 38);
     row_parent.addAndMakeVisible(button_ptr);
@@ -9508,13 +9545,12 @@ bool SynthEditor::refreshFilterRowsIfNeeded() {
   return true;
 }
 
-bool SynthEditor::refreshRandomAmplitudeRowsIfNeeded() {
+bool SynthEditor::refreshSeedRowsIfNeeded() {
   bool changed = false;
-  for (auto& mode : last_random_amplitude_modes_) {
-    const bool random = static_cast<int>(engineValueFor(parameterBridge(mode.first))) ==
-                        vital::SynthOscillator::kRandomAmplitudes;
-    changed |= mode.second != random;
-    mode.second = random;
+  for (auto& mode : last_seed_modes_) {
+    const bool shown = modeShowsSeed(mode.first, static_cast<int>(engineValueFor(parameterBridge(mode.first))));
+    changed |= mode.second != shown;
+    mode.second = shown;
   }
   if (!changed)
     return false;
@@ -9674,7 +9710,7 @@ void SynthEditor::clearSectionComponents() {
   section_headers_.clear();
   rows_.clear();
   last_filter_states_.clear();
-  last_random_amplitude_modes_.clear();
+  last_seed_modes_.clear();
   last_lfo_layouts_.clear();
   last_oscillator_modes_.clear();
   instrument_preset_menu_stale_ = false;
@@ -10197,13 +10233,10 @@ void SynthEditor::showAllSections(bool announce) {
         row_focus_order_.push_back(row->focusableControl());
         rows_.push_back(std::move(row));
 
-        if (auto* bridge = dynamic_cast<ValueBridge*>(parameter);
-            bridge != nullptr && bridge->getParameterId().startsWith("osc_") &&
-            bridge->getParameterId().endsWith("_spectral_morph_seed")) {
+        if (auto* bridge = dynamic_cast<ValueBridge*>(parameter); bridge != nullptr) {
           const String id = bridge->getParameterId();
-          addActionButton(id.contains("_secondary_") ? "Randomize secondary amplitudes seed" : "Randomize amplitudes seed",
-                          "Choose a new random amplitudes pattern for this morph slot",
-                          [this, id] { randomizeAmplitudeSeed(id); });
+          if (const auto [title, description] = seedButtonFor(id); title.isNotEmpty())
+            addActionButton(title, description, [this, id] { randomizeSeed(id); });
         }
       }
       close_arp_destinations();
@@ -16958,7 +16991,7 @@ void SynthEditor::setParameterEngineValue(const String& id, float engineValue) {
   }
 }
 
-void SynthEditor::randomizeAmplitudeSeed(const String& id) {
+void SynthEditor::randomizeSeed(const String& id) {
   auto* bridge = parameterBridge(id);
   if (bridge == nullptr)
     return;
@@ -24879,7 +24912,7 @@ void SynthEditor::timerCallback() {
   }
   if (refreshFilterRowsIfNeeded())
     return;
-  if (refreshRandomAmplitudeRowsIfNeeded())
+  if (refreshSeedRowsIfNeeded())
     return;
   if (refreshLfoRowsIfNeeded())
     return;

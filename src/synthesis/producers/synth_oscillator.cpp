@@ -92,6 +92,13 @@ namespace vital {
       float spread_amount = std::min(1.0f, std::abs(frame_spread) / (kNumOscillatorWaveFrames * 0.5f));
       return static_cast<int>(unison_position * spread_amount * kMaxFrameSpreadPhaseFanCycles * kPhaseMult);
     }
+
+    // A frozen seed's random phase for one unison oscillator lane, in [-1, 1).
+    // Integer hashing, so it is the same on every platform.
+    mono_float frozenRandomPhase(int seed, int lane) {
+      uint32_t hash = analog::mixSeed(analog::mixSeed(static_cast<uint32_t>(seed) + 1u) + static_cast<uint32_t>(lane));
+      return (hash >> 8) * (2.0f / (1 << 24)) - 1.0f;
+    }
     
     const poly_float kFmPhaseMult = kPhaseMult / 8.0f;
     const poly_int kMaxFmModulation = 48;
@@ -809,6 +816,10 @@ namespace vital {
   void SynthOscillator::reset(poly_mask reset_mask) {
     poly_float random_amount = input(kRandomPhase)->at(0);
     poly_float frame_spread = isAnalog() ? poly_float(0.0f) : input(kUnisonFrameSpread)->at(0);
+    // Frozen, every note starts each unison oscillator where the seed puts it,
+    // like a rendered unison sample replayed.
+    bool frozen = std::roundf(input(kRandomPhaseMode)->at(0)[0]) == kRandomPhaseFrozen;
+    int seed = utils::iclamp(std::roundf(input(kRandomPhaseSeed)->at(0)[0]), 0, RandomValues::kMaxSeed);
     last_quantize_ratio_ = utils::maskLoad(last_quantize_ratio_, 1.0f, reset_mask);
 
     for (int v = 0; v < kNumVoicesPerProcess; ++v) {
@@ -816,10 +827,12 @@ namespace vital {
         for (int i = 0; i < kNumPolyPhase; ++i) {
           uint32_t phase_offset_left = getFrameSpreadPhaseOffset(i, active_oscillators_, frame_spread[2 * v]);
           uint32_t phase_offset_right = getFrameSpreadPhaseOffset(i, active_oscillators_, frame_spread[2 * v + 1]);
+          mono_float random_left = frozen ? frozenRandomPhase(seed, 2 * i) : random_generator_.next();
+          mono_float random_right = frozen ? frozenRandomPhase(seed, 2 * i + 1) : random_generator_.next();
           // Through a signed integer, so a negative offset wraps around the cycle on every
           // platform; a negative float converted straight to unsigned is 0 on arm64.
-          uint32_t random_phase_left = static_cast<int64_t>(random_generator_.next() * random_amount[2 * v] * INT_MAX);
-          uint32_t random_phase_right = static_cast<int64_t>(random_generator_.next() * random_amount[2 * v + 1] * INT_MAX);
+          uint32_t random_phase_left = static_cast<int64_t>(random_left * random_amount[2 * v] * INT_MAX);
+          uint32_t random_phase_right = static_cast<int64_t>(random_right * random_amount[2 * v + 1] * INT_MAX);
           phases_[i].set(2 * v, random_phase_left + phase_offset_left);
           phases_[i].set(2 * v + 1, random_phase_right + phase_offset_right);
 

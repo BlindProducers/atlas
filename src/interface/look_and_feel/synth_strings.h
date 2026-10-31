@@ -491,6 +491,11 @@ namespace strings {
     "60 Hz",
   };
 
+  const std::string kRandomPhaseModeNames[] = {
+    "New Each Note",
+    "Frozen",
+  };
+
   const std::string kSubWaveformNames[] = {
     "Sine",
     "Triangle",

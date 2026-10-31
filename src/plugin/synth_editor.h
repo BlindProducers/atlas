@@ -524,7 +524,7 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void wireSampleLoopFineTune(AccessibleParameterRow& row);
     bool shouldShowParameterInSection(const String& sectionName, AudioProcessorParameter* parameter) const;
     bool refreshFilterRowsIfNeeded();
-    bool refreshRandomAmplitudeRowsIfNeeded();
+    bool refreshSeedRowsIfNeeded();
     // An LFO's Simple and Custom views show different rows, and the Simple
     // view shows the one rate row its Sync uses.
     static int lfoIndexForParameterId(const String& parameterId);
@@ -1146,7 +1146,7 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void hideInlineTextPromptNow();
     ValueBridge* parameterBridge(const String& id) const;
     void setParameterEngineValue(const String& id, float engineValue);
-    void randomizeAmplitudeSeed(const String& id);
+    void randomizeSeed(const String& id);
     void setInternalParameterEngineValue(const String& id, float engineValue);
     void refreshVisibleModulationLabels();
     LineGenerator* activeModulationRemapGenerator() const;
@@ -1564,7 +1564,7 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     int active_oscillator_ = -1;
     int active_lfo_index_ = 0;
     std::map<String, std::pair<int, int>> last_filter_states_;
-    std::map<String, bool> last_random_amplitude_modes_;
+    std::map<String, bool> last_seed_modes_;
     std::map<int, int> last_lfo_layouts_;
     std::map<String, int> last_oscillator_modes_;
     // An SF2 preset menu lists another SoundFont than its slot plays.

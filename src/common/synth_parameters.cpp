@@ -1644,6 +1644,12 @@ namespace vital {
       ValueDetails::kIndexed, false, "", "Analog Hum Frequency", strings::kHumFrequencyNames },
     { "analog_sag", 0x020124, 0.0, 1.0, 0.0, 0.0, 100.0,
       ValueDetails::kLinear, false, "%", "Analog Supply Sag", nullptr },
+    // Frozen phase randomization, appended by version. New Each Note, the
+    // default, draws new phases for every note as before.
+    { "random_phase_mode", 0x02012e, 0.0, SynthOscillator::kNumRandomPhaseModes - 1, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Phase Randomization Mode", strings::kRandomPhaseModeNames },
+    { "random_phase_seed", 0x02012e, 0.0, RandomValues::kMaxSeed, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Phase Randomization Seed", nullptr },
   };
 
   // Sample oscillator type: registered once per oscillator slot as osc_N_sample_*.

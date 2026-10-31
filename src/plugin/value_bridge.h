@@ -186,7 +186,7 @@ class ValueBridge : public AudioProcessorParameterWithID {
       static constexpr int kMaxIndexedSteps = 300;
       return details_.value_scale == vital::ValueDetails::kIndexed &&
              (span_ < kMaxIndexedSteps || name_.endsWith("defuse_stages") ||
-              name_.endsWith("spectral_morph_seed"));
+              name_.endsWith("spectral_morph_seed") || name_.endsWith("random_phase_seed"));
     }
 
     bool isBoolean() const override {

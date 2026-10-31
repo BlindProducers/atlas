@@ -148,7 +148,16 @@ namespace vital {
         kAnalogHumFrequency,
         kAnalogSag,
         kSoundingVoices,
+        // Frozen phase randomization: every note starts from the seed's phases.
+        kRandomPhaseMode,
+        kRandomPhaseSeed,
         kNumInputs
+      };
+
+      enum RandomPhaseMode {
+        kRandomPhaseEachNote,
+        kRandomPhaseFrozen,
+        kNumRandomPhaseModes
       };
 
       enum OscillatorType {
