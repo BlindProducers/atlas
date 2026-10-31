@@ -14,7 +14,7 @@ env:
   # the next one, and write what changed since the one before in
   # docs/releases/v<version>-<this>.md, which the publish job puts at the top
   # of the release notes.
-  ATLAS_PRERELEASE: rc.2
+  ATLAS_PRERELEASE: rc.3
 
 on:
   push:
