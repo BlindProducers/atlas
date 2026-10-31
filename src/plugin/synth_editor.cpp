@@ -738,6 +738,7 @@ namespace {
   bool isWavetableOnlyOscillatorSuffix(const String& suffix) {
     static const StringArray suffixes {
       "wave_frame", "frame_spread", "spectral_unison", "smooth_interpolation", "distortion_phase",
+      "unison_remove_fundamental",
       "spectral_morph_type", "spectral_morph_amount", "spectral_morph_seed", "spectral_morph_spread",
       "secondary_spectral_morph_type", "secondary_spectral_morph_amount", "secondary_spectral_morph_seed",
       "secondary_spectral_morph_spread"
@@ -799,8 +800,8 @@ namespace {
       return OscillatorRowGroup::kScaleLock;
     static const StringArray pitch_and_unison {
       "transpose", "tune", "fixed_frequency_mode", "fixed_frequency", "midi_track", "unison_voices",
-      "unison_detune", "unison_blend", "stack_style", "detune_power", "detune_range", "stereo_spread",
-      "phase", "random_phase", "random_phase_mode", "random_phase_seed"
+      "unison_detune", "unison_blend", "unison_remove_fundamental", "stack_style", "detune_power", "detune_range",
+      "stereo_spread", "phase", "random_phase", "random_phase_mode", "random_phase_seed"
     };
     if (pitch_and_unison.contains(suffix))
       return OscillatorRowGroup::kPitch;
@@ -2333,7 +2334,7 @@ namespace {
                                             "transpose_quantize", "level", "pan" });
 
     auto oscillator_suffix_rank = [](const String& suffix) {
-      static const std::array<const char*, 61> oscillator_order = {{
+      static const std::array<const char*, 62> oscillator_order = {{
         "on",
         "type",
         "level",
@@ -2364,6 +2365,7 @@ namespace {
         "unison_voices",
         "unison_detune",
         "unison_blend",
+        "unison_remove_fundamental",
         "stack_style",
         "detune_power",
         "detune_range",
@@ -3760,6 +3762,10 @@ namespace {
       if (suffix == "stereo_spread") return "Spread unison voices across the stereo field.";
       if (suffix == "phase") return "Set the oscillator start phase.";
       if (suffix == "random_phase") return "Randomize oscillator start phase on each triggered note.";
+      if (suffix == "unison_remove_fundamental")
+        return "Take the fundamental out of every detuned unison voice, so the low end does not phase, as in a "
+               "Reese bass. Only a voice on the note's pitch keeps it: the middle one of an odd voice count. "
+               "With an even count none does.";
       if (suffix == "random_phase_mode")
         return "New Each Note draws new random phases for every note. Frozen starts every note from the same "
                "random phases, chosen by the seed, like a rendered unison sample played back.";

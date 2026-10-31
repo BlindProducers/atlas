@@ -1650,6 +1650,10 @@ namespace vital {
       ValueDetails::kIndexed, false, "", "Phase Randomization Mode", strings::kRandomPhaseModeNames },
     { "random_phase_seed", 0x02012e, 0.0, RandomValues::kMaxSeed, 0.0, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Phase Randomization Seed", nullptr },
+    // Remove Fundamental, appended by version. Off, the default, leaves every
+    // unison voice whole as before.
+    { "unison_remove_fundamental", 0x02012f, 0.0, 1.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Unison Remove Fundamental", strings::kOffOnNames },
   };
 
   // Sample oscillator type: registered once per oscillator slot as osc_N_sample_*.

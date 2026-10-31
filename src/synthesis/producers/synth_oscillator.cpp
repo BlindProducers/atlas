@@ -93,6 +93,43 @@ namespace vital {
       return static_cast<int>(unison_position * spread_amount * kMaxFrameSpreadPhaseFanCycles * kPhaseMult);
     }
 
+    // One cycle of the fundamental, to project a wave buffer onto it.
+    struct FundamentalTable {
+      FundamentalTable() {
+        for (int i = 0; i < Wavetable::kWaveformSize; ++i) {
+          double phase = 2.0 * kPi * i / Wavetable::kWaveformSize;
+          cosine[i] = static_cast<mono_float>(std::cos(phase));
+          sine[i] = static_cast<mono_float>(std::sin(phase));
+        }
+      }
+      mono_float cosine[Wavetable::kWaveformSize];
+      mono_float sine[Wavetable::kWaveformSize];
+    };
+    const FundamentalTable kFundamentalTable;
+
+    // Takes the first harmonic out of a wave buffer (as a SynthOscillator wave
+    // buffer points: one sample before the cycle, which the wrap samples surround).
+    void removeFundamental(mono_float* wave) {
+      static constexpr int kSize = Wavetable::kWaveformSize;
+      mono_float* buffer = wave - (poly_float::kSize - 1);
+      mono_float* samples = buffer + poly_float::kSize;
+      mono_float cosine_sum = 0.0f;
+      mono_float sine_sum = 0.0f;
+      for (int i = 0; i < kSize; ++i) {
+        cosine_sum += samples[i] * kFundamentalTable.cosine[i];
+        sine_sum += samples[i] * kFundamentalTable.sine[i];
+      }
+      cosine_sum *= 2.0f / kSize;
+      sine_sum *= 2.0f / kSize;
+      for (int i = 0; i < kSize; ++i)
+        samples[i] -= cosine_sum * kFundamentalTable.cosine[i] + sine_sum * kFundamentalTable.sine[i];
+
+      for (int i = 0; i < poly_float::kSize; ++i) {
+        buffer[i] = buffer[i + kSize];
+        buffer[i + kSize + poly_float::kSize] = buffer[i + poly_float::kSize];
+      }
+    }
+
     // A frozen seed's random phase for one unison oscillator lane, in [-1, 1).
     // Integer hashing, so it is the same on every platform.
     mono_float frozenRandomPhase(int seed, int lane) {
@@ -1156,6 +1193,54 @@ namespace vital {
           wave_buffers_[buffer_index] = wave_buffers_[i];
         }
       }
+    }
+
+    if (input(kUnisonRemoveFundamental)->at(0)[0] != 0.0f)
+      removeDetunedFundamentals(index, spectral_unison);
+  }
+
+  void SynthOscillator::removeDetunedFundamentals(int index, bool spectral_unison) {
+    int num_phase_updates = active_oscillators_ / 2;
+    // With an odd count the first pair's two lanes are the middle voice, on the
+    // note's pitch; with an even count every voice is detuned.
+    int first_detuned = unison_ % 2 ? 1 : 0;
+    if (first_detuned >= num_phase_updates)
+      return;
+
+    if (spectral_unison || first_detuned == 0) {
+      // Each voice has a buffer of its own, just computed, or every voice
+      // shares the first pair's and all of them are detuned.
+      int end = spectral_unison ? num_phase_updates : 1;
+      for (int v = first_detuned; v < end; ++v) {
+        for (int i = index; i < index + 2; ++i) {
+          int buffer_index = v * poly_float::kSize + i;
+          if (i > index && wave_buffers_[buffer_index] == wave_buffers_[buffer_index - 1])
+            continue;
+          removeFundamental(const_cast<mono_float*>(wave_buffers_[buffer_index]));
+        }
+      }
+      return;
+    }
+
+    // The middle voice keeps the shared buffer; the detuned voices share a copy
+    // without its fundamental, in the second pair's frame not in use.
+    for (int i = index; i < index + 2; ++i) {
+      int buffer_index = poly_float::kSize + i;
+      const mono_float* stripped = nullptr;
+      if (i > index && wave_buffers_[i] == wave_buffers_[i - 1])
+        stripped = wave_buffers_[buffer_index - 1];
+      else {
+        mono_float* destination = ((mono_float*)fourier_frames_.first(buffer_index)) + poly_float::kSize - 1;
+        if (destination == last_buffers_[buffer_index])
+          destination = ((mono_float*)fourier_frames_.second(buffer_index)) + poly_float::kSize - 1;
+        const mono_float* source = wave_buffers_[i] - (poly_float::kSize - 1);
+        std::copy(source, source + Wavetable::kWaveformSize + 2 * poly_float::kSize,
+                  destination - (poly_float::kSize - 1));
+        removeFundamental(destination);
+        stripped = destination;
+      }
+      for (int v = 1; v < num_phase_updates; ++v)
+        wave_buffers_[v * poly_float::kSize + i] = stripped;
     }
   }
 

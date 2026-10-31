@@ -102,6 +102,8 @@ namespace vital {
     oscillator_->plug(createPolyModControl(prefix_ + "_analog_sag"), SynthOscillator::kAnalogSag);
     oscillator_->plug(createBaseControl(prefix_ + "_random_phase_mode"), SynthOscillator::kRandomPhaseMode);
     oscillator_->plug(createBaseControl(prefix_ + "_random_phase_seed"), SynthOscillator::kRandomPhaseSeed);
+    oscillator_->plug(createBaseControl(prefix_ + "_unison_remove_fundamental"),
+                      SynthOscillator::kUnisonRemoveFundamental);
     oscillator_->setVoiceCardSalt(prefix_);
 
     oscillator_->useInput(input(kReset), SynthOscillator::kReset);

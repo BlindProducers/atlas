@@ -151,6 +151,8 @@ namespace vital {
         // Frozen phase randomization: every note starts from the seed's phases.
         kRandomPhaseMode,
         kRandomPhaseSeed,
+        // Only a voice on the note's pitch keeps its fundamental.
+        kUnisonRemoveFundamental,
         kNumInputs
       };
 
@@ -444,6 +446,8 @@ namespace vital {
       template<void(*spectralMorph)(const Wavetable::WavetableData*, int, poly_float*,
                                     FourierTransform*, float, int, const poly_float*)>
       void setFourierWaveBuffers(poly_float phase_inc, int index, bool formant_shift);
+      // Remove Fundamental: the detuned voices' buffers without their first harmonic.
+      void removeDetunedFundamentals(int index, bool spectral_unison);
       void stereoBlend(poly_float* audio_out, int num_samples, poly_mask reset_mask);
       void levelOutput(poly_float* audio_out, const poly_float* raw_out, int buffer_size, poly_mask reset_mask);
       void convertVoiceChannels(int buffer_size, poly_float* audio_out, poly_mask active_mask);
