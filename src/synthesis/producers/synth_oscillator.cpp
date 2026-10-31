@@ -816,8 +816,10 @@ namespace vital {
         for (int i = 0; i < kNumPolyPhase; ++i) {
           uint32_t phase_offset_left = getFrameSpreadPhaseOffset(i, active_oscillators_, frame_spread[2 * v]);
           uint32_t phase_offset_right = getFrameSpreadPhaseOffset(i, active_oscillators_, frame_spread[2 * v + 1]);
-          uint32_t random_phase_left = random_generator_.next() * random_amount[2 * v] * INT_MAX;
-          uint32_t random_phase_right = random_generator_.next() * random_amount[2 * v + 1] * INT_MAX;
+          // Through a signed integer, so a negative offset wraps around the cycle on every
+          // platform; a negative float converted straight to unsigned is 0 on arm64.
+          uint32_t random_phase_left = static_cast<int64_t>(random_generator_.next() * random_amount[2 * v] * INT_MAX);
+          uint32_t random_phase_right = static_cast<int64_t>(random_generator_.next() * random_amount[2 * v + 1] * INT_MAX);
           phases_[i].set(2 * v, random_phase_left + phase_offset_left);
           phases_[i].set(2 * v + 1, random_phase_right + phase_offset_right);
 

@@ -2945,6 +2945,7 @@ namespace {
 #include "oscillator_level_tests.h"
 #include "spectral_oscillator_tests.h"
 #include "oscillator_warp_tests.h"
+#include "unison_phase_tests.h"
 #include "random_amplitude_seed_tests.h"
 #include "sample_navigation_tests.h"
 #include "filter_keytrack_tests.h"
@@ -2988,6 +2989,8 @@ int main(int argc, char** argv) {
     return oscillator_warp_tests::benchmark();
   if (argc > 1 && std::string(argv[1]) == "--oscillator-warps")
     return oscillator_warp_tests::run();
+  if (argc > 1 && std::string(argv[1]) == "--unison-phase")
+    return unison_phase_tests::run();
   if (argc > 1 && std::string(argv[1]) == "--ir-navigation-benchmark") {
     juce::ScopedJuceInitialiser_GUI gui;
     Array<File> files;
