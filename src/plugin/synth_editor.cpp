@@ -11687,6 +11687,9 @@ void SynthEditor::undoOrRedo(bool redo) {
   else {
     // The rows show the values again; a choice that decides them rebuilds them.
     timerCallback();
+    // A wavetable step may have added or removed frames.
+    for (int oscillator = 0; oscillator < vital::kNumOscillators; ++oscillator)
+      syncWavetableFrameSliders(oscillator);
   }
   postUndoAnnouncement(undoAnnouncement(outcome, redo));
 }
@@ -21099,6 +21102,8 @@ int SynthEditor::addAccessibleWavetableEditorControls(int oscillator, Component&
         "Frame timeline position",
         "Move this source frame on the 256-position wavetable timeline without crossing adjacent source frames",
         1.0, vital::kNumOscillatorWaveFrames, frame_position + 1.0, 1.0, "", 0);
+    wavetable_frame_slider_[oscillator] = frame_slider;
+    wavetable_frame_position_slider_[oscillator] = frame_position_slider;
 
     auto selected_frame = [frame_slider] { return jmax(0, roundToInt(frame_slider->getValue()) - 1); };
     auto all_frames = [scope] { return scope->getSelectedId() == 2; };
@@ -21307,6 +21312,23 @@ void SynthEditor::pruneWavetableFrameSelection(int oscillator, int frameCount) {
   }
 }
 
+void SynthEditor::syncWavetableFrameSliders(int oscillator) {
+  if (!isPositiveAndBelow(oscillator, vital::kNumOscillators))
+    return;
+  auto* frame_slider = wavetable_frame_slider_[oscillator].getComponent();
+  auto* source = currentWaveSource(oscillator);
+  if (frame_slider == nullptr || source == nullptr || source->numFrames() == 0)
+    return;
+
+  const int frames = source->numFrames();
+  pruneWavetableFrameSelection(oscillator, frames);
+  const int frame = wavetable_keyboard_state_[oscillator].frame;
+  frame_slider->setRange(1.0, jmax(1.000001, double(frames)), 1.0);
+  frame_slider->setValue(frame + 1.0, dontSendNotification);
+  if (auto* position_slider = wavetable_frame_position_slider_[oscillator].getComponent())
+    position_slider->setValue(source->getFrameAt(frame)->position() + 1.0, dontSendNotification);
+}
+
 String SynthEditor::wavetableKeyboardStatusText(int oscillator) const {
   if (!isPositiveAndBelow(oscillator, vital::kNumOscillators))
     return "Wavetable keyboard editor unavailable";
@@ -21407,6 +21429,7 @@ void SynthEditor::moveWavetableFrameCursor(int oscillator, int direction, bool e
     for (int frame = first; frame <= last; ++frame)
       state.selected_frames.insert(frame);
   }
+  syncWavetableFrameSliders(oscillator);
   postWavetableEditorAnnouncement(wavetableFrameStatusText(oscillator),
                                   AccessibilityHandler::AnnouncementPriority::high);
 }
@@ -21606,6 +21629,7 @@ void SynthEditor::addWavetableFrame(int oscillator) {
   state.selected_frames.clear();
   creator->render();
   synth_.markStateChanged(wavetableUndoBlock(oscillator));
+  syncWavetableFrameSliders(oscillator);
   postWavetableEditorAnnouncement("Frame added, " + wavetableFrameStatusText(oscillator),
                                   AccessibilityHandler::AnnouncementPriority::high);
 }
@@ -21633,6 +21657,7 @@ void SynthEditor::deleteWavetableFrames(int oscillator) {
   state.selected_frames.clear();
   creator->render();
   synth_.markStateChanged(wavetableUndoBlock(oscillator));
+  syncWavetableFrameSliders(oscillator);
   postWavetableEditorAnnouncement("Deleted " + String(targets.size()) + " wavetable frame" +
                                   (targets.size() == 1 ? String() : String("s")) + ", " +
                                   wavetableFrameStatusText(oscillator),
@@ -22131,6 +22156,7 @@ bool SynthEditor::handleWavetableShortcut(int oscillator, const KeyPress& key, C
       for (int frame = jmin(previous, state.frame); frame <= jmax(previous, state.frame); ++frame)
         state.selected_frames.insert(frame);
     }
+    syncWavetableFrameSliders(oscillator);
     postWavetableEditorAnnouncement(wavetableFrameStatusText(oscillator),
                                     AccessibilityHandler::AnnouncementPriority::high);
     return true;

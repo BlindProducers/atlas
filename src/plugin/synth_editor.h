@@ -980,6 +980,7 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void rebuildWavetableEditor(int oscillator, const String& focusTitle);
     std::vector<int> wavetableTargetFrameIndices(int oscillator, int frameCount) const;
     void pruneWavetableFrameSelection(int oscillator, int frameCount);
+    void syncWavetableFrameSliders(int oscillator);
     void setWavetableEditorVisible(int oscillator, bool visible);
     void applyWavetableHarmonicEdit(int oscillator, int frame, bool allFrames,
                                     int harmonic, float levelPercent, float phaseDegrees);
@@ -1655,6 +1656,10 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     bool updating_routing_controls_ = false;
     bool wavetable_browser_cache_valid_ = false;
     bool wavetable_editor_visible_[vital::kNumOscillators] = {};
+    // The wave source's Frame and Frame timeline position sliders, which follow
+    // the keyboard editor and undo without a rebuild.
+    Component::SafePointer<Slider> wavetable_frame_slider_[vital::kNumOscillators];
+    Component::SafePointer<Slider> wavetable_frame_position_slider_[vital::kNumOscillators];
     bool preset_to_wavetable_rendering_ = false;
     bool sample_browser_cache_valid_ = false;
     bool ir_browser_cache_valid_ = false;
