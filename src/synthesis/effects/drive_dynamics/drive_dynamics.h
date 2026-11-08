@@ -56,6 +56,13 @@ namespace atlas::drive_dynamics {
       // The latency Hi-Quality reports and the dry path is delayed by.
       static constexpr int kHiQualityLatency = 3;
       static int latencyFor(const Parameters& p, double) { return p.hi_quality >= 0.5 ? kHiQualityLatency : 0; }
+      // Atlas's DC blocker on the wet signal: a first-order high-pass at this frequency.
+      static constexpr double kDcBlockerHz = 5.0;
+
+      // remove_dc adds Atlas's DC blocker after the script's wet path: its
+      // curves are symmetric, so material that is not leaves an offset that
+      // nothing in the script removes. Off, the class is the script alone.
+      explicit Saturator(bool remove_dc = true) : remove_dc_(remove_dc) { }
       void prepare(double sample_rate);
       void setParameters(const Parameters& parameters);
       void process(double& left, double& right);
@@ -69,9 +76,11 @@ namespace atlas::drive_dynamics {
       void setPeak(BiquadCoefficients& c, double fc, double gdb, double q) const;
       void setHighPass(BiquadCoefficients& c, double fc, double q) const;
 
+      bool remove_dc_;
       Parameters p_;
       double srate_ = 44100;
       double wsdc_b_ = 0, wsdc_a_ = 0, sm_ = 0;
+      double out_dc_b_ = 0, out_dc_a_ = 0;
       bool sm_init_ = false;
       double last_key_ = -1;
       double t_gain_ = 0, t_out_ = 0, t_mix_ = 0, s_gain_ = 0, s_out_ = 0, s_mix_ = 0;
@@ -81,7 +90,7 @@ namespace atlas::drive_dynamics {
       double lat_ = 0;
       BiquadCoefficients dcc_, shf_, shfi_, pkf_, pkfi_;
       BiquadState dl_, dr_, sl_, sr_, pl_, pr_, pli_, pri_, sli_, sri_;
-      DcBlocker wl1_, wl2_, wr1_, wr2_;
+      DcBlocker wl1_, wl2_, wr1_, wr2_, out_dc_l_, out_dc_r_;
       HalfBandState st_l_, st_r_;
       std::array<double, 1024> dry_l_ {}, dry_r_ {};
       int dwp_ = 0;

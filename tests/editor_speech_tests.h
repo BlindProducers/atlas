@@ -93,6 +93,26 @@ namespace {
       expectNavigationSpoken(*wavetable, spoken, characterKey('.'), "Harmonic 2", "Wavetable editor next harmonic");
       expectNavigationSpoken(*wavetable, spoken, characterKey(','), "Harmonic 1", "Wavetable editor previous harmonic");
       expectNavigationSpoken(*wavetable, spoken, KeyPress(KeyPress::pageUpKey), "Harmonic 11", "Wavetable editor ten harmonics up");
+
+      // The Frame slider follows the cursor and the frames the keyboard adds and deletes.
+      auto* frame_slider = dynamic_cast<Slider*>(titled(*wavetable_section, "Frame"));
+      expect(frame_slider != nullptr, "the wavetable editor has its Frame slider");
+      if (frame_slider != nullptr) {
+        auto frame_range = [frame_slider] {
+          return String(roundToInt(frame_slider->getValue())) + " of " + String(roundToInt(frame_slider->getMaximum()));
+        };
+        auto expect_frames = [&](const String& expected, const String& after) {
+          expect(frame_range() == expected,
+                 ("after " + after + " the Frame slider reads " + expected + " (it reads " + frame_range() + ")").toStdString());
+        };
+        expect_frames("7 of 7", "End");
+        wavetable->keyPressed(KeyPress(KeyPress::homeKey));
+        expect_frames("1 of 7", "Home");
+        wavetable->keyPressed(characterKey('a'));
+        expect_frames("2 of 8", "adding a frame");
+        wavetable->keyPressed(characterKey('e'));
+        expect_frames("2 of 7", "deleting a frame");
+      }
     }
 
     // Use speech feedback off silences them all.

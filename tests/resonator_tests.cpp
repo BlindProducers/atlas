@@ -553,7 +553,7 @@ namespace {
     vital::Value bpm(2.0f), keytrack(0.0f);
     vital::NoteMonitor notes;
     for (const std::string prefix : { "", "bus_1_", "bus_2_", "bus_3_" }) {
-      vital::ReorderableEffectChain chain(bpm.output(), keytrack.output(), prefix, nullptr, nullptr, nullptr,
+      vital::ReorderableEffectChain chain(bpm.output(), keytrack.output(), prefix, nullptr, nullptr,
                                           nullptr, &notes);
       chain.init();
       chain.setSampleRate(48000);

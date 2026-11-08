@@ -2946,6 +2946,8 @@ namespace {
 #include "spectral_oscillator_tests.h"
 #include "oscillator_warp_tests.h"
 #include "random_amplitude_seed_tests.h"
+#include "unison_phase_tests.h"
+#include "unison_fundamental_tests.h"
 #include "sample_navigation_tests.h"
 #include "filter_keytrack_tests.h"
 #include "filter_routing_tests.h"
@@ -2958,6 +2960,7 @@ namespace {
 #include "distortion_filter_tests.h"
 #include "fourier_transform_tests.h"
 #include "maim_tests.h"
+#include "dc_offset_tests.h"
 
 int main(int argc, char** argv) {
   if (argc > 1 && std::string(argv[1]) == "--distortion-filter")
@@ -2966,6 +2969,8 @@ int main(int argc, char** argv) {
     return fourier_transform_tests::run();
   if (argc > 1 && std::string(argv[1]) == "--maim")
     return maim_tests::run();
+  if (argc > 1 && std::string(argv[1]) == "--dc-offsets")
+    return dc_offset_tests::run(argc, argv);
   if (argc > 1 && std::string(argv[1]) == "--analog-oscillator")
     return analog_oscillator_tests::runDsp();
   if (argc > 1 && std::string(argv[1]) == "--analog-oscillator-controls")
@@ -2988,6 +2993,14 @@ int main(int argc, char** argv) {
     return oscillator_warp_tests::benchmark();
   if (argc > 1 && std::string(argv[1]) == "--oscillator-warps")
     return oscillator_warp_tests::run();
+  if (argc > 1 && std::string(argv[1]) == "--unison-phase")
+    return unison_phase_tests::run();
+  if (argc > 1 && std::string(argv[1]) == "--unison-phase-controls")
+    return unison_phase_tests::runControls();
+  if (argc > 1 && std::string(argv[1]) == "--unison-fundamental")
+    return unison_fundamental_tests::run();
+  if (argc > 1 && std::string(argv[1]) == "--unison-fundamental-controls")
+    return unison_fundamental_tests::runControls();
   if (argc > 1 && std::string(argv[1]) == "--ir-navigation-benchmark") {
     juce::ScopedJuceInitialiser_GUI gui;
     Array<File> files;

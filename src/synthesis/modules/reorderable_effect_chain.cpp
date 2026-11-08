@@ -16,6 +16,7 @@
 
 #include "reorderable_effect_chain.h"
 #include "prepared_effect_module.h"
+#include "dc_filter.h"
 
 #include "analogue_chorus_module.h"
 #include "analogue_flanger_module.h"
@@ -51,7 +52,6 @@
 #include "spectral_compressor_module.h"
 #include "spectral_lock_module.h"
 #include "resonator_module.h"
-#include "scream_module.h"
 #include "tremolo_pan_module.h"
 #include "trance_gate_module.h"
 #include "tape_module.h"
@@ -66,15 +66,29 @@
 
 namespace vital {
 
+  namespace {
+    // The number the removed Scream effect had: it stays reserved so every
+    // later effect keeps its saved number, and a slot that still names it
+    // passes its input through. Scream lives on as a filter model.
+    class RemovedEffectModule : public SynthModule {
+      public:
+        RemovedEffectModule() : SynthModule(0, 1) { }
+        void processWithInput(const poly_float* input, int num_samples) override {
+          SynthModule::process(num_samples);
+          utils::copyBuffer(output()->buffer, input, num_samples);
+        }
+        Processor* clone() const override { VITAL_ASSERT(false); return nullptr; }
+    };
+  }
+
   ReorderableEffectChain::ReorderableEffectChain(const Output* beats_per_second, const Output* keytrack,
                                                  std::string prefix,
                                                  std::shared_ptr<ConvolutionIrWorker> convolution_worker,
-                                                 const Output* scream_midi_note,
                                                  const TranceGateClock* trance_gate_clock,
                                                  std::shared_ptr<EffectPreparationWorker> preparation_worker,
                                                  const NoteMonitor* note_monitor) :
       vital::SynthModule(kNumInputs, 1), equalizer_memory_(nullptr),
-      beats_per_second_(beats_per_second), keytrack_(keytrack), scream_midi_note_(scream_midi_note),
+      beats_per_second_(beats_per_second), keytrack_(keytrack),
       trance_gate_clock_(trance_gate_clock), note_monitor_(note_monitor), prefix_(prefix),
       convolution_worker_(convolution_worker ? std::move(convolution_worker) :
                                               std::make_shared<ConvolutionIrWorker>()),
@@ -192,8 +206,8 @@ namespace vital {
         return new TranceGateModule(beats_per_second_, trance_gate_clock_, module_prefix);
       case constants::kTremoloPan:
         return new TremoloPanModule(beats_per_second_, module_prefix);
-      case constants::kScream:
-        return new ScreamModule(module_prefix, scream_midi_note_);
+      case constants::kRemovedScream:
+        return new RemovedEffectModule();
       case constants::kSpectralLock:
         return new SpectralLockModule(module_prefix);
       case constants::kResonator:
@@ -238,6 +252,8 @@ namespace vital {
         return new OverdriveModule(module_prefix);
       case constants::kMultibandDynamics:
         return new MultibandDynamicsModule(module_prefix);
+      case constants::kDestroy:
+        return new DestroyModule(module_prefix);
       default:
         return nullptr;
     }
@@ -308,6 +324,54 @@ namespace vital {
           return false;
       }
       return true;
+    }
+
+    // Effects that can add DC: saturating stages (delay lines clip what
+    // they write), codecs, dynamics that ride the gain within a cycle, and
+    // the Frequency Shifter, which can move a partial to 0 Hz.
+    // The others are linear, were measured without any, or block their own
+    // (Saturator, Dynamic Tube, Overdrive, Destroy, and Waveshaper, whose
+    // Remove DC can be switched off on purpose).
+    bool addsDc(int effect) {
+      switch (effect) {
+        case constants::kChorus:
+        case constants::kCompressor:
+        case constants::kDelay:
+        case constants::kDistortion:
+        case constants::kFilterFx:
+        case constants::kFlanger:
+        case constants::kPhaser:
+        case constants::kReverb:
+        case constants::kFrequencyShifter:
+        case constants::kLimiter:
+        case constants::kDimensionExpander:
+        case constants::kErosion:
+        case constants::kFloatyDelay:
+        case constants::kTape:
+        case constants::kAnalogueFlanger:
+        case constants::kAnalogueEcho:
+        case constants::kAnalogueRotary:
+        case constants::kOpenWurliAmp:
+        case constants::kAnalogueCompressor:
+        case constants::kMaim:
+        case constants::kParticles:
+        case constants::kMultibandDynamics:
+          return true;
+        default:
+          return false;
+      }
+    }
+
+    // Takes out the part of `out - in` below 5 Hz, which `added` low-passes:
+    // the DC an effect added, while the dry signal passes untouched.
+    void removeAddedDc(poly_float& added, const poly_float* in, poly_float* out, int num_samples,
+                       mono_float coefficient) {
+      poly_float dc = added;
+      for (int i = 0; i < num_samples; ++i) {
+        dc = utils::mulAdd(dc, out[i] - in[i] - dc, coefficient);
+        out[i] -= dc;
+      }
+      added = dc;
     }
 
     bool isValidEffectOrder(const int* order) {
@@ -381,6 +445,7 @@ namespace vital {
   }
 
   void ReorderableEffectChain::processWithInput(const poly_float* audio_in, int num_samples) {
+    const mono_float dc_coefficient = 1.0f - DcBlocker::coefficient(getSampleRate());
     for (int slot = 0; slot < constants::kMaxEffectSlots; ++slot) {
       VITAL_ASSERT(utils::isFinite(audio_in, num_samples));
 
@@ -397,10 +462,13 @@ namespace vital {
       else if (previous >= 0 && previous != index && slot_effects_[slot][previous]->enabled())
         slot_effects_[slot][previous]->enable(false);
       selected_effects_[slot] = index;
-      if (previous != index)
+      if (previous != index) {
         wakeSlot(slot);
+        added_dc_[slot] = 0.0f;
+      }
       if (!on) {
         wakeSlot(slot);
+        added_dc_[slot] = 0.0f;
         if (index >= 0 && slot_effects_[slot][index]->enabled())
           slot_effects_[slot][index]->enable(false);
         continue;
@@ -426,12 +494,17 @@ namespace vital {
       }
 
       slot_effects_[slot][index]->processWithInput(audio_in, num_samples);
-      audio_in = slot_effects_[slot][index]->output(0)->buffer;
+      poly_float* effect_out = slot_effects_[slot][index]->output(0)->buffer;
+      if (addsDc(index))
+        removeAddedDc(added_dc_[slot], audio_in, effect_out, num_samples, dc_coefficient);
+      audio_in = effect_out;
 
       if (input_quiet && isQuiet(audio_in, num_samples)) {
         const int hold = silenceHoldSamples(slot, index);
         quiet_samples_[slot] = std::min(quiet_samples_[slot] + num_samples, hold);
         asleep_[slot] = quiet_samples_[slot] >= hold;
+        if (asleep_[slot])
+          added_dc_[slot] = 0.0f;
       }
       else
         wakeSlot(slot);
@@ -530,6 +603,7 @@ namespace vital {
   void ReorderableEffectChain::hardReset() {
     for (int slot = 0; slot < constants::kMaxEffectSlots; ++slot)
       wakeSlot(slot);
+    added_dc_.fill(0.0f);
     for (int i = 0; i < constants::kNumEffects; ++i)
       effects_[i]->hardReset();
     for (int slot = 0; slot < constants::kMaxEffectSlots; ++slot)

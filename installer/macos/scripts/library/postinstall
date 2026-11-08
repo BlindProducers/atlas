@@ -1,0 +1,41 @@
+#!/bin/sh
+# Copies the library the package put in $2 (the Factory banks and every
+# library's folders, installer/stage_library.cmake) into the Atlas folder of
+# the user logged in at the screen, as that user, then removes it from $2.
+# Factory files already there are replaced; nothing else in the Atlas folder
+# changes. Atlas moves a library still in Documents/Alessio Plugins/Atlas to
+# Documents/Blind Producers Plugins/Atlas the first time it runs (or keeps
+# using it when both exist), so the files go to the old one while it exists.
+staged=$2
+case "$staged" in
+  */"Atlas Library") ;;
+  *) echo "Atlas: unexpected install location $staged" >&2; exit 1 ;;
+esac
+
+cleanup() {
+  rm -rf "$staged"
+  rmdir "$(dirname "$staged")" 2> /dev/null
+  return 0
+}
+
+user=$(stat -f %Su /dev/console)
+case "$user" in
+  "" | root | loginwindow)
+    echo "Atlas: nobody is logged in, so the library was not installed"
+    cleanup
+    exit 0
+    ;;
+esac
+home=$(dscl . -read "/Users/$user" NFSHomeDirectory 2> /dev/null | sed -n 's/^NFSHomeDirectory: //p')
+if [ ! -d "$home" ]; then
+  echo "Atlas: no home folder for $user, so the library was not installed"
+  cleanup
+  exit 0
+fi
+
+atlas="$home/Documents/Blind Producers Plugins/Atlas"
+[ -d "$home/Documents/Alessio Plugins/Atlas" ] && atlas="$home/Documents/Alessio Plugins/Atlas"
+sudo -u "$user" mkdir -p "$atlas" && sudo -u "$user" ditto "$staged" "$atlas"
+status=$?
+cleanup
+exit $status

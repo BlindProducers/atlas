@@ -524,7 +524,7 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void wireSampleLoopFineTune(AccessibleParameterRow& row);
     bool shouldShowParameterInSection(const String& sectionName, AudioProcessorParameter* parameter) const;
     bool refreshFilterRowsIfNeeded();
-    bool refreshRandomAmplitudeRowsIfNeeded();
+    bool refreshSeedRowsIfNeeded();
     // An LFO's Simple and Custom views show different rows, and the Simple
     // view shows the one rate row its Sync uses.
     static int lfoIndexForParameterId(const String& parameterId);
@@ -698,6 +698,12 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     // Library list and column, which would name only Community, are left out.
     void namePresetBrowserForCollection();
     void namePresetFacetTable(PresetTableListBox& table, const String& title);
+    // The Sort presets list beside the search: its choices for the collection
+    // (Most downloaded only on the community's side), the name of a sort, and
+    // choosing one, which a column header pressed with the mouse also does.
+    void updatePresetSortChoices();
+    String presetSortName(int column, bool ascending) const;
+    void setPresetSort(int column, bool ascending);
     // The facet lists side by side in `preset_facet_area_`, without the hidden ones.
     void layoutPresetFacets();
     // The items the facets and the table are built from: a community list in
@@ -974,6 +980,7 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void rebuildWavetableEditor(int oscillator, const String& focusTitle);
     std::vector<int> wavetableTargetFrameIndices(int oscillator, int frameCount) const;
     void pruneWavetableFrameSelection(int oscillator, int frameCount);
+    void syncWavetableFrameSliders(int oscillator);
     void setWavetableEditorVisible(int oscillator, bool visible);
     void applyWavetableHarmonicEdit(int oscillator, int frame, bool allFrames,
                                     int harmonic, float levelPercent, float phaseDegrees);
@@ -1140,7 +1147,7 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void hideInlineTextPromptNow();
     ValueBridge* parameterBridge(const String& id) const;
     void setParameterEngineValue(const String& id, float engineValue);
-    void randomizeAmplitudeSeed(const String& id);
+    void randomizeSeed(const String& id);
     void setInternalParameterEngineValue(const String& id, float engineValue);
     void refreshVisibleModulationLabels();
     LineGenerator* activeModulationRemapGenerator() const;
@@ -1307,6 +1314,7 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     Label preset_details_;
     TextButton preset_menu_ { "Preset menu" };
     TextEditor preset_search_;
+    AccessibleComboBox preset_sort_;
     PresetTableListBox preset_collection_table_ { "Collection" };
     PresetTableListBox preset_library_table_ { "Library" };
     PresetTableListBox preset_bank_table_ { "Bank" };
@@ -1557,7 +1565,7 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     int active_oscillator_ = -1;
     int active_lfo_index_ = 0;
     std::map<String, std::pair<int, int>> last_filter_states_;
-    std::map<String, bool> last_random_amplitude_modes_;
+    std::map<String, bool> last_seed_modes_;
     std::map<int, int> last_lfo_layouts_;
     std::map<String, int> last_oscillator_modes_;
     // An SF2 preset menu lists another SoundFont than its slot plays.
@@ -1607,8 +1615,12 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     String preview_name_;
     bool preview_fetching_ = false;
     int preview_generation_ = 0;
-    int preset_sort_column_ = 1;
-    bool preset_sort_ascending_ = true;
+    // The results' sort: a table column, or kPresetDownloadsSort, which no
+    // column shows. Remembered for the instance like the filters.
+    int& preset_sort_column_;
+    bool& preset_sort_ascending_;
+    // The Sort presets list's choices, its item ID less one indexing them.
+    std::vector<std::pair<int, bool>> preset_sort_choices_;
     bool preset_metadata_edit_mode_ = false;
     File preset_metadata_file_;
     int preset_list_generation_ = 0;
@@ -1644,6 +1656,10 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     bool updating_routing_controls_ = false;
     bool wavetable_browser_cache_valid_ = false;
     bool wavetable_editor_visible_[vital::kNumOscillators] = {};
+    // The wave source's Frame and Frame timeline position sliders, which follow
+    // the keyboard editor and undo without a rebuild.
+    Component::SafePointer<Slider> wavetable_frame_slider_[vital::kNumOscillators];
+    Component::SafePointer<Slider> wavetable_frame_position_slider_[vital::kNumOscillators];
     bool preset_to_wavetable_rendering_ = false;
     bool sample_browser_cache_valid_ = false;
     bool ir_browser_cache_valid_ = false;

@@ -47,7 +47,6 @@ namespace vital {
       ReorderableEffectChain(const Output* beats_per_second, const Output* keytrack,
                              std::string prefix = "",
                              std::shared_ptr<ConvolutionIrWorker> convolution_worker = nullptr,
-                             const Output* scream_midi_note = nullptr,
                              const TranceGateClock* trance_gate_clock = nullptr,
                              std::shared_ptr<EffectPreparationWorker> preparation_worker = nullptr,
                              const NoteMonitor* note_monitor = nullptr);
@@ -107,7 +106,6 @@ namespace vital {
       const StereoMemory* equalizer_memory_;
       const Output* beats_per_second_;
       const Output* keytrack_;
-      const Output* scream_midi_note_;
       const TranceGateClock* trance_gate_clock_;
       const NoteMonitor* note_monitor_;
       std::string prefix_;
@@ -131,6 +129,8 @@ namespace vital {
       std::array<int, constants::kMaxEffectSlots> quiet_samples_ {};
       std::array<int, constants::kMaxEffectSlots> probe_samples_ {};
       std::array<bool, constants::kMaxEffectSlots> asleep_ {};
+      // What each slot's effect added below 5 Hz, taken back out of its output.
+      std::array<poly_float, constants::kMaxEffectSlots> added_dc_ {};
       Value* post_effect_order_;
       int effect_order_[constants::kNumEffects];
       float last_order_;

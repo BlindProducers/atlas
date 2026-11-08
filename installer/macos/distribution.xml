@@ -13,6 +13,7 @@
   <choices-outline>
     <line choice="vst3"/>
     <line choice="au"/>
+    <line choice="library"/>
   </choices-outline>
   <choice id="vst3" title="VST3 plug-in" description="Installs Atlas.vst3 in /Library/Audio/Plug-Ins/VST3.">
     <pkg-ref id="plugins.alessio.atlas.vst3"/>
@@ -20,6 +21,10 @@
   <choice id="au" title="Audio Unit plug-in" description="Installs Atlas.component in /Library/Audio/Plug-Ins/Components.">
     <pkg-ref id="plugins.alessio.atlas.au"/>
   </choice>
+  <choice id="library" title="Factory presets" description="Installs the Factory presets and the library folders in Documents/Blind Producers Plugins/Atlas.">
+    <pkg-ref id="plugins.alessio.atlas.library"/>
+  </choice>
   <pkg-ref id="plugins.alessio.atlas.vst3" version="@VERSION@">#Atlas-vst3.pkg</pkg-ref>
   <pkg-ref id="plugins.alessio.atlas.au" version="@VERSION@">#Atlas-au.pkg</pkg-ref>
+  <pkg-ref id="plugins.alessio.atlas.library" version="@VERSION@">#Atlas-library.pkg</pkg-ref>
 </installer-gui-script>

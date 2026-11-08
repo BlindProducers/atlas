@@ -5,6 +5,7 @@
 #include "table_filter.h"
 #include "spectral_lock_module.h"
 #include "maim_module.h"
+#include "frequency_shifter_module.h"
 #include "drive_dynamics/drive_dynamics.h"
 #include "smooth_value.h"
 #include "value_switch.h"
@@ -20,7 +21,9 @@ namespace vital {
 namespace {
 thread_local bool realtime_effect_processing = false;
 // A configuration's low word: oversampling (4 bits), the processing rate, then
-// whether a Filter FX must allocate its Filter Table buffers.
+// whether a Frequency Shifter must allocate its Mode 2 buffers and whether a
+// Filter FX must allocate its Filter Table buffers.
+constexpr uint64_t kFrequencyShifterMode2Bit = uint64_t(1) << 30;
 constexpr uint64_t kFilterTableBit = uint64_t(1) << 31;
 // Effects that were always fully built before every slot prepared its effect
 // on demand. Their resets are cheap and always ran on the audio thread, so
@@ -126,6 +129,7 @@ PreparedEffectModule::PreparedEffectModule(int type, std::string prefix, Factory
                       type_ == constants::kDynamicTube ? atlas::drive_dynamics::DynamicTube::kHiQualityLatency :
                       // Overdrive's look-ahead grows with the rate: its most at 8 times 192 kHz.
                       type_ == constants::kOverdrive ? atlas::drive_dynamics::Overdrive::latencyFor({}, 8 * 192000.0) :
+                      type_ == constants::kFrequencyShifter ? atlas::bode::Shifter::kLatency :
                       description_.latency;
   // On Windows only a live shell has its dry history (reserveControls).
   if (!kReserveMemoryOnlyWhileUsed && pending_capacity_ > 0)
@@ -167,14 +171,19 @@ void PreparedEffectModule::init() {
     hi_quality_control_ = parameter("saturator_hi_quality");
   if (type_ == constants::kDynamicTube)
     hi_quality_control_ = parameter("dynamic_tube_hi_quality");
+  if (type_ == constants::kFrequencyShifter)
+    frequency_shifter_mode_control_ = parameter("frequency_shifter_mode");
   SynthModule::init();
   worker_->add(this);
 }
 uint64_t PreparedEffectModule::configuration() const {
   return (uint64_t(generation_) << 32) | (filter_table_needed_ ? kFilterTableBit : 0) |
+         (frequency_shifter_mode_2_needed_ ? kFrequencyShifterMode2Bit : 0) |
          (uint64_t(getSampleRate()) << 4) | uint64_t(getOversampleAmount());
 }
-void PreparedEffectModule::updateFilterTableNeed() {
+void PreparedEffectModule::updateBufferNeeds() {
+  if (type_ == constants::kFrequencyShifter && !frequency_shifter_mode_2_needed_)
+    frequency_shifter_mode_2_needed_ = frequency_shifter_mode_control_->value() >= 0.5f;
   if (type_ != constants::kFilterFx || filter_table_needed_) return;
   filter_table_needed_ = filter_table_requested_.load(std::memory_order_acquire) ||
       static_cast<int>(std::round(filter_model_control_->value())) == constants::kFilterTable;
@@ -210,7 +219,7 @@ void PreparedEffectModule::prepareOnWorker() {
     prepared->module->init();
   }
   const int oversample = int(requested & 15);
-  const int rate = int((requested & (kFilterTableBit - 1)) >> 4);
+  const int rate = int((requested & (kFrequencyShifterMode2Bit - 1)) >> 4);
   prepared->module->setSampleRate(rate / oversample);
   prepared->module->setOversampleAmount(oversample);
   if (type_ == constants::kFilterFx) {
@@ -218,6 +227,8 @@ void PreparedEffectModule::prepareOnWorker() {
     filter_fx->setTableWavetable(filter_table_.load(std::memory_order_acquire));
     if (requested & kFilterTableBit) filter_fx->prepareTable();
   }
+  if (type_ == constants::kFrequencyShifter && (requested & kFrequencyShifterMode2Bit))
+    static_cast<FrequencyShifterModule*>(prepared->module.get())->prepareMode2();
   if (convolution_state_)
     static_cast<ConvolutionReverbModule*>(prepared->module.get())->shareIrSourceFrom(*convolution_state_);
   {
@@ -410,7 +421,7 @@ void PreparedEffectModule::park() {
 }
 void PreparedEffectModule::prepareForPlayback() {
   reserveControls();
-  updateFilterTableNeed();
+  updateBufferNeeds();
   requestPreparation();
   // Called with processing suspended, or by an explicitly offline renderer.
   // Drain outdated publications before preparing the latest requested state.
@@ -457,7 +468,7 @@ void PreparedEffectModule::processWithInput(const poly_float* input, int samples
     }
     prepareForPlayback(); // Offline: live, and prepared, within this block.
   }
-  updateFilterTableNeed();
+  updateBufferNeeds();
   requestPreparation();
   if (!RealtimeEffectScope::active()) prepareForPlayback();
   acceptPrepared();
@@ -558,6 +569,10 @@ int PreparedEffectModule::getLatencySamples() const {
         atlas::drive_dynamics::DynamicTube::kHiQualityLatency : 0;
   if (type_ == constants::kOverdrive)
     return atlas::drive_dynamics::Overdrive::latencyFor({}, getSampleRate());
+  // The Frequency Shifter's Mode 2 reports its script's pdc_delay.
+  if (type_ == constants::kFrequencyShifter)
+    return frequency_shifter_mode_control_ != nullptr && frequency_shifter_mode_control_->value() >= 0.5f ?
+        atlas::bode::Shifter::kLatency : 0;
   return description_.latency;
 }
 }

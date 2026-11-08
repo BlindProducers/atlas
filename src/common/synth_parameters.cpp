@@ -218,6 +218,29 @@ namespace vital {
       ValueDetails::kLinear, false, " ms", "Frequency Shifter Delay", nullptr },
     { "frequency_shifter_dry_wet", 0x000000, 0.0, 1.0, 1.0, 0.0, 100.0,
       ValueDetails::kLinear, false, "%", "Frequency Shifter Mix", nullptr },
+    // Mode 2, the Serum 2 Bode JSFX (src/synthesis/effects/bode), appended by
+    // version to preserve every existing host parameter ID. Each control holds
+    // its script slider's value; Mode 1 is the default, so older patches load as they were.
+    { "frequency_shifter_mode", 0x02012c, 0.0, 1.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Frequency Shifter Mode", strings::kFrequencyShifterModeNames },
+    { "frequency_shifter_bode_shift", 0x02012c, -100.0, 100.0, 0.0, 0.0, 1.0,
+      ValueDetails::kLinear, false, "%", "Frequency Shifter Mode 2 Shift", nullptr },
+    { "frequency_shifter_bode_range", 0x02012c, -3.321928, 12.287712, 4.482848, 0.0, 1.0,
+      ValueDetails::kExponential, false, " Hz", "Frequency Shifter Mode 2 Range", nullptr },
+    { "frequency_shifter_bode_direction", 0x02012c, -100.0, 100.0, 0.0, 0.0, 1.0,
+      ValueDetails::kLinear, false, "%", "Frequency Shifter Mode 2 Direction", nullptr },
+    { "frequency_shifter_bode_width", 0x02012c, 0.0, 100.0, 100.0, 0.0, 1.0,
+      ValueDetails::kLinear, false, "%", "Frequency Shifter Mode 2 Width", nullptr },
+    { "frequency_shifter_bode_mono_input", 0x02012c, 0.0, 1.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Frequency Shifter Mode 2 Mono Input", strings::kOffOnNames },
+    { "frequency_shifter_bode_delay", 0x02012c, 0.0, 5.0, 0.0, 0.0, 1000.0,
+      ValueDetails::kLinear, false, " ms", "Frequency Shifter Mode 2 Delay", nullptr },
+    { "frequency_shifter_bode_feedback", 0x02012c, 0.0, 100.0, 0.0, 0.0, 1.0,
+      ValueDetails::kLinear, false, "%", "Frequency Shifter Mode 2 Feedback", nullptr },
+    { "frequency_shifter_bode_blur", 0x02012c, 0.0, 100.0, 0.0, 0.0, 1.0,
+      ValueDetails::kLinear, false, "%", "Frequency Shifter Mode 2 Blur", nullptr },
+    { "frequency_shifter_bode_mix", 0x02012c, 0.0, 100.0, 100.0, 0.0, 1.0,
+      ValueDetails::kLinear, false, "%", "Frequency Shifter Mode 2 Mix", nullptr },
     { "legato", 0x000000, 0.0, 1.0, 0.0, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Legato", strings::kOffOnNames },
     { "limiter_on", 0x000000, 0.0, 1.0, 0.0, 0.0, 1.0,
@@ -361,26 +384,10 @@ namespace vital {
     { "tremolo_pan_mix", 0x020106, 0.0, 1.0, 1.0, 0.0, 100.0,
       ValueDetails::kLinear, false, "%", "Tremolo Pan Mix", nullptr },
 
+    // The retired Scream effect keeps only the switch and chain position
+    // every effect number has; Scream is a filter model now.
     { "scream_on", 0x020105, 0.0, 1.0, 0.0, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Scream Switch", strings::kOffOnNames },
-    { "scream_cutoff", 0x020105, 0.0, 1.0, 1.0, 0.0, 1.0,
-      ValueDetails::kLinear, false, "Hz", "Scream Cutoff", nullptr },
-    { "scream_scream", 0x020105, 0.0, 1.0, 0.5, 0.0, 100.0,
-      ValueDetails::kLinear, false, "%", "Scream Scream", nullptr },
-    { "scream_resonance", 0x020105, 0.0, 1.0, 0.5, 0.0, 100.0,
-      ValueDetails::kLinear, false, "%", "Scream Resonance", nullptr },
-    { "scream_input_gain", 0x020105, 0.0, 1.0, 0.75, -72.0, 96.0,
-      ValueDetails::kLinear, false, "dB", "Scream Input Gain", nullptr },
-    { "scream_wet", 0x020105, 0.0, 1.0, 1.0, 0.0, 100.0,
-      ValueDetails::kLinear, false, "%", "Scream Wet", nullptr },
-    { "scream_output_gain", 0x020105, 0.0, 1.0, 0.75, -24.0, 24.0,
-      ValueDetails::kLinear, false, "dB", "Scream Output Gain", nullptr },
-    { "scream_gate_release", 0x020105, 5.0, 500.0, 30.0, 0.0, 0.001,
-      ValueDetails::kLinear, false, "secs", "Scream Gate Release", nullptr },
-    { "scream_autogain", 0x020105, 0.0, 1.0, 1.0, 0.0, 1.0,
-      ValueDetails::kIndexed, false, "", "Scream Autogain", strings::kOffOnNames },
-    { "scream_keytracking", 0x020105, 0.0, 1.0, 0.0, 0.0, 1.0,
-      ValueDetails::kIndexed, false, "", "Scream MIDI Keytracking", strings::kOffOnNames },
 
     { "spectral_lock_on", 0x02010b, 0.0, 1.0, 0.0, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Spectral Lock On", strings::kOffOnNames },
@@ -1271,7 +1278,7 @@ namespace vital {
       ValueDetails::kIndexed, false, "", "Effect Chain Position 20", strings::kEffectOrder },
     { "effect_chain_slot_21", 0x020104, 0.0, constants::kNumEffects - 1, constants::kSpectralCompressor, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Effect Chain Position 21", strings::kEffectOrder },
-    { "effect_chain_slot_22", 0x020105, 0.0, constants::kNumEffects - 1, constants::kScream, 0.0, 1.0,
+    { "effect_chain_slot_22", 0x020105, 0.0, constants::kNumEffects - 1, constants::kRemovedScream, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Effect Chain Position 22", strings::kEffectOrder },
     { "effect_chain_slot_23", 0x020106, 0.0, constants::kNumEffects - 1, constants::kTremoloPan, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Effect Chain Position 23", strings::kEffectOrder },
@@ -1637,6 +1644,16 @@ namespace vital {
       ValueDetails::kIndexed, false, "", "Analog Hum Frequency", strings::kHumFrequencyNames },
     { "analog_sag", 0x020124, 0.0, 1.0, 0.0, 0.0, 100.0,
       ValueDetails::kLinear, false, "%", "Analog Supply Sag", nullptr },
+    // Frozen phase randomization, appended by version. New Each Note, the
+    // default, draws new phases for every note as before.
+    { "random_phase_mode", 0x02012e, 0.0, SynthOscillator::kNumRandomPhaseModes - 1, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Phase Randomization Mode", strings::kRandomPhaseModeNames },
+    { "random_phase_seed", 0x02012e, 0.0, RandomValues::kMaxSeed, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Phase Randomization Seed", nullptr },
+    // Remove Fundamental, appended by version. Off, the default, leaves every
+    // unison voice whole as before.
+    { "unison_remove_fundamental", 0x02012f, 0.0, 1.0, 0.0, 0.0, 1.0,
+      ValueDetails::kIndexed, false, "", "Unison Remove Fundamental", strings::kOffOnNames },
   };
 
   // Sample oscillator type: registered once per oscillator slot as osc_N_sample_*.
@@ -2068,7 +2085,7 @@ namespace vital {
         "analoguechorus_", "analogueflanger_", "analogueecho_",
         "analoguerotary_", "analoguespring_", "analoguewah_", "spectral_balance_", "glitch_delay_",
         "openwurli_amp_", "scanner_vibrato_", "analoguecompressor_", "maim_", "particles_",
-        "saturator_", "dynamic_tube_", "overdrive_", "multiband_dynamics_"
+        "saturator_", "dynamic_tube_", "overdrive_", "multiband_dynamics_", "destroy_"
       };
       for (const auto& prefix : effect_prefixes) {
         if (name.rfind(prefix, 0) == 0)

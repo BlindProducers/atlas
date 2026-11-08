@@ -178,7 +178,6 @@ namespace vital {
       std::shared_ptr<EffectPreparationWorker> preparation_worker_;
       SynthVoiceHandler* voice_handler_;
       ReorderableEffectChain* effect_chain_;
-      Value scream_midi_note_ { -1.0f };
       TranceGateClock trance_gate_clock_;
       double voice_clock_origin_ = 0.0;
       NoteMonitor note_monitor_;

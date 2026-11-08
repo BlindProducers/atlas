@@ -17,8 +17,10 @@
 #pragma once
 
 #include "synth_module.h"
+#include "bode/bode_shifter.h"
 
 #include <array>
+#include <memory>
 #include <vector>
 
 namespace vital {
@@ -26,6 +28,11 @@ namespace vital {
   class FrequencyShifterModule : public SynthModule {
     public:
       FrequencyShifterModule(std::string prefix = "");
+
+      // Mode 2's feedback line holds 5 s in double precision, so it is
+      // allocated (here, off the audio thread) only once a slot uses Mode 2.
+      // Until then Mode 2 passes its input through.
+      void prepareMode2();
 
       void init() override;
       void processWithInput(const poly_float* audio_in, int num_samples) override;
@@ -104,7 +111,14 @@ namespace vital {
       QuadraturePair protectDownshiftFromDcFold(QuadraturePair pair);
       poly_float processAlignedDry(poly_float audio);
       poly_float processWetDelay(poly_float wet, mono_float delay_samples);
+      void processMode2(const poly_float* audio_in, int num_samples);
 
+      Value* mode_ = nullptr;
+      Value* mode_2_mono_input_ = nullptr;
+      // Shift, Range, Direction, Width, Delay, Feedback, Blur and Mix.
+      std::array<Output*, 8> mode_2_controls_ {};
+      std::unique_ptr<atlas::bode::Shifter> mode_2_;
+      int last_mode_ = -1;
       Output* shift_;
       Output* feedback_;
       Output* delay_;

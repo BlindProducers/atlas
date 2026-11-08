@@ -491,6 +491,11 @@ namespace strings {
     "60 Hz",
   };
 
+  const std::string kRandomPhaseModeNames[] = {
+    "New Each Note",
+    "Frozen",
+  };
+
   const std::string kSubWaveformNames[] = {
     "Sine",
     "Triangle",
@@ -663,7 +668,8 @@ namespace strings {
     "saturator",
     "dynamic_tube",
     "overdrive",
-    "multiband_dynamics"
+    "multiband_dynamics",
+    "destroy"
   };
 
   const std::string kEffectSlotTypeNames[] = {
@@ -713,7 +719,8 @@ namespace strings {
     "Saturator",
     "Dynamic Tube",
     "Overdrive",
-    "Multiband Dynamics"
+    "Multiband Dynamics",
+    "Destroy"
   };
 
   // Both tables are indexed by effect; a missing entry would read out of bounds.
@@ -789,6 +796,8 @@ namespace strings {
   const std::string kSaturatorPostClipNames[] = { "Off", "Soft Clip", "Hard Clip" };
   const std::string kDynamicTubeTypeNames[] = { "A", "B", "C" };
   const std::string kMultibandDetectionNames[] = { "RMS", "Peak" };
+  // Destroy's Filter: off, before the stages or after them.
+  const std::string kDestroyFilterNames[] = { "Off", "Pre", "Post" };
   const std::string kAnalogueWahModelNames[] = { "Cry Baby", "V846", "Mu-Tron III" };
   const std::string kAnalogueWahModeNames[] = { "LP", "BP", "HP" };
   const std::string kAnalogueWahRangeNames[] = { "Lo", "Hi" };
@@ -814,6 +823,7 @@ namespace strings {
   const std::string kSpectralGateFftSizeNames[] = { "256", "512", "1024", "2048", "4096", "8192" };
 
   const std::string kDimensionModeNames[] = { "Mode 1", "Mode 2" };
+  const std::string kFrequencyShifterModeNames[] = { "Mode 1", "Mode 2" };
   const std::string kQuoraxSlopeNames[] = { "12 dB/oct", "24 dB/oct", "36 dB/oct", "48 dB/oct" };
   const std::string kErosionModeNames[] = { "Noise", "Sine" };
 
@@ -1120,6 +1130,7 @@ namespace strings {
     "DYNAMIC TUBE",
     "OVERDRIVE",
     "MULTIBAND DYNAMICS",
+    "DESTROY",
   };
 
   const std::string kDestinationMenuNames[vital::constants::kNumDestinations] = {
@@ -1177,6 +1188,7 @@ namespace strings {
     "Dynamic Tube",
     "Overdrive",
     "Multiband Dynamics",
+    "Destroy",
   };
 
   const std::string kBusDestinationNames[vital::constants::kNumBusDestinations] = {

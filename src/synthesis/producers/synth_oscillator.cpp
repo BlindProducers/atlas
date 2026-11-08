@@ -92,6 +92,50 @@ namespace vital {
       float spread_amount = std::min(1.0f, std::abs(frame_spread) / (kNumOscillatorWaveFrames * 0.5f));
       return static_cast<int>(unison_position * spread_amount * kMaxFrameSpreadPhaseFanCycles * kPhaseMult);
     }
+
+    // One cycle of the fundamental, to project a wave buffer onto it.
+    struct FundamentalTable {
+      FundamentalTable() {
+        for (int i = 0; i < Wavetable::kWaveformSize; ++i) {
+          double phase = 2.0 * kPi * i / Wavetable::kWaveformSize;
+          cosine[i] = static_cast<mono_float>(std::cos(phase));
+          sine[i] = static_cast<mono_float>(std::sin(phase));
+        }
+      }
+      mono_float cosine[Wavetable::kWaveformSize];
+      mono_float sine[Wavetable::kWaveformSize];
+    };
+    const FundamentalTable kFundamentalTable;
+
+    // Takes the first harmonic out of a wave buffer (as a SynthOscillator wave
+    // buffer points: one sample before the cycle, which the wrap samples surround).
+    void removeFundamental(mono_float* wave) {
+      static constexpr int kSize = Wavetable::kWaveformSize;
+      mono_float* buffer = wave - (poly_float::kSize - 1);
+      mono_float* samples = buffer + poly_float::kSize;
+      mono_float cosine_sum = 0.0f;
+      mono_float sine_sum = 0.0f;
+      for (int i = 0; i < kSize; ++i) {
+        cosine_sum += samples[i] * kFundamentalTable.cosine[i];
+        sine_sum += samples[i] * kFundamentalTable.sine[i];
+      }
+      cosine_sum *= 2.0f / kSize;
+      sine_sum *= 2.0f / kSize;
+      for (int i = 0; i < kSize; ++i)
+        samples[i] -= cosine_sum * kFundamentalTable.cosine[i] + sine_sum * kFundamentalTable.sine[i];
+
+      for (int i = 0; i < poly_float::kSize; ++i) {
+        buffer[i] = buffer[i + kSize];
+        buffer[i + kSize + poly_float::kSize] = buffer[i + poly_float::kSize];
+      }
+    }
+
+    // A frozen seed's random phase for one unison oscillator lane, in [-1, 1).
+    // Integer hashing, so it is the same on every platform.
+    mono_float frozenRandomPhase(int seed, int lane) {
+      uint32_t hash = analog::mixSeed(analog::mixSeed(static_cast<uint32_t>(seed) + 1u) + static_cast<uint32_t>(lane));
+      return (hash >> 8) * (2.0f / (1 << 24)) - 1.0f;
+    }
     
     const poly_float kFmPhaseMult = kPhaseMult / 8.0f;
     const poly_int kMaxFmModulation = 48;
@@ -809,6 +853,10 @@ namespace vital {
   void SynthOscillator::reset(poly_mask reset_mask) {
     poly_float random_amount = input(kRandomPhase)->at(0);
     poly_float frame_spread = isAnalog() ? poly_float(0.0f) : input(kUnisonFrameSpread)->at(0);
+    // Frozen, every note starts each unison oscillator where the seed puts it,
+    // like a rendered unison sample replayed.
+    bool frozen = std::roundf(input(kRandomPhaseMode)->at(0)[0]) == kRandomPhaseFrozen;
+    int seed = utils::iclamp(std::roundf(input(kRandomPhaseSeed)->at(0)[0]), 0, RandomValues::kMaxSeed);
     last_quantize_ratio_ = utils::maskLoad(last_quantize_ratio_, 1.0f, reset_mask);
 
     for (int v = 0; v < kNumVoicesPerProcess; ++v) {
@@ -816,8 +864,12 @@ namespace vital {
         for (int i = 0; i < kNumPolyPhase; ++i) {
           uint32_t phase_offset_left = getFrameSpreadPhaseOffset(i, active_oscillators_, frame_spread[2 * v]);
           uint32_t phase_offset_right = getFrameSpreadPhaseOffset(i, active_oscillators_, frame_spread[2 * v + 1]);
-          uint32_t random_phase_left = random_generator_.next() * random_amount[2 * v] * INT_MAX;
-          uint32_t random_phase_right = random_generator_.next() * random_amount[2 * v + 1] * INT_MAX;
+          mono_float random_left = frozen ? frozenRandomPhase(seed, 2 * i) : random_generator_.next();
+          mono_float random_right = frozen ? frozenRandomPhase(seed, 2 * i + 1) : random_generator_.next();
+          // Through a signed integer, so a negative offset wraps around the cycle on every
+          // platform; a negative float converted straight to unsigned is 0 on arm64.
+          uint32_t random_phase_left = static_cast<int64_t>(random_left * random_amount[2 * v] * INT_MAX);
+          uint32_t random_phase_right = static_cast<int64_t>(random_right * random_amount[2 * v + 1] * INT_MAX);
           phases_[i].set(2 * v, random_phase_left + phase_offset_left);
           phases_[i].set(2 * v + 1, random_phase_right + phase_offset_right);
 
@@ -1141,6 +1193,54 @@ namespace vital {
           wave_buffers_[buffer_index] = wave_buffers_[i];
         }
       }
+    }
+
+    if (input(kUnisonRemoveFundamental)->at(0)[0] != 0.0f)
+      removeDetunedFundamentals(index, spectral_unison);
+  }
+
+  void SynthOscillator::removeDetunedFundamentals(int index, bool spectral_unison) {
+    int num_phase_updates = active_oscillators_ / 2;
+    // With an odd count the first pair's two lanes are the middle voice, on the
+    // note's pitch; with an even count every voice is detuned.
+    int first_detuned = unison_ % 2 ? 1 : 0;
+    if (first_detuned >= num_phase_updates)
+      return;
+
+    if (spectral_unison || first_detuned == 0) {
+      // Each voice has a buffer of its own, just computed, or every voice
+      // shares the first pair's and all of them are detuned.
+      int end = spectral_unison ? num_phase_updates : 1;
+      for (int v = first_detuned; v < end; ++v) {
+        for (int i = index; i < index + 2; ++i) {
+          int buffer_index = v * poly_float::kSize + i;
+          if (i > index && wave_buffers_[buffer_index] == wave_buffers_[buffer_index - 1])
+            continue;
+          removeFundamental(const_cast<mono_float*>(wave_buffers_[buffer_index]));
+        }
+      }
+      return;
+    }
+
+    // The middle voice keeps the shared buffer; the detuned voices share a copy
+    // without its fundamental, in the second pair's frame not in use.
+    for (int i = index; i < index + 2; ++i) {
+      int buffer_index = poly_float::kSize + i;
+      const mono_float* stripped = nullptr;
+      if (i > index && wave_buffers_[i] == wave_buffers_[i - 1])
+        stripped = wave_buffers_[buffer_index - 1];
+      else {
+        mono_float* destination = ((mono_float*)fourier_frames_.first(buffer_index)) + poly_float::kSize - 1;
+        if (destination == last_buffers_[buffer_index])
+          destination = ((mono_float*)fourier_frames_.second(buffer_index)) + poly_float::kSize - 1;
+        const mono_float* source = wave_buffers_[i] - (poly_float::kSize - 1);
+        std::copy(source, source + Wavetable::kWaveformSize + 2 * poly_float::kSize,
+                  destination - (poly_float::kSize - 1));
+        removeFundamental(destination);
+        stripped = destination;
+      }
+      for (int v = 1; v < num_phase_updates; ++v)
+        wave_buffers_[v * poly_float::kSize + i] = stripped;
     }
   }
 
@@ -2056,8 +2156,14 @@ namespace vital {
     // read position, plus their jumps and corners. Positions are in slave
     // cycles since a sync reset; the read position is half a cycle later, so
     // at a 1:1 ratio a synced oscillator matches the free-running one.
+    // `integral(x)` is the area under the wave from a sync reset to x slave
+    // cycles later, for x in [0, 1]; a whole cycle has none.
     template<int waveform>
     struct SyncShape;
+
+    force_inline poly_float syncReadPosition(poly_float slave) {
+      return utils::mod(slave + 0.5f);
+    }
 
     template<>
     struct SyncShape<analog::kSine> {
@@ -2077,6 +2183,14 @@ namespace vital {
                                           poly_float::lessThan(q, knee));
         return analog::sinCycles(warp(q)) * rate * (-2.0f * kPi);
       }
+      // Area from the cycle start to q, which is the same at q = 0 and 1.
+      force_inline poly_float area(poly_float q) const {
+        poly_float length = utils::maskLoad(poly_float(1.0f) - knee, knee, poly_float::lessThan(q, knee));
+        return length * analog::sinCycles(warp(q)) * (1.0f / kPi);
+      }
+      force_inline poly_float integral(poly_float x) const {
+        return area(syncReadPosition(x)) - area(poly_float(0.5f));
+      }
       template<class Function> void edges(Function) const { }
       template<class Function> void corners(Function) const { }
     };
@@ -2093,6 +2207,16 @@ namespace vital {
       force_inline poly_float slope(poly_float q) const {
         return utils::maskLoad(poly_float(2.0f) / (poly_float(1.0f) - apex), poly_float(-2.0f) / apex,
                                poly_float::lessThan(q, apex));
+      }
+      // Area from the cycle start to q, which is the same at q = 0 and 1.
+      force_inline poly_float area(poly_float q) const {
+        poly_float falling = q - q * q / apex;
+        poly_float rising_time = q - apex;
+        poly_float rising = rising_time * rising_time / (poly_float(1.0f) - apex) - rising_time;
+        return utils::maskLoad(rising, falling, poly_float::lessThan(q, apex));
+      }
+      force_inline poly_float integral(poly_float x) const {
+        return area(syncReadPosition(x)) - area(poly_float(0.5f));
       }
       template<class Function> void edges(Function) const { }
       template<class Function> void corners(Function function) const {
@@ -2111,6 +2235,10 @@ namespace vital {
         return poly_float(1.0f) - position - utils::mod(position - offset);
       }
       force_inline poly_float slope(poly_float) const { return -2.0f; }
+      // From a reset the wave is 1 + offset - 2x, one lower before x reaches the offset.
+      force_inline poly_float integral(poly_float x) const {
+        return (offset + 1.0f) * x - x * x - utils::min(x, offset);
+      }
       template<class Function> void edges(Function function) const {
         function(poly_float(0.0f), poly_float(1.0f));
         function(offset, poly_float(1.0f));
@@ -2129,6 +2257,11 @@ namespace vital {
         return utils::maskLoad(poly_float(-1.0f), poly_float(1.0f), high) - (width * 2.0f - 1.0f);
       }
       force_inline poly_float slope(poly_float) const { return 0.0f; }
+      // From a reset the wave is low, then high for `width` from 0.5 - width / 2.
+      force_inline poly_float integral(poly_float x) const {
+        poly_float high_time = utils::clamp(x - (poly_float(0.5f) - width * 0.5f), 0.0f, width);
+        return x * (width * -2.0f) + high_time * 2.0f;
+      }
       template<class Function> void edges(Function function) const {
         function(width * 0.5f + 0.5f, poly_float(-2.0f));
         function(poly_float(0.5f) - width * 0.5f, poly_float(2.0f));
@@ -2136,14 +2269,12 @@ namespace vital {
       template<class Function> void corners(Function) const { }
     };
 
-    force_inline poly_float syncReadPosition(poly_float slave) {
-      return utils::mod(slave + 0.5f);
-    }
-
     // Band-limited hard sync. `master` is the oscillator's own position since
     // its sync point; the slave runs `ratio` times faster and restarts there.
     // Every jump and corner, including each restart, is found with its exact
-    // time, and its correction is spread over a two sample look-ahead.
+    // time, and its correction is spread over a two sample look-ahead. A
+    // ratio that isn't whole leaves part of a slave cycle in every master
+    // cycle, whose mean is subtracted so the result has no DC.
     template<int waveform>
     force_inline poly_float syncSample(analog::LaneState& state, poly_float master, poly_float ratio, poly_float shape) {
       static constexpr mono_float kTiny = 1.0e-9f;
@@ -2229,9 +2360,22 @@ namespace vital {
         next_slave = utils::maskLoad(next_slave, utils::mod(restarted), wrapped);
       }
 
+      // The slave cycles in one master cycle, fewer where the slave rate is capped.
+      poly_float cycles = utils::min(ratio, poly_float(kMaxSlaveRate) / utils::max(movement, kTiny));
+      poly_float fraction = cycles - utils::floor(cycles);
+      poly_float mean = sync_shape.integral(fraction) / utils::max(cycles, kTiny);
+      if constexpr (waveform == analog::kSine) {
+        // A band-limited corner adds a sixth of its slope change per sample
+        // in area. The other waves' corners cancel over a master cycle; the
+        // sine's restart corner is only taken back by its curve, which isn't
+        // band-limited, so its area is a DC of its own.
+        poly_float change = sync_shape.slope(syncReadPosition(0.0f)) - sync_shape.slope(syncReadPosition(fraction));
+        mean += change * slave_rate * utils::max(movement, 0.0f) * (1.0f / 6.0f);
+      }
+
       state.sync_slave = next_slave;
       state.sync_master = master;
-      poly_float result = state.sync_history2 + state.sync_correction0;
+      poly_float result = state.sync_history2 + state.sync_correction0 - mean;
       state.sync_history2 = state.sync_history1;
       state.sync_history1 = sync_shape.value(syncReadPosition(next_slave));
       state.sync_correction0 = state.sync_correction1;

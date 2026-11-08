@@ -1092,6 +1092,53 @@ namespace {
     }
   }
 
+  // The Frequency Shifter's Mode menu shows Mode 1's rows or Mode 2's, each
+  // labelled, and stepping it swaps them.
+  void testFrequencyShifterModeRows() {
+    SynthPlugin synth;
+    synth.parameterChanged("fx_slot_1_type", vital::constants::kFrequencyShifter + 1);
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    editor.toFront(true);
+    pumpEditorEvents();
+
+    const String prefix = "fx_slot_1_frequency_shifter_";
+    const char* mode_1[] = { "shift", "delay", "feedback", "dry_wet" };
+    const char* mode_2[] = { "bode_shift", "bode_range", "bode_direction", "bode_width", "bode_mono_input",
+                             "bode_delay", "bode_feedback", "bode_blur", "bode_mix" };
+    const auto shown = [&](const char* suffix) { return editor.controlForParameter(prefix + suffix) != nullptr; };
+    auto* mode = dynamic_cast<ComboBox*>(editor.controlForParameter(prefix + "mode"));
+    expect(mode != nullptr, "Frequency Shifter Mode is a menu");
+    if (mode == nullptr)
+      return;
+    expect(mode->getNumItems() == 2 && mode->getItemText(0) == "Mode 1" && mode->getItemText(1) == "Mode 2",
+           "Frequency Shifter Mode offers Mode 1 and Mode 2");
+    expect(mode->getText() == "Mode 1", "Frequency Shifter starts in Mode 1");
+    for (const char* suffix : mode_1)
+      expect(shown(suffix), std::string("Mode 1 shows ") + suffix);
+    for (const char* suffix : mode_2)
+      expect(!shown(suffix), std::string("Mode 1 hides ") + suffix);
+
+    editor.ensureComponentVisible(mode);
+    mode->grabKeyboardFocus();
+    mode->keyPressed(KeyPress(KeyPress::downKey));
+    editor.pollStateNow();
+    pumpEditorEvents();
+    close(synth.getControls().at((prefix + "mode").toStdString())->value(), 1.0f, "Down steps Mode to Mode 2");
+    for (const char* suffix : mode_1)
+      expect(!shown(suffix), std::string("Mode 2 hides ") + suffix);
+    for (const char* suffix : mode_2) {
+      auto* control = editor.controlForParameter(prefix + suffix);
+      expect(control != nullptr, std::string("Mode 2 shows ") + suffix);
+      if (control != nullptr)
+        expect(control->getTitle().startsWith("Mode 2 "),
+               std::string("Mode 2's ") + suffix + " is labelled: " + control->getTitle().toStdString());
+    }
+    editor.removeFromDesktop();
+  }
+
   // Stepping a choice that decides which rows show (an oscillator's Type, a
   // filter's Model, an effect's mode) rebuilds the rows around it. The rebuild
   // used to replace the focused menu and every group around it, so NVDA read
@@ -2532,6 +2579,7 @@ namespace {
     synth.parameterChanged("fx_slot_2_type", vital::constants::kMultibandDynamics + 1);
     synth.parameterChanged("fx_slot_3_type", vital::constants::kDynamicTube + 1);
     synth.parameterChanged("fx_slot_4_type", vital::constants::kOverdrive + 1);
+    synth.parameterChanged("fx_slot_5_type", vital::constants::kDestroy + 1);
     SynthEditor editor(synth);
     editor.updateFullGui();
     editor.addToDesktop(0);
@@ -2625,6 +2673,44 @@ namespace {
     described("fx_slot_4_overdrive_dynamics", "ceiling");
     described(multiband + "high_below_ratio", "high band's ratio below its Below Threshold");
     described(saturator + "ws_period", "ripple");
+
+    // Destroy: Filter is a menu that shows the filter's rows only while it is
+    // Pre or Post; Frequency and Level read in Hz and dB as the script shows them.
+    const String destroy = "fx_slot_5_destroy_";
+    auto* filter = dynamic_cast<ComboBox*>(editor.controlForParameter(destroy + "filter"));
+    expect(filter != nullptr && filter->getNumItems() == 3 && filter->getText() == "Off",
+           "Destroy's Filter is a menu of Off, Pre and Post, Off by default");
+    for (const auto* control : { "drive", "stack", "filter", "mix", "level" }) {
+      check(destroy + control, "");
+      described(destroy + control);
+    }
+    for (const auto* control : { "filter_frequency", "filter_q", "filter_morph" })
+      check(destroy + control, "no row");
+    reads(destroy + "drive", "25%");
+    reads(destroy + "level", "0 dB");
+    synth.parameterChanged((destroy + "filter").toStdString(), 2.0f);
+    synth.parameterChanged((destroy + "level").toStdString(), 0.0f);
+    editor.updateFullGui();
+    pumpEditorEvents();
+    for (const auto* control : { "filter_frequency", "filter_q", "filter_morph" }) {
+      check(destroy + control, "");
+      described(destroy + control);
+    }
+    reads(destroy + "filter_frequency", "425 Hz");
+    reads(destroy + "level", "-inf dB");
+    described(destroy + "filter_morph", "band-pass");
+    {
+      const std::string id = (destroy + "filter_frequency").toStdString();
+      ValueBridge bridge(id, synth.getControls().at(id));
+      expect(bridge.getText(bridge.getValueForText("2 kHz"), 100) == "2.00 kHz" &&
+             bridge.getText(bridge.getValueForText("100 Hz"), 100) == "100 Hz",
+             "typing 2 kHz or 100 Hz sets a Destroy filter frequency that reads back the same");
+      const std::string level_id = (destroy + "level").toStdString();
+      ValueBridge level(level_id, synth.getControls().at(level_id));
+      expect(level.getText(level.getValueForText("6 dB"), 100) == "6 dB" &&
+             level.getText(level.getValueForText("-inf"), 100) == "-inf dB",
+             "typing 6 dB or -inf sets a Destroy level that reads back the same");
+    }
   }
 
   // Maim's Encoder is a menu that decides which rows show: the MP3 bends for

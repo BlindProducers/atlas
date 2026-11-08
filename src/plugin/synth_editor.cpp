@@ -210,8 +210,8 @@ namespace {
   // The preset results table's keys, said after the selected preset.
   String presetTableKeysHelp() {
     return String("Press Return to load, F to change favourite, R to rename, E to edit metadata, P to play or stop a "
-                  "community preset's preview, S to choose the next sort column, Shift S to reverse the sort, or "
-                  "Delete to move an editable preset to Trash.");
+                  "community preset's preview, or Delete to move an editable preset to Trash. Sort presets, beside the "
+                  "search, chooses the order.");
   }
 
   enum PresetFacetKind {
@@ -232,6 +232,9 @@ namespace {
     kPresetLibraryColumn,
     kPresetModifiedColumn,
   };
+  // A sort the Sort presets list offers on the community's side, by how often
+  // a preset or bank was downloaded, which no column shows.
+  constexpr int kPresetDownloadsSort = 100;
 
   using AccessibilitySpeechSettings = atlas::speech::Settings;
 
@@ -735,11 +738,33 @@ namespace {
   bool isWavetableOnlyOscillatorSuffix(const String& suffix) {
     static const StringArray suffixes {
       "wave_frame", "frame_spread", "spectral_unison", "smooth_interpolation", "distortion_phase",
+      "unison_remove_fundamental",
       "spectral_morph_type", "spectral_morph_amount", "spectral_morph_seed", "spectral_morph_spread",
       "secondary_spectral_morph_type", "secondary_spectral_morph_amount", "secondary_spectral_morph_seed",
       "secondary_spectral_morph_spread"
     };
     return suffixes.contains(suffix);
+  }
+
+  // Whether an oscillator mode's value shows the seed row it decides: Random
+  // Amplitudes for a frequency morph, Frozen for phase randomization.
+  bool modeShowsSeed(const String& mode_id, int value) {
+    if (mode_id.endsWith("_random_phase_mode"))
+      return value == vital::SynthOscillator::kRandomPhaseFrozen;
+    return value == vital::SynthOscillator::kRandomAmplitudes;
+  }
+
+  // The Randomize button that follows an oscillator seed row, as title and
+  // description; an empty title for any other row.
+  std::pair<String, String> seedButtonFor(const String& id) {
+    if (!id.startsWith("osc_"))
+      return {};
+    if (id.endsWith("_spectral_morph_seed"))
+      return { id.contains("_secondary_") ? "Randomize secondary amplitudes seed" : "Randomize amplitudes seed",
+               "Choose a new random amplitudes pattern for this morph slot" };
+    if (id.endsWith("_random_phase_seed"))
+      return { "Randomize phase seed", "Choose a new frozen phase pattern for this oscillator" };
+    return {};
   }
 
   bool isOscillatorDistortionSuffix(const String& suffix) {
@@ -775,8 +800,8 @@ namespace {
       return OscillatorRowGroup::kScaleLock;
     static const StringArray pitch_and_unison {
       "transpose", "tune", "fixed_frequency_mode", "fixed_frequency", "midi_track", "unison_voices",
-      "unison_detune", "unison_blend", "stack_style", "detune_power", "detune_range", "stereo_spread",
-      "phase", "random_phase"
+      "unison_detune", "unison_blend", "unison_remove_fundamental", "stack_style", "detune_power", "detune_range",
+      "stereo_spread", "phase", "random_phase", "random_phase_mode", "random_phase_seed"
     };
     if (pitch_and_unison.contains(suffix))
       return OscillatorRowGroup::kPitch;
@@ -1696,7 +1721,6 @@ namespace {
         "Analogue Wah",
         "Spectral Balance",
         "Spectral Compressor",
-        "Scream",
         "Erosion",
         "Floaty Delay",
         "Glitch Delay",
@@ -1708,7 +1732,8 @@ namespace {
         "Saturator",
         "Dynamic Tube",
         "Overdrive",
-        "Multiband Dynamics"
+        "Multiband Dynamics",
+        "Destroy"
       };
       for (int envelope = 1; envelope <= vital::kNumEnvelopes; ++envelope)
         result.push_back("Envelope " + String(envelope));
@@ -1778,14 +1803,14 @@ namespace {
         section == "Equalizer" || section == "Compressor" || section == "Limiter" ||
         section == "Frequency Shifter" || section == "Dimension Expander" || section == "Waveshaper" ||
         section == "Convolution Reverb" || section == "Mid Side EQ" || section == "Spectral Gate" ||
-        section == "Erosion" || section == "Floaty Delay" || section == "Spectral Lock" || section == "Spectral Compressor" || section == "Scream" || section == "Trance gate" ||
+        section == "Erosion" || section == "Floaty Delay" || section == "Spectral Lock" || section == "Spectral Compressor" || section == "Trance gate" ||
         section == "Resonator" || section == "Analogue Chorus" ||
         section == "Analogue Flanger" || section == "Analogue Echo" ||
         section == "Analogue Rotary" || section == "Analogue Spring" ||
         section == "Analogue Wah" || section == "Spectral Balance" || section == "Glitch Delay" ||
         section == "OpenWurli Amp" || section == "Scanner Vibrato" || section == "Analogue Compressor" ||
         section == "Maim" || section == "Particles" || section == "Saturator" || section == "Dynamic Tube" ||
-        section == "Overdrive" || section == "Multiband Dynamics")
+        section == "Overdrive" || section == "Multiband Dynamics" || section == "Destroy")
       return "Effects";
     if (section == "Modulation routing")
       return "Modulation";
@@ -1868,7 +1893,7 @@ namespace {
     return 900;
   }
 
-  // Saturator, Dynamic Tube, Overdrive and Multiband Dynamics (drive_dynamics_controls.h).
+  // Saturator, Dynamic Tube, Overdrive, Multiband Dynamics and Destroy (drive_dynamics_controls.h).
   const vital::drive_dynamics::ControlSpec* driveDynamicsSpec(const String& effect_id, const String& suffix,
                                                               int* index = nullptr) {
     using namespace vital::drive_dynamics;
@@ -1884,6 +1909,7 @@ namespace {
     if (effect_id == "saturator") return find(kSaturatorControls, kNumSaturatorControls);
     if (effect_id == "dynamic_tube") return find(kDynamicTubeControls, kNumDynamicTubeControls);
     if (effect_id == "overdrive") return find(kOverdriveControls, kNumOverdriveControls);
+    if (effect_id == "destroy") return find(kDestroyControls, kNumDestroyControls);
     if (effect_id == "multiband_dynamics") {
       for (int i = 0; i < kNumMultibandControls; ++i)
         if (suffix == String(multibandSuffix(i))) {
@@ -1896,7 +1922,7 @@ namespace {
 
   // The control a parameter ID names in one of those effects, in a slot or a bus.
   const vital::drive_dynamics::ControlSpec* driveDynamicsSpecForId(const String& id) {
-    for (const char* effect : { "saturator", "dynamic_tube", "overdrive", "multiband_dynamics" }) {
+    for (const char* effect : { "saturator", "dynamic_tube", "overdrive", "multiband_dynamics", "destroy" }) {
       const String prefix = String(effect) + "_";
       int start = id.startsWith(prefix) ? 0 : -1;
       if (start < 0) {
@@ -1918,6 +1944,10 @@ namespace {
     if (suffix == "bass_threshold") return type == vital::drive_dynamics::kBassShaper;
     if (suffix.startsWith("ws_")) return type == vital::drive_dynamics::kWaveshaper;
     return true;
+  }
+  // Destroy shows its filter's Frequency, Q and LP-HP only while Filter is Pre or Post.
+  bool isDestroyParameterRelevant(const String& suffix, int filter) {
+    return !suffix.startsWith("filter_") || filter != 0;
   }
 
   int effectSlotParameterRank(const String& effect_id, const String& suffix) {
@@ -1975,9 +2005,6 @@ namespace {
       return rank({ "mix", "trigger", "grid", "start", "stop", "attack", "decay", "sustain" });
     if (effect_id == "tremolo_pan")
       return rank({ "sync", "frequency", "tempo", "shape", "stereo_phase", "offset", "depth", "smoothing", "mix" });
-    if (effect_id == "scream")
-      return rank({ "cutoff", "scream", "resonance", "input_gain", "wet", "output_gain",
-                    "gate_release", "autogain", "keytracking" });
     if (effect_id == "spectral_lock")
       return rank({ "amount", "isolate", "shimmer", "bend", "bend_range", "range_high", "range_low",
                     "mute_high", "mute_low", "spray", "tilt", "pitch", "root", "scale", "mix" });
@@ -2029,7 +2056,8 @@ namespace {
     if (effect_id == "spectral_gate")
       return rank({ "fft_size", "cutoff", "balance", "tilt_enabled", "tilt", "mix" });
     if (effect_id == "frequency_shifter")
-      return rank({ "shift", "delay", "feedback", "dry_wet" });
+      return rank({ "mode", "shift", "delay", "feedback", "dry_wet", "bode_shift", "bode_range", "bode_direction",
+                    "bode_width", "bode_mono_input", "bode_delay", "bode_feedback", "bode_blur", "bode_mix" });
     if (effect_id == "limiter")
       return rank({ "gain", "ceiling", "release", "dry_wet" });
     if (effect_id == "dimension_expander")
@@ -2089,7 +2117,7 @@ namespace {
     if (const int slot = sourceSlotForId(id); slot >= 0) {
       const String suffix = id.substring(String("osc_" + String(slot + 1) + "_").length());
       return suffix == "type" || suffix == "analog_waveform" || suffix == "braids_model" ||
-             suffix.endsWith("spectral_morph_type");
+             suffix.endsWith("spectral_morph_type") || suffix == "random_phase_mode";
     }
     const String filter_suffix = filterSuffixForParameter(id);
     if (filter_suffix == "model" || filter_suffix == "style")
@@ -2098,10 +2126,10 @@ namespace {
     if (id.startsWith("lfo_") && id.endsWith("_sync") &&
         id.fromFirstOccurrenceOf("lfo_", false, false).upToFirstOccurrenceOf("_", false, false).containsOnly("0123456789"))
       return true;
-    for (const char* variant : { "dimension_expander_mode", "resonator_model", "analoguechorus_model",
+    for (const char* variant : { "dimension_expander_mode", "frequency_shifter_mode", "resonator_model", "analoguechorus_model",
                                  "analogueecho_medium", "analoguerotary_model", "analoguewah_model",
                                  "convolution_reverb_predelay_sync", "spectral_lock_mode",
-                                 "glitch_delay_tap_view", "maim_encoder", "saturator_type" }) {
+                                 "glitch_delay_tap_view", "maim_encoder", "saturator_type", "destroy_filter" }) {
       if (id == variant || id.endsWith(String("_") + variant))
         return true;
     }
@@ -2306,7 +2334,7 @@ namespace {
                                             "transpose_quantize", "level", "pan" });
 
     auto oscillator_suffix_rank = [](const String& suffix) {
-      static const std::array<const char*, 59> oscillator_order = {{
+      static const std::array<const char*, 62> oscillator_order = {{
         "on",
         "type",
         "level",
@@ -2337,6 +2365,7 @@ namespace {
         "unison_voices",
         "unison_detune",
         "unison_blend",
+        "unison_remove_fundamental",
         "stack_style",
         "detune_power",
         "detune_range",
@@ -2345,6 +2374,8 @@ namespace {
         "stereo_spread",
         "phase",
         "random_phase",
+        "random_phase_mode",
+        "random_phase_seed",
         "midi_track",
         "smooth_interpolation",
         "distortion_type",
@@ -2747,7 +2778,7 @@ namespace {
     static const std::vector<int> order = [] {
       std::vector<int> result;
       for (int effect = 0; effect < vital::constants::kNumEffects; ++effect)
-        if (effect != vital::constants::kScream) // Retained for old presets; new instances use Filter -> Scream.
+        if (effect != vital::constants::kRemovedScream) // Retired; Scream is a filter model.
           result.push_back(effect);
       std::sort(result.begin(), result.end(), [](int a, int b) {
         return effectName(a).compareIgnoreCase(effectName(b)) < 0;
@@ -2773,7 +2804,7 @@ namespace {
         { "Modulation", { kChorus, kFlanger, kPhaser, kTremoloPan, kDimensionExpander, kPhaseShift,
                           kFrequencyShifter, kTranceGate } },
         { "Distortion and character", { kDistortion, kWaveShaper, kErosion, kResonator, kMaim, kSaturator,
-                                        kDynamicTube, kOverdrive } },
+                                        kDynamicTube, kOverdrive, kDestroy } },
         { "Filter and EQ", { kFilterFx, kEq, kMidSideEq, kDefuse } },
         { "Spectral", { kSpectralGate, kSpectralCompressor, kSpectralLock, kSpectralBalance } },
       };
@@ -2868,6 +2899,7 @@ namespace {
     if (rest.startsWith("dynamic_tube_")) return "Dynamic Tube";
     if (rest.startsWith("overdrive_")) return "Overdrive";
     if (rest.startsWith("multiband_dynamics_")) return "Multiband Dynamics";
+    if (rest.startsWith("destroy_")) return "Destroy";
     if (rest.startsWith("spectral_compressor_")) return "Spectral Compressor";
     if (rest.startsWith("spectral_gate_")) return "Spectral Gate";
     if (rest.startsWith("erosion_")) return "Erosion";
@@ -3026,6 +3058,7 @@ namespace {
     if (id.startsWith("dynamic_tube_")) return "Dynamic Tube";
     if (id.startsWith("overdrive_")) return "Overdrive";
     if (id.startsWith("multiband_dynamics_")) return "Multiband Dynamics";
+    if (id.startsWith("destroy_")) return "Destroy";
     if (id.startsWith("spectral_compressor_")) return "Spectral Compressor";
     if (id.startsWith("spectral_gate_")) return "Spectral Gate";
     if (const int arp = arpeggiatorForId(id); arp > 0) return "Arpeggiator " + String(arp);
@@ -3439,6 +3472,29 @@ namespace {
     return {};
   }
 
+  String destroyHelpText(const String& suffix) {
+    if (suffix == "drive")
+      return "Set the gain into each stage's clipper, from 0.9 dB at zero to 39.9 dB at 100 percent. A gain control "
+             "ahead of the clipper holds its level steady, so higher settings add grit rather than loudness.";
+    if (suffix == "stack")
+      return "Repeat the whole stage, high-pass, gain control and clipper, from 1 to 16 times. Each stage drives "
+             "the next.";
+    if (suffix == "filter")
+      return "Place a 12 dB per octave filter before the stages (Pre) or after them (Post), or turn it off.";
+    if (suffix == "filter_frequency")
+      return "Set the filter's cutoff, from 8 Hz to 22 kHz.";
+    if (suffix == "filter_q")
+      return "Set the filter's resonance, from 0.05 to 7.6.";
+    if (suffix == "filter_morph")
+      return "Morph the filter from low-pass at zero through band-pass at 50 percent to high-pass at 100 percent.";
+    if (suffix == "mix")
+      return "Blend the dry signal, delayed by 7 samples to line up, with the distorted signal. 100 percent is the "
+             "distorted signal alone.";
+    if (suffix == "level")
+      return "Set the distorted signal's output level, from silent to plus 12 dB. 0 dB is unity.";
+    return {};
+  }
+
   String multibandHelpText(const String& suffix) {
     String band;
     String control = suffix;
@@ -3706,6 +3762,16 @@ namespace {
       if (suffix == "stereo_spread") return "Spread unison voices across the stereo field.";
       if (suffix == "phase") return "Set the oscillator start phase.";
       if (suffix == "random_phase") return "Randomize oscillator start phase on each triggered note.";
+      if (suffix == "unison_remove_fundamental")
+        return "Take the fundamental out of every detuned unison voice, so the low end does not phase, as in a "
+               "Reese bass. Only a voice on the note's pitch keeps it: the middle one of an odd voice count. "
+               "With an even count none does.";
+      if (suffix == "random_phase_mode")
+        return "New Each Note draws new random phases for every note. Frozen starts every note from the same "
+               "random phases, chosen by the seed, like a rendered unison sample played back.";
+      if (suffix == "random_phase_seed")
+        return "Choose the frozen phase pattern from 0 to 65535. The seed is saved with the preset. "
+               "Use the following Randomize button to try a new pattern.";
       if (suffix == "midi_track") return "Choose how strongly this oscillator follows MIDI note pitch.";
       if (suffix == "smooth_interpolation") return "Smooth movement between wavetable frames.";
       if (suffix == "secondary_distortion_type") return "Choose a second warp, FM or ring modulation mode after the primary distortion. None bypasses this stage.";
@@ -4087,16 +4153,6 @@ namespace {
     if (tremolo_suffix == "depth") return "Set the volume modulation depth. Zero is unchanged audio; 100 percent allows full attenuation.";
     if (tremolo_suffix == "smoothing") return "Soften the modulation edges from zero to 20 ms, especially for Square and Ramp shapes. Arrows change 0.1 ms.";
     if (tremolo_suffix == "mix") return "Blend dry audio with Tremolo Pan. Zero percent is dry; 100 percent uses the full effect.";
-    const String scream_suffix = effectSuffix("scream_");
-    if (scream_suffix == "cutoff") return "Set the Scream filter cutoff from 20 Hz to 20 kHz using BP Scream's original frequency scale.";
-    if (scream_suffix == "scream") return "Move the high-pass filter in the nonlinear feedback path relative to Cutoff.";
-    if (scream_suffix == "resonance") return "Set feedback gain and feedback filter resonance.";
-    if (scream_suffix == "input_gain") return "Set the filter input gain from minus 72 to plus 24 dB.";
-    if (scream_suffix == "wet") return "Blend dry and filtered audio before BP Scream's autogain and output gain stages.";
-    if (scream_suffix == "output_gain") return "Set final output gain from minus 24 to zero dB.";
-    if (scream_suffix == "gate_release") return "Set the output gate release from 5 to 500 ms to control the resonance tail.";
-    if (scream_suffix == "autogain") return "Enable BP Scream's automatic level compensation after the filter.";
-    if (scream_suffix == "keytracking") return "Offset Cutoff relative to the last MIDI note. MIDI note 24 adds no offset; each octave transposes the filter by one octave.";
     const String lock_suffix = effectSuffix("spectral_lock_");
     if (lock_suffix == "amount") return "Set how far each band's pitch snaps to the scale: zero plays the bands at their own notes, 100 percent fully on the scale.";
     if (lock_suffix == "isolate") return "Gate the weaker bands relative to the loudest one, so only the strongest tones are re-played.";
@@ -4285,6 +4341,11 @@ namespace {
       if (help.isNotEmpty())
         return help;
     }
+    if (const String destroy_suffix = effectSuffix("destroy_"); destroy_suffix.isNotEmpty()) {
+      const String help = destroyHelpText(destroy_suffix);
+      if (help.isNotEmpty())
+        return help;
+    }
     if (const String multiband_suffix = effectSuffix("multiband_dynamics_"); multiband_suffix.isNotEmpty()) {
       const String help = multibandHelpText(multiband_suffix);
       if (help.isNotEmpty())
@@ -4345,6 +4406,17 @@ namespace {
     if (dimension_suffix == "quorax_low_cut") return "Filter low frequencies from the generated side signal only. Zero bypasses the filter.";
     if (dimension_suffix == "quorax_high_cut") return "Filter high frequencies from the generated side signal only. Twenty thousand Hz bypasses the filter.";
     if (dimension_suffix == "quorax_slope") return "Choose the Mode 2 wet filter slope in dB per octave.";
+    const String shifter_suffix = effectSuffix("frequency_shifter_");
+    if (shifter_suffix == "mode") return "Choose Mode 1 or Mode 2. Each mode retains its own settings. Mode 2 adds 11 samples of latency.";
+    if (shifter_suffix == "bode_shift") return "Set the Mode 2 shift as a percentage of Range, from minus 100 to 100. The left output is the left input shifted down, the right output the right input shifted up.";
+    if (shifter_suffix == "bode_range") return "Set the Mode 2 shift in Hz at 100 percent Shift, from 0.1 Hz to 5 kHz.";
+    if (shifter_suffix == "bode_direction") return "Crossfade one Mode 2 output towards the other. Positive values move the left output towards the up shift, and 100 percent shifts both up. Negative values move the right output towards the down shift, and minus 100 percent shifts both down.";
+    if (shifter_suffix == "bode_width") return "Blend the two Mode 2 outputs, from mono at zero to full stereo at 100 percent.";
+    if (shifter_suffix == "bode_mono_input") return "Sum the input to mono before the Mode 2 shifter.";
+    if (shifter_suffix == "bode_delay") return "Set the Mode 2 feedback delay, up to five seconds. Feedback above zero makes it heard.";
+    if (shifter_suffix == "bode_feedback") return "Feed the delayed Mode 2 output back into the shifter, so each repeat shifts again.";
+    if (shifter_suffix == "bode_blur") return "Smear the Mode 2 output with a random multitap.";
+    if (shifter_suffix == "bode_mix") return "Blend the dry signal, delayed by Mode 2's 11 samples to line up, with the shifted signal. At 50 percent both play at full level; below it the shifted signal fades out, above it the dry signal.";
     const String erosion_suffix = effectSuffix("erosion_");
     if (erosion_suffix == "mode") return "Choose filtered Noise or Sine delay modulation.";
     if (erosion_suffix == "frequency") return "Set the noise band center or sine modulator frequency in Hz.";
@@ -4378,7 +4450,7 @@ namespace {
       "reverb_", "utility_", "waveshaper_", "spectral_gate_", "erosion_", "floaty_delay_", "spectral_compressor_", "scream_", "tremolo_pan_", "tape_", "defuse_", "suppressor_", "trance_gate_", "spectral_lock_", "resonator_",
       "analoguechorus_", "analogueflanger_", "analogueecho_", "analoguerotary_", "analoguespring_", "analoguewah_",
       "spectral_balance_", "openwurli_amp_", "scanner_vibrato_", "analoguecompressor_", "maim_", "particles_",
-      "saturator_", "dynamic_tube_", "overdrive_", "multiband_dynamics_"
+      "saturator_", "dynamic_tube_", "overdrive_", "multiband_dynamics_", "destroy_"
     };
     for (const auto& prefix : effect_prefixes) {
       effect_suffix = effectSuffix(prefix);
@@ -5352,8 +5424,9 @@ namespace {
     const auto* bridge = dynamic_cast<const ValueBridge*>(&parameter);
     const String parameter_id = bridge != nullptr ? bridge->getParameterId() : String();
     const int steps = parameter.getNumSteps();
-    const bool amplitude_seed = parameter_id.startsWith("osc_") && parameter_id.endsWith("_spectral_morph_seed");
-    double interval = steps > 1 && (steps < 10000 || amplitude_seed) ? 1.0 / (steps - 1) : 0.0;
+    const bool seed = parameter_id.startsWith("osc_") && (parameter_id.endsWith("_spectral_morph_seed") ||
+                                                          parameter_id.endsWith("_random_phase_seed"));
+    double interval = steps > 1 && (steps < 10000 || seed) ? 1.0 / (steps - 1) : 0.0;
     slider.setRange(minNormalizedValue, maxNormalizedValue, interval);
     // The effects whose sliders step in display units of their own, all
     // continuous: alone ("tape_drive") or in an effect slot ("fx_slot_2_tape_drive").
@@ -5378,6 +5451,7 @@ namespace {
     const bool maim_control = continuous && (parameter_id.startsWith("maim_") || parameter_id.contains("_maim_"));
     const bool particles_control = continuous && (parameter_id.startsWith("particles_") ||
                                                   parameter_id.contains("_particles_"));
+    const bool frequency_shifter_mode_2_control = continuous && parameter_id.contains("frequency_shifter_bode_");
     if (parameter_id == "release_velocity_glide_time") {
       slider.toAdjustmentValue = [](double value) { return value * 10.0; };
       slider.fromAdjustmentValue = [](double seconds) { return seconds / 10.0; };
@@ -5412,13 +5486,6 @@ namespace {
         return displayAccessibleFrequencyValuesInHz() ? 10.0
             : (slider.getMaximum() - slider.getMinimum()) / 100.0;
       };
-    }
-    if (bridge != nullptr && vital::scream::parameterIs(bridge->getDetails().name, "cutoff")) {
-      slider.toAdjustmentValue = [](double value) { return vital::scream::cutoffToHz(value); };
-      slider.fromAdjustmentValue = [](double hz) {
-        return hz >= 20000.0 ? 1.0 : static_cast<double>(vital::scream::cutoffFromHz(hz));
-      };
-      slider.adjustmentStep = [] { return 10.0; };
     }
     if (bridge != nullptr && spectral_lock_control && interval == 0.0) {
       const auto& details = bridge->getDetails();
@@ -5496,6 +5563,17 @@ namespace {
       slider.toAdjustmentValue = [minimum, span, scale](double v) { return (minimum + span * v) * scale; };
       slider.fromAdjustmentValue = [minimum, span, scale](double v) { return (v / scale - minimum) / span; };
       const double step = String(details.display_units).trim() == "dB" ? 0.5 : 1.0;
+      slider.adjustmentStep = [step] { return step; };
+    }
+    if (bridge != nullptr && frequency_shifter_mode_2_control && interval == 0.0 &&
+        bridge->getDetails().value_scale == vital::ValueDetails::kLinear) {
+      // The Frequency Shifter's Mode 2 keeps its script's units: keys move one
+      // percent, or ten milliseconds of Delay. Range steps along its logarithmic scale.
+      const auto& details = bridge->getDetails();
+      const double minimum = details.min, span = details.max - minimum, scale = details.display_multiply;
+      slider.toAdjustmentValue = [minimum, span, scale](double v) { return (minimum + span * v) * scale; };
+      slider.fromAdjustmentValue = [minimum, span, scale](double v) { return (v / scale - minimum) / span; };
+      const double step = parameter_id.endsWith("_bode_delay") ? 10.0 : 1.0;
       slider.adjustmentStep = [step] { return step; };
     }
     if (const auto* spec = continuous ? driveDynamicsSpecForId(parameter_id) : nullptr;
@@ -5874,10 +5952,13 @@ class PresetResultsTableModel final : public TableListBoxModel {
       editor_.loadSelectedPreset();
     }
 
+    // A column header pressed. The header also reports the sorts the editor
+    // set itself, which are already applied, and none (column 0) for Most
+    // downloaded, which no column shows.
     void sortOrderChanged(int column, bool forwards) override {
-      editor_.preset_sort_column_ = column;
-      editor_.preset_sort_ascending_ = forwards;
-      editor_.filterPresetList();
+      if (column == 0 || (column == editor_.preset_sort_column_ && forwards == editor_.preset_sort_ascending_))
+        return;
+      editor_.setPresetSort(column, forwards);
     }
 
     void deleteKeyPressed(int) override { editor_.deleteSelectedPreset(); }
@@ -6979,7 +7060,9 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
     last_preset_category_(synth.getEditorMemory().preset_category),
     last_preset_tag_(synth.getEditorMemory().preset_tag),
     last_preset_collection_(synth.getEditorMemory().preset_collection),
-    preset_browser_shown_(synth.getEditorMemory().preset_browser_shown) {
+    preset_browser_shown_(synth.getEditorMemory().preset_browser_shown),
+    preset_sort_column_(synth.getEditorMemory().preset_sort_column),
+    preset_sort_ascending_(synth.getEditorMemory().preset_sort_ascending) {
   // A new instance's preset browser starts unfiltered.
   if (last_preset_library_.isEmpty()) last_preset_library_ = kAllLibraries;
   if (last_preset_bank_.isEmpty()) last_preset_bank_ = kAllBanks;
@@ -7101,13 +7184,26 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   };
   addChildComponent(preset_search_);
 
+  // Sorts the preset table only, not the lists of libraries, banks and the like.
+  preset_sort_.setTitle("Sort presets");
+  preset_sort_.setDescription("The order of the preset table");
+  preset_sort_.setHelpText("Up and Down choose the order of the preset table, Return or Space opens the list");
+  preset_sort_.setWantsKeyboardFocus(true);
+  preset_sort_.onChange = [this] {
+    const int index = preset_sort_.getSelectedId() - 1;
+    if (isPositiveAndBelow(index, static_cast<int>(preset_sort_choices_.size())))
+      setPresetSort(preset_sort_choices_[static_cast<size_t>(index)].first,
+                    preset_sort_choices_[static_cast<size_t>(index)].second);
+  };
+  addChildComponent(preset_sort_);
+
   preset_table_model_ = std::make_unique<PresetResultsTableModel>(*this);
   preset_table_.setModel(preset_table_model_.get());
   preset_table_.setTitle("Preset results table");
   const String command = atlas::keys::commandName();
   preset_table_.setDescription("Sortable preset results with Name first. " + presetTableKeysHelp() + " " +
                                command + " S saves the patch, Shift " + command + " S saves it as a new preset.");
-  preset_table_.setHelpText("Use arrow keys to select a preset. Return loads, F toggles favourite, R renames, E edits metadata, P plays or stops a community preset's preview, S chooses the next sort column, Shift S reverses the sort, and column headers can also be pressed to sort. " +
+  preset_table_.setHelpText("Use arrow keys to select a preset. Return loads, F toggles favourite, R renames, E edits metadata, P plays or stops a community preset's preview. Sort presets, beside the search, chooses the order, and column headers can also be pressed to sort. " +
                             command + " S saves the patch and Shift " + command + " S saves it as a new preset.");
   preset_table_.setWantsKeyboardFocus(true);
   preset_table_.setRowHeight(30);
@@ -7123,7 +7219,8 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   preset_header.addColumn("Library", kPresetLibraryColumn, 100, 70, 180);
   preset_header.addColumn("Modified", kPresetModifiedColumn, 160, 110, 230);
   preset_header.setSortColumnId(preset_sort_column_, preset_sort_ascending_);
-  setPresetCollection(presetCollection());   // names the Favourite column for the remembered collection
+  // Names the Favourite column for the remembered collection, and fills Sort presets.
+  setPresetCollection(presetCollection());
   preset_table_.onFocusGained = [this] { ensurePresetListLoaded(); };
   preset_table_.onKeyPressed = [this](const KeyPress& key) {
     if (key.getKeyCode() == KeyPress::returnKey) {
@@ -7158,22 +7255,6 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
     }
     if (isContextMenuKey(key)) {
       showSelectedPresetMenu(preset_table_);
-      return true;
-    }
-    if (character_shortcut && character == 's') {
-      if (key.getModifiers().isShiftDown())
-        preset_sort_ascending_ = !preset_sort_ascending_;
-      else {
-        // The next column shown: the community's collections leave Bank and Library out.
-        auto& header = preset_table_.getHeader();
-        do
-          preset_sort_column_ = preset_sort_column_ >= kPresetModifiedColumn ? kPresetNameColumn : preset_sort_column_ + 1;
-        while (!header.isColumnVisible(preset_sort_column_) && preset_sort_column_ != kPresetNameColumn);
-      }
-      preset_table_.getHeader().setSortColumnId(preset_sort_column_, preset_sort_ascending_);
-      postPluginAnnouncement("Sorted by " + preset_table_.getHeader().getColumnName(preset_sort_column_) +
-                               (preset_sort_ascending_ ? ", ascending" : ", descending"),
-                             AccessibilityHandler::AnnouncementPriority::medium);
       return true;
     }
     return false;
@@ -8016,6 +8097,7 @@ std::unique_ptr<AccessibleParameterRow> SynthEditor::buildAccessibleParameterRow
 
   if (parameter_id == "release_velocity_mode" || parameter_id == "release_velocity_target" ||
       isEffectChoiceParameter(parameter_id, "dimension_expander_mode") ||
+      isEffectChoiceParameter(parameter_id, "frequency_shifter_mode") ||
       isEffectChoiceParameter(parameter_id, "erosion_mode") ||
       isEffectChoiceParameter(parameter_id, "resonator_note_priority")) {
     // These are named two-way choices, not On/Off switches.
@@ -8300,11 +8382,12 @@ std::unique_ptr<AccessibleParameterRow> SynthEditor::buildAccessibleParameterRow
     }
   }
 
-  if (parameter_id.startsWith("osc_") && parameter_id.endsWith("_spectral_morph_type"))
-    last_random_amplitude_modes_[parameter_id] =
-        static_cast<int>(engineValueFor(bridge)) == vital::SynthOscillator::kRandomAmplitudes;
+  if (parameter_id.startsWith("osc_") && (parameter_id.endsWith("_spectral_morph_type") ||
+                                          parameter_id.endsWith("_random_phase_mode")))
+    last_seed_modes_[parameter_id] = modeShowsSeed(parameter_id, static_cast<int>(engineValueFor(bridge)));
 
-  if (parameter_id.startsWith("osc_") && parameter_id.endsWith("_spectral_morph_seed"))
+  if (parameter_id.startsWith("osc_") && (parameter_id.endsWith("_spectral_morph_seed") ||
+                                          parameter_id.endsWith("_random_phase_seed")))
     return std::make_unique<AccessibleParameterRow>(parameter, bridge->getDetails().local_description);
 
   if (parameter_id.startsWith("osc_") && parameter_id.contains("_secondary_"))
@@ -8521,6 +8604,11 @@ bool SynthEditor::shouldShowParameterInSection(const String& sectionName, AudioP
   if (parameter_id.startsWith("osc_") && parameter_id.endsWith("_spectral_morph_seed")) {
     const String mode_id = parameter_id.dropLastCharacters(4) + "type";
     return static_cast<int>(engineValueFor(parameterBridge(mode_id))) == vital::SynthOscillator::kRandomAmplitudes;
+  }
+
+  if (parameter_id.startsWith("osc_") && parameter_id.endsWith("_random_phase_seed")) {
+    const String mode_id = parameter_id.dropLastCharacters(4) + "mode";
+    return static_cast<int>(engineValueFor(parameterBridge(mode_id))) == vital::SynthOscillator::kRandomPhaseFrozen;
   }
 
   const String suffix = filterSuffixForParameter(parameter_id);
@@ -8823,18 +8911,19 @@ void SynthEditor::addOscillatorSectionContent(int oscillator, const String& sect
     row_y += 48;
 
     auto* bridge = dynamic_cast<ValueBridge*>(&parameter);
-    if (bridge == nullptr || !bridge->getParameterId().endsWith("_spectral_morph_seed"))
+    if (bridge == nullptr)
       return;
     const String id = bridge->getParameterId();
-    const String title = id.contains("_secondary_") ? "Randomize secondary amplitudes seed" : "Randomize amplitudes seed";
-    const String description = "Choose a new random amplitudes pattern for this morph slot";
+    const auto [title, description] = seedButtonFor(id);
+    if (title.isEmpty())
+      return;
     auto button = std::make_unique<OffscreenTextButton>(title);
     auto* button_ptr = button.get();
     button_ptr->setTitle(title);
     button_ptr->setDescription(description);
     button_ptr->setHelpText("Press Enter to " + description.toLowerCase());
     button_ptr->setWantsKeyboardFocus(true);
-    button_ptr->onClick = [this, id] { randomizeAmplitudeSeed(id); };
+    button_ptr->onClick = [this, id] { randomizeSeed(id); };
     button_ptr->setExplicitFocusOrder(focus_order++);
     button_ptr->setBounds(row_x, row_y, row_width, 38);
     row_parent.addAndMakeVisible(button_ptr);
@@ -9462,13 +9551,12 @@ bool SynthEditor::refreshFilterRowsIfNeeded() {
   return true;
 }
 
-bool SynthEditor::refreshRandomAmplitudeRowsIfNeeded() {
+bool SynthEditor::refreshSeedRowsIfNeeded() {
   bool changed = false;
-  for (auto& mode : last_random_amplitude_modes_) {
-    const bool random = static_cast<int>(engineValueFor(parameterBridge(mode.first))) ==
-                        vital::SynthOscillator::kRandomAmplitudes;
-    changed |= mode.second != random;
-    mode.second = random;
+  for (auto& mode : last_seed_modes_) {
+    const bool shown = modeShowsSeed(mode.first, static_cast<int>(engineValueFor(parameterBridge(mode.first))));
+    changed |= mode.second != shown;
+    mode.second = shown;
   }
   if (!changed)
     return false;
@@ -9628,7 +9716,7 @@ void SynthEditor::clearSectionComponents() {
   section_headers_.clear();
   rows_.clear();
   last_filter_states_.clear();
-  last_random_amplitude_modes_.clear();
+  last_seed_modes_.clear();
   last_lfo_layouts_.clear();
   last_oscillator_modes_.clear();
   instrument_preset_menu_stale_ = false;
@@ -9701,10 +9789,14 @@ void SynthEditor::showAllSections(bool announce) {
         group_y += 42;
       }
       else {
-        preset_search_.setBounds(172, group_y, available_width - 156, 38);
-        group_ptr->addAndMakeVisible(preset_search_);
-        group_ptr->addAccessibleChild(&preset_search_);
-        row_focus_order_.push_back(&preset_search_);
+        constexpr int kSortWidth = 220;
+        preset_search_.setBounds(172, group_y, available_width - 156 - kSortWidth - 6, 38);
+        preset_sort_.setBounds(preset_search_.getRight() + 6, group_y, kSortWidth, 38);
+        for (Component* control : { static_cast<Component*>(&preset_search_), static_cast<Component*>(&preset_sort_) }) {
+          group_ptr->addAndMakeVisible(control);
+          group_ptr->addAccessibleChild(control);
+          row_focus_order_.push_back(control);
+        }
         group_y += 42;
         for (auto* table : { &preset_collection_table_, &preset_library_table_, &preset_bank_table_,
                              &preset_category_table_, &preset_tag_table_ }) {
@@ -10147,13 +10239,10 @@ void SynthEditor::showAllSections(bool announce) {
         row_focus_order_.push_back(row->focusableControl());
         rows_.push_back(std::move(row));
 
-        if (auto* bridge = dynamic_cast<ValueBridge*>(parameter);
-            bridge != nullptr && bridge->getParameterId().startsWith("osc_") &&
-            bridge->getParameterId().endsWith("_spectral_morph_seed")) {
+        if (auto* bridge = dynamic_cast<ValueBridge*>(parameter); bridge != nullptr) {
           const String id = bridge->getParameterId();
-          addActionButton(id.contains("_secondary_") ? "Randomize secondary amplitudes seed" : "Randomize amplitudes seed",
-                          "Choose a new random amplitudes pattern for this morph slot",
-                          [this, id] { randomizeAmplitudeSeed(id); });
+          if (const auto [title, description] = seedButtonFor(id); title.isNotEmpty())
+            addActionButton(title, description, [this, id] { randomizeSeed(id); });
         }
       }
       close_arp_destinations();
@@ -11416,8 +11505,7 @@ String SynthEditor::keyboardHelpText() {
       "Presets and browsers\n"
       "  Collection, Library, Bank, Category, and Tags tables: Up / Down selects and applies a value\n"
       "  Preset table: Up / Down chooses a preset; Enter loads it; F changes its favourite state\n"
-      "  S - Sort the preset table by the next column\n"
-      "  Shift+S - Reverse the preset table sort direction\n"
+      "  Sort presets (after the search): Up / Down chooses the order of the preset table; Return or Space opens the list\n"
       "  R - Rename the selected editable user preset\n"
       "  E - Edit the selected editable preset's metadata\n"
       "  P - Play or stop the selected community preset's or bank's preview\n"
@@ -11599,6 +11687,9 @@ void SynthEditor::undoOrRedo(bool redo) {
   else {
     // The rows show the values again; a choice that decides them rebuilds them.
     timerCallback();
+    // A wavetable step may have added or removed frames.
+    for (int oscillator = 0; oscillator < vital::kNumOscillators; ++oscillator)
+      syncWavetableFrameSliders(oscillator);
   }
   postUndoAnnouncement(undoAnnouncement(outcome, redo));
 }
@@ -11895,6 +11986,7 @@ void SynthEditor::showPresetControls() {
   preset_menu_.setVisible(true);
   // The browser itself follows the toolbar's Show preset browser.
   for (Component* control : { static_cast<Component*>(&preset_details_), static_cast<Component*>(&preset_search_),
+                              static_cast<Component*>(&preset_sort_),
                               static_cast<Component*>(&preset_collection_table_),
                               static_cast<Component*>(&preset_library_table_),
                               static_cast<Component*>(&preset_bank_table_),
@@ -12226,12 +12318,54 @@ void SynthEditor::namePresetBrowserForCollection() {
   header.setColumnName(kPresetCategoryColumn, category);
   header.setColumnVisible(kPresetBankColumn, !community);
   header.setColumnVisible(kPresetLibraryColumn, !community);
-  // A sort by a column left out goes back to the name.
-  if (!header.isColumnVisible(preset_sort_column_)) {
+  // A sort by a column left out, or by downloads away from the community's
+  // side, goes back to the name.
+  if (preset_sort_column_ == kPresetDownloadsSort ? !community : !header.isColumnVisible(preset_sort_column_)) {
     preset_sort_column_ = kPresetNameColumn;
+    preset_sort_ascending_ = true;
     header.setSortColumnId(preset_sort_column_, preset_sort_ascending_);
   }
+  updatePresetSortChoices();
   layoutPresetFacets();
+}
+
+String SynthEditor::presetSortName(int column, bool ascending) const {
+  if (column == kPresetModifiedColumn)
+    return ascending ? "Oldest first" : "Newest first";
+  if (column == kPresetDownloadsSort)
+    return ascending ? "Least downloaded" : "Most downloaded";
+  return preset_table_.getHeader().getColumnName(column) + (ascending ? ", A to Z" : ", Z to A");
+}
+
+void SynthEditor::updatePresetSortChoices() {
+  preset_sort_choices_ = { { kPresetNameColumn, true }, { kPresetNameColumn, false },
+                           { kPresetModifiedColumn, false }, { kPresetModifiedColumn, true },
+                           { kPresetAuthorColumn, true }, { kPresetCategoryColumn, true } };
+  if (inAnyCommunityCollection())
+    preset_sort_choices_.push_back({ kPresetDownloadsSort, false });
+  preset_sort_.clear(dontSendNotification);
+  int selected = 0;
+  for (size_t i = 0; i < preset_sort_choices_.size(); ++i) {
+    const auto& choice = preset_sort_choices_[i];
+    preset_sort_.addItem(presetSortName(choice.first, choice.second), static_cast<int>(i) + 1);
+    if (choice.first == preset_sort_column_ && choice.second == preset_sort_ascending_)
+      selected = static_cast<int>(i) + 1;
+  }
+  // A column header pressed may sort by what the list does not offer: the
+  // list then says so (Tags, A to Z) without an item chosen.
+  if (selected > 0)
+    preset_sort_.setSelectedId(selected, dontSendNotification);
+  else
+    preset_sort_.setText(presetSortName(preset_sort_column_, preset_sort_ascending_), dontSendNotification);
+}
+
+void SynthEditor::setPresetSort(int column, bool ascending) {
+  preset_sort_column_ = column;
+  preset_sort_ascending_ = ascending;
+  // No column shows the downloads, so the header shows no sort for them.
+  preset_table_.getHeader().setSortColumnId(column, ascending);
+  updatePresetSortChoices();
+  filterPresetList();
 }
 
 void SynthEditor::layoutPresetFacets() {
@@ -13197,13 +13331,20 @@ void SynthEditor::filterPresetList() {
       else if (first->modified_time > second->modified_time)
         comparison = 1;
     }
+    else if (preset_sort_column_ == kPresetDownloadsSort) {
+      if (first->remote_downloads < second->remote_downloads)
+        comparison = -1;
+      else if (first->remote_downloads > second->remote_downloads)
+        comparison = 1;
+    }
     else {
       comparison = valueForColumn(*first, preset_sort_column_)
                        .compareNatural(valueForColumn(*second, preset_sort_column_));
     }
-    if (comparison == 0)
-      comparison = first->file.getFileNameWithoutExtension().compareNatural(second->file.getFileNameWithoutExtension());
-    return preset_sort_ascending_ ? comparison < 0 : comparison > 0;
+    if (comparison != 0)
+      return preset_sort_ascending_ ? comparison < 0 : comparison > 0;
+    // Ties go by name, A to Z, whichever way the sort runs.
+    return first->file.getFileNameWithoutExtension().compareNatural(second->file.getFileNameWithoutExtension()) < 0;
   });
   for (const auto& match : matches)
     filtered_presets_.add(match);
@@ -16859,7 +17000,7 @@ void SynthEditor::setParameterEngineValue(const String& id, float engineValue) {
   }
 }
 
-void SynthEditor::randomizeAmplitudeSeed(const String& id) {
+void SynthEditor::randomizeSeed(const String& id) {
   auto* bridge = parameterBridge(id);
   if (bridge == nullptr)
     return;
@@ -17964,6 +18105,12 @@ void SynthEditor::addEffectSlotGroups(const String& sectionName, Component& pare
       if (found != synth_.getControls().end()) dimension_mode = found->second->value() >= 0.5f ? 1 : 0;
       effect_slot_modes_[effect_prefix + "mode"] = dimension_mode;
     }
+    int frequency_shifter_mode = 0;
+    if (effect_id == "frequency_shifter") {
+      const auto found = synth_.getControls().find((effect_prefix + "mode").toStdString());
+      if (found != synth_.getControls().end()) frequency_shifter_mode = found->second->value() >= 0.5f ? 1 : 0;
+      effect_slot_modes_[effect_prefix + "mode"] = frequency_shifter_mode;
+    }
     int resonator_model = 0;
     if (effect_id == "resonator") {
       const auto found = synth_.getControls().find((effect_prefix + "model").toStdString());
@@ -18018,6 +18165,12 @@ void SynthEditor::addEffectSlotGroups(const String& sectionName, Component& pare
         maim_encoder = jlimit(0, atlas::maim::kNumEncoders - 1, roundToInt(found->second->value()));
       effect_slot_modes_[effect_prefix + "encoder"] = effectSlotRowVariant(effect_prefix + "encoder", float(maim_encoder));
     }
+    int destroy_filter = 0;
+    if (effect_id == "destroy") {
+      const auto found = synth_.getControls().find((effect_prefix + "filter").toStdString());
+      if (found != synth_.getControls().end()) destroy_filter = jlimit(0, 2, roundToInt(found->second->value()));
+      effect_slot_modes_[effect_prefix + "filter"] = effectSlotRowVariant(effect_prefix + "filter", float(destroy_filter));
+    }
     int saturator_type = 0;
     if (effect_id == "saturator") {
       const auto found = synth_.getControls().find((effect_prefix + "type").toStdString());
@@ -18055,6 +18208,9 @@ void SynthEditor::addEffectSlotGroups(const String& sectionName, Component& pare
       if (effect_id == "dimension_expander" && suffix != "mode" && suffix != "on" &&
           (suffix.startsWith("quorax_") != (dimension_mode == 1)))
         continue;
+      if (effect_id == "frequency_shifter" && suffix != "mode" && suffix != "on" &&
+          (suffix.startsWith("bode_") != (frequency_shifter_mode == 1)))
+        continue;
       if (effect_id == "resonator" && !isResonatorParameterRelevant(suffix, resonator_model))
         continue;
       if (effect_id == "analoguechorus" && !isAnalogueChorusParameterRelevant(suffix, analogue_chorus_model))
@@ -18074,6 +18230,8 @@ void SynthEditor::addEffectSlotGroups(const String& sectionName, Component& pare
       if (effect_id == "maim" && !isMaimParameterRelevant(suffix, maim_encoder))
         continue;
       if (effect_id == "saturator" && !isSaturatorParameterRelevant(suffix, saturator_type))
+        continue;
+      if (effect_id == "destroy" && !isDestroyParameterRelevant(suffix, destroy_filter))
         continue;
       if (shouldExposeEffectSlotParameter(effect_id, suffix) &&
           shouldShowParameterInSection(sectionName, parameter))
@@ -20944,6 +21102,8 @@ int SynthEditor::addAccessibleWavetableEditorControls(int oscillator, Component&
         "Frame timeline position",
         "Move this source frame on the 256-position wavetable timeline without crossing adjacent source frames",
         1.0, vital::kNumOscillatorWaveFrames, frame_position + 1.0, 1.0, "", 0);
+    wavetable_frame_slider_[oscillator] = frame_slider;
+    wavetable_frame_position_slider_[oscillator] = frame_position_slider;
 
     auto selected_frame = [frame_slider] { return jmax(0, roundToInt(frame_slider->getValue()) - 1); };
     auto all_frames = [scope] { return scope->getSelectedId() == 2; };
@@ -21152,6 +21312,23 @@ void SynthEditor::pruneWavetableFrameSelection(int oscillator, int frameCount) {
   }
 }
 
+void SynthEditor::syncWavetableFrameSliders(int oscillator) {
+  if (!isPositiveAndBelow(oscillator, vital::kNumOscillators))
+    return;
+  auto* frame_slider = wavetable_frame_slider_[oscillator].getComponent();
+  auto* source = currentWaveSource(oscillator);
+  if (frame_slider == nullptr || source == nullptr || source->numFrames() == 0)
+    return;
+
+  const int frames = source->numFrames();
+  pruneWavetableFrameSelection(oscillator, frames);
+  const int frame = wavetable_keyboard_state_[oscillator].frame;
+  frame_slider->setRange(1.0, jmax(1.000001, double(frames)), 1.0);
+  frame_slider->setValue(frame + 1.0, dontSendNotification);
+  if (auto* position_slider = wavetable_frame_position_slider_[oscillator].getComponent())
+    position_slider->setValue(source->getFrameAt(frame)->position() + 1.0, dontSendNotification);
+}
+
 String SynthEditor::wavetableKeyboardStatusText(int oscillator) const {
   if (!isPositiveAndBelow(oscillator, vital::kNumOscillators))
     return "Wavetable keyboard editor unavailable";
@@ -21252,6 +21429,7 @@ void SynthEditor::moveWavetableFrameCursor(int oscillator, int direction, bool e
     for (int frame = first; frame <= last; ++frame)
       state.selected_frames.insert(frame);
   }
+  syncWavetableFrameSliders(oscillator);
   postWavetableEditorAnnouncement(wavetableFrameStatusText(oscillator),
                                   AccessibilityHandler::AnnouncementPriority::high);
 }
@@ -21451,6 +21629,7 @@ void SynthEditor::addWavetableFrame(int oscillator) {
   state.selected_frames.clear();
   creator->render();
   synth_.markStateChanged(wavetableUndoBlock(oscillator));
+  syncWavetableFrameSliders(oscillator);
   postWavetableEditorAnnouncement("Frame added, " + wavetableFrameStatusText(oscillator),
                                   AccessibilityHandler::AnnouncementPriority::high);
 }
@@ -21478,6 +21657,7 @@ void SynthEditor::deleteWavetableFrames(int oscillator) {
   state.selected_frames.clear();
   creator->render();
   synth_.markStateChanged(wavetableUndoBlock(oscillator));
+  syncWavetableFrameSliders(oscillator);
   postWavetableEditorAnnouncement("Deleted " + String(targets.size()) + " wavetable frame" +
                                   (targets.size() == 1 ? String() : String("s")) + ", " +
                                   wavetableFrameStatusText(oscillator),
@@ -21976,6 +22156,7 @@ bool SynthEditor::handleWavetableShortcut(int oscillator, const KeyPress& key, C
       for (int frame = jmin(previous, state.frame); frame <= jmax(previous, state.frame); ++frame)
         state.selected_frames.insert(frame);
     }
+    syncWavetableFrameSliders(oscillator);
     postWavetableEditorAnnouncement(wavetableFrameStatusText(oscillator),
                                     AccessibilityHandler::AnnouncementPriority::high);
     return true;
@@ -24763,7 +24944,7 @@ void SynthEditor::timerCallback() {
   }
   if (refreshFilterRowsIfNeeded())
     return;
-  if (refreshRandomAmplitudeRowsIfNeeded())
+  if (refreshSeedRowsIfNeeded())
     return;
   if (refreshLfoRowsIfNeeded())
     return;

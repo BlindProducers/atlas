@@ -21,10 +21,31 @@
 
 namespace vital {
 
+  // A one-pole high-pass at 5 Hz that removes DC: y[n] = x[n] - x[n-1] + r y[n-1].
+  struct DcBlocker {
+    static constexpr mono_float kCutoff = 5.0f;
+
+    static mono_float coefficient(mono_float sample_rate) {
+      return 1.0f - 2.0f * kPi * kCutoff / sample_rate;
+    }
+
+    force_inline poly_float tick(poly_float audio_in, mono_float coefficient) {
+      last_out = utils::mulAdd(audio_in - last_in, last_out, coefficient);
+      last_in = audio_in;
+      return last_out;
+    }
+
+    force_inline void reset(poly_mask reset_mask) {
+      last_in = utils::maskLoad(last_in, 0.0f, reset_mask);
+      last_out = utils::maskLoad(last_out, 0.0f, reset_mask);
+    }
+
+    poly_float last_in = 0.0f;
+    poly_float last_out = 0.0f;
+  };
+
   class DcFilter : public Processor {
     public:
-      static constexpr mono_float kCoefficientToSrConstant = 1.0f;
-
       enum {
         kAudio,
         kReset,
@@ -39,18 +60,13 @@ namespace vital {
       virtual void processWithInput(const poly_float* audio_in, int num_samples) override;
 
       void setSampleRate(int sample_rate) override;
-      void tick(const poly_float& audio_in, poly_float& audio_out);
 
     private:
       void reset(poly_mask reset_mask) override;
 
       mono_float coefficient_;
-
-      // Past input and output values.
-      poly_float past_in_;
-      poly_float past_out_;
+      DcBlocker blocker_;
 
       JUCE_LEAK_DETECTOR(DcFilter)
   };
 } // namespace vital
-

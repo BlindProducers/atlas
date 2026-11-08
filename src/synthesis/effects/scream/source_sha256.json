@@ -6,7 +6,5 @@
   "third_party/scream/Source/DSP/ScreamDSP.h": "15daccb3b2b435baddc62c0f3c809475f73a17ee0320fe4626f0ce90ac7d5ab2",
   "third_party/scream/Source/DSP/SmoothedParam.h": "7d5a9d879f37beb556b0a6dfb354d8bcdd7c66efd6a9ad67cd8dc6f365b1a263",
   "third_party/scream/Source/DSP/SvfFilter.h": "885a635cf44333bd177b5c7d47454c5e4e577caada5a0fca8e4eecda2d4f95f9",
-  "third_party/scream/Source/DSP/TanhADAA2.h": "e3e1179735a0efb6aa2c10ce0dad3244cc831f25da490a7809767bfe463ccba0",
-  "third_party/scream/Source/PluginProcessor.cpp": "644887ff690e2072642e7888e087a2af4696c6b02b6e562a3d70b249806b893a",
-  "third_party/scream/Source/PluginProcessor.h": "68a03e65bef39978bb0eb3d6c1c812bbd73b40a071db374d40fc6eaa1aedf3f8"
+  "third_party/scream/Source/DSP/TanhADAA2.h": "e3e1179735a0efb6aa2c10ce0dad3244cc831f25da490a7809767bfe463ccba0"
 }

@@ -219,7 +219,7 @@ namespace vital {
       addProcessor(bus_chain_inputs_[i]);
 
       bus_effect_chains_[i] = new ReorderableEffectChain(beats_per_second, voice_handler_->midi_offset_output(),
-                                                         bus_prefix, convolution_worker_, scream_midi_note_.output(), &trance_gate_clock_, preparation_worker_,
+                                                         bus_prefix, convolution_worker_, &trance_gate_clock_, preparation_worker_,
                                                &note_monitor_);
       addSubmodule(bus_effect_chains_[i]);
       addProcessor(bus_effect_chains_[i]);
@@ -240,7 +240,7 @@ namespace vital {
     addProcessor(main_chain_input_);
 
     effect_chain_ = new ReorderableEffectChain(beats_per_second, voice_handler_->midi_offset_output(),
-                                               "", convolution_worker_, scream_midi_note_.output(), &trance_gate_clock_, preparation_worker_,
+                                               "", convolution_worker_, &trance_gate_clock_, preparation_worker_,
                                                &note_monitor_);
     addSubmodule(effect_chain_);
     addProcessor(effect_chain_);
@@ -638,7 +638,6 @@ namespace vital {
 
   void SoundEngine::noteOn(int note, mono_float velocity, int sample, int channel) {
     if (velocity > 0) {
-      scream_midi_note_.set(static_cast<float>(note));
       trance_gate_clock_.noteOn(note, channel, sample);
       note_monitor_.noteOn(note, channel);
     }

@@ -34,6 +34,27 @@
 
 namespace vital {
 
+  namespace {
+    // Models that saturate inside, which leaves DC on notes whose partials
+    // make the saturation uneven. In a voice the amp envelope comes after
+    // them, so the DC blocker's own decay ends with the note.
+    bool leavesDc(int model) {
+      switch (model) {
+        case constants::kAnalog:
+        case constants::kDirty:
+        case constants::kLadder:
+        case constants::kDigital:
+        case constants::kFormant:
+        case constants::kPhase:
+        case constants::kScreamFilter:
+        case constants::kRingModFilter:
+          return true;
+        default:
+          return false;
+      }
+    }
+  }
+
   FilterModule::FilterModule(std::string prefix) :
       SynthModule(kNumInputs, 1), last_model_(-1), was_on_(false), 
       prefix_(std::move(prefix)), create_on_value_(true), mono_(false),
@@ -350,6 +371,7 @@ namespace vital {
 
     if (to_reset)
       getLocalProcessor(to_reset)->hardReset();
+    dc_blocker_.reset(constants::kFullMask);
 
     last_model_ = new_model;
   }
@@ -357,34 +379,56 @@ namespace vital {
   void FilterModule::process(int num_samples) {
     bool on = on_ == nullptr || on_->value() > 0.5f;
     setModel(static_cast<int>(roundf(filter_model_->value())));
-    if (on && !was_on_ && last_model_ == constants::kScreamFilter)
-      getLocalProcessor(scream_filter_)->hardReset();
+    if (on && !was_on_) {
+      if (last_model_ == constants::kScreamFilter)
+        getLocalProcessor(scream_filter_)->hardReset();
+      dc_blocker_.reset(constants::kFullMask);
+    }
     was_on_ = on;
 
     if (on) {
       SynthModule::process(num_samples);
 
+      const poly_mask reset_mask = getResetMask(kReset);
+      poly_float* audio_out = output()->buffer;
+      // Filter FX has no envelope after it, and must fall silent when its input does.
+      const bool block_dc = !mono_ && leavesDc(last_model_);
+      // A local copy stays in registers; the member could alias the buffer.
+      DcBlocker dc_blocker = dc_blocker_;
+      dc_blocker.reset(reset_mask);
+      const mono_float dc_coefficient = DcBlocker::coefficient(getSampleRate());
+
       // Scream applies its mix before autogain/output, as in the original DSP.
-      if (last_model_ == constants::kScreamFilter) return;
+      if (last_model_ == constants::kScreamFilter) {
+        if (block_dc) {
+          for (int i = 0; i < num_samples; ++i)
+            audio_out[i] = dc_blocker.tick(audio_out[i], dc_coefficient);
+          dc_blocker_ = dc_blocker;
+        }
+        return;
+      }
 
       poly_float current_mix = mix_;
       mix_ = utils::clamp(filter_mix_->buffer[0], 0.0f, 1.0f);
-      current_mix = utils::maskLoad(current_mix, mix_, getResetMask(kReset));
+      current_mix = utils::maskLoad(current_mix, mix_, reset_mask);
       poly_float delta_mix = (mix_ - current_mix) * (1.0f / num_samples);
 
       const bool reverb = last_model_ == constants::kReverbFilter;
       poly_float current_gain = reverb_gain_;
       reverb_gain_ = reverb ? futils::dbToMagnitude(utils::clamp(reverb_output_->buffer[0], -24.0f, 12.0f)) : poly_float(1.0f);
-      current_gain = utils::maskLoad(current_gain, reverb_gain_, getResetMask(kReset));
+      current_gain = utils::maskLoad(current_gain, reverb_gain_, reset_mask);
       const poly_float gain_step = (reverb_gain_ - current_gain) * (1.0f / num_samples);
-      poly_float* audio_out = output()->buffer;
       const poly_float* audio_in = input(kAudio)->source->buffer;
       for (int i = 0; i < num_samples; ++i) {
         current_mix += delta_mix;
         current_gain += gain_step;
-        audio_out[i] = utils::interpolate(audio_in[i], audio_out[i], current_mix);
+        poly_float wet = audio_out[i];
+        if (block_dc) wet = dc_blocker.tick(wet, dc_coefficient);
+        audio_out[i] = utils::interpolate(audio_in[i], wet, current_mix);
         if (reverb) audio_out[i] *= current_gain;
       }
+      if (block_dc)
+        dc_blocker_ = dc_blocker;
     }
     else
       utils::zeroBuffer(output()->buffer, num_samples);

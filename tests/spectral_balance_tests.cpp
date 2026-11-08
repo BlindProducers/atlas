@@ -310,7 +310,7 @@ namespace {
     // In a chain slot, enabled and bypassed.
     vital::Value bpm(2.0f), keytrack(0.0f);
     for (const std::string prefix : { "", "bus_2_" }) {
-      vital::ReorderableEffectChain chain(bpm.output(), keytrack.output(), prefix, nullptr, nullptr, nullptr, nullptr, nullptr);
+      vital::ReorderableEffectChain chain(bpm.output(), keytrack.output(), prefix, nullptr, nullptr, nullptr, nullptr);
       chain.init(); chain.setSampleRate(int(kRate));
       auto chain_controls = chain.getControls();
       chain_controls.at(prefix + "fx_slot_1_type")->set(vital::constants::kSpectralBalance + 1);

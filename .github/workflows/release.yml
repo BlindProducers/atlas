@@ -1,11 +1,15 @@
 # Builds Atlas for macOS (VST3, AU and a .pkg installer) and for Windows (VST3
-# and an .exe installer) on every push to dev, then publishes all of it as the
-# current pre-release on the Releases page (v2.0.0-beta.1, v2.0.0-rc.1 and so
-# on, see ATLAS_PRERELEASE below). The two builds run side by side; the release is
-# touched only once both have succeeded, so its files always come from one
-# commit. Each publish replaces the files of the one before, and the
-# pre-release's tag moves to the commit it was built from; bumping ATLAS_PRERELEASE starts
-# a new release. Nothing here touches main.
+# and an .exe installer) on every push to dev or main. A push to dev publishes
+# all of it as the current pre-release on the Releases page (v2.0.0-beta.1,
+# v2.0.0-rc.1 and so on, see ATLAS_PRERELEASE below); a push to main publishes
+# it as the release of the version in CMakeLists.txt (v2.0.0, "Atlas v2.0.0"),
+# marked latest. Both installers also install the Factory banks and every
+# library's folders (installer/stage_library.cmake). The two builds run side
+# by side; the release is touched only once both have succeeded, so its files
+# always come from one commit. Each publish replaces the files of the one
+# before, and the release's tag moves to the commit it was built from; bumping
+# ATLAS_PRERELEASE starts a new pre-release, and bumping the version in
+# CMakeLists.txt a new release.
 name: Build and publish
 
 env:
@@ -14,18 +18,21 @@ env:
   # the next one, and write what changed since the one before in
   # docs/releases/v<version>-<this>.md, which the publish job puts at the top
   # of the release notes.
-  ATLAS_PRERELEASE: rc.1
+  ATLAS_PRERELEASE: rc.5
+  # true on main (and a run by hand on main): the build is the release itself.
+  ATLAS_OFFICIAL: ${{ github.ref == 'refs/heads/main' }}
 
 on:
   push:
     branches:
       - dev
+      - main
     # A push that only changes documentation does not need a new build.
     paths-ignore:
       - '**.md'
       - 'docs/**'
-  # Run by hand from the Actions tab to rebuild and republish the current
-  # dev head, for example after a force-push, which starts no run.
+  # Run by hand from the Actions tab to rebuild and republish the head of dev
+  # or main, for example after a force-push, which starts no run.
   workflow_dispatch:
 
 # A newer push cancels the build still running for an older one.
@@ -59,9 +66,13 @@ jobs:
       - name: Package
         run: |
           version=$(sed -n 's/^project(Atlas VERSION \([^ ]*\).*/\1/p' CMakeLists.txt)
-          name="Atlas-${version}-${ATLAS_PRERELEASE}-macOS"
+          if [ "$ATLAS_OFFICIAL" = true ]; then
+            name="Atlas-${version}-macOS"
+          else
+            name="Atlas-${version}-${ATLAS_PRERELEASE}-macOS"
+          fi
           installer/macos/build_pkg.sh build dist
-          mv "dist/Atlas-${version}-macOS.pkg" "dist/${name}.pkg"
+          [ "dist/Atlas-${version}-macOS.pkg" = "dist/${name}.pkg" ] || mv "dist/Atlas-${version}-macOS.pkg" "dist/${name}.pkg"
           ditto -c -k --sequesterRsrc --keepParent build/Atlas_artefacts/Release/VST3/Atlas.vst3 "dist/${name}-VST3.zip"
           ditto -c -k --sequesterRsrc --keepParent build/Atlas_artefacts/Release/AU/Atlas.component "dist/${name}-AU.zip"
           # File attributes in a payload become stray ._ entries, so flag them.
@@ -104,13 +115,16 @@ jobs:
       # Contents/x86_64-win, the Tape effect's clips under
       # Contents/Resources/Tape and espeak-ng's data under
       # Contents/Resources/espeak-ng-data); the installer puts that folder
-      # into the system VST3 folder (installer/windows/Atlas.iss).
+      # into the system VST3 folder and the staged library into the user's
+      # Atlas folder (installer/windows/Atlas.iss).
       - name: Package
         shell: pwsh
         run: |
           $version = (Select-String -Path CMakeLists.txt -Pattern '^project\(Atlas VERSION (\S+)').Matches[0].Groups[1].Value
-          $name = "Atlas-$version-$env:ATLAS_PRERELEASE-Windows"
+          $name = if ($env:ATLAS_OFFICIAL -eq 'true') { "Atlas-$version-Windows" } else { "Atlas-$version-$env:ATLAS_PRERELEASE-Windows" }
           New-Item -ItemType Directory -Force dist | Out-Null
+          cmake -DDESTINATION=build/library -P installer/stage_library.cmake
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           Compress-Archive -Path build/Atlas_artefacts/Release/VST3/Atlas.vst3 -DestinationPath "dist/$name-VST3.zip"
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /Q "/DAppVersion=$version" "/DOutputName=$name" installer\windows\Atlas.iss
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -124,12 +138,12 @@ jobs:
           retention-days: 7
 
   publish:
-    name: Publish the beta pre-release
+    name: Publish the release
     needs: [macos, windows]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      # Moves the beta tag and updates its release.
+      # Moves the release's tag and updates the release.
       contents: write
     steps:
       - uses: actions/checkout@v7
@@ -145,32 +159,39 @@ jobs:
           REPOSITORY_URL: ${{ github.server_url }}/${{ github.repository }}
         run: |
           version=$(sed -n 's/^project(Atlas VERSION \([^ ]*\).*/\1/p' CMakeLists.txt)
-          tag="v${version}-${ATLAS_PRERELEASE}"
-          # beta.1 reads as "beta 1" in the title and notes, rc.1 as "RC 1".
-          beta="${ATLAS_PRERELEASE/./ }"
-          beta="${beta/#rc /RC }"
-          title="Atlas ${version} ${beta}"
-          case "$ATLAS_PRERELEASE" in
-            rc.*) stage="This is a release candidate: Atlas ${version} as it is meant to ship, unless testing finds something that has to change first. Keep copies of the presets you care about, and tell us what works and what does not." ;;
-            *) stage="This is a beta release. Atlas is still being developed and tested: expect rough edges, keep copies of the presets you care about, and tell us what works and what does not." ;;
-          esac
-          # What changed since the pre-release before, written when
-          # ATLAS_PRERELEASE was bumped; an older one republished by hand may have none.
+          if [ "$ATLAS_OFFICIAL" = true ]; then
+            tag="v${version}"
+            title="Atlas v${version}"
+            stage=""
+            kind=(--prerelease=false --latest)
+          else
+            tag="v${version}-${ATLAS_PRERELEASE}"
+            # beta.1 reads as "beta 1" in the title and notes, rc.1 as "RC 1".
+            beta="${ATLAS_PRERELEASE/./ }"
+            beta="${beta/#rc /RC }"
+            title="Atlas ${version} ${beta}"
+            case "$ATLAS_PRERELEASE" in
+              rc.*) stage="This is a release candidate: Atlas ${version} as it is meant to ship, unless testing finds something that has to change first. Keep copies of the presets you care about, and tell us what works and what does not." ;;
+              *) stage="This is a beta release. Atlas is still being developed and tested: expect rough edges, keep copies of the presets you care about, and tell us what works and what does not." ;;
+            esac
+            kind=(--prerelease --latest=false)
+          fi
+          # What changed since the release before, written in
+          # docs/releases/<tag>.md when ATLAS_PRERELEASE or the version was
+          # bumped; an older one republished by hand may have none.
           changes=""
           if [ -f "docs/releases/${tag}.md" ]; then
             changes="$(cat "docs/releases/${tag}.md")"$'\n\n'
           fi
-          notes="Atlas ${version} ${beta}, built from commit ${GITHUB_SHA} on the dev branch (${GITHUB_SHA::7}: $(git log -1 --format=%s)). Every push to dev replaces these files until the next pre-release.
-
-          ${changes}${stage}
+          notes="${changes}${stage}
 
           Atlas can get loud. Some oscillators, filters and effects reach well above 0 dBFS, so a limiter after Atlas, on the track or on the master, is recommended when you play it, especially on headphones.
 
           Contributions are welcome: bug reports, feature requests, pull requests, presets, wavetables and documentation, at ${REPOSITORY_URL}. Atlas is built to be played and programmed with a keyboard and a screen reader, so reports from VoiceOver and Windows screen reader users are especially valuable.
 
-          macOS: the .pkg installs the VST3 and the Audio Unit in /Library/Audio/Plug-Ins. It is not signed, so the first time macOS blocks it: open System Settings > Privacy & Security and click Open Anyway. The macOS zips hold the bare plug-ins for copying by hand. They are not notarized either, so after unzipping, clear the quarantine flag (xattr -dr com.apple.quarantine Atlas.vst3, and the same for Atlas.component) or hosts refuse to load them.
+          macOS: the .pkg installs the VST3 and the Audio Unit in /Library/Audio/Plug-Ins, and the Factory presets in Documents/Blind Producers Plugins/Atlas. It is not signed, so the first time macOS blocks it: open System Settings > Privacy & Security and click Open Anyway. The macOS zips hold the bare plug-ins for copying by hand. They are not notarized either, so after unzipping, clear the quarantine flag (xattr -dr com.apple.quarantine Atlas.vst3, and the same for Atlas.component) or hosts refuse to load them.
 
-          Windows: the .exe installs Atlas.vst3 into C:\\Program Files\\Common Files\\VST3 (or a folder you choose) and can be removed from Apps & features. It is not signed, so SmartScreen may ask once: choose More info, then Run anyway. The Windows zip holds the bare Atlas.vst3 folder for copying by hand into your VST3 folder. Rescan plug-ins in your host afterwards."
+          Windows: the .exe installs Atlas.vst3 into C:\\Program Files\\Common Files\\VST3 (or a folder you choose), and the Factory presets in Documents\\Blind Producers Plugins\\Atlas, and can be removed from Apps & features. It is not signed, so SmartScreen may ask once: choose More info, then Run anyway. The Windows zip holds the bare Atlas.vst3 folder for copying by hand into your VST3 folder. Rescan plug-ins in your host afterwards."
           ls -l dist
           git tag -f "$tag" "$GITHUB_SHA"
           git push -f origin "refs/tags/$tag"
@@ -178,8 +199,8 @@ jobs:
             gh release view "$tag" --json assets --jq '.assets[].name' | while read -r asset; do
               gh release delete-asset "$tag" "$asset" --yes
             done
-            gh release edit "$tag" --title "$title" --notes "$notes" --prerelease
+            gh release edit "$tag" --title "$title" --notes "$notes" "${kind[@]}"
           else
-            gh release create "$tag" --verify-tag --prerelease --latest=false --title "$title" --notes "$notes"
+            gh release create "$tag" --verify-tag "${kind[@]}" --title "$title" --notes "$notes"
           fi
           gh release upload "$tag" dist/*

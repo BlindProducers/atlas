@@ -182,6 +182,15 @@ set(ATLAS_DRIVE_DYNAMICS_SOURCES
   src/synthesis/effects/drive_dynamics/overdrive.cpp
   src/synthesis/effects/drive_dynamics/multiband_dynamics.cpp)
 
+# The Frequency Shifter's Mode 2: Alessio Scala's Serum 2 Bode JSFX, ported the
+# same way, statement for statement, so that AtlasBodeReferenceTests finds every
+# output sample identical to the script's.
+set(ATLAS_BODE_SOURCES src/synthesis/effects/bode/bode_shifter.cpp)
+
+# Destroy: Alessio Scala's Serum 2 Overdrive JSFX, ported the same way, so that
+# AtlasDestroyReferenceTests finds every output sample identical to the script's.
+set(ATLAS_DESTROY_SOURCES src/synthesis/effects/destroy/destroy.cpp)
+
 # PFFFT (third_party/pffft) is every FFT in Atlas on every platform: the
 # oscillators' (src/common/fourier_transform.h) and, through
 # third_party/patches/juce8-pffft-fft-engine.patch, every juce::dsp::FFT and
@@ -202,13 +211,10 @@ target_sources(Atlas PRIVATE
   # Spectral effects keep IEEE semantics outside the fast-math synthesis unity build.
   src/synthesis/effects/suppressor/suppressor_engine.cpp
   src/synthesis/effects/spectral_compressor/spectral_compressor_engine.cpp
-  # Compile BP Scream and its adapter outside the fast-math synthesis unity build.
-  "third_party/scream/Source/DSP/ScreamDSP.cpp"
   src/plugin/trance_gate_editor.cpp
   src/common/tape_noise_library.cpp
   src/synthesis/modules/tape_module.cpp
   src/synthesis/modules/defuse_module.cpp
-  src/synthesis/modules/scream_module.cpp
   src/synthesis/filters/scream_filter.cpp
   src/synthesis/filters/scream_tanh.cpp
   src/synthesis/modules/spectral_compressor_module.cpp
@@ -276,6 +282,10 @@ target_sources(Atlas PRIVATE
   # Saturator, Overdrive, Dynamic Tube and Multiband Dynamics (Alessio Scala's JSFX).
   ${ATLAS_DRIVE_DYNAMICS_SOURCES}
   src/synthesis/modules/drive_dynamics_modules.cpp
+  # The Frequency Shifter's Mode 2 (Alessio Scala's Serum 2 Bode JSFX).
+  ${ATLAS_BODE_SOURCES}
+  # Destroy (Alessio Scala's Serum 2 Overdrive JSFX).
+  ${ATLAS_DESTROY_SOURCES}
   # ZL Compressor by zsliu98 (AGPL v3): the Analogue Compressor effect.
   ${ATLAS_ZL_COMPRESSOR_SOURCES}
   # Maim by Arden Butterfield (GPL v3): the Maim effect.
@@ -311,7 +321,8 @@ set_source_files_properties(${ATLAS_OPENB3_SOURCES} src/synthesis/producers/open
   src/synthesis/modules/openb3_module.cpp src/synthesis/modules/scanner_vibrato_module.cpp PROPERTIES
   COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:precise>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffp-contract=off;-fno-fast-math>")
 set_source_files_properties(${ATLAS_ZL_COMPRESSOR_SOURCES} ${ATLAS_MAIM_SOURCES}
-  ${ATLAS_DRIVE_DYNAMICS_SOURCES} src/synthesis/modules/drive_dynamics_modules.cpp PROPERTIES
+  ${ATLAS_DRIVE_DYNAMICS_SOURCES} src/synthesis/modules/drive_dynamics_modules.cpp ${ATLAS_BODE_SOURCES}
+  ${ATLAS_DESTROY_SOURCES} PROPERTIES
   COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:precise>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffp-contract=off;-fno-fast-math>")
 # The Scream filter's feedback loop amplifies any rounding difference, so its
 # SVFs and waveshaper round alike on arm64 and x64.
@@ -643,7 +654,8 @@ if(ATLAS_BUILD_TIMING_TESTS)
   enable_testing()
   juce_add_console_app(AtlasTimingTests PRODUCT_NAME "Atlas Timing Tests")
   juce_generate_juce_header(AtlasTimingTests)
-  target_sources(AtlasTimingTests PRIVATE tests/timing_stability_tests.cpp)
+  # BP Scream's own DSP, which the Scream filter model's test compares it with.
+  target_sources(AtlasTimingTests PRIVATE tests/timing_stability_tests.cpp "third_party/scream/Source/DSP/ScreamDSP.cpp")
   target_include_directories(AtlasTimingTests PRIVATE
     src/common
     src/common/wavetable
@@ -685,6 +697,10 @@ if(ATLAS_BUILD_TIMING_TESTS)
   add_test(NAME atlas_spectral_oscillator COMMAND AtlasTimingTests --spectral-oscillator)
   add_test(NAME atlas_oscillator_warps COMMAND AtlasTimingTests --oscillator-warps)
   add_test(NAME atlas_oscillator_warp_controls COMMAND AtlasTimingTests --oscillator-warp-controls)
+  add_test(NAME atlas_unison_phase COMMAND AtlasTimingTests --unison-phase)
+  add_test(NAME atlas_unison_phase_controls COMMAND AtlasTimingTests --unison-phase-controls)
+  add_test(NAME atlas_unison_fundamental COMMAND AtlasTimingTests --unison-fundamental)
+  add_test(NAME atlas_unison_fundamental_controls COMMAND AtlasTimingTests --unison-fundamental-controls)
   add_test(NAME atlas_random_amplitude_seeds COMMAND AtlasTimingTests --random-amplitude-seeds)
   add_test(NAME atlas_random_amplitude_seed_controls COMMAND AtlasTimingTests --random-amplitude-seed-controls)
   add_test(NAME atlas_sample_navigation COMMAND AtlasTimingTests --sample-navigation)
@@ -699,6 +715,7 @@ if(ATLAS_BUILD_TIMING_TESTS)
   add_test(NAME atlas_analog_oscillator COMMAND AtlasTimingTests --analog-oscillator)
   add_test(NAME atlas_fourier_transform COMMAND AtlasTimingTests --fourier-transform)
   add_test(NAME atlas_maim COMMAND AtlasTimingTests --maim)
+  add_test(NAME atlas_dc_offsets COMMAND AtlasTimingTests --dc-offsets)
   add_test(NAME atlas_analog_oscillator_controls COMMAND AtlasTimingTests --analog-oscillator-controls)
 
   juce_add_console_app(AtlasCpuTests PRODUCT_NAME "Atlas CPU Tests")
@@ -1271,21 +1288,6 @@ if(ATLAS_BUILD_TIMING_TESTS)
   add_test(NAME atlas_analogue_cpu COMMAND AtlasAnalogueTests --cpu)
   set_tests_properties(atlas_analogue_cpu PROPERTIES LABELS cpu)
 
-  juce_add_console_app(AtlasScreamTests PRODUCT_NAME "Atlas Scream Tests")
-  juce_generate_juce_header(AtlasScreamTests)
-  target_sources(AtlasScreamTests PRIVATE
-    tests/scream_tests.cpp tests/scream_reference_processor.cpp
-    "third_party/scream/Source/LFO/LFOData.cpp"
-    "third_party/scream/Source/LFO/LFOProcessor.cpp")
-  target_include_directories(AtlasScreamTests PRIVATE
-    "third_party/scream/Source"
-    src/common src/common/wavetable src/synthesis/framework src/synthesis/modules src/synthesis/effects third_party)
-  target_compile_definitions(AtlasScreamTests PRIVATE
-    VITAL_ACCESSIBLE_UI=1 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_DSP_USE_SHARED_FFTW=0)
-  target_link_libraries(AtlasScreamTests PRIVATE
-    Atlas juce::juce_audio_utils juce::juce_dsp juce::juce_recommended_config_flags)
-  add_test(NAME atlas_scream COMMAND AtlasScreamTests)
-
   juce_add_console_app(AtlasJsfxTests PRODUCT_NAME "Atlas JSFX Tests")
   juce_generate_juce_header(AtlasJsfxTests)
   target_sources(AtlasJsfxTests PRIVATE tests/jsfx/module_tests.cpp)
@@ -1346,6 +1348,28 @@ if(ATLAS_BUILD_TIMING_TESTS)
     target_link_libraries(AtlasDriveDynamicsReferenceTests PRIVATE AtlasEelReference)
     add_test(NAME atlas_drive_dynamics_reference COMMAND AtlasDriveDynamicsReferenceTests
       "${CMAKE_SOURCE_DIR}/tests/drive_dynamics")
+    # The Frequency Shifter's Mode 2 against the Serum 2 Bode JSFX, which is not
+    # in the repository: the test is added once ATLAS_BODE_JSFX names the script.
+    set(ATLAS_BODE_JSFX "" CACHE FILEPATH "Path to Serum2Bode.jsfx for the Frequency Shifter Mode 2 reference test")
+    add_executable(AtlasBodeReferenceTests tests/bode/reference_tests.cpp ${ATLAS_BODE_SOURCES})
+    target_include_directories(AtlasBodeReferenceTests PRIVATE src/synthesis/effects/bode)
+    set_source_files_properties(tests/bode/reference_tests.cpp PROPERTIES
+      COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:precise>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffp-contract=off;-fno-fast-math>")
+    target_link_libraries(AtlasBodeReferenceTests PRIVATE AtlasEelReference)
+    if(EXISTS "${ATLAS_BODE_JSFX}")
+      add_test(NAME atlas_bode_reference COMMAND AtlasBodeReferenceTests "${ATLAS_BODE_JSFX}")
+    endif()
+    # Destroy against the Serum 2 Overdrive JSFX, which is not in the
+    # repository either: the test is added once ATLAS_DESTROY_JSFX names it.
+    set(ATLAS_DESTROY_JSFX "" CACHE FILEPATH "Path to Serum2Overdrive.jsfx for the Destroy reference test")
+    add_executable(AtlasDestroyReferenceTests tests/destroy/reference_tests.cpp ${ATLAS_DESTROY_SOURCES})
+    target_include_directories(AtlasDestroyReferenceTests PRIVATE src/synthesis/effects/destroy)
+    set_source_files_properties(tests/destroy/reference_tests.cpp PROPERTIES
+      COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:precise>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffp-contract=off;-fno-fast-math>")
+    target_link_libraries(AtlasDestroyReferenceTests PRIVATE AtlasEelReference)
+    if(EXISTS "${ATLAS_DESTROY_JSFX}")
+      add_test(NAME atlas_destroy_reference COMMAND AtlasDestroyReferenceTests "${ATLAS_DESTROY_JSFX}")
+    endif()
     add_executable(AtlasResonatorReferenceTests tests/resonator/reference_tests.cpp)
     target_include_directories(AtlasResonatorReferenceTests PRIVATE src/synthesis/effects)
     target_link_libraries(AtlasResonatorReferenceTests PRIVATE AtlasEelReference Atlas)
