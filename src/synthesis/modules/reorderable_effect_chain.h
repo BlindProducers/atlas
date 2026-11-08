@@ -129,6 +129,8 @@ namespace vital {
       std::array<int, constants::kMaxEffectSlots> quiet_samples_ {};
       std::array<int, constants::kMaxEffectSlots> probe_samples_ {};
       std::array<bool, constants::kMaxEffectSlots> asleep_ {};
+      // What each slot's effect added below 5 Hz, taken back out of its output.
+      std::array<poly_float, constants::kMaxEffectSlots> added_dc_ {};
       Value* post_effect_order_;
       int effect_order_[constants::kNumEffects];
       float last_order_;
