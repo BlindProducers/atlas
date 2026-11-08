@@ -2156,8 +2156,14 @@ namespace vital {
     // read position, plus their jumps and corners. Positions are in slave
     // cycles since a sync reset; the read position is half a cycle later, so
     // at a 1:1 ratio a synced oscillator matches the free-running one.
+    // `integral(x)` is the area under the wave from a sync reset to x slave
+    // cycles later, for x in [0, 1]; a whole cycle has none.
     template<int waveform>
     struct SyncShape;
+
+    force_inline poly_float syncReadPosition(poly_float slave) {
+      return utils::mod(slave + 0.5f);
+    }
 
     template<>
     struct SyncShape<analog::kSine> {
@@ -2177,6 +2183,14 @@ namespace vital {
                                           poly_float::lessThan(q, knee));
         return analog::sinCycles(warp(q)) * rate * (-2.0f * kPi);
       }
+      // Area from the cycle start to q, which is the same at q = 0 and 1.
+      force_inline poly_float area(poly_float q) const {
+        poly_float length = utils::maskLoad(poly_float(1.0f) - knee, knee, poly_float::lessThan(q, knee));
+        return length * analog::sinCycles(warp(q)) * (1.0f / kPi);
+      }
+      force_inline poly_float integral(poly_float x) const {
+        return area(syncReadPosition(x)) - area(poly_float(0.5f));
+      }
       template<class Function> void edges(Function) const { }
       template<class Function> void corners(Function) const { }
     };
@@ -2193,6 +2207,16 @@ namespace vital {
       force_inline poly_float slope(poly_float q) const {
         return utils::maskLoad(poly_float(2.0f) / (poly_float(1.0f) - apex), poly_float(-2.0f) / apex,
                                poly_float::lessThan(q, apex));
+      }
+      // Area from the cycle start to q, which is the same at q = 0 and 1.
+      force_inline poly_float area(poly_float q) const {
+        poly_float falling = q - q * q / apex;
+        poly_float rising_time = q - apex;
+        poly_float rising = rising_time * rising_time / (poly_float(1.0f) - apex) - rising_time;
+        return utils::maskLoad(rising, falling, poly_float::lessThan(q, apex));
+      }
+      force_inline poly_float integral(poly_float x) const {
+        return area(syncReadPosition(x)) - area(poly_float(0.5f));
       }
       template<class Function> void edges(Function) const { }
       template<class Function> void corners(Function function) const {
@@ -2211,6 +2235,10 @@ namespace vital {
         return poly_float(1.0f) - position - utils::mod(position - offset);
       }
       force_inline poly_float slope(poly_float) const { return -2.0f; }
+      // From a reset the wave is 1 + offset - 2x, one lower before x reaches the offset.
+      force_inline poly_float integral(poly_float x) const {
+        return (offset + 1.0f) * x - x * x - utils::min(x, offset);
+      }
       template<class Function> void edges(Function function) const {
         function(poly_float(0.0f), poly_float(1.0f));
         function(offset, poly_float(1.0f));
@@ -2229,6 +2257,11 @@ namespace vital {
         return utils::maskLoad(poly_float(-1.0f), poly_float(1.0f), high) - (width * 2.0f - 1.0f);
       }
       force_inline poly_float slope(poly_float) const { return 0.0f; }
+      // From a reset the wave is low, then high for `width` from 0.5 - width / 2.
+      force_inline poly_float integral(poly_float x) const {
+        poly_float high_time = utils::clamp(x - (poly_float(0.5f) - width * 0.5f), 0.0f, width);
+        return x * (width * -2.0f) + high_time * 2.0f;
+      }
       template<class Function> void edges(Function function) const {
         function(width * 0.5f + 0.5f, poly_float(-2.0f));
         function(poly_float(0.5f) - width * 0.5f, poly_float(2.0f));
@@ -2236,14 +2269,12 @@ namespace vital {
       template<class Function> void corners(Function) const { }
     };
 
-    force_inline poly_float syncReadPosition(poly_float slave) {
-      return utils::mod(slave + 0.5f);
-    }
-
     // Band-limited hard sync. `master` is the oscillator's own position since
     // its sync point; the slave runs `ratio` times faster and restarts there.
     // Every jump and corner, including each restart, is found with its exact
-    // time, and its correction is spread over a two sample look-ahead.
+    // time, and its correction is spread over a two sample look-ahead. A
+    // ratio that isn't whole leaves part of a slave cycle in every master
+    // cycle, whose mean is subtracted so the result has no DC.
     template<int waveform>
     force_inline poly_float syncSample(analog::LaneState& state, poly_float master, poly_float ratio, poly_float shape) {
       static constexpr mono_float kTiny = 1.0e-9f;
@@ -2329,9 +2360,22 @@ namespace vital {
         next_slave = utils::maskLoad(next_slave, utils::mod(restarted), wrapped);
       }
 
+      // The slave cycles in one master cycle, fewer where the slave rate is capped.
+      poly_float cycles = utils::min(ratio, poly_float(kMaxSlaveRate) / utils::max(movement, kTiny));
+      poly_float fraction = cycles - utils::floor(cycles);
+      poly_float mean = sync_shape.integral(fraction) / utils::max(cycles, kTiny);
+      if constexpr (waveform == analog::kSine) {
+        // A band-limited corner adds a sixth of its slope change per sample
+        // in area. The other waves' corners cancel over a master cycle; the
+        // sine's restart corner is only taken back by its curve, which isn't
+        // band-limited, so its area is a DC of its own.
+        poly_float change = sync_shape.slope(syncReadPosition(0.0f)) - sync_shape.slope(syncReadPosition(fraction));
+        mean += change * slave_rate * utils::max(movement, 0.0f) * (1.0f / 6.0f);
+      }
+
       state.sync_slave = next_slave;
       state.sync_master = master;
-      poly_float result = state.sync_history2 + state.sync_correction0;
+      poly_float result = state.sync_history2 + state.sync_correction0 - mean;
       state.sync_history2 = state.sync_history1;
       state.sync_history1 = sync_shape.value(syncReadPosition(next_slave));
       state.sync_correction0 = state.sync_correction1;
