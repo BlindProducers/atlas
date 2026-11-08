@@ -160,9 +160,7 @@ jobs:
           if [ -f "docs/releases/${tag}.md" ]; then
             changes="$(cat "docs/releases/${tag}.md")"$'\n\n'
           fi
-          notes="Atlas ${version} ${beta}, built from commit ${GITHUB_SHA} on the dev branch (${GITHUB_SHA::7}: $(git log -1 --format=%s)). Every push to dev replaces these files until the next pre-release.
-
-          ${changes}${stage}
+          notes="${changes}${stage}
 
           Atlas can get loud. Some oscillators, filters and effects reach well above 0 dBFS, so a limiter after Atlas, on the track or on the master, is recommended when you play it, especially on headphones.
 
