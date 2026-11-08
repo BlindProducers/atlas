@@ -53,6 +53,11 @@ for Filter FX and autogain in place of BP Scream's input gates and ADSR.
   polynomial) use only IEEE add, multiply and divide on SSE2 or NEON double
   vectors, two lanes per register. Every platform gets the same bits, which
   libm does not give.
+- **DC blocker.** As a voice filter, the filter module follows Scream with a
+  5 Hz one-pole high-pass (`DcBlocker` in `dc_filter.h`), because the
+  saturating feedback leaves DC on notes whose partials drive it unevenly
+  (−27 to −37 dB on a full-scale Analog saw). The steady-tone test passes BP
+  Scream's output through the same high-pass. Filter FX has none.
 - Both files are compiled outside the fast-math unit and without FMA
   contraction (`CMakeLists.txt`), so arm64 rounds as x64 does.
 

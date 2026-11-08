@@ -17,6 +17,7 @@
 #pragma once
 
 #include "synth_module.h"
+#include "dc_filter.h"
 #include "formant_module.h"
 
 namespace vital {
@@ -97,6 +98,8 @@ namespace vital {
       Output* filter_mix_;
       Output* reverb_output_;
       poly_float reverb_gain_ { 1.0f };
+      // Removes the DC that saturating models leave (see leavesDc).
+      DcBlocker dc_blocker_;
       SmoothControlSource* keytrack_smoother_;
 
       CombModule* comb_filter_;

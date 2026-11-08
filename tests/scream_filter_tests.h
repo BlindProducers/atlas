@@ -91,6 +91,9 @@ void testReferenceTone() {
   float parameters[5] = { normalized, .5f, .2f, .75f, 1.0f };
   const float mod_amounts[5][2] {};
   std::array<std::array<float, 128>, 2> scratch {};
+  // A voice's Scream is followed by the filter module's DC blocker.
+  vital::DcBlocker dc_blocker;
+  const float dc_coefficient = vital::DcBlocker::coefficient(48000);
   double difference = 0, energy = 0;
   for (int b = 0; b < 700; ++b) {
     for (int i = 0; i < 128; ++i) {
@@ -102,6 +105,8 @@ void testReferenceTone() {
     reference.applyAutogain(channels, 128, false);
     reference.applyOutputGain(channels, 128, .75f);
     filter.process(128);
+    for (int i = 0; i < 128; ++i)
+      scratch[0][size_t(i)] = dc_blocker.tick(scratch[0][size_t(i)], dc_coefficient)[0];
     if (b < 600) continue;
     for (int i = 0; i < 128; ++i) {
       double x = filter.output()->buffer[i][0], y = scratch[0][size_t(i)];

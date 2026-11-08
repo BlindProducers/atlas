@@ -19,13 +19,12 @@
 namespace vital {
 
   DcFilter::DcFilter() : Processor(DcFilter::kNumInputs, 1) {
-    coefficient_ = 0.0f;
-    reset(constants::kFullMask);
+    coefficient_ = DcBlocker::coefficient(kDefaultSampleRate);
   }
 
   void DcFilter::setSampleRate(int sample_rate) {
     Processor::setSampleRate(sample_rate);
-    coefficient_ = 1.0f - kCoefficientToSrConstant / getSampleRate();
+    coefficient_ = DcBlocker::coefficient(getSampleRate());
   }
 
   void DcFilter::process(int num_samples) {
@@ -40,17 +39,10 @@ namespace vital {
 
     poly_float* audio_out = output()->buffer;
     for (int i = 0; i < num_samples; ++i)
-      tick(audio_in[i], audio_out[i]);
-  }
-
-  force_inline void DcFilter::tick(const poly_float& audio_in, poly_float& audio_out) {
-    audio_out = utils::mulAdd(audio_in - past_in_, past_out_, coefficient_);
-    past_out_ = audio_out;
-    past_in_ = audio_in;
+      audio_out[i] = blocker_.tick(audio_in[i], coefficient_);
   }
 
   void DcFilter::reset(poly_mask reset_mask) {
-    past_in_ = utils::maskLoad(past_in_, 0.0f, reset_mask);
-    past_out_ = utils::maskLoad(past_in_, 0.0f, reset_mask);
+    blocker_.reset(reset_mask);
   }
 } // namespace vital
