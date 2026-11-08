@@ -715,6 +715,7 @@ if(ATLAS_BUILD_TIMING_TESTS)
   add_test(NAME atlas_analog_oscillator COMMAND AtlasTimingTests --analog-oscillator)
   add_test(NAME atlas_fourier_transform COMMAND AtlasTimingTests --fourier-transform)
   add_test(NAME atlas_maim COMMAND AtlasTimingTests --maim)
+  add_test(NAME atlas_dc_offsets COMMAND AtlasTimingTests --dc-offsets)
   add_test(NAME atlas_analog_oscillator_controls COMMAND AtlasTimingTests --analog-oscillator-controls)
 
   juce_add_console_app(AtlasCpuTests PRODUCT_NAME "Atlas CPU Tests")

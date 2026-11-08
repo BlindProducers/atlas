@@ -92,7 +92,7 @@ flagged too.
 ## Scenarios
 
 `AtlasBench --list` prints the standard set: the initial patch, wavetable and
-analog unison, Braids, OpenWurli and OpenB3, three filter pairs, and six effect
+analog unison, Analog Hard Sync, Braids, OpenWurli and OpenB3, three filter pairs, and six effect
 chains. `--effects` measures each effect alone instead, and `--filters` each
 voice filter model alone, plus the Reverb model at 2 kHz (its default 100 Hz
 cutoff skips its FIR) and on single notes, the Scream model driven hard
