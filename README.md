@@ -135,14 +135,14 @@ Compiled binaries are located in `build/Atlas_artefacts/Release`, one folder per
 - **macOS**: Copy `VST3/Atlas.vst3` to `~/Library/Audio/Plug-Ins/VST3` and `AU/Atlas.component` to `~/Library/Audio/Plug-Ins/Components` (or run `installer/macos/build_pkg.sh` to generate an installer package).
 - **Windows**: Copy the entire `VST3/Atlas.vst3` folder (including its internal asset bundle for the Tape effect) to `C:\Program Files\Common Files\VST3` (or compile `installer/windows/Atlas.iss` using Inno Setup).
 
-Atlas stores user presets, wavetables, samples, and effect chains in
-`Documents/Blind Producers Plugins/Atlas`.
+Atlas stores presets, wavetables, samples, and effect chains in
+`Documents/Blind Producers Plugins/Atlas`. Copying the plug-ins by hand leaves out the Factory presets: copy `Factory/Banks/Factory` to `Factory/Banks/Factory` in that folder, or use an installer, which also creates the library folders.
 
-### Pre-built Betas
+### Pre-built Releases
 
-Automated builds run on every push to `dev`. You can download the latest installers (`.pkg` for macOS, `.exe` for Windows) and standalone plugin bundles from the GitHub Releases page.
+Every push to `main` builds and publishes the release, and every push to `dev` the current pre-release. The GitHub Releases page has the installers (`.pkg` for macOS, `.exe` for Windows), which install the plug-ins and the Factory presets, and zips of the bare plug-ins.
 
-*(Note: Atlas is actively in beta. Using a safety limiter downstream in your DAW monitor chain is recommended.)*
+*(Note: Some oscillators, filters and effects reach well above 0 dBFS. A limiter after Atlas in your DAW is recommended.)*
 
 ### Running Tests
 
