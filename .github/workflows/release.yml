@@ -10,7 +10,7 @@
 # before, and the release's tag moves to the commit it was built from; bumping
 # ATLAS_PRERELEASE starts a new pre-release, and bumping the version in
 # CMakeLists.txt a new release.
-name: Build and publish
+name: Build and publish (hotfix 2.0.0.1, Windows only)
 
 env:
   # The pre-release the dev branch publishes: its tag is v<version>-<this>,
@@ -18,9 +18,9 @@ env:
   # the next one, and write what changed since the one before in
   # docs/releases/v<version>-<this>.md, which the publish job puts at the top
   # of the release notes.
-  ATLAS_PRERELEASE: rc.5
+  ATLAS_PRERELEASE: ""
   # true on main (and a run by hand on main): the build is the release itself.
-  ATLAS_OFFICIAL: ${{ github.ref == 'refs/heads/main' }}
+  ATLAS_OFFICIAL: true
 
 on:
   push:
@@ -41,55 +41,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  macos:
-    name: macOS arm64
-    runs-on: macos-26
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v7
-
-      # .gitmodules marks the reference-test submodules update = none, so this
-      # fetches only the five the plugin needs (JUCE, nlohmann json,
-      # concurrentqueue, KISS FFT and espeak-ng), shallow.
-      - name: Fetch submodules
-        run: git submodule update --init --jobs 4
-
-      - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-
-      # The runner has 3 cores and 7 GB of RAM, and one compile job can use
-      # several GB (see CLAUDE.md), so build with 2 jobs.
-      - name: Build
-        run: cmake --build build --config Release --parallel 2 --target Atlas_VST3 Atlas_AU
-
-      # ditto keeps the bundles' symlinks, permissions and signatures.
-      - name: Package
-        run: |
-          version=$(sed -n 's/^project(Atlas VERSION \([^ ]*\).*/\1/p' CMakeLists.txt)
-          if [ "$ATLAS_OFFICIAL" = true ]; then
-            name="Atlas-${version}-macOS"
-          else
-            name="Atlas-${version}-${ATLAS_PRERELEASE}-macOS"
-          fi
-          installer/macos/build_pkg.sh build dist
-          [ "dist/Atlas-${version}-macOS.pkg" = "dist/${name}.pkg" ] || mv "dist/Atlas-${version}-macOS.pkg" "dist/${name}.pkg"
-          ditto -c -k --sequesterRsrc --keepParent build/Atlas_artefacts/Release/VST3/Atlas.vst3 "dist/${name}-VST3.zip"
-          ditto -c -k --sequesterRsrc --keepParent build/Atlas_artefacts/Release/AU/Atlas.component "dist/${name}-AU.zip"
-          # File attributes in a payload become stray ._ entries, so flag them.
-          pkgutil --expand "dist/${name}.pkg" "$RUNNER_TEMP/expanded"
-          for component in "$RUNNER_TEMP"/expanded/*.pkg; do
-            if gunzip -dc < "$component/Payload" | cpio -t 2> /dev/null | grep '/\._' > /dev/null; then
-              echo "::warning::$(basename "$component") has ._ attribute files in its payload"
-            fi
-          done
-
-      - uses: actions/upload-artifact@v7
-        with:
-          name: macos
-          path: dist/*
-          if-no-files-found: error
-          retention-days: 7
-
   windows:
     name: Windows x64
     # Visual Studio 2022, the Windows SDK (its MIDL generates the NVDA
@@ -136,71 +87,3 @@ jobs:
           path: dist/*
           if-no-files-found: error
           retention-days: 7
-
-  publish:
-    name: Publish the release
-    needs: [macos, windows]
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    permissions:
-      # Moves the release's tag and updates the release.
-      contents: write
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/download-artifact@v8
-        with:
-          path: dist
-          merge-multiple: true
-
-      - name: Publish
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPOSITORY_URL: ${{ github.server_url }}/${{ github.repository }}
-        run: |
-          version=$(sed -n 's/^project(Atlas VERSION \([^ ]*\).*/\1/p' CMakeLists.txt)
-          if [ "$ATLAS_OFFICIAL" = true ]; then
-            tag="v${version}"
-            title="Atlas v${version}"
-            stage=""
-            kind=(--prerelease=false --latest)
-          else
-            tag="v${version}-${ATLAS_PRERELEASE}"
-            # beta.1 reads as "beta 1" in the title and notes, rc.1 as "RC 1".
-            beta="${ATLAS_PRERELEASE/./ }"
-            beta="${beta/#rc /RC }"
-            title="Atlas ${version} ${beta}"
-            case "$ATLAS_PRERELEASE" in
-              rc.*) stage="This is a release candidate: Atlas ${version} as it is meant to ship, unless testing finds something that has to change first. Keep copies of the presets you care about, and tell us what works and what does not." ;;
-              *) stage="This is a beta release. Atlas is still being developed and tested: expect rough edges, keep copies of the presets you care about, and tell us what works and what does not." ;;
-            esac
-            kind=(--prerelease --latest=false)
-          fi
-          # What changed since the release before, written in
-          # docs/releases/<tag>.md when ATLAS_PRERELEASE or the version was
-          # bumped; an older one republished by hand may have none.
-          changes=""
-          if [ -f "docs/releases/${tag}.md" ]; then
-            changes="$(cat "docs/releases/${tag}.md")"$'\n\n'
-          fi
-          notes="${changes}${stage}
-
-          Atlas can get loud. Some oscillators, filters and effects reach well above 0 dBFS, so a limiter after Atlas, on the track or on the master, is recommended when you play it, especially on headphones.
-
-          Contributions are welcome: bug reports, feature requests, pull requests, presets, wavetables and documentation, at ${REPOSITORY_URL}. Atlas is built to be played and programmed with a keyboard and a screen reader, so reports from VoiceOver and Windows screen reader users are especially valuable.
-
-          macOS: the .pkg installs the VST3 and the Audio Unit in /Library/Audio/Plug-Ins, and the Factory presets in Documents/Blind Producers Plugins/Atlas. It is not signed, so the first time macOS blocks it: open System Settings > Privacy & Security and click Open Anyway. The macOS zips hold the bare plug-ins for copying by hand. They are not notarized either, so after unzipping, clear the quarantine flag (xattr -dr com.apple.quarantine Atlas.vst3, and the same for Atlas.component) or hosts refuse to load them.
-
-          Windows: the .exe installs Atlas.vst3 into C:\\Program Files\\Common Files\\VST3 (or a folder you choose), and the Factory presets in Documents\\Blind Producers Plugins\\Atlas, and can be removed from Apps & features. It is not signed, so SmartScreen may ask once: choose More info, then Run anyway. The Windows zip holds the bare Atlas.vst3 folder for copying by hand into your VST3 folder. Rescan plug-ins in your host afterwards."
-          ls -l dist
-          git tag -f "$tag" "$GITHUB_SHA"
-          git push -f origin "refs/tags/$tag"
-          if gh release view "$tag" > /dev/null 2>&1; then
-            gh release view "$tag" --json assets --jq '.assets[].name' | while read -r asset; do
-              gh release delete-asset "$tag" "$asset" --yes
-            done
-            gh release edit "$tag" --title "$title" --notes "$notes" "${kind[@]}"
-          else
-            gh release create "$tag" --verify-tag "${kind[@]}" --title "$title" --notes "$notes"
-          fi
-          gh release upload "$tag" dist/*
