@@ -499,10 +499,12 @@ target_include_directories(Atlas PRIVATE
 
 # The beta the release workflow publishes this version as (ATLAS_PRERELEASE in
 # .github/workflows/release.yml, "rc.1"), which Settings shows after the
-# version; empty for a final release. Bumping it there configures again.
+# version. Bumping it there configures again. The release itself (the
+# workflow on main sets ATLAS_OFFICIAL_RELEASE) shows the version alone.
+option(ATLAS_OFFICIAL_RELEASE "Show the version without the workflow's pre-release label" OFF)
 set(ATLAS_PRERELEASE "")
 set(ATLAS_RELEASE_WORKFLOW "${CMAKE_CURRENT_SOURCE_DIR}/.github/workflows/release.yml")
-if(EXISTS "${ATLAS_RELEASE_WORKFLOW}")
+if(NOT ATLAS_OFFICIAL_RELEASE AND EXISTS "${ATLAS_RELEASE_WORKFLOW}")
   file(STRINGS "${ATLAS_RELEASE_WORKFLOW}" ATLAS_PRERELEASE_LINE REGEX "^[ ]+ATLAS_PRERELEASE:")
   if(ATLAS_PRERELEASE_LINE)
     string(REGEX REPLACE "^[ ]+ATLAS_PRERELEASE:[ ]*\"?([^\" ]*)\"?.*$" "\\1" ATLAS_PRERELEASE "${ATLAS_PRERELEASE_LINE}")

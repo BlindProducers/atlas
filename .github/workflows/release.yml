@@ -55,7 +55,7 @@ jobs:
         run: git submodule update --init --jobs 4
 
       - name: Configure
-        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+        run: cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DATLAS_OFFICIAL_RELEASE=${{ env.ATLAS_OFFICIAL }}
 
       # The runner has 3 cores and 7 GB of RAM, and one compile job can use
       # several GB (see CLAUDE.md), so build with 2 jobs.
@@ -103,7 +103,7 @@ jobs:
         run: git submodule update --init --jobs 4
 
       - name: Configure
-        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DATLAS_MSVC_COMPILE_JOBS=3
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DATLAS_MSVC_COMPILE_JOBS=3 -DATLAS_OFFICIAL_RELEASE=${{ env.ATLAS_OFFICIAL }}
 
       # The runner has 4 cores and 16 GB of RAM, and each compiler on a unity
       # file can use several GB (see CLAUDE.md): one project at a time, with
