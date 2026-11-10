@@ -71,14 +71,16 @@ namespace {
   // Arpeggiator voices sit outside the polyphony limit and their tails can
   // fill the whole pool. A key on a slot the arpeggiator does not play must
   // still sound, and a mono trill there (Kill override, legato off) used to
-  // hand a voice that did not exist to the audio thread.
+  // hand a voice that did not exist to the audio thread. With one voice the
+  // arpeggiator plays one note at a time, so the tails come from a
+  // polyphonic patch switched to one voice once they ring.
   void testKeyboardNotesSurviveAFullVoicePool() {
     SynthPlugin synth;
     prepare(synth);
     auto& controls = synth.getControls();
     for (int slot = 1; slot <= vital::kNumOscillators; ++slot)
       controls.at("osc_" + std::to_string(slot) + "_on")->set(slot <= 2 ? 1.0f : 0.0f);
-    controls.at("polyphony")->set(1.0f);
+    controls.at("polyphony")->set(32.0f);
     controls.at("env_1_release")->set(std::pow(16.0f, 0.25f));  // sixteen seconds
     controls.at("arp_1_on")->set(1.0f);
     controls.at("arp_1_time_mode")->set(1.0f);
@@ -91,6 +93,10 @@ namespace {
     for (int i = 0; i < 2000 && synth.getEngine()->getNumActiveVoices() < 34; ++i)
       renderMidi(synth, empty);
     expect(synth.getEngine()->getNumActiveVoices() == 34, "arpeggiator tails fill the voice pool");
+    controls.at("arp_1_on")->set(0.0f);
+    controls.at("polyphony")->set(1.0f);
+    renderMidi(synth, empty);
+    expect(synth.getEngine()->getNumActiveVoices() == 34, "the tails ring on after the arpeggiator stops");
 
     MidiBuffer key_b;
     key_b.addEvent(MidiMessage::noteOn(1, 55, 1.0f), 0);
@@ -102,7 +108,7 @@ namespace {
     for (int i = 0; i < 10; ++i)
       renderMidi(synth, empty);
     expect(synth.getEngine()->getNumPressedNotes() == 1, "releasing the trill's upper key returns to the held one");
-    // The upper key's voice fades out (Kill) and the next arpeggiator step takes it.
+    // The upper key's voice fades out (Kill) and the held key takes a tail's voice.
     expect(synth.getEngine()->getNumActiveVoices() >= 33, "the pool stays in use and nothing breaks");
   }
 

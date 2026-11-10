@@ -6,6 +6,7 @@
 // and the formant, breath, speed and vibrato controls.
 
 #include "JuceHeader.h"
+#include "atlas_arpeggiator.h"
 #include "synth_plugin.h"
 #include "synth_editor.h"
 #include "sound_engine.h"
@@ -798,6 +799,32 @@ namespace {
       expect(next == (legato ? 1 : 2), label + (legato ? " keeps the first syllable across the legato note"
                                                        : " sings a new syllable on each note") +
                                            " (next is " + std::to_string(next) + ")");
+    }
+
+    // With one voice, arpeggiator notes do not overlap either. The Phrase
+    // split at the lowest speed would sing on long after each release.
+    for (bool legato : { true, false }) {
+      SynthPlugin plugin;
+      preparePlayback(plugin, "one two three four five six seven eight");
+      setControl(plugin, "osc_1_speech_split", static_cast<float>(vital::speech::kSplitPhrase));
+      setControl(plugin, "osc_1_speech_speed", 0.0f);
+      setControl(plugin, "polyphony", 1.0f);
+      setControl(plugin, "legato", legato ? 1.0f : 0.0f);
+      setControl(plugin, "arp_1_on", 1.0f);
+      setControl(plugin, "arp_1_time_mode", static_cast<float>(AtlasArpeggiator::kFree));
+      setControl(plugin, "arp_1_free_rate", 10.0f);
+      setControl(plugin, "arp_1_gate", 50.0f);
+      const std::string label = legato ? "legato arpeggiator" : "mono arpeggiator";
+      render(plugin, 128, { { 0, juce::MidiMessage::noteOn(1, 60, 1.0f) } });
+      int most = 0;
+      for (int block = 0; block < kRate / 128; ++block) {
+        const auto audio = render(plugin, 128, {});
+        expect(finite(audio), label + " is finite");
+        most = std::max(most, plugin.getEngine()->getNumActiveVoices());
+      }
+      // Kill fades the outgoing note while the next one starts.
+      const int allowed = legato ? 1 : 2;
+      expect(most <= allowed, label + " plays one note at a time (" + std::to_string(most) + " voices)");
     }
     return finish("legato");
   }

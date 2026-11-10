@@ -463,6 +463,9 @@ namespace vital {
     private:
       Voice* grabVoice(bool legato_transition);
       Voice* grabInternalArpVoice();
+      // The most recent voice still playing (or ringing out) a note on this
+      // arpeggiator channel, or null.
+      Voice* newestInternalArpVoice(int channel) const;
       Voice* grabFreeVoice();
       Voice* grabFreeParallelVoice();
       Voice* grabVoiceOfType(Voice::KeyState key_state, bool internal_only = false, bool exclude_internal = false);

@@ -597,6 +597,16 @@ namespace vital {
     return voice;
   }
 
+  Voice* VoiceHandler::newestInternalArpVoice(int channel) const {
+    Voice* newest = nullptr;
+    for (Voice* voice : active_voices_) {
+      if (voice->state().channel == channel && voice->state().event != kVoiceKill &&
+          (newest == nullptr || voice->state().note_count > newest->state().note_count))
+        newest = voice;
+    }
+    return newest;
+  }
+
   Voice* VoiceHandler::grabFreeVoice() {
     Voice* voice = nullptr;
     if (free_voices_.size()) {
@@ -735,9 +745,22 @@ namespace vital {
 
     const bool internal_arp = isAtlasInternalArpChannel(channel);
     const int control_channel = getControlChannel(channel);
-    const bool legato_transition =
-        !internal_arp && legato_ && polyphony_ == 1 && pressed_notes_.size() != 0;
-    Voice* voice = internal_arp ? grabInternalArpVoice() : grabVoice(legato_transition);
+    // With one voice, an arpeggiator note plays like a key: it takes over the
+    // voice of its slot's last note (Legato, Steal) or starts its own while
+    // that one fades (Kill), so the slot's notes never overlap.
+    const bool mono_arp = internal_arp && polyphony_ == 1;
+    Voice* previous_arp_voice = mono_arp ? newestInternalArpVoice(channel) : nullptr;
+    const bool reuse_arp_voice = previous_arp_voice != nullptr && (legato_ || voice_override_ == kSteal);
+    const bool legato_transition = internal_arp ?
+        reuse_arp_voice && legato_ && (previous_arp_voice->key_state() == Voice::kHeld ||
+                                       previous_arp_voice->key_state() == Voice::kTriggering) :
+        legato_ && polyphony_ == 1 && pressed_notes_.size() != 0;
+
+    Voice* voice = previous_arp_voice;
+    if (reuse_arp_voice)
+      active_voices_.remove(voice);
+    else
+      voice = internal_arp ? grabInternalArpVoice() : grabVoice(legato_transition);
     if (voice == nullptr)
       return;
 
@@ -777,6 +800,13 @@ namespace vital {
       Voice* sacrifice = getVoiceToKill(polyphony_);
       if (sacrifice)
         sacrifice->kill(sample);
+    }
+
+    if (mono_arp) {
+      for (Voice* other : active_voices_) {
+        if (other != voice && other->state().channel == channel && other->state().event != kVoiceKill)
+          other->kill(sample);
+      }
     }
   }
 
