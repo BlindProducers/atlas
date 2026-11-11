@@ -1372,6 +1372,8 @@ namespace {
            editor.controlForParameter("random_1_tempo") == nullptr &&
            editor.controlForParameter("random_1_rate_x10") != nullptr,
            "Sync in seconds shows Random 1's Rate in place of Tempo");
+    expect(dynamic_cast<ToggleButton*>(editor.controlForParameter("random_1_rate_x10")) != nullptr,
+           "a random generator's 10x Rate is a toggle, as an LFO's is");
     focused = Component::getCurrentlyFocusedComponent();
     expect(focused != nullptr && focused == editor.controlForParameter("random_1_sync"),
            "focus stays on Random 1's Sync when it changes the rows");

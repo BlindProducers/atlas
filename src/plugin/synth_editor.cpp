@@ -8193,12 +8193,9 @@ std::unique_ptr<AccessibleParameterRow> SynthEditor::buildAccessibleParameterRow
       return std::make_unique<AccessibleParameterRow>(parameter, "Style");
     if (suffix == "frequency")
       return std::make_unique<AccessibleParameterRow>(parameter, "Rate");
+    // A toggle, as an LFO's is.
     if (suffix == "rate_x10")
-      return std::make_unique<AccessibleParameterRow>(
-          parameter, "10x rate",
-          [bridge](double value) { return bridge->getText(static_cast<float>(value), 128); }, 1.0, 0.0,
-          String(), String(),
-          "Multiply this random LFO rate by ten", true);
+      return std::make_unique<AccessibleParameterRow>(parameter, "10x rate");
     if (suffix == "sync") {
       // Watched for changes: Sync picks the rate rows.
       const String modulator = modulatorPrefix(parameter_id);
