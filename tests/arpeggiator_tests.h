@@ -532,6 +532,53 @@ namespace {
            "The plugin's Swing at 100% delays the second step by half a step (at " + std::to_string(second_step) + ")");
   }
 
+  // A gate above 100% overlaps the notes inside a division, but no note is
+  // left held when Beat retrigger restarts the pattern.
+  void testArpBeatRetriggerEndsOverlappingNotes() {
+    const int division = static_cast<int>(kArpTestSamplesPerQuarter * 2.0);
+    for (int time_mode : { AtlasArpeggiator::kSync, AtlasArpeggiator::kFree }) {
+      for (float swing : { 0.0f, 0.5f }) {
+        for (double ppq_start : { -1.0, 0.0 }) {
+          for (int block_size : { 512, 100 }) {
+            auto settings = arpTestSettings();
+            settings.retrigger = AtlasArpeggiator::kRetriggerBeat;
+            settings.retrigger_division = arpRetriggerDivisionIndex("1/2");
+            settings.time_mode = time_mode;
+            // 3 Hz: the third step of each division is cut short by the restart.
+            settings.free_rate = 3.0f;
+            settings.gate = 200.0f;
+            settings.swing = swing;
+            int held = 0;
+            int restarts = 0;
+            int held_at_restart = 0;
+            int overlaps = 0;
+            for (const auto& event : runArpeggiator(settings, arpChord(0), division * 3 + 100, ppq_start, block_size)) {
+              if (event.message.isNoteOff())
+                --held;
+              if (!event.message.isNoteOn())
+                continue;
+              // A restart on a block's first sample can land a sample early.
+              if ((event.sample + 2) % division <= 4) {
+                ++restarts;
+                held_at_restart += held;
+              }
+              else if (held > 0) {
+                ++overlaps;
+              }
+              ++held;
+            }
+            expect(restarts == 4 && held_at_restart == 0 && overlaps >= 6,
+                   std::string("Beat retrigger ends the overlapping notes at each restart (") +
+                   (time_mode == AtlasArpeggiator::kSync ? "beat grid" : "clock") + ", swing " +
+                   std::to_string(swing) + (ppq_start >= 0.0 ? ", playing" : ", stopped") + ", blocks of " +
+                   std::to_string(block_size) + ": " + std::to_string(restarts) + " restarts, " +
+                   std::to_string(held_at_restart) + " held, " + std::to_string(overlaps) + " overlaps)");
+          }
+        }
+      }
+    }
+  }
+
   // Each slot's arpeggiator notes count against the voice limit like keys:
   // a four-note chord with two voices plays two notes.
   void testArpNotesFollowTheVoiceCount() {

@@ -151,10 +151,11 @@ class AtlasArpeggiator {
     void addBeatClockSteps(juce::MidiBuffer& output, int num_samples, double rate_quarters,
                            double gate_ratio, double block_start_beat, double quarters_per_sample,
                            double division_quarters, bool starting, const Settings& settings);
-    void restartPatternAtDivision(int64 division_index);
+    void restartPatternAtDivision(juce::MidiBuffer& output, int sample_offset, int64 division_index);
     // A gate up to the step's length ends before the next step starts; a
-    // longer one is kept, so the notes overlap.
-    static int clampedGateSamples(double step_samples, double gate_samples);
+    // longer one is kept, so the notes overlap, but ends before
+    // `restart_samples`, where Beat retrigger restarts the pattern.
+    static int clampedGateSamples(double step_samples, double gate_samples, double restart_samples);
     void triggerStep(juce::MidiBuffer& output, int sample_offset, int gate_samples, int block_samples,
                      const Settings& settings);
     const std::vector<HeldNote>& sortedHeldNotes();
@@ -201,6 +202,8 @@ class AtlasArpeggiator {
     double beat_position_ = 0.0;
     // Division of the beat grid the last step fell in, for Beat retrigger.
     static constexpr int64 kNoDivision = std::numeric_limits<int64>::min();
+    // Samples to the next Beat retrigger restart when there is none.
+    static constexpr double kNoRestart = std::numeric_limits<double>::max();
     int64 last_division_index_ = kNoDivision;
     // Keys physically down per MIDI channel, so releasing Hold drops latched notes.
     std::array<std::bitset<128>, 16> physically_down_;
