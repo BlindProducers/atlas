@@ -14,7 +14,7 @@ if(APPLE)
   list(APPEND ATLAS_PLUGIN_FORMATS AU)
 endif()
 
-project(Atlas VERSION 2.0.0 LANGUAGES ${ATLAS_PROJECT_LANGUAGES})
+project(Atlas VERSION 2.0.0.1 LANGUAGES ${ATLAS_PROJECT_LANGUAGES})
 
 if(MSVC)
   # Keep Atlas and all static dependencies on the same self-contained CRT.

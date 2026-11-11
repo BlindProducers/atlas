@@ -9,7 +9,9 @@
 # always come from one commit. Each publish replaces the files of the one
 # before, and the release's tag moves to the commit it was built from; bumping
 # ATLAS_PRERELEASE starts a new pre-release, and bumping the version in
-# CMakeLists.txt a new release.
+# CMakeLists.txt a new release. An update to a released version (2.0.0.1) has
+# no beta or RC: with ATLAS_PRERELEASE empty, dev publishes v<version> itself,
+# marked as a pre-release, and a push to main turns it into the release.
 name: Build and publish
 
 env:
@@ -17,8 +19,10 @@ env:
   # its title "Atlas <version> beta N" or "Atlas <version> RC N". Bump it for
   # the next one, and write what changed since the one before in
   # docs/releases/v<version>-<this>.md, which the publish job puts at the top
-  # of the release notes.
-  ATLAS_PRERELEASE: rc.5
+  # of the release notes. Empty ("") for an update with no beta or RC: the tag
+  # is then v<version>, the title "Atlas <version>" and the notes
+  # docs/releases/v<version>.md, the ones the release on main uses too.
+  ATLAS_PRERELEASE: ""
   # true on main (and a run by hand on main): the build is the release itself.
   ATLAS_OFFICIAL: ${{ github.ref == 'refs/heads/main' }}
 
@@ -66,7 +70,7 @@ jobs:
       - name: Package
         run: |
           version=$(sed -n 's/^project(Atlas VERSION \([^ ]*\).*/\1/p' CMakeLists.txt)
-          if [ "$ATLAS_OFFICIAL" = true ]; then
+          if [ "$ATLAS_OFFICIAL" = true ] || [ -z "$ATLAS_PRERELEASE" ]; then
             name="Atlas-${version}-macOS"
           else
             name="Atlas-${version}-${ATLAS_PRERELEASE}-macOS"
@@ -121,7 +125,7 @@ jobs:
         shell: pwsh
         run: |
           $version = (Select-String -Path CMakeLists.txt -Pattern '^project\(Atlas VERSION (\S+)').Matches[0].Groups[1].Value
-          $name = if ($env:ATLAS_OFFICIAL -eq 'true') { "Atlas-$version-Windows" } else { "Atlas-$version-$env:ATLAS_PRERELEASE-Windows" }
+          $name = if ($env:ATLAS_OFFICIAL -eq 'true' -or -not $env:ATLAS_PRERELEASE) { "Atlas-$version-Windows" } else { "Atlas-$version-$env:ATLAS_PRERELEASE-Windows" }
           New-Item -ItemType Directory -Force dist | Out-Null
           cmake -DDESTINATION=build/library -P installer/stage_library.cmake
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -164,6 +168,12 @@ jobs:
             title="Atlas v${version}"
             stage=""
             kind=(--prerelease=false --latest)
+          elif [ -z "$ATLAS_PRERELEASE" ]; then
+            # An update on its way to main: the release's own tag, not yet latest.
+            tag="v${version}"
+            title="Atlas ${version}"
+            stage="This is a pre-release: Atlas ${version} for testing before it becomes the release. Keep copies of the presets you care about, and tell us what works and what does not."
+            kind=(--prerelease --latest=false)
           else
             tag="v${version}-${ATLAS_PRERELEASE}"
             # beta.1 reads as "beta 1" in the title and notes, rc.1 as "RC 1".
