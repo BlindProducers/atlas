@@ -1286,6 +1286,10 @@ namespace {
            editor.controlForParameter("lfo_1_morph") == nullptr &&
            titled(*editorSection(editor, "LFO 1"), "LFO 1 accessible editor") != nullptr,
            "the Custom view shows the shape editor and Phase, not Morph");
+    expect(editor.controlForParameter("lfo_1_tempo") != nullptr &&
+           editor.controlForParameter("lfo_1_frequency") == nullptr &&
+           editor.controlForParameter("lfo_1_keytrack_transpose") == nullptr,
+           "the Custom view shows only the rate row Sync uses");
 
     editor.ensureComponentVisible(simple);
     simple->grabKeyboardFocus();
@@ -1332,6 +1336,45 @@ namespace {
     focused = Component::getCurrentlyFocusedComponent();
     expect(focused != nullptr && focused == tab("Custom") && tab("Custom")->getToggleState(),
            "focus moves to the Custom tab, now checked");
+
+    // The Custom view follows Sync as the Simple view does.
+    expect(editor.controlForParameter("lfo_1_frequency") != nullptr &&
+           editor.controlForParameter("lfo_1_tempo") == nullptr,
+           "the Custom view keeps Frequency for Sync in seconds");
+    if (auto* sync_menu = dynamic_cast<ComboBox*>(editor.controlForParameter("lfo_1_sync"))) {
+      editor.ensureComponentVisible(sync_menu);
+      sync_menu->grabKeyboardFocus();
+      sync_menu->setSelectedItemIndex(vital::SynthLfo::kKeytrack, sendNotificationSync);
+    }
+    pumpUntil([&] { return editor.controlForParameter("lfo_1_keytrack_transpose") != nullptr; });
+    expect(editor.controlForParameter("lfo_1_keytrack_transpose") != nullptr &&
+           editor.controlForParameter("lfo_1_keytrack_tune") != nullptr &&
+           editor.controlForParameter("lfo_1_frequency") == nullptr &&
+           editor.controlForParameter("lfo_1_tempo") == nullptr &&
+           editor.controlForParameter("lfo_1_rate_x10") != nullptr,
+           "Keytrack in the Custom view shows Transpose and Tune in place of Frequency");
+    focused = Component::getCurrentlyFocusedComponent();
+    expect(focused != nullptr && focused == editor.controlForParameter("lfo_1_sync"),
+           "focus stays on Sync when it changes the Custom view's rows");
+
+    // A random generator follows its Sync the same way.
+    expect(editor.controlForParameter("random_1_tempo") != nullptr &&
+           editor.controlForParameter("random_1_frequency") == nullptr &&
+           editor.controlForParameter("random_1_keytrack_transpose") == nullptr,
+           "Random 1 shows only the rate row Sync uses");
+    if (auto* sync_menu = dynamic_cast<ComboBox*>(editor.controlForParameter("random_1_sync"))) {
+      editor.ensureComponentVisible(sync_menu);
+      sync_menu->grabKeyboardFocus();
+      sync_menu->setSelectedItemIndex(vital::SynthLfo::kTime, sendNotificationSync);
+    }
+    pumpUntil([&] { return editor.controlForParameter("random_1_frequency") != nullptr; });
+    expect(editor.controlForParameter("random_1_frequency") != nullptr &&
+           editor.controlForParameter("random_1_tempo") == nullptr &&
+           editor.controlForParameter("random_1_rate_x10") != nullptr,
+           "Sync in seconds shows Random 1's Rate in place of Tempo");
+    focused = Component::getCurrentlyFocusedComponent();
+    expect(focused != nullptr && focused == editor.controlForParameter("random_1_sync"),
+           "focus stays on Random 1's Sync when it changes the rows");
 
     atlas::speech::setObserverForTesting(nullptr);
     editor.removeFromDesktop();
@@ -3382,7 +3425,13 @@ namespace {
                text("modulation_1_amount", 0.0f) == "0%",
            "modulation amounts read from -100% to 100%: " + text("modulation_1_amount", 0.255f).toStdString());
     expect(text("volume", 5473.0404f).endsWith("dB"), "Global Gain keeps its decibels");
-    expect(!text("lfo_1_phase", 0.25f).endsWith("%"), "an LFO phase is a position, not an amount");
+    expect(text("lfo_1_phase", 0.25f) == "25%" && text("lfo_1_phase", 1.0f) == "100%",
+           "an LFO's Phase reads as a percentage of its cycle: " + text("lfo_1_phase", 0.25f).toStdString());
+    close(typed("lfo_1_phase", "50%"), 0.5f, "typing 50% sets Phase to half the cycle");
+    expect(text("lfo_1_stereo", -0.5f) == "0%" && text("lfo_1_stereo", 0.0f) == "50%" &&
+               text("lfo_1_stereo", 0.5f) == "100%",
+           "an LFO's Stereo reads 0% to 100%, 50% by default: " + text("lfo_1_stereo", 0.0f).toStdString());
+    close(typed("lfo_1_stereo", "75%"), 0.25f, "typing 75% sets Stereo halfway above its middle");
     close(typed("osc_1_level", "50%"), 0.5f, "typing 50% sets half the level");
     close(typed("osc_1_level", "25"), 0.25f, "a number beyond 1 is a percentage");
     close(typed("modulation_1_amount", "-25%"), -0.25f, "typing -25% sets a negative amount");

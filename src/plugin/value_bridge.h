@@ -246,11 +246,11 @@ class ValueBridge : public AudioProcessorParameterWithID {
         return false;
       if (details.value_scale != vital::ValueDetails::kLinear && details.value_scale != vital::ValueDetails::kQuadratic)
         return false;
-      // Mixes already read as percentages. Ratios, a cycle phase and the trance
-      // gate's step shapes are not amounts.
+      // Mixes already read as percentages. Ratios and the trance gate's step
+      // shapes are not amounts. An LFO's Phase reads as a percentage of its cycle.
       const String name(details.name);
       return !name.endsWith("_mix") && !name.endsWith("_dry_wet") && !name.contains("ratio") &&
-             !name.endsWith("phase") && !name.contains("trance_gate_step_");
+             !name.contains("trance_gate_step_");
     }
 
     static String rangePercentText(float engineValue) {

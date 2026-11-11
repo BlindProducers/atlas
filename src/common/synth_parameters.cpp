@@ -1421,8 +1421,9 @@ namespace vital {
       ValueDetails::kLinear, false, "%", "Swing", nullptr },
     { "delay_time", 0x000000, 0.0, 4.0, 0.0, 0.0, 1.0,
       ValueDetails::kLinear, false, " secs", "Delay", nullptr },
-    { "stereo", 0x000406, -0.5, 0.5, 0.0, 0.0, 1.0,
-      ValueDetails::kLinear, false, "", "Stereo", nullptr },
+    // Reads 0% to 100% with 50% in the middle; the offset only shifts the readout.
+    { "stereo", 0x000406, -0.5, 0.5, 0.0, 50.0, 100.0,
+      ValueDetails::kLinear, false, "%", "Stereo", nullptr },
     { "keytrack_transpose", 0x000704, -60.0, 36.0, -12.0, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Transpose", nullptr },
     { "keytrack_tune", 0x000704, -1.0, 1.0, 0.0, 0.0, 100.0,

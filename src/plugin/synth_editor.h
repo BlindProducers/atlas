@@ -525,14 +525,15 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     bool shouldShowParameterInSection(const String& sectionName, AudioProcessorParameter* parameter) const;
     bool refreshFilterRowsIfNeeded();
     bool refreshSeedRowsIfNeeded();
-    // An LFO's Simple and Custom views show different rows, and the Simple
-    // view shows the one rate row its Sync uses.
+    // An LFO's Simple and Custom views show different rows, and an LFO or a
+    // random generator ("lfo_1_", "random_1_") shows only the rate rows its
+    // Sync uses.
     static int lfoIndexForParameterId(const String& parameterId);
     bool isLfoSimpleView(int lfo) const;
-    int lfoSyncOption(int lfo) const;
-    int lfoRowLayout(int lfo) const;
+    int syncOption(const String& modulatorPrefix) const;
+    int modulatorRowLayout(const String& modulatorPrefix) const;
     void setLfoView(int lfo, int view);
-    bool refreshLfoRowsIfNeeded();
+    bool refreshModulatorRowsIfNeeded();
     bool isAnalogOscillator(int oscillator) const;
     int sourceSlotType(int oscillator) const;
     void setAutomationProxyCallbacks(AccessibleParameterRow& row);
@@ -1566,7 +1567,7 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     int active_lfo_index_ = 0;
     std::map<String, std::pair<int, int>> last_filter_states_;
     std::map<String, bool> last_seed_modes_;
-    std::map<int, int> last_lfo_layouts_;
+    std::map<String, int> last_modulator_layouts_;
     std::map<String, int> last_oscillator_modes_;
     // An SF2 preset menu lists another SoundFont than its slot plays.
     bool instrument_preset_menu_stale_ = false;

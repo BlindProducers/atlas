@@ -2108,6 +2108,34 @@ namespace {
     return value >= 0.5f ? 1 : 0;
   }
 
+  // "lfo_3_" or "random_2_" for a parameter of an LFO or a random generator,
+  // else empty.
+  String modulatorPrefix(const String& id) {
+    for (const char* kind : { "lfo_", "random_" }) {
+      if (!id.startsWith(kind))
+        continue;
+      const String number = id.substring(String(kind).length()).upToFirstOccurrenceOf("_", false, false);
+      if (number.isNotEmpty() && number.containsOnly("0123456789") && id.startsWith(kind + number + "_"))
+        return kind + number + "_";
+    }
+    return {};
+  }
+
+  // The rate rows of an LFO or a random generator. Its Sync picks the ones it
+  // shows: Frequency for seconds, Tempo for the three tempo options, and
+  // Transpose and Tune for Keytrack.
+  bool isRateRow(const String& suffix) {
+    return suffix == "frequency" || suffix == "tempo" || suffix == "keytrack_transpose" || suffix == "keytrack_tune";
+  }
+
+  bool syncUsesRateRow(const String& suffix, int sync) {
+    if (suffix == "frequency")
+      return sync == vital::SynthLfo::kTime;
+    if (suffix == "tempo")
+      return sync != vital::SynthLfo::kTime && sync != vital::SynthLfo::kKeytrack;
+    return sync == vital::SynthLfo::kKeytrack;
+  }
+
   // Choices that change which rows the editor shows, so choosing one rebuilds
   // it: oscillator type and analog waveform, frequency morph type (Random
   // Amplitudes adds a seed), filter model and style, and the effect slot
@@ -2122,9 +2150,8 @@ namespace {
     const String filter_suffix = filterSuffixForParameter(id);
     if (filter_suffix == "model" || filter_suffix == "style")
       return true;
-    // An LFO's Sync picks which rate row its Simple view shows.
-    if (id.startsWith("lfo_") && id.endsWith("_sync") &&
-        id.fromFirstOccurrenceOf("lfo_", false, false).upToFirstOccurrenceOf("_", false, false).containsOnly("0123456789"))
+    // The Sync of an LFO or a random generator picks which rate rows it shows.
+    if (const String modulator = modulatorPrefix(id); modulator.isNotEmpty() && id == modulator + "sync")
       return true;
     for (const char* variant : { "dimension_expander_mode", "frequency_shifter_mode", "resonator_model", "analoguechorus_model",
                                  "analogueecho_medium", "analoguerotary_model", "analoguewah_model",
@@ -2648,22 +2675,22 @@ namespace {
         continue;
 
       const String suffix = id.fromFirstOccurrenceOf(prefix, false, false);
-      static const std::array<const char*, 8> random_order = {{
+      // As in an LFO, the rate rows Sync picks follow it directly, before 10x Rate.
+      static const std::array<const char*, 9> random_order = {{
         "style",
-        "frequency",
-        "rate_x10",
         "sync",
+        "frequency",
         "tempo",
+        "keytrack_transpose",
+        "keytrack_tune",
+        "rate_x10",
         "sync_type",
         "stereo",
-        "keytrack_transpose",
       }};
       for (int i = 0; i < static_cast<int>(random_order.size()); ++i) {
         if (suffix == random_order[i])
           return 7000 + random * 100 + i;
       }
-      if (suffix == "keytrack_tune")
-        return 7000 + random * 100 + 8;
       return 7000 + random * 100 + 90;
     }
 
@@ -2675,6 +2702,7 @@ namespace {
       const String suffix = id.fromFirstOccurrenceOf(prefix, false, false);
       // The Simple view reads Shape, Morph, Sync, the rate and Trigger Mode
       // in that order; the custom view skips those three and reads the rest.
+      // The rate rows Sync picks follow it directly, before 10x Rate.
       static const std::array<const char*, 19> lfo_order = {{
         "simple_shape",
         "morph",
@@ -2682,10 +2710,10 @@ namespace {
         "sync_type",
         "sync",
         "frequency",
-        "rate_x10",
         "tempo",
         "keytrack_transpose",
         "keytrack_tune",
+        "rate_x10",
         "simple_trigger",
         "view",
         "deform",
@@ -8171,12 +8199,16 @@ std::unique_ptr<AccessibleParameterRow> SynthEditor::buildAccessibleParameterRow
           [bridge](double value) { return bridge->getText(static_cast<float>(value), 128); }, 1.0, 0.0,
           String(), String(),
           "Multiply this random LFO rate by ten", true);
-    if (suffix == "sync")
+    if (suffix == "sync") {
+      // Watched for changes: Sync picks the rate rows.
+      const String modulator = modulatorPrefix(parameter_id);
+      last_modulator_layouts_[modulator] = modulatorRowLayout(modulator);
       return std::make_unique<AccessibleParameterRow>(
           parameter, "Tempo sync type",
           [bridge](double value) { return bridge->getText(static_cast<float>(value), 128); }, 1.0, 0.0,
           String(), String(),
           "Choose seconds, tempo, dotted tempo, triplet tempo, or keytrack timing", true);
+    }
     if (suffix == "tempo")
       return std::make_unique<AccessibleParameterRow>(parameter, "Tempo");
     if (suffix == "sync_type")
@@ -8553,26 +8585,22 @@ bool SynthEditor::shouldShowParameterInSection(const String& sectionName, AudioP
       return !analog;
   }
 
+  // An LFO or a random generator shows only the rate rows its Sync uses.
   // View is the tabs at the top of an LFO. The Simple view shows its shape,
-  // Morph, Sync, the one rate row Sync uses and Trigger Mode; the custom view
-  // shows everything else.
-  if (const int lfo = lfoIndexForParameterId(parameter_id); lfo >= 0) {
-    const String suffix = parameter_id.fromFirstOccurrenceOf("lfo_" + String(lfo + 1) + "_", false, false);
-    if (suffix == "view")
-      return false;
-    const bool simple_only = suffix == "simple_shape" || suffix == "morph" || suffix == "simple_trigger";
-    if (!isLfoSimpleView(lfo))
-      return !simple_only;
-    if (simple_only || suffix == "sync")
-      return true;
-    const int sync = lfoSyncOption(lfo);
-    if (suffix == "frequency")
-      return sync == vital::SynthLfo::kTime;
-    if (suffix == "tempo")
-      return sync != vital::SynthLfo::kTime && sync != vital::SynthLfo::kKeytrack;
-    if (suffix == "keytrack_transpose" || suffix == "keytrack_tune")
-      return sync == vital::SynthLfo::kKeytrack;
-    return false;
+  // Morph, Sync, the rate and Trigger Mode; the custom view shows Sync, the
+  // rate and everything else.
+  if (const String modulator = modulatorPrefix(parameter_id); modulator.isNotEmpty()) {
+    const String suffix = parameter_id.substring(modulator.length());
+    if (isRateRow(suffix))
+      return syncUsesRateRow(suffix, syncOption(modulator));
+    if (const int lfo = lfoIndexForParameterId(parameter_id); lfo >= 0) {
+      if (suffix == "view")
+        return false;
+      if (suffix == "sync")
+        return true;
+      const bool simple_only = suffix == "simple_shape" || suffix == "morph" || suffix == "simple_trigger";
+      return simple_only == isLfoSimpleView(lfo);
+    }
   }
 
   for (int osc = 1; osc <= vital::kNumOscillators; ++osc) {
@@ -8700,18 +8728,16 @@ bool SynthEditor::isLfoSimpleView(int lfo) const {
   return roundToInt(engineValueFor(parameterBridge("lfo_" + String(lfo + 1) + "_view"))) == vital::SynthLfo::kSimpleView;
 }
 
-int SynthEditor::lfoSyncOption(int lfo) const {
+int SynthEditor::syncOption(const String& modulatorPrefix) const {
   return jlimit(0, vital::SynthLfo::kNumSyncOptions - 1,
-                roundToInt(engineValueFor(parameterBridge("lfo_" + String(lfo + 1) + "_sync"))));
+                roundToInt(engineValueFor(parameterBridge(modulatorPrefix + "sync"))));
 }
 
-int SynthEditor::lfoRowLayout(int lfo) const {
-  if (!isLfoSimpleView(lfo))
-    return 0;
-  const int sync = lfoSyncOption(lfo);
-  if (sync == vital::SynthLfo::kTime)
-    return 1;
-  return sync == vital::SynthLfo::kKeytrack ? 3 : 2;
+int SynthEditor::modulatorRowLayout(const String& modulatorPrefix) const {
+  const int sync = syncOption(modulatorPrefix);
+  const int rate_rows = sync == vital::SynthLfo::kTime ? 0 : sync == vital::SynthLfo::kKeytrack ? 2 : 1;
+  const int lfo = lfoIndexForParameterId(modulatorPrefix);
+  return rate_rows + (lfo >= 0 && isLfoSimpleView(lfo) ? 3 : 0);
 }
 
 void SynthEditor::setLfoView(int lfo, int view) {
@@ -8720,10 +8746,10 @@ void SynthEditor::setLfoView(int lfo, int view) {
   setParameterEngineValue("lfo_" + String(lfo + 1) + "_view", static_cast<float>(view));
 }
 
-bool SynthEditor::refreshLfoRowsIfNeeded() {
+bool SynthEditor::refreshModulatorRowsIfNeeded() {
   bool changed = false;
-  for (auto& layout : last_lfo_layouts_) {
-    const int current = lfoRowLayout(layout.first);
+  for (auto& layout : last_modulator_layouts_) {
+    const int current = modulatorRowLayout(layout.first);
     changed |= layout.second != current;
     layout.second = current;
   }
@@ -8732,7 +8758,8 @@ bool SynthEditor::refreshLfoRowsIfNeeded() {
 
   const String parameter_id = focusedParameterId();
   const String accessible_title = focusedAccessibleTitle();
-  // Every LFO has the same tabs and rows: stay in this one.
+  // Every LFO has the same tabs and rows, and so has every random generator:
+  // stay in this one.
   const String section_key = focusedSectionKey();
   auto* persistent_focus = persistentFocusedComponent();
   keepFocusedSwitchingRow();
@@ -9719,7 +9746,7 @@ void SynthEditor::clearSectionComponents() {
   rows_.clear();
   last_filter_states_.clear();
   last_seed_modes_.clear();
-  last_lfo_layouts_.clear();
+  last_modulator_layouts_.clear();
   last_oscillator_modes_.clear();
   instrument_preset_menu_stale_ = false;
   rows_container_.removeAllChildren();
@@ -10055,7 +10082,8 @@ void SynthEditor::showAllSections(bool announce) {
       else if (section_name.startsWith("LFO ")) {
         const int lfo = section_name.fromFirstOccurrenceOf("LFO ", false, false).getIntValue() - 1;
         if (isPositiveAndBelow(lfo, vital::kNumLfos)) {
-          last_lfo_layouts_[lfo] = lfoRowLayout(lfo);
+          const String modulator = "lfo_" + String(lfo + 1) + "_";
+          last_modulator_layouts_[modulator] = modulatorRowLayout(modulator);
           const bool simple = isLfoSimpleView(lfo);
           const int tab_x = flatten_section ? 16 : 10;
           const int tab_width = jmax(620, width - (flatten_section ? 32 : 34)) / 2;
@@ -24948,7 +24976,7 @@ void SynthEditor::timerCallback() {
     return;
   if (refreshSeedRowsIfNeeded())
     return;
-  if (refreshLfoRowsIfNeeded())
+  if (refreshModulatorRowsIfNeeded())
     return;
   if (refreshOscillatorModeRowsIfNeeded())
     return;
