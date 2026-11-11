@@ -75,6 +75,7 @@ namespace vital {
       createBaseControl(prefix + "play_order");
       createBaseControl(prefix + "gate");
       createBaseControl(prefix + "random_gate");
+      createBaseControl(prefix + "swing");
       createBaseControl(prefix + "repeats");
       createBaseControl(prefix + "loop");
       createBaseControl(prefix + "offset");
