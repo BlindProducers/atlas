@@ -81,10 +81,10 @@ namespace {
     return found != controls.end() && found->second != nullptr ? found->second->value() : fallback;
   }
 
-  constexpr std::array<const char*, 21> kArpeggiatorControlNames {
+  constexpr std::array<const char*, SynthBase::kNumArpeggiatorControls> kArpeggiatorControlNames {
     "on", "time_mode", "sync_rate", "free_rate", "style", "gate", "random_gate", "repeats",
     "offset", "distance", "steps", "velocity", "velocity_decay", "random_velocity", "hold", "retrigger", "channel",
-    "retrigger_division", "play_order", "loop", "octave"
+    "retrigger_division", "play_order", "loop", "octave", "swing"
   };
 
   // The value an arpeggiator control has after the engine's modulation, or
@@ -94,8 +94,9 @@ namespace {
     return modulation_switch ? modulation_switch->output(vital::ValueSwitch::kSwitch) : nullptr;
   }
 
-  AtlasArpeggiator::Settings arpeggiatorSettings(const std::array<vital::Value*, 21>& controls,
-                                                 const std::array<const vital::Output*, 21>& modulations) {
+  AtlasArpeggiator::Settings arpeggiatorSettings(
+      const std::array<vital::Value*, SynthBase::kNumArpeggiatorControls>& controls,
+      const std::array<const vital::Output*, SynthBase::kNumArpeggiatorControls>& modulations) {
     const auto value = [&](int index, float fallback) -> float {
       if (modulations[index])
         return modulations[index]->buffer[0][0];
@@ -124,6 +125,7 @@ namespace {
     settings.play_order = static_cast<int>(std::round(value(18, AtlasArpeggiator::kPlayOrderPitch)));
     settings.loop = static_cast<int>(std::round(value(19, AtlasArpeggiator::kLoopInfinite)));
     settings.octave = static_cast<int>(std::round(value(20, 0)));
+    settings.swing = value(21, 0);
     return settings;
   }
 

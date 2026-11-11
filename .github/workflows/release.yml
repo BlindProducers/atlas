@@ -10,7 +10,7 @@
 # before, and the release's tag moves to the commit it was built from; bumping
 # ATLAS_PRERELEASE starts a new pre-release, and bumping the version in
 # CMakeLists.txt a new release.
-name: Build and publish (hotfix 2.0.0.1, Windows only)
+name: Build and publish (hotfix 2.0.0.2, Windows only)
 
 env:
   # The pre-release the dev branch publishes: its tag is v<version>-<this>,
@@ -54,7 +54,7 @@ jobs:
         run: git submodule update --init --jobs 4
 
       - name: Configure
-        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DATLAS_MSVC_COMPILE_JOBS=3
+        run: cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DATLAS_MSVC_COMPILE_JOBS=3 -DATLAS_OFFICIAL_RELEASE=${{ env.ATLAS_OFFICIAL }}
 
       # The runner has 4 cores and 16 GB of RAM, and each compiler on a unity
       # file can use several GB (see CLAUDE.md): one project at a time, with

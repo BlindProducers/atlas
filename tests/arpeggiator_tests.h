@@ -137,6 +137,25 @@ namespace {
              "After releasing keys the arp plays only the notes still held");
     }
 
+    // A gate above 100% holds a note into the next step.
+    {
+      auto settings = arpTestSettings();
+      settings.gate = 150.0f;
+      const int step = static_cast<int>(kArpTestSamplesPerQuarter * 0.5);
+      const auto events = runArpeggiator(settings, arpChord(0), step * 3);
+      int first_off = -1;
+      for (const auto& event : events) {
+        if (event.message.isNoteOff() && event.message.getNoteNumber() == 60) {
+          first_off = event.sample;
+          break;
+        }
+      }
+      expect(std::abs(first_off - step * 3 / 2) <= 1,
+             "A 150% gate ends the note halfway through the next step (note-off at " + std::to_string(first_off) +
+             ", step " + std::to_string(step) + ")");
+      expectArpSteps(arpNoteOns(events), { 60, 64, 67 }, { 0, step, step * 2 }, "A 150% gate keeps the steps in time");
+    }
+
     // Releasing Hold drops the latched notes without cutting the step either.
     AtlasArpeggiator arp;
     arp.prepare(kArpTestSampleRate);
@@ -442,6 +461,102 @@ namespace {
     }
     expect(most_voices == 8, "An eight-note chord on one oscillator uses one voice per note, got " +
            std::to_string(most_voices));
+  }
+
+  // Swing delays every second step by up to half a step, on the internal
+  // clock and on the beat grid, and the gate follows the steps' new lengths.
+  void testArpSwing() {
+    const int step = static_cast<int>(kArpTestSamplesPerQuarter * 0.5);
+    const std::vector<int> straight = { 0, step, step * 2, step * 3 };
+    const std::vector<int> swung = { 0, step + step / 4, step * 2, step * 3 + step / 4 };
+    for (int retrigger : { AtlasArpeggiator::kRetriggerNote, AtlasArpeggiator::kRetriggerBeat }) {
+      for (double ppq_start : { -1.0, 0.0 }) {
+        // 512 and 100 samples: a swung step waits across more or fewer blocks.
+        for (int block_size : { 512, 100 }) {
+          auto settings = arpTestSettings();
+          settings.retrigger = retrigger;
+          const std::string label = std::string(retrigger == AtlasArpeggiator::kRetriggerBeat ? "beat grid" : "clock") +
+                                    (ppq_start >= 0.0 ? ", playing" : ", stopped") + ", blocks of " +
+                                    std::to_string(block_size);
+          expectArpSteps(arpNoteOns(runArpeggiator(settings, arpChord(0), step * 4, ppq_start, block_size)),
+                         { 60, 64, 67, 60 }, straight, "No swing keeps the steps even (" + label + ")");
+          settings.swing = 0.5f;
+          settings.gate = 100.0f;
+          const auto events = runArpeggiator(settings, arpChord(0), step * 4, ppq_start, block_size);
+          expectArpSteps(arpNoteOns(events), { 60, 64, 67, 60 }, swung,
+                         "50% swing delays every second step by a quarter of a step (" + label + ")");
+          // At 100% each note ends as the next begins: the first lasts a
+          // step and a quarter, the second three quarters.
+          int first_off = -1;
+          int second_off = -1;
+          for (const auto& event : events) {
+            if (event.message.isNoteOff() && event.message.getNoteNumber() == 60 && first_off < 0)
+              first_off = event.sample;
+            if (event.message.isNoteOff() && event.message.getNoteNumber() == 64 && second_off < 0)
+              second_off = event.sample;
+          }
+          expect(std::abs(first_off - (step + step / 4)) <= 2 && std::abs(second_off - step * 2) <= 2,
+                 "A full gate fills the swung steps without overlap (" + label + ", note-offs at " +
+                 std::to_string(first_off) + " and " + std::to_string(second_off) + ")");
+        }
+      }
+    }
+
+    // Through the plugin: two steps a second, the second a full swing late.
+    SynthPlugin synth;
+    prepare(synth);
+    auto& controls = synth.getControls();
+    expect(controls.count("arp_1_swing") == 1 && controls.count("arp_2_swing") == 1, "Swing is a control");
+    for (int osc = 1; osc <= vital::kNumOscillators; ++osc)
+      controls.at("osc_" + std::to_string(osc) + "_on")->set(osc == 1 ? 1.0f : 0.0f);
+    controls.at("env_1_release")->set(std::pow(0.01f, 0.25f));
+    controls.at("arp_1_on")->set(1.0f);
+    controls.at("arp_1_time_mode")->set(1.0f);
+    controls.at("arp_1_free_rate")->set(2.0f);
+    controls.at("arp_1_gate")->set(50.0f);
+    controls.at("arp_1_swing")->set(1.0f);
+    MidiBuffer hold;
+    hold.addEvent(MidiMessage::noteOn(1, 60, 1.0f), 0);
+    renderMidi(synth, hold);
+    MidiBuffer empty;
+    bool sounding = true;
+    int second_step = -1;
+    for (int block = 1; block < 48000 / 128 && second_step < 0; ++block) {
+      renderMidi(synth, empty);
+      const bool now = synth.getEngine()->getNumActiveVoices() > 0;
+      if (now && !sounding)
+        second_step = block * 128;
+      sounding = now;
+    }
+    expect(std::abs(second_step - 36000) <= 256,
+           "The plugin's Swing at 100% delays the second step by half a step (at " + std::to_string(second_step) + ")");
+  }
+
+  // Each slot's arpeggiator notes count against the voice limit like keys:
+  // a four-note chord with two voices plays two notes.
+  void testArpNotesFollowTheVoiceCount() {
+    SynthPlugin synth;
+    prepare(synth);
+    auto& controls = synth.getControls();
+    controls.at("polyphony")->set(2.0f);
+    for (int osc = 1; osc <= vital::kNumOscillators; ++osc)
+      controls.at("osc_" + std::to_string(osc) + "_on")->set(osc <= 2 ? 1.0f : 0.0f);
+    controls.at("arp_1_on")->set(1.0f);
+    controls.at("arp_1_style")->set(static_cast<float>(AtlasArpeggiator::kChordTrigger));
+    controls.at("arp_1_time_mode")->set(1.0f);
+    controls.at("arp_1_free_rate")->set(2.0f);
+
+    MidiBuffer midi;
+    for (int note : { 48, 52, 55, 59 })
+      midi.addEvent(MidiMessage::noteOn(1, note, 1.0f), 0);
+    renderMidi(synth, midi);
+    MidiBuffer empty;
+    // 50 ms: the notes over the limit have faded out, still inside the first step.
+    for (int i = 0; i < 19; ++i)
+      renderMidi(synth, empty);
+    const int voices = synth.getEngine()->getNumActiveVoices();
+    expect(voices == 4, "A four-note chord with two voices plays two notes on each of two oscillators, got " +
+           std::to_string(voices) + " voices");
   }
 
   // The arpeggiator's time mode and rates are modulation destinations. It

@@ -38,8 +38,22 @@ namespace vital {
       return value & kNoteMask;
     }
 
+    // One channel per oscillator slot, above the MIDI channels.
+    constexpr int kFirstAtlasInternalArpChannel = 16;
+    constexpr int kNumAtlasInternalArpChannels = 8;
+
     force_inline bool isAtlasInternalArpChannel(int channel) {
-      return channel >= 16 && channel < 24;
+      return channel >= kFirstAtlasInternalArpChannel &&
+             channel < kFirstAtlasInternalArpChannel + kNumAtlasInternalArpChannels;
+    }
+
+    // Voices are counted and replaced within the group of the note's
+    // channel: one arpeggiator channel (one oscillator slot's arpeggiators)
+    // or every key played from outside.
+    force_inline bool inVoiceGroup(Voice* voice, int channel) {
+      const int voice_channel = voice->state().channel;
+      return isAtlasInternalArpChannel(channel) ? voice_channel == channel :
+                                                  !isAtlasInternalArpChannel(voice_channel);
     }
 
     force_inline int getControlChannel(int channel) {
@@ -521,17 +535,17 @@ namespace vital {
     return 0;
   }
 
-  Voice* VoiceHandler::grabVoice(bool legato_transition) {
+  Voice* VoiceHandler::grabVoice(bool legato_transition, int channel) {
     Voice* voice = nullptr;
 
-    // A real mono-legato transition must continue the currently sounding
-    // keyboard voice. There can also be an older Kill tail in active_voices_;
+    // A real mono-legato transition must continue the group's currently
+    // sounding voice. There can also be an older Kill tail in active_voices_;
     // never select that tail just because it appears earlier in the priority
     // list. kTriggering covers multiple note-ons queued inside one host block.
     if (legato_transition) {
-      voice = grabVoiceOfType(Voice::kHeld, false, true);
+      voice = grabVoiceOfType(Voice::kHeld, channel);
       if (voice == nullptr)
-        voice = grabVoiceOfType(Voice::kTriggering, false, true);
+        voice = grabVoiceOfType(Voice::kTriggering, channel);
       if (voice)
         return voice;
     }
@@ -541,70 +555,51 @@ namespace vital {
     // current release value instead of summing a new oscillator with a 50 ms
     // Kill tail. Retrig mode keeps the independent outgoing tail behavior.
     const bool allow_release_overlap = voice_override_ == kKill && !legato_;
-    if (getNumActiveKeyboardVoices() < polyphony() || allow_release_overlap) {
-      voice = grabFreeParallelVoice();
+    const bool below_limit = getNumActiveVoices(channel) < polyphony() || allow_release_overlap;
+    auto grabSpareVoice = [this] {
+      Voice* spare = grabFreeParallelVoice();
+      return spare != nullptr ? spare : grabFreeVoice();
+    };
+    if (below_limit)
+      voice = grabSpareVoice();
+
+    // At the limit a note takes over one of its group's voices. A key also
+    // does with the pool empty; an arpeggiator note below its limit goes
+    // straight to the tails of every arpeggiator instead, so it does not cut
+    // its own slot's sounding notes while another slot's tails ring.
+    static constexpr Voice::KeyState kStealOrder[] = { Voice::kReleased, Voice::kSustained, Voice::kHeld,
+                                                       Voice::kTriggering };
+    if (!below_limit || !isAtlasInternalArpChannel(channel)) {
+      for (Voice::KeyState key_state : kStealOrder) {
+        if (voice == nullptr)
+          voice = grabVoiceOfType(key_state, channel);
+      }
+    }
+
+    // At the limit with every voice of the group fading out: a spare voice
+    // rather than another group's.
+    if (voice == nullptr && !below_limit)
+      voice = grabSpareVoice();
+
+    // Arpeggiator tails can fill the whole pool. A key played on a slot the
+    // arpeggiator does not play then takes one of them rather than going
+    // unheard, and so does an arpeggiator note.
+    for (Voice::KeyState key_state : kStealOrder) {
       if (voice == nullptr)
-        voice = grabFreeVoice();
+        voice = grabArpVoiceOfType(key_state);
     }
 
-    if (voice == nullptr)
-      voice = grabVoiceOfType(Voice::kReleased, false, true);
-
-    if (voice == nullptr)
-      voice = grabVoiceOfType(Voice::kSustained, false, true);
-
-    if (voice == nullptr)
-      voice = grabVoiceOfType(Voice::kHeld, false, true);
-
-    if (voice == nullptr)
-      voice = grabVoiceOfType(Voice::kTriggering, false, true);
-
-    // Arpeggiator voices sit outside the polyphony limit and can fill the
-    // whole pool with their tails. A key played on a slot the arpeggiator
-    // does not play then takes one of them rather than going unheard.
-    if (voice == nullptr)
-      voice = grabVoiceOfType(Voice::kReleased, true);
-
-    if (voice == nullptr)
-      voice = grabVoiceOfType(Voice::kSustained, true);
-
-    if (voice == nullptr)
-      voice = grabVoiceOfType(Voice::kHeld, true);
-
-    if (voice == nullptr)
-      voice = grabVoiceOfType(Voice::kTriggering, true);
-
     return voice;
   }
 
-  Voice* VoiceHandler::grabInternalArpVoice() {
-    Voice* voice = grabFreeParallelVoice();
-    if (voice == nullptr)
-      voice = grabFreeVoice();
-
-    if (voice == nullptr)
-      voice = grabVoiceOfType(Voice::kReleased, true);
-
-    if (voice == nullptr)
-      voice = grabVoiceOfType(Voice::kSustained, true);
-
-    if (voice == nullptr)
-      voice = grabVoiceOfType(Voice::kHeld, true);
-
-    if (voice == nullptr)
-      voice = grabVoiceOfType(Voice::kTriggering, true);
-
-    return voice;
-  }
-
-  Voice* VoiceHandler::newestInternalArpVoice(int channel) const {
-    Voice* newest = nullptr;
+  bool VoiceHandler::hasHeldVoice(int channel) const {
     for (Voice* voice : active_voices_) {
-      if (voice->state().channel == channel && voice->state().event != kVoiceKill &&
-          (newest == nullptr || voice->state().note_count > newest->state().note_count))
-        newest = voice;
+      const Voice::KeyState key_state = voice->key_state();
+      if (inVoiceGroup(voice, channel) && voice->state().event != kVoiceKill &&
+          (key_state == Voice::kHeld || key_state == Voice::kTriggering))
+        return true;
     }
-    return newest;
+    return false;
   }
 
   Voice* VoiceHandler::grabFreeVoice() {
@@ -637,13 +632,11 @@ namespace vital {
     return nullptr;
   }
 
-  Voice* VoiceHandler::grabVoiceOfType(Voice::KeyState key_state, bool internal_only, bool exclude_internal) {
+  Voice* VoiceHandler::grabVoiceOfType(Voice::KeyState key_state, int channel) {
     for (auto iter = active_voices_.begin(); iter != active_voices_.end(); ++iter) {
       Voice* voice = *iter;
-      const bool internal = isAtlasInternalArpChannel(voice->state().channel);
       const bool fading_out = voice->state().event == kVoiceKill;
-      if (!fading_out && voice->key_state() == key_state &&
-          (!internal_only || internal) && (!exclude_internal || !internal)) {
+      if (!fading_out && voice->key_state() == key_state && inVoiceGroup(voice, channel)) {
         active_voices_.erase(iter);
         return voice;
       }
@@ -651,23 +644,35 @@ namespace vital {
     return nullptr;
   }
 
-  int VoiceHandler::getNumActiveKeyboardVoices() const {
+  Voice* VoiceHandler::grabArpVoiceOfType(Voice::KeyState key_state) {
+    for (auto iter = active_voices_.begin(); iter != active_voices_.end(); ++iter) {
+      Voice* voice = *iter;
+      const bool fading_out = voice->state().event == kVoiceKill;
+      if (!fading_out && voice->key_state() == key_state && isAtlasInternalArpChannel(voice->state().channel)) {
+        active_voices_.erase(iter);
+        return voice;
+      }
+    }
+    return nullptr;
+  }
+
+  int VoiceHandler::getNumActiveVoices(int channel) const {
     int count = 0;
     for (Voice* voice : active_voices_) {
-      if (!isAtlasInternalArpChannel(voice->state().channel))
+      if (inVoiceGroup(voice, channel))
         ++count;
     }
     return count;
   }
 
-  Voice* VoiceHandler::getVoiceToKill(int max_voices) {
-    int excess_voices = getNumActiveKeyboardVoices() - max_voices;
+  Voice* VoiceHandler::getVoiceToKill(int max_voices, int channel) {
+    int excess_voices = getNumActiveVoices(channel) - max_voices;
     Voice* released = nullptr;
     Voice* sustained = nullptr;
     Voice* held = nullptr;
 
     for (Voice* voice : active_voices_) {
-      if (isAtlasInternalArpChannel(voice->state().channel))
+      if (!inVoiceGroup(voice, channel))
         continue;
       if (voice->state().event == kVoiceKill)
         excess_voices--;
@@ -745,22 +750,12 @@ namespace vital {
 
     const bool internal_arp = isAtlasInternalArpChannel(channel);
     const int control_channel = getControlChannel(channel);
-    // With one voice, an arpeggiator note plays like a key: it takes over the
-    // voice of its slot's last note (Legato, Steal) or starts its own while
-    // that one fades (Kill), so the slot's notes never overlap.
-    const bool mono_arp = internal_arp && polyphony_ == 1;
-    Voice* previous_arp_voice = mono_arp ? newestInternalArpVoice(channel) : nullptr;
-    const bool reuse_arp_voice = previous_arp_voice != nullptr && (legato_ || voice_override_ == kSteal);
-    const bool legato_transition = internal_arp ?
-        reuse_arp_voice && legato_ && (previous_arp_voice->key_state() == Voice::kHeld ||
-                                       previous_arp_voice->key_state() == Voice::kTriggering) :
-        legato_ && polyphony_ == 1 && pressed_notes_.size() != 0;
-
-    Voice* voice = previous_arp_voice;
-    if (reuse_arp_voice)
-      active_voices_.remove(voice);
-    else
-      voice = internal_arp ? grabInternalArpVoice() : grabVoice(legato_transition);
+    // An arpeggiator's notes follow the voice count like keys do, each
+    // oscillator slot's (one channel) on their own. With one voice and
+    // Legato, a note played into a held one continues it.
+    const bool note_held = internal_arp ? hasHeldVoice(channel) : pressed_notes_.size() != 0;
+    const bool legato_transition = legato_ && polyphony_ == 1 && note_held;
+    Voice* voice = grabVoice(legato_transition, channel);
     if (voice == nullptr)
       return;
 
@@ -768,20 +763,25 @@ namespace vital {
     if (tuning_)
       tuned_note = tuning_->convertMidiNote(note);
 
+    // An arpeggiator note glides only out of the note it continues.
     poly_float last_note = tuned_note;
-    if (!internal_arp && last_played_note_[0] >= 0.0f)
-      last_note = last_played_note_;
-    if (!internal_arp)
+    if (internal_arp) {
+      if (legato_transition)
+        last_note = voice->state().tuned_note;
+    }
+    else {
+      if (last_played_note_[0] >= 0.0f)
+        last_note = last_played_note_;
       last_played_note_ = tuned_note;
 
-    if (!internal_arp) {
       int note_value = combineNoteChannel(note, channel);
       pressed_notes_.remove(note_value);
       pressed_notes_.push_back(note_value);
     }
 
     total_notes_++;
-    const int note_pressed = internal_arp ? 1 : pressed_notes_.size();
+    const int arp_notes_pressed = legato_transition ? 2 : 1;
+    const int note_pressed = internal_arp ? arp_notes_pressed : pressed_notes_.size();
     if (legato_transition)
       voice->retarget(note, tuned_note, last_note, note_pressed, total_notes_, sample, channel);
     else
@@ -796,17 +796,10 @@ namespace vital {
     // In Kill mode a non-legato note starts on a spare voice while the
     // outgoing voice fades independently. Schedule that fade at the MIDI
     // event's exact sample rather than at the start of the host block.
-    if (!internal_arp && voice_override_ == kKill && !legato_transition) {
-      Voice* sacrifice = getVoiceToKill(polyphony_);
+    if (voice_override_ == kKill && !legato_transition) {
+      Voice* sacrifice = getVoiceToKill(polyphony_, channel);
       if (sacrifice)
         sacrifice->kill(sample);
-    }
-
-    if (mono_arp) {
-      for (Voice* other : active_voices_) {
-        if (other != voice && other->state().channel == channel && other->state().event != kVoiceKill)
-          other->kill(sample);
-      }
     }
   }
 
@@ -841,7 +834,7 @@ namespace vital {
             Voice* new_voice = voice;
             if (voice_override_ == kKill && !legato_) {
               voice->kill(sample);
-              new_voice = grabVoice(false);
+              new_voice = grabVoice(false, channel);
               // Every other voice is fading out or belongs to an
               // arpeggiator: hand the held note to this one, as the Steal
               // override does, instead of a voice that does not exist.
@@ -940,11 +933,19 @@ namespace vital {
     while (all_voices_.size() < polyphony)
       addParallelVoices();
 
-    int num_voices_to_kill = getNumActiveKeyboardVoices() - polyphony;
-    for (int i = 0; i < num_voices_to_kill; ++i) {
-      Voice* sacrifice = getVoiceToKill(polyphony);
-      if (sacrifice)
-        sacrifice->kill();
+    // The keys' voices (group 0), then each arpeggiator channel's.
+    int num_voices[1 + kNumAtlasInternalArpChannels] = {};
+    for (Voice* voice : active_voices_) {
+      const int channel = voice->state().channel;
+      num_voices[isAtlasInternalArpChannel(channel) ? 1 + channel - kFirstAtlasInternalArpChannel : 0]++;
+    }
+    for (int group = 0; group <= kNumAtlasInternalArpChannels; ++group) {
+      const int channel = group == 0 ? 0 : kFirstAtlasInternalArpChannel + group - 1;
+      for (int i = polyphony; i < num_voices[group]; ++i) {
+        Voice* sacrifice = getVoiceToKill(polyphony, channel);
+        if (sacrifice)
+          sacrifice->kill();
+      }
     }
 
     polyphony_ = polyphony;

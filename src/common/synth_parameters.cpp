@@ -78,7 +78,7 @@ namespace vital {
       ValueDetails::kLinear, false, " Hz", "Arpeggiator 1 Free Rate", nullptr },
     { "arp_1_style", 0x020000, 0.0, 16.0, 0.0, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Arpeggiator 1 Style", strings::kArpStyleNames },
-    { "arp_1_gate", 0x020000, 1.0, 100.0, 80.0, 0.0, 1.0,
+    { "arp_1_gate", 0x020000, 1.0, 200.0, 80.0, 0.0, 1.0,
       ValueDetails::kLinear, false, "%", "Arpeggiator 1 Gate", nullptr },
     { "arp_1_random_gate", 0x020000, 0.0, 1.0, 0.0, 0.0, 100.0,
       ValueDetails::kLinear, false, "%", "Arpeggiator 1 Random Gate", nullptr },
@@ -128,7 +128,7 @@ namespace vital {
       ValueDetails::kLinear, false, " Hz", "Arpeggiator 2 Free Rate", nullptr },
     { "arp_2_style", 0x020000, 0.0, 16.0, 0.0, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Arpeggiator 2 Style", strings::kArpStyleNames },
-    { "arp_2_gate", 0x020000, 1.0, 100.0, 80.0, 0.0, 1.0,
+    { "arp_2_gate", 0x020000, 1.0, 200.0, 80.0, 0.0, 1.0,
       ValueDetails::kLinear, false, "%", "Arpeggiator 2 Gate", nullptr },
     { "arp_2_random_gate", 0x020000, 0.0, 1.0, 0.0, 0.0, 100.0,
       ValueDetails::kLinear, false, "%", "Arpeggiator 2 Random Gate", nullptr },
@@ -1365,6 +1365,12 @@ namespace vital {
       ValueDetails::kIndexed, false, " octaves", "Arpeggiator 1 Octave", nullptr },
     { "arp_2_octave", 0x020122, -4.0, 4.0, 0.0, 0.0, 1.0,
       ValueDetails::kIndexed, false, " octaves", "Arpeggiator 2 Octave", nullptr },
+    // How far each arpeggiator delays every second step, appended by version
+    // to preserve every existing host parameter ID. 0 matches older patches.
+    { "arp_1_swing", 0x020130, 0.0, 1.0, 0.0, 0.0, 100.0,
+      ValueDetails::kLinear, false, "%", "Arpeggiator 1 Swing", nullptr },
+    { "arp_2_swing", 0x020130, 0.0, 1.0, 0.0, 0.0, 100.0,
+      ValueDetails::kLinear, false, "%", "Arpeggiator 2 Swing", nullptr },
   };
 
   const ValueDetails ValueDetailsLookup::env_parameter_list[] = {

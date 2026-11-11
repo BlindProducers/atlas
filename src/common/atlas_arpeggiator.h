@@ -57,6 +57,8 @@ class AtlasArpeggiator {
     static constexpr int kLoopInfinite = kMaxLoops;
 
     // Octave shifts every note the arp plays by this many octaves.
+    // Above 100% a note rings into the next step.
+    static constexpr double kMaxGatePercent = 200.0;
     static constexpr int kMinOctave = -4;
     static constexpr int kMaxOctave = 4;
 
@@ -82,6 +84,8 @@ class AtlasArpeggiator {
       int play_order = kPlayOrderPitch;
       float gate = 80.0f;
       float random_gate = 0.0f;
+      // 0 to 1: how far every second step is delayed, up to half its length.
+      float swing = 0.0f;
       int repeats = 1;
       // How many times the pattern plays before the arp falls silent (see kLoopInfinite).
       int loop = kLoopInfinite;
@@ -130,13 +134,27 @@ class AtlasArpeggiator {
     void handleNoteOn(const juce::MidiMessage& message);
     void handleNoteOff(const juce::MidiMessage& message, const Settings& settings);
     void addDueNoteOffs(juce::MidiBuffer& output, int num_samples);
+    // How long after its place on the grid a step sounds, and how long its
+    // turn lasts until the next step sounds.
+    struct SwungStep {
+      double delay = 0.0;
+      double length = 0.0;
+    };
+    // `second`: the second step of a pair, which Swing delays. `interval` is
+    // the time from this step to the next on the grid and `next_interval`
+    // that step's own; `next_restarts` when the next step starts the grid again.
+    static SwungStep swingStep(bool second, double swing, double interval, double next_interval,
+                               bool next_restarts);
     void addInternalClockSteps(juce::MidiBuffer& output, int num_samples, double step_samples,
-                               double gate_samples, double block_start_beat, double quarters_per_sample,
+                               double gate_ratio, double block_start_beat, double quarters_per_sample,
                                double division_quarters, const Settings& settings);
     void addBeatClockSteps(juce::MidiBuffer& output, int num_samples, double rate_quarters,
-                           double gate_samples, double block_start_beat, double quarters_per_sample,
-                           double division_quarters, const Settings& settings);
+                           double gate_ratio, double block_start_beat, double quarters_per_sample,
+                           double division_quarters, bool starting, const Settings& settings);
     void restartPatternAtDivision(int64 division_index);
+    // A gate up to the step's length ends before the next step starts; a
+    // longer one is kept, so the notes overlap.
+    static int clampedGateSamples(double step_samples, double gate_samples);
     void triggerStep(juce::MidiBuffer& output, int sample_offset, int gate_samples, int block_samples,
                      const Settings& settings);
     const std::vector<HeldNote>& sortedHeldNotes();
@@ -165,6 +183,8 @@ class AtlasArpeggiator {
 
     double sample_rate_ = 44100.0;
     double samples_until_next_step_ = 0.0;
+    // Steps the internal clock has played since it last restarted, for Swing.
+    int swing_step_ = 0;
     int pattern_index_ = 0;
     int repeat_index_ = 0;
     // Steps played since the pattern last restarted, for Loop.

@@ -1000,6 +1000,8 @@ int main(int argc, char** argv) {
     testArpOctave();
     testArpRetriggerDivisionParameter();
     testArpChordUsesVoicesOnlyForOscillatorsThatAreOn();
+    testArpSwing();
+    testArpNotesFollowTheVoiceCount();
     testArpRateFollowsModulation();
     if (failures == 0)
       std::cout << "Atlas arpeggiator tests passed\n";

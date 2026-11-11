@@ -826,6 +826,31 @@ namespace {
       const int allowed = legato ? 1 : 2;
       expect(most <= allowed, label + " plays one note at a time (" + std::to_string(most) + " voices)");
     }
+
+    // A gate above 100% runs each arpeggiator note into the next, which
+    // Legato then plays as one note: the first syllable at the new pitches.
+    for (float gate : { 50.0f, 150.0f }) {
+      SynthPlugin plugin;
+      preparePlayback(plugin, "one two three four five six seven eight");
+      setControl(plugin, "polyphony", 1.0f);
+      setControl(plugin, "legato", 1.0f);
+      setControl(plugin, "arp_1_on", 1.0f);
+      setControl(plugin, "arp_1_time_mode", static_cast<float>(AtlasArpeggiator::kFree));
+      setControl(plugin, "arp_1_free_rate", 10.0f);
+      setControl(plugin, "arp_1_gate", gate);
+      // Four steps, then the keys come up inside the fifth.
+      const auto audio = render(plugin, kRate * 45 / 100, { { 0, juce::MidiMessage::noteOn(1, 60, 1.0f) },
+                                                           { 0, juce::MidiMessage::noteOn(1, 64, 1.0f) } });
+      expect(finite(audio), "the legato arpeggiator is finite");
+      const int voices = plugin.getEngine()->getNumActiveVoices();
+      expect(voices == 1, "overlapping arpeggiator notes share one voice (" + std::to_string(voices) + ")");
+      const int next = plugin.getEngine()->getSpeechSlot(0)->takeUnit(10.0);
+      const bool overlapping = gate > 100.0f;
+      expect(overlapping ? next == 1 : next > 2,
+             std::string(overlapping ? "notes that overlap keep the first syllable"
+                                     : "notes with a gap each sing a new syllable") +
+                 " (next is " + std::to_string(next) + ")");
+    }
     return finish("legato");
   }
 
@@ -1370,6 +1395,7 @@ namespace {
     return 0;
   }
 } // namespace
+
 
 int main(int argc, char** argv) {
   juce::ScopedJuceInitialiser_GUI juce;

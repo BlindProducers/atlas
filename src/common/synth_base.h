@@ -56,6 +56,9 @@ namespace speech {
 
 class SynthBase : public MidiManager::Listener {
   public:
+    // The controls each arpeggiator reads (kArpeggiatorControlNames).
+    static constexpr int kNumArpeggiatorControls = 22;
+
     static constexpr float kOutputWindowMinNote = 16.0f;
     static constexpr float kOutputWindowMaxNote = 128.0f;
 
@@ -295,10 +298,11 @@ class SynthBase : public MidiManager::Listener {
     std::unique_ptr<MidiManager> midi_manager_;
     std::unique_ptr<MidiKeyboardState> keyboard_state_;
     std::array<std::array<AtlasArpeggiator, 8>, vital::kNumArpeggiators> arpeggiators_;
-    std::array<std::array<vital::Value*, 21>, vital::kNumArpeggiators> arpeggiator_controls_ {};
+    std::array<std::array<vital::Value*, kNumArpeggiatorControls>, vital::kNumArpeggiators> arpeggiator_controls_ {};
     // For the controls modulation can reach (time mode and the rates), the
     // value the engine's modulation gives them; null for the others.
-    std::array<std::array<const vital::Output*, 21>, vital::kNumArpeggiators> arpeggiator_modulations_ {};
+    std::array<std::array<const vital::Output*, kNumArpeggiatorControls>, vital::kNumArpeggiators>
+        arpeggiator_modulations_ {};
     // What routes a played key to each oscillator slot's arpeggiators: the
     // slot's switch and key and velocity zones, and each arp's destination
     // switch for it. Looked up once, as the audio thread reads them per note.

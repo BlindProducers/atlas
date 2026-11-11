@@ -461,16 +461,17 @@ namespace vital {
       const CircularQueue<Voice*>& activeVoices() const { return active_voices_; }
 
     private:
-      Voice* grabVoice(bool legato_transition);
-      Voice* grabInternalArpVoice();
-      // The most recent voice still playing (or ringing out) a note on this
-      // arpeggiator channel, or null.
-      Voice* newestInternalArpVoice(int channel) const;
+      // `channel` names a voice group: one arpeggiator channel's voices, or
+      // every key's.
+      Voice* grabVoice(bool legato_transition, int channel);
+      bool hasHeldVoice(int channel) const;
       Voice* grabFreeVoice();
       Voice* grabFreeParallelVoice();
-      Voice* grabVoiceOfType(Voice::KeyState key_state, bool internal_only = false, bool exclude_internal = false);
-      Voice* getVoiceToKill(int max_voices);
-      int getNumActiveKeyboardVoices() const;
+      Voice* grabVoiceOfType(Voice::KeyState key_state, int channel);
+      // From any arpeggiator channel.
+      Voice* grabArpVoiceOfType(Voice::KeyState key_state);
+      Voice* getVoiceToKill(int max_voices, int channel);
+      int getNumActiveVoices(int channel) const;
       int grabNextUnplayedPressedNote();
       void sortVoicePriority();
       void addParallelVoices();
