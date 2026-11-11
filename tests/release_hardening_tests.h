@@ -68,47 +68,43 @@ namespace {
                                      std::to_string(blocks * 128 / 48) + " ms)");
   }
 
-  // Arpeggiator voices sit outside the polyphony limit and their tails can
-  // fill the whole pool. A key on a slot the arpeggiator does not play must
-  // still sound, and a mono trill there (Kill override, legato off) used to
-  // hand a voice that did not exist to the audio thread. With one voice the
-  // arpeggiator plays one note at a time, so the tails come from a
-  // polyphonic patch switched to one voice once they ring.
+  // Each slot's arpeggiator notes count against the voice limit on their own,
+  // so several slots' tails can fill the whole pool. A key on a slot the
+  // arpeggiator does not play must still sound, and releasing a key at the
+  // voice limit there (Kill override, legato off) used to hand a voice that
+  // did not exist to the audio thread.
   void testKeyboardNotesSurviveAFullVoicePool() {
+    static constexpr int kVoices = 5;
     SynthPlugin synth;
     prepare(synth);
     auto& controls = synth.getControls();
     for (int slot = 1; slot <= vital::kNumOscillators; ++slot)
-      controls.at("osc_" + std::to_string(slot) + "_on")->set(slot <= 2 ? 1.0f : 0.0f);
-    controls.at("polyphony")->set(32.0f);
+      controls.at("osc_" + std::to_string(slot) + "_on")->set(1.0f);
+    controls.at("polyphony")->set(static_cast<float>(kVoices));
     controls.at("env_1_release")->set(std::pow(16.0f, 0.25f));  // sixteen seconds
     controls.at("arp_1_on")->set(1.0f);
     controls.at("arp_1_time_mode")->set(1.0f);
     controls.at("arp_1_free_rate")->set(16.0f);
-    controls.at("arp_1_destination_osc_2")->set(0.0f);  // oscillator 2 plays from the keyboard
-    MidiBuffer key_a;
-    key_a.addEvent(MidiMessage::noteOn(1, 52, 1.0f), 0);
-    renderMidi(synth, key_a);
+    controls.at("arp_1_destination_osc_8")->set(0.0f);  // oscillator 8 plays from the keyboard
+    MidiBuffer keys;
+    for (int key = 0; key < kVoices; ++key)
+      keys.addEvent(MidiMessage::noteOn(1, 52 + key, 1.0f), 0);
+    renderMidi(synth, keys);
     MidiBuffer empty;
     for (int i = 0; i < 2000 && synth.getEngine()->getNumActiveVoices() < 34; ++i)
       renderMidi(synth, empty);
     expect(synth.getEngine()->getNumActiveVoices() == 34, "arpeggiator tails fill the voice pool");
-    controls.at("arp_1_on")->set(0.0f);
-    controls.at("polyphony")->set(1.0f);
-    renderMidi(synth, empty);
-    expect(synth.getEngine()->getNumActiveVoices() == 34, "the tails ring on after the arpeggiator stops");
 
-    MidiBuffer key_b;
-    key_b.addEvent(MidiMessage::noteOn(1, 55, 1.0f), 0);
-    renderMidi(synth, key_b);
-    expect(synth.getEngine()->getNumPressedNotes() == 2, "a key pressed with the pool full is played");
-    MidiBuffer release_b;
-    release_b.addEvent(MidiMessage::noteOff(1, 55), 0);
-    renderMidi(synth, release_b);
+    MidiBuffer one_more;
+    one_more.addEvent(MidiMessage::noteOn(1, 60, 1.0f), 0);
+    renderMidi(synth, one_more);
+    expect(synth.getEngine()->getNumPressedNotes() == kVoices + 1, "a key pressed with the pool full is played");
+    MidiBuffer release;
+    release.addEvent(MidiMessage::noteOff(1, 60), 0);
+    renderMidi(synth, release);
     for (int i = 0; i < 10; ++i)
       renderMidi(synth, empty);
-    expect(synth.getEngine()->getNumPressedNotes() == 1, "releasing the trill's upper key returns to the held one");
-    // The upper key's voice fades out (Kill) and the held key takes a tail's voice.
+    expect(synth.getEngine()->getNumPressedNotes() == kVoices, "releasing it returns to the held keys");
     expect(synth.getEngine()->getNumActiveVoices() >= 33, "the pool stays in use and nothing breaks");
   }
 
