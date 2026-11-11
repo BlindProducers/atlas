@@ -49,6 +49,7 @@
 #include "synth_strings.h"
 #include "tuning.h"
 #include "utils.h"
+#include "comb_filter.h"
 #include "formant_filter.h"
 #include "ring_mod_filter.h"
 #include "sample_hold_filter.h"
@@ -978,31 +979,114 @@ namespace {
     }
   }
 
-  String filterBlendText(int model, double normalized_value) {
-    const double engine_value = jlimit(0.0, 1.0, normalized_value) * 2.0;
-    if (model == vital::constants::kComb) {
-      if (engine_value <= 0.05)
-        return "Low comb";
-      if (engine_value >= 1.95)
-        return "High comb";
-      return "Low to high comb, " + String(engine_value, 2);
+  // What a filter's Blend plays at the positions that have a name, on the
+  // engine's 0 to 2 scale, as each model's setupFilter mixes its responses.
+  // `between` names every position between the first and last stop where that
+  // has a name of its own; without it a position reads as between its two
+  // neighbours. A model or style whose Blend is an amount rather than a morph
+  // has no stops and reads as a percentage.
+  struct FilterBlendStops {
+    struct Stop {
+      double position;
+      const char* name;
+    };
+    std::array<Stop, 3> stops;
+    int count = 0;
+    const char* between = nullptr;
+  };
+
+  FilterBlendStops filterBlendStops(int model, int style) {
+    static const FilterBlendStops kPasses { { { { 0.0, "Low pass" }, { 1.0, "Band pass" }, { 2.0, "High pass" } } }, 3 };
+    switch (static_cast<vital::constants::FilterModel>(model)) {
+      case vital::constants::kAnalog:
+      case vital::constants::kDirty:
+      case vital::constants::kLadder:
+      case vital::constants::kDigital:
+        switch (style) {
+          case vital::SynthFilter::k12Db:
+          case vital::SynthFilter::k24Db:
+            return kPasses;
+          case vital::SynthFilter::kNotchPassSwap:
+            return { { { { 0.0, "Low pass" }, { 1.0, "Notch" }, { 2.0, "High pass" } } }, 3 };
+          // Two notches, one each side of the cutoff, that meet at the top.
+          case vital::SynthFilter::kDualNotchBand:
+            return { { { { 0.0, "Band pass" }, { 2.0, "Notch" } } }, 2, "Two notches" };
+          case vital::SynthFilter::kBandPeakNotch:
+            return { { { { 0.0, "Band pass" }, { 1.0, "Peak" }, { 2.0, "Notch" } } }, 3 };
+          default:
+            return {};
+        }
+      // Its filter is a 12 dB state variable filter; Style is the distortion type.
+      case vital::constants::kDistortionFilter:
+        return kPasses;
+      // The outputs of 4, 8 and 12 all-pass stages, crossfaded.
+      case vital::constants::kPhase:
+        return { { { { 0.0, "4 stages" }, { 1.0, "8 stages" }, { 2.0, "12 stages" } } }, 3 };
+      // The Band Spread styles' Blend is the width of the band.
+      case vital::constants::kComb:
+        if (vital::CombFilter::getFilterStyle(style) == vital::CombFilter::kLowHighBlend)
+          return { { { { 0.0, "Low comb" }, { 2.0, "High comb" } } }, 2, "Low to high comb" };
+        return {};
+      // Diode's Blend is how much of the lows its shelf or cut takes out.
+      default:
+        return {};
     }
-    if (model == vital::constants::kPhase)
-      return "Phaser blend, " + String(engine_value, 2);
+  }
+
+  String filterBlendText(int model, int style, double normalized_value) {
+    const double engine_value = jlimit(0.0, 1.0, normalized_value) * 2.0;
     if (model == vital::constants::kSampleHoldFilter) {
       const float bits = vital::SampleHoldFilter::crushBits(static_cast<float>(engine_value));
       return bits <= 0.0f ? String("Off") : String(bits, 1) + " bits";
     }
 
-    if (engine_value <= 0.05)
-      return "Low pass";
-    if (std::abs(engine_value - 1.0) <= 0.05)
-      return "Band pass";
-    if (engine_value >= 1.95)
-      return "High pass";
-    if (engine_value < 1.0)
-      return "Between low pass and band pass, " + String(engine_value, 2);
-    return "Between band pass and high pass, " + String(engine_value, 2);
+    const FilterBlendStops blend = filterBlendStops(model, style);
+    if (blend.count == 0)
+      return compactFloat(static_cast<float>(engine_value * 50.0), 1) + "%";
+
+    // A name is read only where the two decimals shown beside it would round
+    // to its position, so nothing between two responses takes one's name.
+    int next = 0;
+    for (; next < blend.count; ++next) {
+      if (std::abs(engine_value - blend.stops[next].position) < 0.005)
+        return blend.stops[next].name;
+      if (blend.stops[next].position > engine_value)
+        break;
+    }
+    const String value = String(engine_value, 2);
+    if (blend.between != nullptr)
+      return String(blend.between) + ", " + value;
+    return "Between " + String(blend.stops[next - 1].name).toLowerCase() + " and " +
+           String(blend.stops[next].name).toLowerCase() + ", " + value;
+  }
+
+  // The Blend position (0 to 1, as the host parameter) for typed text: a name
+  // the readout uses, or a number as the readout shows it, alone or after the
+  // words read with it. Text with neither leaves `current` in place.
+  double filterBlendValueForText(int model, int style, const String& text, double current) {
+    const String typed = text.trim();
+    const FilterBlendStops blend = filterBlendStops(model, style);
+    for (int i = 0; i < blend.count; ++i) {
+      if (typed.equalsIgnoreCase(blend.stops[i].name))
+        return blend.stops[i].position * 0.5;
+    }
+
+    const bool sample_hold = model == vital::constants::kSampleHoldFilter;
+    if (sample_hold && typed.equalsIgnoreCase("off"))
+      return 0.0;
+    const String number = typed.fromLastOccurrenceOf(",", false, false);
+    if (!number.containsAnyOf("0123456789"))
+      return current;
+
+    const double value = number.getDoubleValue();
+    if (sample_hold) {
+      // crushBits the other way; no bits, or 16 and above, is Off.
+      if (value <= 0.0)
+        return 0.0;
+      const double range = vital::SampleHoldFilter::kMaxCrushBits - vital::SampleHoldFilter::kMinCrushBits;
+      return jlimit(0.0, 1.0, (vital::SampleHoldFilter::kMaxCrushBits - value) / range);
+    }
+    return jlimit(0.0, 1.0, value / (blend.count == 0 ? 100.0 : 2.0));
   }
 
   // A preference, so shared by every Atlas instance. The section and preset
@@ -6370,7 +6454,9 @@ class AccessibleParameterRow : public Component {
         };
         slider_.valueFromTextFunction = [this](const String& text) {
           double parameter_value = static_cast<double>(parameter_.getValueForText(text));
-          if (auto* bridge = dynamic_cast<ValueBridge*>(&parameter_))
+          if (value_from_text_)
+            parameter_value = value_from_text_(text);
+          else if (auto* bridge = dynamic_cast<ValueBridge*>(&parameter_))
             parameter_value = accessibleParameterValueForText(*bridge, text);
           return sliderValueForParameterValue(parameter_value);
         };
@@ -6426,6 +6512,12 @@ class AccessibleParameterRow : public Component {
       modulation_removal_sources_callback_ = std::move(sources);
       modulation_remove_callback_ = std::move(remove);
       updateAccessibleCommand();
+    }
+
+    // The parameter value (0 to 1) for text in the row's own readout, where
+    // the parameter's own parsing would not read it.
+    void setValueFromText(std::function<double(const String&)> valueFromText) {
+      value_from_text_ = std::move(valueFromText);
     }
 
     void setValueEntryCallback(std::function<void(const String&, Component&)> callback) {
@@ -6783,7 +6875,9 @@ class AccessibleParameterRow : public Component {
       endParameterChange();
       refresh();
       String value_text = parameter_.getText(parameter_.getValue(), 128);
-      if (auto* bridge = dynamic_cast<ValueBridge*>(&parameter_))
+      if (text_from_value_)
+        value_text = text_from_value_(parameter_.getValue());
+      else if (auto* bridge = dynamic_cast<ValueBridge*>(&parameter_))
         value_text = accessibleParameterText(*bridge, parameter_.getValue());
       postPluginAnnouncement(parameter_.getName(128) + " reset to " + value_text,
                              AccessibilityHandler::AnnouncementPriority::high);
@@ -6795,6 +6889,7 @@ class AccessibleParameterRow : public Component {
     ParameterComboBox combo_;
     OffscreenToggleButton toggle_;
     std::function<String(double)> text_from_value_;
+    std::function<double(const String&)> value_from_text_;
     std::function<bool()> toggle_state_;
     std::function<float(bool)> toggle_value_;
     std::function<PopupMenu(const String&, std::map<int, String>&, int)> modulation_source_submenu_callback_;
@@ -8517,9 +8612,13 @@ std::unique_ptr<AccessibleParameterRow> SynthEditor::buildAccessibleParameterRow
   if (suffix == "blend") {
     const String name = model == vital::constants::kComb ? "Comb blend"
                       : model == vital::constants::kSampleHoldFilter ? "Bit crush"
-                                                                     : "Filter blend, low pass to high pass";
-    return std::make_unique<AccessibleParameterRow>(parameter, name,
-                                                    [model](double value) { return filterBlendText(model, value); });
+                                                                     : "Filter blend";
+    // Read by the model and style of the moment, not the pair the row was built for.
+    auto row = std::make_unique<AccessibleParameterRow>(parameter, name, [this, bridge](double value) {
+      return parameterValueText(*bridge, value);
+    });
+    row->setValueFromText([this, bridge](const String& text) { return parameterValueForText(*bridge, text); });
+    return row;
   }
 
   return std::make_unique<AccessibleParameterRow>(parameter,
@@ -8644,19 +8743,7 @@ bool SynthEditor::shouldShowParameterInSection(const String& sectionName, AudioP
   if (!isFilterParameterSuffix(suffix))
     return false;
 
-  const String prefix = filterPrefixForParameter(parameter_id);
-  int model = 0;
-  int style = 0;
-  if (auto* model_bridge = parameterBridge(prefix + "model"))
-    model = static_cast<int>(std::round(model_bridge->convertToEngineValue(model_bridge->getValue())));
-  else if (const auto found = synth_.getControls().find((prefix + "model").toStdString());
-           found != synth_.getControls().end() && found->second != nullptr)
-    model = static_cast<int>(std::round(found->second->value()));   // effect slot filters have no host bridge
-  if (auto* style_bridge = parameterBridge(prefix + "style"))
-    style = static_cast<int>(std::round(style_bridge->convertToEngineValue(style_bridge->getValue())));
-  else if (const auto found = synth_.getControls().find((prefix + "style").toStdString());
-           found != synth_.getControls().end() && found->second != nullptr)
-    style = static_cast<int>(std::round(found->second->value()));
+  auto [model, style] = filterModelAndStyle(filterPrefixForParameter(parameter_id));
   if (model == vital::constants::kFormant)
     style = jlimit(0, vital::FormantFilter::kNumFormantStyles - 1, style);
 
@@ -11726,7 +11813,7 @@ String SynthEditor::undoAnnouncement(const UndoHistory::Outcome& outcome, bool r
   // One control: its name and the value it has now, as its row reads it.
   if (!outcome.reloaded && outcome.controls.size() == 1) {
     if (auto* bridge = parameterBridge(String(outcome.controls.front())))
-      return verb + bridge->getName(128) + ", " + accessibleParameterText(*bridge, bridge->getValue());
+      return verb + bridge->getName(128) + ", " + parameterValueText(*bridge, bridge->getValue());
   }
   String message = verb + outcome.description;
   if (outcome.preset_name_changed)
@@ -17004,6 +17091,36 @@ void SynthEditor::setLfoPointCurve(int curve_index) {
     postLfoAnnouncement("Changed curve for " + String(static_cast<int>(indices.size())) + " selected points");
 }
 
+std::pair<int, int> SynthEditor::filterModelAndStyle(const String& prefix) const {
+  const auto engine_value = [this](const String& id) {
+    if (auto* bridge = parameterBridge(id))
+      return static_cast<int>(std::round(bridge->convertToEngineValue(bridge->getValue())));
+    // Effect slot filters have no host bridge.
+    const auto found = synth_.getControls().find(id.toStdString());
+    return found != synth_.getControls().end() && found->second != nullptr
+        ? static_cast<int>(std::round(found->second->value())) : 0;
+  };
+  return { engine_value(prefix + "model"), engine_value(prefix + "style") };
+}
+
+String SynthEditor::parameterValueText(const ValueBridge& bridge, double normalizedValue) const {
+  const String id = bridge.getParameterId();
+  if (filterSuffixForParameter(id) == "blend") {
+    const auto [model, style] = filterModelAndStyle(filterPrefixForParameter(id));
+    return filterBlendText(model, style, normalizedValue);
+  }
+  return accessibleParameterText(bridge, normalizedValue);
+}
+
+double SynthEditor::parameterValueForText(const ValueBridge& bridge, const String& text) const {
+  const String id = bridge.getParameterId();
+  if (filterSuffixForParameter(id) == "blend") {
+    const auto [model, style] = filterModelAndStyle(filterPrefixForParameter(id));
+    return filterBlendValueForText(model, style, text, bridge.getValue());
+  }
+  return accessibleParameterValueForText(bridge, text);
+}
+
 ValueBridge* SynthEditor::parameterBridge(const String& id) const {
   const auto found = parameters_by_id_.find(id);
   return found == parameters_by_id_.end() ? nullptr : found->second;
@@ -19025,7 +19142,7 @@ void SynthEditor::promptForInitialModulationAmount(const String& sourceId, const
       if (auto* amount_bridge = parameterBridge("modulation_" + String(connection + 1) + "_amount"))
         amount = amount_bridge->convertToEngineValue(amount_bridge->getValue());
     peak = modulationTargetValue(*bridge, amount);
-    peak_value = accessibleParameterText(*bridge, peak);
+    peak_value = parameterValueText(*bridge, peak);
     modulation_amount_at_open_ = amount;
   }
   modulation_amount_editor_.setText(peak_value, dontSendNotification);
@@ -19056,11 +19173,11 @@ void SynthEditor::setUpModulationAmountSlider(ValueBridge* destination, double p
   // destination's own, so the slider covers its range in its own steps and
   // reads each value as its control does.
   setParameterSliderSteps(modulation_amount_slider_, *destination, 0.0, 1.0);
-  modulation_amount_slider_.textFromValueFunction = [destination](double value) {
-    return accessibleParameterText(*destination, value);
+  modulation_amount_slider_.textFromValueFunction = [this, destination](double value) {
+    return parameterValueText(*destination, value);
   };
-  modulation_amount_slider_.valueFromTextFunction = [destination](const String& text) {
-    return accessibleParameterValueForText(*destination, text);
+  modulation_amount_slider_.valueFromTextFunction = [this, destination](const String& text) {
+    return parameterValueForText(*destination, text);
   };
   modulation_amount_slider_.setValue(peakValue, dontSendNotification);
   // Backspace (or a double click) goes back to where the destination is now.
@@ -19159,7 +19276,7 @@ void SynthEditor::promptForParameterValue(const String& parameterId, Component& 
   rememberPromptFocus(target);
 
   const String name = bridge->getName(128);
-  String value = accessibleParameterText(*bridge, bridge->getValue());
+  String value = parameterValueText(*bridge, bridge->getValue());
   const int macro_index = macroIndexForControlId(parameterId);
   if (macro_index >= 0 && isMacroBipolar(macro_index))
     value = String(roundToInt((bridge->getValue() * 2.0f - 1.0f) * 100.0f)) + "%";
@@ -19506,7 +19623,7 @@ float SynthEditor::modulationAmountFromPeakText(const String& destinationId, con
   // Modulation is continuous even on stepped controls: Transpose moves by
   // fractions of a semitone. Converting through the control's own value
   // would round 0.5 semitones to a whole step (or to nothing).
-  return modulationAmountForTarget(*bridge, accessibleParameterValueForText(*bridge, trimmed));
+  return modulationAmountForTarget(*bridge, parameterValueForText(*bridge, trimmed));
 }
 
 float SynthEditor::modulationAmountForTarget(const ValueBridge& destination, double targetValue) const {
@@ -19562,7 +19679,7 @@ void SynthEditor::applyParameterValue() {
       value = static_cast<float>(jlimit(0.0, 1.0, normalized));
     }
     else {
-      value = static_cast<float>(accessibleParameterValueForText(*bridge, modulation_amount_editor_.getText()));
+      value = static_cast<float>(parameterValueForText(*bridge, modulation_amount_editor_.getText()));
     }
     const int macro_index = macroIndexForControlId(parameter_id);
     if (macro_index >= 0) {
@@ -19615,7 +19732,7 @@ void SynthEditor::applyParameterValue() {
                                              AccessibilityHandler::AnnouncementPriority::high);
     }
     else {
-      postPluginAnnouncement(bridge->getName(128) + " " + accessibleParameterText(*bridge, bridge->getValue()),
+      postPluginAnnouncement(bridge->getName(128) + " " + parameterValueText(*bridge, bridge->getValue()),
                                              AccessibilityHandler::AnnouncementPriority::high);
     }
   }

@@ -3526,16 +3526,34 @@ namespace {
       expect(!titled(*group, "Comb Blend Offset") && !titled(*group, "Formant X"),
              "Analog hides comb and vowel controls");
       checkStyles(group, { "12dB", "24dB", "Notch Blend", "Notch Spread", "B/P/N" });
-      auto* blend = slider(group, "Filter blend, low pass to high pass");
-      if (blend) {
-        for (int i = 0; i < 3; ++i) {
+      // Blend names what each style plays at its low end, middle and high end.
+      const StringArray blend_names[] = { { "Low pass", "Band pass", "High pass" },
+                                          { "Low pass", "Band pass", "High pass" },
+                                          { "Low pass", "Notch", "High pass" },
+                                          { "Band pass", "Two notches, 1.00", "Notch" },
+                                          { "Band pass", "Peak", "Notch" } };
+      Slider* blend = nullptr;
+      for (int style = 0; style < 5; ++style) {
+        synth.parameterChanged(filter_prefix + "style", style);
+        pumpEditorEvents();
+        group = editorSection(editor, section, 19);
+        blend = slider(group, "Filter blend");
+        for (int i = 0; blend && i < 3; ++i) {
           blend->setValue(i * 0.5, sendNotificationSync);
-          expect(valueText(blend) == StringArray { "Low pass", "Band pass", "High pass" }[i],
-                 "Filter FX blend announces the pass type");
+          expect(valueText(blend) == blend_names[style][i],
+                 "Filter FX blend names what style " + std::to_string(style) + " plays: " +
+                     valueText(blend).toStdString());
         }
+      }
+      if (blend) {
         blend->setValue(0.25, sendNotificationSync);
-        expect(valueText(blend) == "Between low pass and band pass, 0.50",
-               "Intermediate blend announces the value and surrounding pass types");
+        expect(valueText(blend) == "Between band pass and peak, 0.50",
+               "Intermediate blend announces the value and the responses around it");
+        auto handler = blend->createAccessibilityHandler();
+        handler->getValueInterface()->setValueAsString("Notch");
+        expect(blend->getValue() == 1.0, "Blend takes a typed response name");
+        handler->getValueInterface()->setValueAsString("Between band pass and peak, 0.50");
+        expect(valueText(blend) == "Between band pass and peak, 0.50", "Blend takes its own readout back");
       }
 
       // This change goes through the accessible row; let the normal timer refresh it.
@@ -3552,6 +3570,15 @@ namespace {
                  !titled(*group, "Drive"), "Comb shows its offset and hides drive and vowel controls");
       checkStyles(group, { "Low High Comb", "Low High Flange+", "Low High Flange-",
                            "Band Spread Comb", "Band Spread Flange+", "Band Spread Flange-" });
+      blend = slider(group, "Comb blend");
+      if (blend) {
+        // checkStyles left a Band Spread style, whose blend is the width of its band.
+        blend->setValue(0.5, sendNotificationSync);
+        expect(valueText(blend) == "50%", "A Band Spread comb's blend reads as a percentage");
+      }
+      synth.parameterChanged(filter_prefix + "style", 0);
+      pumpEditorEvents();
+      group = editorSection(editor, section, 19);
       blend = slider(group, "Comb blend");
       if (blend) {
         blend->setValue(0, sendNotificationSync);
@@ -3576,6 +3603,10 @@ namespace {
       pumpEditorEvents();
       group = editorSection(editor, section, 19);
       checkStyles(group, { "Low Shelf", "Low Cut" });
+      if (auto* diode_blend = slider(group, "Filter blend")) {
+        diode_blend->setValue(0.5, sendNotificationSync);
+        expect(valueText(diode_blend) == "50%", "Diode's blend has no response names and reads as a percentage");
+      }
       expect(group && !titled(*group, "Formant X") && !titled(*group, "Comb Blend Offset"),
              "Leaving vowel mode removes its controls");
 
@@ -3593,7 +3624,7 @@ namespace {
         expect(valueText(control).isNotEmpty(), "Every Reverb control has an accessible value");
       }
       expect(group && !titled(*group, "Filter style") && !titled(*group, "Drive") &&
-                 !titled(*group, "Filter blend, low pass to high pass"),
+                 !titled(*group, "Filter blend"),
              "Reverb hides unrelated slope, drive and pass blend controls");
       if (auto* cutoff = slider(group, "Reverb Cutoff")) {
         cutoff->keyPressed(KeyPress(KeyPress::endKey));
@@ -3614,7 +3645,7 @@ namespace {
       pumpEditorEvents();
       group = editorSection(editor, section, 19);
       for (const char* name : { "Distortion Drive", "Distortion Filter Order", "Cutoff", "Resonance",
-                                "Filter blend, low pass to high pass", "Mix" }) {
+                                "Filter blend", "Mix" }) {
         auto* control = group ? titled(*group, name) : nullptr;
         expect(control && control->isVisible() && control->getWidth() > 0,
                std::string("Distortion Filter FX exposes its control: ") + name);

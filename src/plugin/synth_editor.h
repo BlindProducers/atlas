@@ -1147,6 +1147,12 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void hideInlineTextPrompt();
     void hideInlineTextPromptNow();
     ValueBridge* parameterBridge(const String& id) const;
+    // The model and style of the filter whose parameter ids start with `prefix`.
+    std::pair<int, int> filterModelAndStyle(const String& prefix) const;
+    // A parameter's value as its row reads it, and the value (0 to 1) for
+    // text typed that way: a filter's Blend reads by its model and style.
+    String parameterValueText(const ValueBridge& bridge, double normalizedValue) const;
+    double parameterValueForText(const ValueBridge& bridge, const String& text) const;
     void setParameterEngineValue(const String& id, float engineValue);
     void randomizeSeed(const String& id);
     void setInternalParameterEngineValue(const String& id, float engineValue);
