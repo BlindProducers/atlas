@@ -10,7 +10,7 @@
 # before, and the release's tag moves to the commit it was built from; bumping
 # ATLAS_PRERELEASE starts a new pre-release, and bumping the version in
 # CMakeLists.txt a new release.
-name: Build and publish (hotfix 2.0.0.2, Windows only)
+name: Build and publish (hotfix 2.0.0.3, Windows only)
 
 env:
   # The pre-release the dev branch publishes: its tag is v<version>-<this>,

@@ -261,13 +261,16 @@ void AtlasArpeggiator::addDueNoteOffs(MidiBuffer& output, int num_samples) {
   }), active_notes_.end());
 }
 
-int AtlasArpeggiator::clampedGateSamples(double step_samples, double gate_samples) {
+int AtlasArpeggiator::clampedGateSamples(double step_samples, double gate_samples, double restart_samples) {
   const int gate = static_cast<int>(std::round(gate_samples));
   // Compared before rounding, so 100% of a step that is not a whole number
-  // of samples never overlaps.
-  if (gate_samples > step_samples)
+  // of samples never overlaps. A sample short of the restart, because the
+  // note's start and the restart round to whole samples on their own.
+  const bool overlaps = gate_samples > step_samples;
+  if (overlaps && gate_samples < restart_samples - 1.0)
     return gate;
-  return jlimit(1, jmax(1, static_cast<int>(std::floor(step_samples)) - 1), gate);
+  const double end = overlaps ? restart_samples : step_samples;
+  return jlimit(1, jmax(1, static_cast<int>(std::floor(end)) - 1), gate);
 }
 
 AtlasArpeggiator::SwungStep AtlasArpeggiator::swingStep(bool second, double swing, double interval,
@@ -286,15 +289,20 @@ void AtlasArpeggiator::addInternalClockSteps(MidiBuffer& output, int num_samples
   static constexpr double kToleranceSamples = 0.25;
   step_samples = jmax(1.0, step_samples);
   const double swing = jlimit(0.0, 1.0, static_cast<double>(settings.swing));
-  // Samples from a step on the grid to the next: a whole step, or up to the
-  // division Beat retrigger restarts the clock on.
-  const auto gridInterval = [&](double grid) {
+  // Samples from a step on the grid to the division Beat retrigger restarts
+  // the clock on.
+  const auto samplesToDivision = [&](double grid) {
     if (division_quarters <= 0.0)
-      return step_samples;
+      return kNoRestart;
     const double beat = block_start_beat + grid * quarters_per_sample;
     const double division = std::floor((beat + kToleranceSamples * quarters_per_sample) / division_quarters);
-    const double boundary = ((division + 1.0) * division_quarters - beat) / quarters_per_sample;
-    return boundary < step_samples - kToleranceSamples ? jmax(1.0, boundary) : step_samples;
+    return jmax(1.0, ((division + 1.0) * division_quarters - beat) / quarters_per_sample);
+  };
+  // Samples from a step on the grid to the next: a whole step, or up to that
+  // division.
+  const auto gridInterval = [&](double grid) {
+    const double boundary = samplesToDivision(grid);
+    return boundary < step_samples - kToleranceSamples ? boundary : step_samples;
   };
 
   while (true) {
@@ -327,10 +335,12 @@ void AtlasArpeggiator::addInternalClockSteps(MidiBuffer& output, int num_samples
     if (sounds >= static_cast<double>(num_samples))
       break;
 
-    if (restarts)
-      restartPatternAtDivision(event_division);
     const int offset = jlimit(0, num_samples - 1, static_cast<int>(std::round(sounds)));
-    triggerStep(output, offset, clampedGateSamples(swung.length, swung.length * gate_ratio), num_samples, settings);
+    if (restarts)
+      restartPatternAtDivision(output, offset, event_division);
+    const int gate = clampedGateSamples(swung.length, swung.length * gate_ratio,
+                                        samplesToDivision(event) - swung.delay);
+    triggerStep(output, offset, gate, num_samples, settings);
     ++swing_step_;
     samples_until_next_step_ = event + step_samples;
   }
@@ -381,17 +391,22 @@ void AtlasArpeggiator::addBeatClockSteps(MidiBuffer& output, int num_samples, do
       continue;
 
     const int64 step_division = static_cast<int64>(std::floor((step + tolerance) / division_quarters));
-    if (step_division != last_division_index_)
-      restartPatternAtDivision(step_division);
     const int offset = jlimit(0, num_samples - 1,
                               static_cast<int>(std::round((sounds - block_start_beat) / quarters_per_sample)));
+    if (step_division != last_division_index_)
+      restartPatternAtDivision(output, offset, step_division);
     const double length_samples = swung.length / quarters_per_sample;
-    triggerStep(output, offset, clampedGateSamples(length_samples, length_samples * gate_ratio), num_samples,
-                settings);
+    const int gate = clampedGateSamples(length_samples, length_samples * gate_ratio,
+                                        (next_division - sounds) / quarters_per_sample);
+    triggerStep(output, offset, gate, num_samples, settings);
   }
 }
 
-void AtlasArpeggiator::restartPatternAtDivision(int64 division_index) {
+void AtlasArpeggiator::restartPatternAtDivision(MidiBuffer& output, int sample_offset, int64 division_index) {
+  // Each note's gate already ends at the division. A note still held here
+  // started at another tempo, and ends now so the pattern's first note starts
+  // afresh instead of joining it.
+  stopAllGeneratedNotes(output, sample_offset);
   last_division_index_ = division_index;
   swing_step_ = 0;
   pattern_index_ = 0;

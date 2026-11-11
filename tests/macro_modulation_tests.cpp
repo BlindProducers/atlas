@@ -1001,6 +1001,7 @@ int main(int argc, char** argv) {
     testArpRetriggerDivisionParameter();
     testArpChordUsesVoicesOnlyForOscillatorsThatAreOn();
     testArpSwing();
+    testArpBeatRetriggerEndsOverlappingNotes();
     testArpNotesFollowTheVoiceCount();
     testArpRateFollowsModulation();
     if (failures == 0)
