@@ -38,6 +38,9 @@ namespace vital {
     // -96 dB: an envelope below this is finished.
     constexpr float kMultiSampleSilence = 1.585e-5f;
     constexpr float kMultiSampleFadeSeconds = 0.006f;
+    // The fastest release. SFZ and SF2 default to 1 ms, which is a cut that
+    // clicks; sfizz releases no faster than its 6 ms off time either.
+    constexpr float kMultiSampleMinimumRelease = 0.006f;
     constexpr float kMultiSampleScale = 1.0f / 32768.0f;
 
     // A CC's value, 0..1, through the modulation's curve when it has one.
@@ -143,7 +146,7 @@ namespace vital {
     const float decay_samples = std::max(0.0f, envelope.decay) * sample_rate_;
     const float decay_target = std::max(sustain_, kMultiSampleSilence);
     decay_multiplier_ = decay_samples >= 1.0f ? std::pow(decay_target, 1.0f / decay_samples) : 0.0f;
-    release_seconds_ = std::max(0.001f, envelope.release);
+    release_seconds_ = std::max(kMultiSampleMinimumRelease, envelope.release);
 
     stage_ = kDelay;
     stage_samples_ = static_cast<int>(std::max(0.0f, envelope.delay) * sample_rate_);
@@ -155,7 +158,8 @@ namespace vital {
       return;
     const multisample::Region& region = *region_;
     if (!region.ampeg_cc.release.empty()) {
-      const float seconds = std::max(0.001f, applyMultiSampleMods(region.ampeg.release, region.ampeg_cc.release, slot));
+      const float seconds = std::max(kMultiSampleMinimumRelease,
+                                     applyMultiSampleMods(region.ampeg.release, region.ampeg_cc.release, slot));
       if (seconds != release_seconds_) {
         release_seconds_ = seconds;
         // A release under way goes on from its level at the new rate.

@@ -46,6 +46,9 @@ namespace multisample {
 
     // EMU hardware, FluidSynth and Polyphone scale initialAttenuation by 0.4.
     constexpr float kAttenuationScale = 0.4f;
+    // The shortest volume envelope release, about 16 ms: FluidSynth's floor
+    // "to stop clicks". The format's default, -12000, is 1 ms.
+    constexpr int kMinimumReleaseTimecents = -7200;
     // A volume envelope stage spans 96 dB.
     constexpr float kEnvelopeRangeDb = 96.0f;
     // Exclusive classes become choke groups outside the range SFZ files use.
@@ -505,7 +508,7 @@ namespace multisample {
         // SF2 decay is the time a full 96 dB fall would take; stop at sustain.
         envelope.decay = timecentsToSeconds(zone.values[kDecayVolEnv]) *
                          std::min(1.0f, sustain_db / kEnvelopeRangeDb);
-        envelope.release = timecentsToSeconds(zone.values[kReleaseVolEnv]);
+        envelope.release = timecentsToSeconds(std::max(kMinimumReleaseTimecents, zone.values[kReleaseVolEnv]));
         region.hold_keytrack = static_cast<float>(zone.values[kKeynumToVolEnvHold]);
         region.decay_keytrack = static_cast<float>(zone.values[kKeynumToVolEnvDecay]);
 
