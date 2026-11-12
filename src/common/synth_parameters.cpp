@@ -194,7 +194,7 @@ namespace vital {
       ValueDetails::kIndexed, false, "", "Delay Tempo 2", strings::kSyncedFrequencyNames },
     { "distortion_on", 0x000000, 0.0, 1.0, 0.0, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Distortion Switch", strings::kOffOnNames },
-    { "distortion_type", 0x000000, 0.0, 5.0, 0.0, 0.0, 1.0,
+    { "distortion_type", 0x000000, 0.0, Distortion::kNumEffectTypes - 1, 0.0, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Distortion Type", strings::kDistortionTypeNames },
     { "distortion_drive", 0x000000, Distortion::kMinDrive, Distortion::kMaxDrive, 0.0, 0.0, 1.0,
       ValueDetails::kLinear, false, " dB", "Distortion Drive", nullptr },
@@ -208,6 +208,14 @@ namespace vital {
       ValueDetails::kLinear, false, "%", "Distortion Filter Resonance", nullptr },
     { "distortion_filter_blend", 0x000000, 0.0, 2.0, 0.0, 0.0, 1.0,
       ValueDetails::kLinear, false, "", "Distortion Filter Blend", nullptr },
+    // The Types from Tube on: modes ported from a JSFX
+    // (src/synthesis/effects/distortion_modes), whose Drive and Level hold its
+    // sliders' values. Drive starts at 0, as Distortion's own Drive does. Appended
+    // by version to preserve every existing host parameter ID.
+    { "distortion_jsfx_drive", 0x020131, 0.0, 100.0, 0.0, 0.0, 1.0,
+      ValueDetails::kLinear, false, "%", "Distortion Drive", nullptr },
+    { "distortion_jsfx_level", 0x020131, 0.0, 1.0, 0.5, 0.0, 1.0,
+      ValueDetails::kLinear, false, " dB", "Distortion Level", nullptr },
     { "frequency_shifter_on", 0x000000, 0.0, 1.0, 0.0, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Frequency Shifter Switch", strings::kOffOnNames },
     { "frequency_shifter_shift", 0x000000, -5000.0, 5000.0, 0.0, 0.0, 1.0,

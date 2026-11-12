@@ -48,7 +48,19 @@ namespace vital {
         kSinFold,
         kBitCrush,
         kDownSample,
-        kNumTypes
+        kNumTypes,
+        // The Distortion effect's modes ported from a JSFX
+        // (DistortionModule, distortion_modes). They follow kNumTypes, which
+        // stays the voice filter's count of Distortion styles.
+        kTube = kNumTypes,
+        kDiode1,
+        kDiode2,
+        kZeroSquare,
+        kAsymmetric,
+        kStompBox,
+        kTapeSaturation,
+        kSoftSaturation,
+        kNumEffectTypes
       };
 
       // The waveshapers. The Distortion voice filter model shares them.

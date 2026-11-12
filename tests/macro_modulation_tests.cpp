@@ -15,6 +15,7 @@
 #include "load_save.h"
 #include "community_library.h"
 #include "credential_store.h"
+#include "distortion.h"
 #include "phase_modifier.h"
 #include "wave_source.h"
 #include "wavetable_creator.h"

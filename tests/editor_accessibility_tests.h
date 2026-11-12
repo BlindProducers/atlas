@@ -2681,6 +2681,7 @@ namespace {
   // menu shows Bass Shaper Threshold and the Waveshaper group only for their
   // curves; Multiband Dynamics groups its rows by band and reads its ratios as
   // "1 : x"; every row reads in its script's units and has a description.
+  // Distortion's JSFX modes show their own Drive and Level.
   void testDriveDynamicsRows() {
     SynthPlugin synth;
     synth.parameterChanged("fx_slot_1_type", vital::constants::kSaturator + 1);
@@ -2688,6 +2689,7 @@ namespace {
     synth.parameterChanged("fx_slot_3_type", vital::constants::kDynamicTube + 1);
     synth.parameterChanged("fx_slot_4_type", vital::constants::kOverdrive + 1);
     synth.parameterChanged("fx_slot_5_type", vital::constants::kDestroy + 1);
+    synth.parameterChanged("fx_slot_6_type", vital::constants::kDistortion + 1);
     SynthEditor editor(synth);
     editor.updateFullGui();
     editor.addToDesktop(0);
@@ -2819,6 +2821,26 @@ namespace {
              level.getText(level.getValueForText("-inf"), 100) == "-inf dB",
              "typing 6 dB or -inf sets a Destroy level that reads back the same");
     }
+
+    // Distortion: Type is a menu of Vital's six curves and the eight JSFX
+    // modes; from Tube on, their own Drive and Level take Drive's place.
+    const String distortion = "fx_slot_6_distortion_";
+    auto* distortion_type = dynamic_cast<ComboBox*>(editor.controlForParameter(distortion + "type"));
+    expect(distortion_type != nullptr && distortion_type->getNumItems() == vital::Distortion::kNumEffectTypes &&
+           distortion_type->getText() == "Soft Clip", "Distortion's Type is a menu of its 14 curves, Soft Clip by default");
+    check(distortion + "drive", "");
+    for (const auto* control : { "jsfx_drive", "jsfx_level" })
+      check(distortion + control, "no row");
+    synth.parameterChanged((distortion + "type").toStdString(), float(vital::Distortion::kZeroSquare));
+    editor.updateFullGui();
+    pumpEditorEvents();
+    check(distortion + "drive", "no row");
+    for (const auto* control : { "type", "jsfx_drive", "mix", "jsfx_level" })
+      check(distortion + control, "");
+    distortion_type = dynamic_cast<ComboBox*>(editor.controlForParameter(distortion + "type"));
+    expect(distortion_type != nullptr && distortion_type->getText() == "Zero-Square", "Distortion's Type reads Zero-Square");
+    reads(distortion + "jsfx_drive", "0%");
+    reads(distortion + "jsfx_level", "0 dB");
   }
 
   // Maim's Encoder is a menu that decides which rows show: the MP3 bends for
