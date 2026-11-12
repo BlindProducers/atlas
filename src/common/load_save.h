@@ -60,7 +60,7 @@ class LoadSave {
     };
 
     static const int kMaxCommentLength = 500;
-    static constexpr int kEngineBehaviorVersion = 2;
+    static constexpr int kEngineBehaviorVersion = 3;
     static const std::string kUserDirectoryName;
     static const std::string kPresetFolderName;
     static const std::string kWavetableFolderName;

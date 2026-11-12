@@ -58,10 +58,16 @@ mix law and the output clip are the script's. It holds its state while the scrip
 `DestroyModule` (`drive_dynamics_modules.h`, the same wrapper as Saturator's and Overdrive's)
 holds the script's eight slider values in its units and passes them unchanged: Drive, Filter LP-HP
 and Mix in percent, Stack 1 to 16, Filter Off, Pre or Post, Filter Frequency and Level 0 to 1, and
-Filter Q 0.05 to 7.6. Filter Frequency reads in Hz and Level in dB, as the script shows them
-(`destroyFrequencyHz`, `destroyLevelDb`), and typed values in those units are accepted. Controls
-are read once per block, when the script's `@slider` would run; the script smooths nothing. The
-editor shows the filter's three rows only while Filter is Pre or Post.
+Filter Q 0.05 to 7.6. Filter Frequency reads in Hz, as the script shows it (`destroyFrequencyHz`).
+Level reads in dB as the wet path's gain against the input at Drive 0 with one stage, which is the
+script's reading minus 8.64 dB (`kDestroyLevelOffsetDb`): Level only scales the wet path, by
+(2 Level)² / 3 after a stage's +0.9 dB. So 0 dB, Level 0.8223 (the script shows +8.6 dB), plays a
+quiet input at its own level, and Level reaches +3.4 dB. Typed values in those units are accepted.
+Drive and Level start at 0 % and 0 dB, where the script starts at 25 % and Level 0.5, as Atlas did
+before engine behaviour version 3. A state leaves out values at their defaults, so loading an older
+state puts 25 % and 0.5 back into every slot holding Destroy that leaves them out
+(`migrateDestroyDefaults` in `load_save.cpp`). Controls are read once per block, when the script's `@slider` would run; the script smooths nothing. The editor
+shows the filter's three rows only while Filter is Pre or Post.
 
 The port runs at the effect chain's rate (the host rate times Atlas's oversampling), as the script
 would in a project at that rate; its filters and time constants scale with the rate, its Q table

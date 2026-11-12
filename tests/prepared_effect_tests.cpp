@@ -46,6 +46,7 @@
 #include "table_filter.h"
 #include "reorderable_effect_chain.h"
 #include "synth_plugin.h"
+#include "load_save.h"
 #include "synth_strings.h"
 #include "sound_engine.h"
 #include "value_switch.h"
@@ -475,6 +476,29 @@ void destroyDc() {
   expect(delayed, "Destroy at Mix 0 is its input, 7 samples late");
 }
 
+// At its default Drive, Stack, Mix and Level, Destroy plays a quiet sine at
+// its own level, so its Level reads 0 dB there.
+void destroyDefaultLevel() {
+  using namespace vital;
+  DestroyModule module;
+  module.init(); module.setSampleRate(48000); module.setOversampleAmount(1);
+  std::vector<poly_float> input(97);
+  double in_power = 0, out_power = 0;
+  for (int block = 0; block < 200; ++block) {
+    for (int i = 0; i < int(input.size()); ++i) {
+      const float x = .063f * std::sin((block * 97 + i) * .13f);
+      input[size_t(i)] = poly_float(x, x, x, x);
+    }
+    module.processWithInput(input.data(), int(input.size()));
+    for (int i = 0; block >= 100 && i < int(input.size()); ++i) {
+      in_power += double(input[size_t(i)][0]) * input[size_t(i)][0];
+      out_power += double(module.output()->buffer[i][0]) * module.output()->buffer[i][0];
+    }
+  }
+  const double gain_db = 10.0 * std::log10(out_power / in_power);
+  std::cout << "Destroy at its defaults: " << gain_db << " dB\n";
+  expect(std::abs(gain_db) < .02, "Destroy plays a quiet input at its own level by default");
+}
 
 // Saturator leaves no DC offset either: every curve but the Waveshaper is
 // symmetric, so the script alone turns an asymmetric pulse into a wet signal
@@ -2064,6 +2088,47 @@ void callbackLockWait() {
   host.join();
 }
 
+// Destroy's Drive and Level defaulted to 25 % and 0.5 before behaviour
+// version 3, and a state leaves defaults out: an older state with Destroy in a
+// slot loads with those values, a newer one and a new Destroy with 0 % and
+// 0 dB.
+void destroyDefaultsMigration() {
+  using namespace vital;
+  SynthPlugin plugin;
+  plugin.setPlayConfigDetails(0, 2, 48000, 512);
+  plugin.prepareToPlay(48000, 512);
+  const auto& controls = plugin.getControls();
+  const float new_drive = Parameters::getDetails("fx_slot_1_destroy_drive").default_value;
+  const float new_level = Parameters::getDetails("fx_slot_1_destroy_level").default_value;
+  expect(new_drive == 0.0f && std::abs(new_level - .8223006f) < 1e-6f, "a new Destroy starts at 0 % and 0 dB");
+  selectEffect(plugin, "fx_slot_1_", constants::kDestroy);
+  selectEffect(plugin, "bus_2_fx_slot_3_", constants::kDestroy);
+  selectEffect(plugin, "fx_slot_2_", constants::kDelay);
+  juce::MemoryBlock saved;
+  plugin.getStateInformation(saved);
+  json state = json::parse(saved.toString().toStdString());
+  expect(!state["settings"].count("fx_slot_1_destroy_drive") && !state["settings"].count("fx_slot_1_destroy_level"),
+         "a state leaves Destroy's defaults out");
+
+  auto load = [&](int behaviour_version) {
+    state["engine_behavior_version"] = behaviour_version;
+    const std::string text = state.dump();
+    plugin.setStateInformation(text.data(), int(text.size()));
+  };
+  load(2);
+  for (const char* slot : { "fx_slot_1_", "bus_2_fx_slot_3_" }) {
+    expect(controls.at(std::string(slot) + "destroy_drive")->value() == 25.0f &&
+           controls.at(std::string(slot) + "destroy_level")->value() == .5f,
+           std::string("an older state's Destroy in ") + slot + " loads at 25 % and Level 0.5");
+  }
+  expect(controls.at("fx_slot_2_destroy_drive")->value() == new_drive,
+         "a slot holding another effect keeps Destroy's new defaults");
+  load(LoadSave::kEngineBehaviorVersion);
+  expect(controls.at("fx_slot_1_destroy_drive")->value() == new_drive &&
+         controls.at("fx_slot_1_destroy_level")->value() == new_level,
+         "a newer state's Destroy loads at 0 % and 0 dB");
+}
+
 // Saving, loading into a fresh instance and saving again gives identical state,
 // including settings of effects a slot no longer selects, routes into them,
 // and FX automation assignments to them.
@@ -2141,6 +2206,7 @@ void stateRoundTrip() {
     if (!first.count(it.key()) && ++differences <= 10) std::cout << "only after reload: " << it.key() << '\n';
   std::cout << "state round trip differences=" << differences << '\n';
   expect(differences == 0, "saving, loading and saving again gives the same state");
+  destroyDefaultsMigration();
 }
 
 // Footprint of one instance as a host sees it: construction, playback, then
@@ -2348,6 +2414,7 @@ int main(int argc, char** argv) {
     driveDynamicsModules();
     distortionModes();
     destroyDc();
+    destroyDefaultLevel();
     saturatorDc();
     if (argc > 2) driveDynamicsPresets(argv[2]);
     return failures ? 1 : 0;

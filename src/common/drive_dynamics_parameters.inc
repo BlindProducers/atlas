@@ -177,7 +177,7 @@
     // with a filter before or after them.
     { "destroy_on", 0x02012d, 0.0, 1.0, 0.0, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Destroy Switch", strings::kOffOnNames },
-    { "destroy_drive", 0x02012d, 0.0, 100.0, 25.0, 0.0, 1.0,
+    { "destroy_drive", 0x02012d, 0.0, 100.0, 0.0, 0.0, 1.0,
       ValueDetails::kLinear, false, "%", "Destroy Drive", nullptr },
     { "destroy_stack", 0x02012d, 1.0, 16.0, 1.0, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Destroy Stack", nullptr },
@@ -191,7 +191,7 @@
       ValueDetails::kLinear, false, "%", "Destroy Filter LP-HP", nullptr },
     { "destroy_mix", 0x02012d, 0.0, 100.0, 100.0, 0.0, 1.0,
       ValueDetails::kLinear, false, "%", "Destroy Mix", nullptr },
-    { "destroy_level", 0x02012d, 0.0, 1.0, 0.5, 0.0, 1.0,
+    { "destroy_level", 0x02012d, 0.0, 1.0, 0.8223006, 0.0, 1.0,
       ValueDetails::kLinear, false, " dB", "Destroy Level", nullptr },
     { "effect_chain_slot_47", 0x02012d, 0.0, constants::kNumEffects - 1, constants::kDestroy, 0.0, 1.0,
       ValueDetails::kIndexed, false, "", "Effect Chain Slot 47", nullptr },
