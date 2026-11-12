@@ -2247,6 +2247,32 @@ namespace {
       return true;
     };
 
+    // Comma and period step from where the focus is, not from the section a
+    // key last reached: a group's letter and Tab move the focus without one.
+    auto envelope_3_then_filters = [&] {
+      press(KeyPress('e', ModifierKeys(), 'e'));
+      press(KeyPress('3', ModifierKeys(), '3'));
+      const bool on_envelope = focused_section() == "Envelope 3";
+      press(KeyPress('f', ModifierKeys(), 'f'));
+      return on_envelope && focused_title() == "Filters";
+    };
+    expect(envelope_3_then_filters(), "E, 3 and F reach Envelope 3 and then the Filters heading");
+    press(period);
+    expect(focused_section() == "Filter 1", "period on the Filters heading goes into Filter 1, got " +
+                                              focused_section().toStdString());
+    envelope_3_then_filters();
+    press(comma);
+    expect(focused_section().isNotEmpty() && !focused_section().startsWith("Envelope") &&
+           !focused_section().startsWith("Filter"),
+           "comma on the Filters heading goes to the section before Filter 1, got " + focused_section().toStdString());
+    envelope_3_then_filters();
+    press(KeyPress(KeyPress::tabKey));
+    const String tabbed_into = focused_section();
+    press(period);
+    expect(tabbed_into == "Filter 1" && focused_section() == "Filter 2",
+           "period after Tab into Filter 1 goes to Filter 2 (Tab reached " + tabbed_into.toStdString() + ", period " +
+           focused_section().toStdString() + ")");
+
     press(KeyPress('f', ModifierKeys(), 'f'));
     for (int digit = 1; digit <= 9 && focused_section() != "Filter 2"; ++digit)
       press(KeyPress('0' + digit, ModifierKeys(), static_cast<juce_wchar>('0' + digit)));

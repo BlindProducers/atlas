@@ -8930,6 +8930,15 @@ String SynthEditor::focusedSectionKey() const {
   return {};
 }
 
+String SynthEditor::focusedGroup() const {
+  for (auto* component = Component::getCurrentlyFocusedComponent(); component != nullptr;
+       component = component->getParentComponent()) {
+    if (component->getParentComponent() == &rows_container_)
+      return group_sections_.count(component->getTitle()) != 0 ? component->getTitle() : String();
+  }
+  return {};
+}
+
 Component* SynthEditor::persistentFocusedComponent() const {
   auto* focused = Component::getCurrentlyFocusedComponent();
   if (focused == nullptr)
@@ -24786,10 +24795,24 @@ void SynthEditor::moveToSection(int direction) {
     return;
   if (kSectionKeysStepThroughEffectSlots && moveThroughEffectSlots(direction))
     return;
-  int current = section_names_.indexOf(last_section_name_);
+  // The step starts where the focus is. A group's letter, Tab and the arrows
+  // move the focus without a section key, so last_section_name_, the section
+  // a key last reached, only stands in when the focus is outside the rows.
+  int current = section_names_.indexOf(focusedSectionKey());
+  bool on_group_heading = false;
+  if (current < 0) {
+    // On a group's heading: period goes into its first section, and comma to
+    // the section before that.
+    const auto found = group_sections_.find(focusedGroup());
+    if (found != group_sections_.end() && !found->second.isEmpty()) {
+      current = section_names_.indexOf(found->second[0]);
+      on_group_heading = current >= 0;
+    }
+  }
   if (current < 0)
-    current = 0;
-  const String next = section_names_[(current + direction + count) % count];
+    current = jmax(0, section_names_.indexOf(last_section_name_));
+  const int step = on_group_heading && direction > 0 ? 0 : direction;
+  const String next = section_names_[(current + step + count) % count];
   // Back onto an effects chain, the step before the element after it is the
   // chain's last stop: its last slot, or the last grouping inside it.
   if (kSectionKeysStepThroughEffectSlots && direction < 0 && isEffectChainSection(next) &&
@@ -25033,7 +25056,10 @@ bool SynthEditor::focusShortcutTarget(const KeyPress& key) {
 
   if (key.getKeyCode() >= '1' && key.getKeyCode() <= '9') {
     const int index = key.getKeyCode() - '1';
-    const auto found = group_sections_.find(current_group_);
+    // The group the focus is in, however it got there; outside the rows, the
+    // group a letter last chose.
+    const String focused_group = focusedGroup();
+    const auto found = group_sections_.find(focused_group.isNotEmpty() ? focused_group : current_group_);
     if (found != group_sections_.end() && isPositiveAndBelow(index, found->second.size())) {
       selectSectionByName(found->second[index], true);
       return true;

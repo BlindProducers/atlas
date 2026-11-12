@@ -553,6 +553,8 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     // The SectionName of the focused control or its nearest group, so a rebuild
     // can find the same control when several sections share its title.
     String focusedSectionKey() const;
+    // The top-level group the focus is in or on the heading of; empty outside the rows.
+    String focusedGroup() const;
     Component* persistentFocusedComponent() const;
     // Focuses the control a rebuild replaced; false when there is none to focus.
     // refocusScreenReader moves the screen reader to it again once the rows
