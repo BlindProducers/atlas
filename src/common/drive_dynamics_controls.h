@@ -154,11 +154,19 @@ namespace vital::drive_dynamics {
     { "mix", 0.0f, 100.0f, 1.0f, true },
     { "level", 0.0f, 1.0f, 0.01f, true },
   };
-  // Whether a parameter is Destroy's control with this suffix, in a slot or a bus.
-  inline bool destroyParameterIs(const std::string& name, const std::string& suffix) {
-    const std::string id = "destroy_" + suffix;
+  // Whether a parameter is the effect control `id`, in a slot or a bus.
+  inline bool effectParameterIs(const std::string& name, const std::string& id) {
     return name == id || (name.size() > id.size() &&
         name.compare(name.size() - id.size() - 1, id.size() + 1, "_" + id) == 0);
+  }
+  // Whether a parameter is Destroy's control with this suffix, in a slot or a bus.
+  inline bool destroyParameterIs(const std::string& name, const std::string& suffix) {
+    return effectParameterIs(name, "destroy_" + suffix);
+  }
+  // A Level that holds a JSFX's 0 to 1 slider and reads in dB: Destroy's,
+  // and the Distortion effect's in its JSFX modes.
+  inline bool scriptLevelParameter(const std::string& name) {
+    return destroyParameterIs(name, "level") || effectParameterIs(name, "distortion_jsfx_level");
   }
   // The filter's cutoff in Hz, as the script shows it: 8.1758 Hz times 2697 to the slider.
   inline double destroyFrequencyHz(double value) { return 8.1758 * std::pow(2697.0, value); }

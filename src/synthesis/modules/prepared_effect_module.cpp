@@ -6,6 +6,8 @@
 #include "spectral_lock_module.h"
 #include "maim_module.h"
 #include "frequency_shifter_module.h"
+#include "distortion.h"
+#include "distortion_modes/distortion_modes.h"
 #include "drive_dynamics/drive_dynamics.h"
 #include "smooth_value.h"
 #include "value_switch.h"
@@ -130,6 +132,7 @@ PreparedEffectModule::PreparedEffectModule(int type, std::string prefix, Factory
                       // Overdrive's look-ahead grows with the rate: its most at 8 times 192 kHz.
                       type_ == constants::kOverdrive ? atlas::drive_dynamics::Overdrive::latencyFor({}, 8 * 192000.0) :
                       type_ == constants::kFrequencyShifter ? atlas::bode::Shifter::kLatency :
+                      type_ == constants::kDistortion ? atlas::distortion_modes::Engine::kLatency :
                       description_.latency;
   // On Windows only a live shell has its dry history (reserveControls).
   if (!kReserveMemoryOnlyWhileUsed && pending_capacity_ > 0)
@@ -173,6 +176,8 @@ void PreparedEffectModule::init() {
     hi_quality_control_ = parameter("dynamic_tube_hi_quality");
   if (type_ == constants::kFrequencyShifter)
     frequency_shifter_mode_control_ = parameter("frequency_shifter_mode");
+  if (type_ == constants::kDistortion)
+    distortion_type_control_ = parameter("distortion_type");
   SynthModule::init();
   worker_->add(this);
 }
@@ -573,6 +578,11 @@ int PreparedEffectModule::getLatencySamples() const {
   if (type_ == constants::kFrequencyShifter)
     return frequency_shifter_mode_control_ != nullptr && frequency_shifter_mode_control_->value() >= 0.5f ?
         atlas::bode::Shifter::kLatency : 0;
+  // Distortion's JSFX modes report their script's pdc_delay.
+  if (type_ == constants::kDistortion)
+    return distortion_type_control_ != nullptr &&
+           std::lround(distortion_type_control_->value()) >= Distortion::kNumTypes ?
+        atlas::distortion_modes::Engine::kLatency : 0;
   return description_.latency;
 }
 }

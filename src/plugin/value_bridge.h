@@ -218,7 +218,7 @@ class ValueBridge : public AudioProcessorParameterWithID {
         text = hz < 999.5 ? String(roundToInt(hz)) + " Hz" : String(hz / 1000.0, 2) + " kHz";
         return true;
       }
-      if (vital::drive_dynamics::destroyParameterIs(details.name, "level")) {
+      if (vital::drive_dynamics::scriptLevelParameter(details.name)) {
         text = vital::drive_dynamics::destroyLevelSilent(engine_value) ? String("-inf dB")
             : compactFloat(static_cast<float>(vital::drive_dynamics::destroyLevelDb(engine_value)), 1) + " dB";
         return true;
@@ -231,7 +231,7 @@ class ValueBridge : public AudioProcessorParameterWithID {
       if (vital::drive_dynamics::destroyParameterIs(details.name, "filter_frequency"))
         value = vital::drive_dynamics::destroyFrequencyValue(
             text.getDoubleValue() * (text.containsIgnoreCase("k") ? 1000.0 : 1.0));
-      else if (vital::drive_dynamics::destroyParameterIs(details.name, "level"))
+      else if (vital::drive_dynamics::scriptLevelParameter(details.name))
         value = text.containsIgnoreCase("inf") ? 0.0 : vital::drive_dynamics::destroyLevelValue(text.getDoubleValue());
       else
         return false;

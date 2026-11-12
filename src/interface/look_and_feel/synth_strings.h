@@ -570,6 +570,14 @@ namespace strings {
     "Sine Fold",
     "Bit Crush",
     "Down Samp",
+    "Tube",
+    "Diode 1",
+    "Diode 2",
+    "Zero-Sq",
+    "Asym",
+    "Stompbox",
+    "Tape Sat",
+    "Soft Sat",
   };
 
   const std::string kDistortionTypeNames[] = {
@@ -579,6 +587,14 @@ namespace strings {
     "Sine Fold",
     "Bit Crush",
     "Down Sample",
+    "Tube",
+    "Diode 1",
+    "Diode 2",
+    "Zero-Square",
+    "Asymmetric",
+    "Stomp Box",
+    "Tape Saturation",
+    "Soft Saturation",
   };
 
   const std::string kDistortionFilterOrderNames[] = {

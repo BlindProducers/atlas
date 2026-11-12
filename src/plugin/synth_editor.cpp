@@ -2038,6 +2038,14 @@ namespace {
     return !suffix.startsWith("filter_") || filter != 0;
   }
 
+  // Distortion's Types from Tube on (the JSFX modes) have their own Drive
+  // and Level in place of Vital's Drive.
+  bool isDistortionParameterRelevant(const String& suffix, int type) {
+    const bool jsfx_mode = type >= vital::Distortion::kNumTypes;
+    if (suffix == "drive") return !jsfx_mode;
+    return !suffix.startsWith("jsfx_") || jsfx_mode;
+  }
+
   int effectSlotParameterRank(const String& effect_id, const String& suffix) {
     auto rank = [&suffix](std::initializer_list<const char*> order) {
       int index = 0;
@@ -2062,7 +2070,8 @@ namespace {
       return rank({ "style", "sync", "frequency", "tempo", "aux_sync", "aux_frequency", "aux_tempo",
                     "feedback", "filter_cutoff", "filter_spread", "dry_wet" });
     if (effect_id == "distortion")
-      return rank({ "type", "drive", "filter_order", "filter_cutoff", "filter_resonance", "filter_blend", "mix" });
+      return rank({ "type", "drive", "jsfx_drive", "filter_order", "filter_cutoff", "filter_resonance", "filter_blend",
+                    "mix", "jsfx_level" });
     if (effect_id == "eq")
       return equalizerParameterRank(suffix);
     if (effect_id == "filter_fx")
@@ -2183,6 +2192,9 @@ namespace {
       if (model == atlas::resonator::kTube) return 3;
       return 0;
     }
+    // Distortion's JSFX modes share their rows.
+    if (control_id.endsWith("distortion_type"))
+      return roundToInt(value) >= vital::Distortion::kNumTypes ? 1 : 0;
     // Saturator's Bass Shaper and Waveshaper curves each add their own rows.
     if (control_id.endsWith("saturator_type"))
       return saturatorRowVariant(roundToInt(value));
@@ -2263,7 +2275,8 @@ namespace {
     for (const char* variant : { "dimension_expander_mode", "frequency_shifter_mode", "resonator_model", "analoguechorus_model",
                                  "analogueecho_medium", "analoguerotary_model", "analoguewah_model",
                                  "convolution_reverb_predelay_sync", "spectral_lock_mode",
-                                 "glitch_delay_tap_view", "maim_encoder", "saturator_type", "destroy_filter" }) {
+                                 "glitch_delay_tap_view", "maim_encoder", "saturator_type", "destroy_filter",
+                                 "distortion_type" }) {
       if (id == variant || id.endsWith(String("_") + variant))
         return true;
     }
@@ -18581,6 +18594,12 @@ void SynthEditor::addEffectSlotGroups(const String& sectionName, Component& pare
       if (found != synth_.getControls().end()) destroy_filter = jlimit(0, 2, roundToInt(found->second->value()));
       effect_slot_modes_[effect_prefix + "filter"] = effectSlotRowVariant(effect_prefix + "filter", float(destroy_filter));
     }
+    int distortion_type = 0;
+    if (effect_id == "distortion") {
+      const auto found = synth_.getControls().find((effect_prefix + "type").toStdString());
+      if (found != synth_.getControls().end()) distortion_type = roundToInt(found->second->value());
+      effect_slot_modes_[effect_prefix + "type"] = effectSlotRowVariant(effect_prefix + "type", float(distortion_type));
+    }
     int saturator_type = 0;
     if (effect_id == "saturator") {
       const auto found = synth_.getControls().find((effect_prefix + "type").toStdString());
@@ -18642,6 +18661,8 @@ void SynthEditor::addEffectSlotGroups(const String& sectionName, Component& pare
       if (effect_id == "saturator" && !isSaturatorParameterRelevant(suffix, saturator_type))
         continue;
       if (effect_id == "destroy" && !isDestroyParameterRelevant(suffix, destroy_filter))
+        continue;
+      if (effect_id == "distortion" && !isDistortionParameterRelevant(suffix, distortion_type))
         continue;
       if (shouldExposeEffectSlotParameter(effect_id, suffix) &&
           shouldShowParameterInSection(sectionName, parameter))

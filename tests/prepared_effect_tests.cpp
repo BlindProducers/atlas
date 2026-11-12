@@ -21,6 +21,7 @@
 #include "glitch_delay_module.h"
 #include "compressor_module.h"
 #include "distortion_module.h"
+#include "distortion.h"
 #include "equalizer_module.h"
 #include "filter_fx_module.h"
 #include "flanger_module.h"
@@ -332,6 +333,94 @@ void driveDynamicsModules() {
   }
 }
 
+// Distortion's Types from Tube on hand their controls to the JSFX port:
+// with the filter at None the module's output is the port's,
+// rounded to float, through changes of Type (crossfades), Drive, Mix and
+// Level. Pre and Post stay finite, a slot reports the port's latency only in
+// those Types, and at their defaults they play a quiet input at its own level.
+void distortionModes() {
+  using namespace vital;
+  namespace modes = atlas::distortion_modes;
+  const int script_modes[] = { modes::kTube, modes::kDiode1, modes::kDiode2, modes::kZeroSquare, modes::kAsym,
+                               modes::kStompBox, modes::kTapeSat, modes::kSoftSat };
+  constexpr int kNumScriptModes = Distortion::kNumEffectTypes - Distortion::kNumTypes;
+  static_assert(sizeof(script_modes) / sizeof(script_modes[0]) == kNumScriptModes);
+  DistortionModule module;
+  module.init(); module.setSampleRate(48000); module.setOversampleAmount(1);
+  const auto controls = module.getControls();
+  modes::Engine core;
+  modes::Engine::Parameters p;
+  std::vector<poly_float> input(97);
+  double worst = 0;
+  bool finite = true;
+  for (int block = 0; block < 120; ++block) {
+    if (block % 10 == 0) {
+      // A new Type every 970 samples, within the 30 ms crossfade of the last.
+      const int type = Distortion::kNumTypes + (block / 10) % kNumScriptModes;
+      const float drive = std::fmod(17.0f + 31.0f * block, 100.0f), mix = std::fmod(.3f + .23f * block, 1.0f),
+                  level = std::fmod(.2f + .37f * block, 1.0f);
+      controls.at("distortion_type")->set(float(type));
+      controls.at("distortion_jsfx_drive")->set(drive);
+      controls.at("distortion_mix")->set(mix);
+      controls.at("distortion_jsfx_level")->set(level);
+      controls.at("distortion_filter_order")->set(block < 90 ? 0.0f : block < 105 ? 1.0f : 2.0f);
+      p.mode = script_modes[type - Distortion::kNumTypes];
+      p.drive = drive; p.mix = 100.0 * double(mix); p.level = level;
+      core.setParameters(p);
+      if (block == 0) core.prepare(48000);
+    }
+    core.block(int(input.size()));
+    for (int i = 0; i < int(input.size()); ++i) {
+      const float l = .7f * std::sin((block * 97 + i) * .053f), r = .6f * std::sin((block * 97 + i) * .031f + 1);
+      input[size_t(i)] = poly_float(l, r, l, r);
+    }
+    module.processWithInput(input.data(), int(input.size()));
+    for (int i = 0; i < int(input.size()); ++i) {
+      const poly_float out = module.output()->buffer[i];
+      finite = finite && std::isfinite(out[0]) && std::isfinite(out[1]) && out[2] == out[0] && out[3] == out[1];
+      if (block >= 90) continue;
+      double l = input[size_t(i)][0], r = input[size_t(i)][1];
+      core.process(l, r);
+      worst = std::max({ worst, double(std::abs(out[0] - float(l))), double(std::abs(out[1] - float(r))) });
+    }
+  }
+  std::cout << "Distortion module against its JSFX modes' port: maximum difference " << worst << '\n';
+  expect(worst == 0, "Distortion's JSFX modes equal their port's output");
+  expect(finite, "Distortion's JSFX modes stay finite with the filter Pre and Post, lanes 2-3 repeating 0-1");
+
+  cr::Value bpm(2), keytrack(0);
+  ReorderableEffectChain chain(bpm.output(), keytrack.output(), "bus_2_");
+  chain.init(); chain.setSampleRate(48000); chain.setOversampleAmount(1);
+  const auto chain_controls = chain.getControls();
+  const std::string prefix = "bus_2_fx_slot_3_";
+  chain_controls.at(prefix + "type")->set(constants::kDistortion + 1);
+  chain_controls.at(prefix + "enabled")->set(1);
+  chain_controls.at(prefix + "distortion_type")->set(Distortion::kDownSample);
+  expect(chain.getLatencySamples() == 0, "Distortion has no latency before Tube");
+  chain_controls.at(prefix + "distortion_type")->set(Distortion::kSoftSaturation);
+  expect(chain.getLatencySamples() == modes::Engine::kLatency, "Distortion's JSFX modes report the script's latency");
+
+  // Tube at its default Drive, Mix and Level plays a quiet sine at its own level.
+  DistortionModule fresh;
+  fresh.init(); fresh.setSampleRate(48000); fresh.setOversampleAmount(1);
+  fresh.getControls().at("distortion_type")->set(float(Distortion::kTube));
+  double in_power = 0, out_power = 0;
+  for (int block = 0; block < 200; ++block) {
+    for (int i = 0; i < int(input.size()); ++i) {
+      const float x = .063f * std::sin((block * 97 + i) * .029f);
+      input[size_t(i)] = poly_float(x, x, x, x);
+    }
+    fresh.processWithInput(input.data(), int(input.size()));
+    for (int i = 0; block >= 100 && i < int(input.size()); ++i) {
+      in_power += double(input[size_t(i)][0]) * input[size_t(i)][0];
+      out_power += double(fresh.output()->buffer[i][0]) * fresh.output()->buffer[i][0];
+    }
+  }
+  const double gain_db = 10.0 * std::log10(out_power / in_power);
+  std::cout << "Distortion Tube at its defaults: " << gain_db << " dB\n";
+  expect(std::abs(gain_db) < .01, "Distortion's JSFX modes play a quiet input at its own level by default");
+}
+
 // Destroy leaves no DC offset: its port of the script alone turns an
 // asymmetric pulse into a wet signal with an offset, which Atlas's DC blocker
 // removes, at every stack depth and filter position, while the dry path passes
@@ -385,6 +474,7 @@ void destroyDc() {
   }
   expect(delayed, "Destroy at Mix 0 is its input, 7 samples late");
 }
+
 
 // Saturator leaves no DC offset either: every curve but the Waveshaper is
 // symmetric, so the script alone turns an asymmetric pulse into a wet signal
@@ -2256,6 +2346,7 @@ int main(int argc, char** argv) {
   }
   if (argc > 1 && String(argv[1]) == "--drive-dynamics") {
     driveDynamicsModules();
+    distortionModes();
     destroyDc();
     saturatorDc();
     if (argc > 2) driveDynamicsPresets(argv[2]);
