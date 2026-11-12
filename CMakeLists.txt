@@ -191,6 +191,11 @@ set(ATLAS_BODE_SOURCES src/synthesis/effects/bode/bode_shifter.cpp)
 # AtlasDestroyReferenceTests finds every output sample identical to the script's.
 set(ATLAS_DESTROY_SOURCES src/synthesis/effects/destroy/destroy.cpp)
 
+# The Distortion effect's JSFX modes: eight modes of Alessio Scala's
+# distortion JSFX, ported the same way, so that
+# AtlasDistortionModesReferenceTests finds every output sample identical to the script's.
+set(ATLAS_DISTORTION_MODES_SOURCES src/synthesis/effects/distortion_modes/distortion_modes.cpp)
+
 # PFFFT (third_party/pffft) is every FFT in Atlas on every platform: the
 # oscillators' (src/common/fourier_transform.h) and, through
 # third_party/patches/juce8-pffft-fft-engine.patch, every juce::dsp::FFT and
@@ -286,6 +291,8 @@ target_sources(Atlas PRIVATE
   ${ATLAS_BODE_SOURCES}
   # Destroy (Alessio Scala's Serum 2 Overdrive JSFX).
   ${ATLAS_DESTROY_SOURCES}
+  # The Distortion effect's JSFX modes (Alessio Scala's distortion JSFX).
+  ${ATLAS_DISTORTION_MODES_SOURCES}
   # ZL Compressor by zsliu98 (AGPL v3): the Analogue Compressor effect.
   ${ATLAS_ZL_COMPRESSOR_SOURCES}
   # Maim by Arden Butterfield (GPL v3): the Maim effect.
@@ -322,7 +329,7 @@ set_source_files_properties(${ATLAS_OPENB3_SOURCES} src/synthesis/producers/open
   COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:precise>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffp-contract=off;-fno-fast-math>")
 set_source_files_properties(${ATLAS_ZL_COMPRESSOR_SOURCES} ${ATLAS_MAIM_SOURCES}
   ${ATLAS_DRIVE_DYNAMICS_SOURCES} src/synthesis/modules/drive_dynamics_modules.cpp ${ATLAS_BODE_SOURCES}
-  ${ATLAS_DESTROY_SOURCES} PROPERTIES
+  ${ATLAS_DESTROY_SOURCES} ${ATLAS_DISTORTION_MODES_SOURCES} PROPERTIES
   COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:precise>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffp-contract=off;-fno-fast-math>")
 # The Scream filter's feedback loop amplifies any rounding difference, so its
 # SVFs and waveshaper round alike on arm64 and x64.
@@ -1371,6 +1378,19 @@ if(ATLAS_BUILD_TIMING_TESTS)
     target_link_libraries(AtlasDestroyReferenceTests PRIVATE AtlasEelReference)
     if(EXISTS "${ATLAS_DESTROY_JSFX}")
       add_test(NAME atlas_destroy_reference COMMAND AtlasDestroyReferenceTests "${ATLAS_DESTROY_JSFX}")
+    endif()
+    # The Distortion effect's JSFX modes against their script,
+    # which is not in the repository either: the test is added once
+    # ATLAS_DISTORTION_JSFX names it.
+    set(ATLAS_DISTORTION_JSFX "" CACHE FILEPATH "Path to the JSFX the Distortion modes are ported from, for their reference test")
+    add_executable(AtlasDistortionModesReferenceTests tests/distortion_modes/reference_tests.cpp
+      ${ATLAS_DISTORTION_MODES_SOURCES})
+    target_include_directories(AtlasDistortionModesReferenceTests PRIVATE src/synthesis/effects/distortion_modes)
+    set_source_files_properties(tests/distortion_modes/reference_tests.cpp PROPERTIES
+      COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:precise>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffp-contract=off;-fno-fast-math>")
+    target_link_libraries(AtlasDistortionModesReferenceTests PRIVATE AtlasEelReference)
+    if(EXISTS "${ATLAS_DISTORTION_JSFX}")
+      add_test(NAME atlas_distortion_modes_reference COMMAND AtlasDistortionModesReferenceTests "${ATLAS_DISTORTION_JSFX}")
     endif()
     add_executable(AtlasResonatorReferenceTests tests/resonator/reference_tests.cpp)
     target_include_directories(AtlasResonatorReferenceTests PRIVATE src/synthesis/effects)

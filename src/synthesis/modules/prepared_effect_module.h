@@ -155,6 +155,8 @@ private:
   Value* hi_quality_control_ = nullptr;
   // The Frequency Shifter's Mode, whose Mode 2 adds latency and buffers.
   Value* frequency_shifter_mode_control_ = nullptr;
+  // Distortion's Type, whose JSFX modes add latency.
+  Value* distortion_type_control_ = nullptr;
   std::atomic<Wavetable*> filter_table_ { nullptr };
   std::atomic<bool> filter_table_requested_ { false };
   // Once a Filter FX has used its table model it keeps the buffers, as the

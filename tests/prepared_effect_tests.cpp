@@ -21,6 +21,7 @@
 #include "glitch_delay_module.h"
 #include "compressor_module.h"
 #include "distortion_module.h"
+#include "distortion.h"
 #include "equalizer_module.h"
 #include "filter_fx_module.h"
 #include "flanger_module.h"
@@ -45,6 +46,7 @@
 #include "table_filter.h"
 #include "reorderable_effect_chain.h"
 #include "synth_plugin.h"
+#include "load_save.h"
 #include "synth_strings.h"
 #include "sound_engine.h"
 #include "value_switch.h"
@@ -332,6 +334,94 @@ void driveDynamicsModules() {
   }
 }
 
+// Distortion's Types from Tube on hand their controls to the JSFX port:
+// with the filter at None the module's output is the port's,
+// rounded to float, through changes of Type (crossfades), Drive, Mix and
+// Level. Pre and Post stay finite, a slot reports the port's latency only in
+// those Types, and at their defaults they play a quiet input at its own level.
+void distortionModes() {
+  using namespace vital;
+  namespace modes = atlas::distortion_modes;
+  const int script_modes[] = { modes::kTube, modes::kDiode1, modes::kDiode2, modes::kZeroSquare, modes::kAsym,
+                               modes::kStompBox, modes::kTapeSat, modes::kSoftSat };
+  constexpr int kNumScriptModes = Distortion::kNumEffectTypes - Distortion::kNumTypes;
+  static_assert(sizeof(script_modes) / sizeof(script_modes[0]) == kNumScriptModes);
+  DistortionModule module;
+  module.init(); module.setSampleRate(48000); module.setOversampleAmount(1);
+  const auto controls = module.getControls();
+  modes::Engine core;
+  modes::Engine::Parameters p;
+  std::vector<poly_float> input(97);
+  double worst = 0;
+  bool finite = true;
+  for (int block = 0; block < 120; ++block) {
+    if (block % 10 == 0) {
+      // A new Type every 970 samples, within the 30 ms crossfade of the last.
+      const int type = Distortion::kNumTypes + (block / 10) % kNumScriptModes;
+      const float drive = std::fmod(17.0f + 31.0f * block, 100.0f), mix = std::fmod(.3f + .23f * block, 1.0f),
+                  level = std::fmod(.2f + .37f * block, 1.0f);
+      controls.at("distortion_type")->set(float(type));
+      controls.at("distortion_jsfx_drive")->set(drive);
+      controls.at("distortion_mix")->set(mix);
+      controls.at("distortion_jsfx_level")->set(level);
+      controls.at("distortion_filter_order")->set(block < 90 ? 0.0f : block < 105 ? 1.0f : 2.0f);
+      p.mode = script_modes[type - Distortion::kNumTypes];
+      p.drive = drive; p.mix = 100.0 * double(mix); p.level = level;
+      core.setParameters(p);
+      if (block == 0) core.prepare(48000);
+    }
+    core.block(int(input.size()));
+    for (int i = 0; i < int(input.size()); ++i) {
+      const float l = .7f * std::sin((block * 97 + i) * .053f), r = .6f * std::sin((block * 97 + i) * .031f + 1);
+      input[size_t(i)] = poly_float(l, r, l, r);
+    }
+    module.processWithInput(input.data(), int(input.size()));
+    for (int i = 0; i < int(input.size()); ++i) {
+      const poly_float out = module.output()->buffer[i];
+      finite = finite && std::isfinite(out[0]) && std::isfinite(out[1]) && out[2] == out[0] && out[3] == out[1];
+      if (block >= 90) continue;
+      double l = input[size_t(i)][0], r = input[size_t(i)][1];
+      core.process(l, r);
+      worst = std::max({ worst, double(std::abs(out[0] - float(l))), double(std::abs(out[1] - float(r))) });
+    }
+  }
+  std::cout << "Distortion module against its JSFX modes' port: maximum difference " << worst << '\n';
+  expect(worst == 0, "Distortion's JSFX modes equal their port's output");
+  expect(finite, "Distortion's JSFX modes stay finite with the filter Pre and Post, lanes 2-3 repeating 0-1");
+
+  cr::Value bpm(2), keytrack(0);
+  ReorderableEffectChain chain(bpm.output(), keytrack.output(), "bus_2_");
+  chain.init(); chain.setSampleRate(48000); chain.setOversampleAmount(1);
+  const auto chain_controls = chain.getControls();
+  const std::string prefix = "bus_2_fx_slot_3_";
+  chain_controls.at(prefix + "type")->set(constants::kDistortion + 1);
+  chain_controls.at(prefix + "enabled")->set(1);
+  chain_controls.at(prefix + "distortion_type")->set(Distortion::kDownSample);
+  expect(chain.getLatencySamples() == 0, "Distortion has no latency before Tube");
+  chain_controls.at(prefix + "distortion_type")->set(Distortion::kSoftSaturation);
+  expect(chain.getLatencySamples() == modes::Engine::kLatency, "Distortion's JSFX modes report the script's latency");
+
+  // Tube at its default Drive, Mix and Level plays a quiet sine at its own level.
+  DistortionModule fresh;
+  fresh.init(); fresh.setSampleRate(48000); fresh.setOversampleAmount(1);
+  fresh.getControls().at("distortion_type")->set(float(Distortion::kTube));
+  double in_power = 0, out_power = 0;
+  for (int block = 0; block < 200; ++block) {
+    for (int i = 0; i < int(input.size()); ++i) {
+      const float x = .063f * std::sin((block * 97 + i) * .029f);
+      input[size_t(i)] = poly_float(x, x, x, x);
+    }
+    fresh.processWithInput(input.data(), int(input.size()));
+    for (int i = 0; block >= 100 && i < int(input.size()); ++i) {
+      in_power += double(input[size_t(i)][0]) * input[size_t(i)][0];
+      out_power += double(fresh.output()->buffer[i][0]) * fresh.output()->buffer[i][0];
+    }
+  }
+  const double gain_db = 10.0 * std::log10(out_power / in_power);
+  std::cout << "Distortion Tube at its defaults: " << gain_db << " dB\n";
+  expect(std::abs(gain_db) < .01, "Distortion's JSFX modes play a quiet input at its own level by default");
+}
+
 // Destroy leaves no DC offset: its port of the script alone turns an
 // asymmetric pulse into a wet signal with an offset, which Atlas's DC blocker
 // removes, at every stack depth and filter position, while the dry path passes
@@ -384,6 +474,30 @@ void destroyDc() {
     delayed = delayed && l == expected && r == -expected;
   }
   expect(delayed, "Destroy at Mix 0 is its input, 7 samples late");
+}
+
+// At its default Drive, Stack, Mix and Level, Destroy plays a quiet sine at
+// its own level, so its Level reads 0 dB there.
+void destroyDefaultLevel() {
+  using namespace vital;
+  DestroyModule module;
+  module.init(); module.setSampleRate(48000); module.setOversampleAmount(1);
+  std::vector<poly_float> input(97);
+  double in_power = 0, out_power = 0;
+  for (int block = 0; block < 200; ++block) {
+    for (int i = 0; i < int(input.size()); ++i) {
+      const float x = .063f * std::sin((block * 97 + i) * .13f);
+      input[size_t(i)] = poly_float(x, x, x, x);
+    }
+    module.processWithInput(input.data(), int(input.size()));
+    for (int i = 0; block >= 100 && i < int(input.size()); ++i) {
+      in_power += double(input[size_t(i)][0]) * input[size_t(i)][0];
+      out_power += double(module.output()->buffer[i][0]) * module.output()->buffer[i][0];
+    }
+  }
+  const double gain_db = 10.0 * std::log10(out_power / in_power);
+  std::cout << "Destroy at its defaults: " << gain_db << " dB\n";
+  expect(std::abs(gain_db) < .02, "Destroy plays a quiet input at its own level by default");
 }
 
 // Saturator leaves no DC offset either: every curve but the Waveshaper is
@@ -1974,6 +2088,47 @@ void callbackLockWait() {
   host.join();
 }
 
+// Destroy's Drive and Level defaulted to 25 % and 0.5 before behaviour
+// version 3, and a state leaves defaults out: an older state with Destroy in a
+// slot loads with those values, a newer one and a new Destroy with 0 % and
+// 0 dB.
+void destroyDefaultsMigration() {
+  using namespace vital;
+  SynthPlugin plugin;
+  plugin.setPlayConfigDetails(0, 2, 48000, 512);
+  plugin.prepareToPlay(48000, 512);
+  const auto& controls = plugin.getControls();
+  const float new_drive = Parameters::getDetails("fx_slot_1_destroy_drive").default_value;
+  const float new_level = Parameters::getDetails("fx_slot_1_destroy_level").default_value;
+  expect(new_drive == 0.0f && std::abs(new_level - .8223006f) < 1e-6f, "a new Destroy starts at 0 % and 0 dB");
+  selectEffect(plugin, "fx_slot_1_", constants::kDestroy);
+  selectEffect(plugin, "bus_2_fx_slot_3_", constants::kDestroy);
+  selectEffect(plugin, "fx_slot_2_", constants::kDelay);
+  juce::MemoryBlock saved;
+  plugin.getStateInformation(saved);
+  json state = json::parse(saved.toString().toStdString());
+  expect(!state["settings"].count("fx_slot_1_destroy_drive") && !state["settings"].count("fx_slot_1_destroy_level"),
+         "a state leaves Destroy's defaults out");
+
+  auto load = [&](int behaviour_version) {
+    state["engine_behavior_version"] = behaviour_version;
+    const std::string text = state.dump();
+    plugin.setStateInformation(text.data(), int(text.size()));
+  };
+  load(2);
+  for (const char* slot : { "fx_slot_1_", "bus_2_fx_slot_3_" }) {
+    expect(controls.at(std::string(slot) + "destroy_drive")->value() == 25.0f &&
+           controls.at(std::string(slot) + "destroy_level")->value() == .5f,
+           std::string("an older state's Destroy in ") + slot + " loads at 25 % and Level 0.5");
+  }
+  expect(controls.at("fx_slot_2_destroy_drive")->value() == new_drive,
+         "a slot holding another effect keeps Destroy's new defaults");
+  load(LoadSave::kEngineBehaviorVersion);
+  expect(controls.at("fx_slot_1_destroy_drive")->value() == new_drive &&
+         controls.at("fx_slot_1_destroy_level")->value() == new_level,
+         "a newer state's Destroy loads at 0 % and 0 dB");
+}
+
 // Saving, loading into a fresh instance and saving again gives identical state,
 // including settings of effects a slot no longer selects, routes into them,
 // and FX automation assignments to them.
@@ -2051,6 +2206,7 @@ void stateRoundTrip() {
     if (!first.count(it.key()) && ++differences <= 10) std::cout << "only after reload: " << it.key() << '\n';
   std::cout << "state round trip differences=" << differences << '\n';
   expect(differences == 0, "saving, loading and saving again gives the same state");
+  destroyDefaultsMigration();
 }
 
 // Footprint of one instance as a host sees it: construction, playback, then
@@ -2256,7 +2412,9 @@ int main(int argc, char** argv) {
   }
   if (argc > 1 && String(argv[1]) == "--drive-dynamics") {
     driveDynamicsModules();
+    distortionModes();
     destroyDc();
+    destroyDefaultLevel();
     saturatorDc();
     if (argc > 2) driveDynamicsPresets(argv[2]);
     return failures ? 1 : 0;

@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include "distortion_modes/distortion_modes.h"
 #include "synth_constants.h"
 #include "synth_module.h"
 
@@ -31,16 +32,28 @@ namespace vital {
 
       virtual void init() override;
       virtual void setSampleRate(int sample_rate) override;
+      virtual void setOversampleAmount(int oversample) override;
+      virtual void hardReset() override;
       virtual void processWithInput(const poly_float* audio_in, int num_samples) override;
       virtual Processor* clone() const override { return new DistortionModule(*this); }
 
     protected:
+      // The Types from Tube on: the JSFX modes, with the script's own Mix
+      // law, Level and latency.
+      void processJsfxMode(int type, const poly_float* audio_in, int num_samples);
+
       Distortion* distortion_;
       std::string prefix_;
+      Value* distortion_type_;
       Value* filter_order_;
       DigitalSvf* filter_;
       Output* distortion_mix_;
+      Output* jsfx_drive_;
+      Output* jsfx_level_;
       poly_float mix_;
+      atlas::distortion_modes::Engine jsfx_;
+      // Whether jsfx_ has run its @init since the last reset, rate change or Type from before Tube.
+      bool jsfx_active_;
 
       JUCE_LEAK_DETECTOR(DistortionModule)
   };

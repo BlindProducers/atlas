@@ -154,22 +154,39 @@ namespace vital::drive_dynamics {
     { "mix", 0.0f, 100.0f, 1.0f, true },
     { "level", 0.0f, 1.0f, 0.01f, true },
   };
-  // Whether a parameter is Destroy's control with this suffix, in a slot or a bus.
-  inline bool destroyParameterIs(const std::string& name, const std::string& suffix) {
-    const std::string id = "destroy_" + suffix;
+  // Whether a parameter is the effect control `id`, in a slot or a bus.
+  inline bool effectParameterIs(const std::string& name, const std::string& id) {
     return name == id || (name.size() > id.size() &&
         name.compare(name.size() - id.size() - 1, id.size() + 1, "_" + id) == 0);
+  }
+  // Whether a parameter is Destroy's control with this suffix, in a slot or a bus.
+  inline bool destroyParameterIs(const std::string& name, const std::string& suffix) {
+    return effectParameterIs(name, "destroy_" + suffix);
+  }
+  // A Level that holds a JSFX's 0 to 1 slider and reads in dB: Destroy's,
+  // and the Distortion effect's in its JSFX modes.
+  inline bool scriptLevelParameter(const std::string& name) {
+    return destroyParameterIs(name, "level") || effectParameterIs(name, "distortion_jsfx_level");
   }
   // The filter's cutoff in Hz, as the script shows it: 8.1758 Hz times 2697 to the slider.
   inline double destroyFrequencyHz(double value) { return 8.1758 * std::pow(2697.0, value); }
   inline double destroyFrequencyValue(double hz) {
     return std::log(std::max(hz, 1.0e-6) / 8.1758) / std::log(2697.0);
   }
-  // The output level in dB: (2 Level)^2 in amplitude. The script shows
-  // minus infinity at Level 0.0005 and below, where destroyLevelSilent holds.
-  inline bool destroyLevelSilent(double value) { return value <= 0.0005; }
-  inline double destroyLevelDb(double value) { return 40.0 * std::log10(2.0 * std::max(value, 0.0005)); }
-  inline double destroyLevelValue(double db) { return 0.5 * std::pow(10.0, db / 40.0); }
+  // A script Level's gain in dB, as the scripts show it: (2 Level)^2 in
+  // amplitude, minus infinity at Level 0.0005 and below (scriptLevelSilent).
+  inline bool scriptLevelSilent(double value) { return value <= 0.0005; }
+  inline double scriptLevelDb(double value) { return 40.0 * std::log10(2.0 * std::max(value, 0.0005)); }
+  inline double scriptLevelValue(double db) { return 0.5 * std::pow(10.0, db / 40.0); }
+  // Destroy's Level scales only its wet path, by (2 Level)^2 / 3, after
+  // stages of +0.9 dB below their knee at Drive 0. Atlas reads it as that
+  // path's gain with one stage, so 0 dB (Level 0.8223006, the default) plays
+  // a quiet input at its own level at Drive 0. Distortion's JSFX modes
+  // double their wet path instead, so their Level reads as the script's.
+  inline constexpr double kDestroyLevelOffsetDb = 0.9 - 9.542425094393248; // 0.9 dB - 20 log10(3)
+  inline double scriptLevelOffsetDb(const std::string& name) {
+    return destroyParameterIs(name, "level") ? kDestroyLevelOffsetDb : 0.0;
+  }
 
   // A band's ratio as the script's own display reads it: output dB per input
   // dB above (Above Ratio, 1 + value) or below (Below Ratio, 1 - value) the

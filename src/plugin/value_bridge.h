@@ -218,9 +218,11 @@ class ValueBridge : public AudioProcessorParameterWithID {
         text = hz < 999.5 ? String(roundToInt(hz)) + " Hz" : String(hz / 1000.0, 2) + " kHz";
         return true;
       }
-      if (vital::drive_dynamics::destroyParameterIs(details.name, "level")) {
-        text = vital::drive_dynamics::destroyLevelSilent(engine_value) ? String("-inf dB")
-            : compactFloat(static_cast<float>(vital::drive_dynamics::destroyLevelDb(engine_value)), 1) + " dB";
+      if (vital::drive_dynamics::scriptLevelParameter(details.name)) {
+        const double db = vital::drive_dynamics::scriptLevelDb(engine_value) +
+                          vital::drive_dynamics::scriptLevelOffsetDb(details.name);
+        text = vital::drive_dynamics::scriptLevelSilent(engine_value) ? String("-inf dB")
+            : compactFloat(std::abs(db) < 0.05 ? 0.0f : static_cast<float>(db), 1) + " dB";
         return true;
       }
       return false;
@@ -231,8 +233,9 @@ class ValueBridge : public AudioProcessorParameterWithID {
       if (vital::drive_dynamics::destroyParameterIs(details.name, "filter_frequency"))
         value = vital::drive_dynamics::destroyFrequencyValue(
             text.getDoubleValue() * (text.containsIgnoreCase("k") ? 1000.0 : 1.0));
-      else if (vital::drive_dynamics::destroyParameterIs(details.name, "level"))
-        value = text.containsIgnoreCase("inf") ? 0.0 : vital::drive_dynamics::destroyLevelValue(text.getDoubleValue());
+      else if (vital::drive_dynamics::scriptLevelParameter(details.name))
+        value = text.containsIgnoreCase("inf") ? 0.0 : vital::drive_dynamics::scriptLevelValue(
+            text.getDoubleValue() - vital::drive_dynamics::scriptLevelOffsetDb(details.name));
       else
         return false;
       engine_value = std::clamp(static_cast<float>(value), details.min, details.max);
