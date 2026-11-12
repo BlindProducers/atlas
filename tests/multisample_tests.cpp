@@ -450,6 +450,7 @@ namespace {
       close(low.tune_cents, 3.0, "preset fine tune adds to the instrument");
       close(low.ampeg.attack, 0.5, "global zone attack -1200 timecents", 1e-4);
       close(low.ampeg.sustain, std::pow(10.0, -6.0 / 20.0), "sustain 60 cB", 1e-4);
+      close(low.ampeg.release, std::pow(2.0, -7200.0 / 1200.0), "a zone with no release gets the 16 ms floor", 1e-5);
       expect(low.loop_mode == LoopMode::kContinuous, "sampleModes 1 loops");
       expect(low.loop_start == 1000 && low.loop_end == 3000, "loop points");
       expect(low.offset == 0 && low.end == 4800, "sample range");
@@ -901,6 +902,21 @@ namespace {
       else
         expect(during < held * 1.0e-3, "Envelope 1 mode: Env 1's release wins");
     }
+    // A region with no release set fades over a few milliseconds; the 1 ms
+    // the formats default to is a cut that clicks.
+    {
+      writeText(temp.folder.getChildFile("plain.sfz"), "<region> sample=long.wav key=60\n");
+      SynthPlugin plugin;
+      preparePlayback(plugin);
+      setInstrument(plugin, 0, loadSfz(temp.folder.getChildFile("plain.sfz")));
+      auto cut = render(plugin, kRate / 2, { { 0, juce::MidiMessage::noteOn(1, 60, 1.0f) },
+                                             { kRate / 4, juce::MidiMessage::noteOff(1, 60) } });
+      const double held = rms(cut, kRate / 8, kRate / 4);
+      expect(rms(cut, kRate / 4 + kRate / 2000, kRate / 4 + kRate / 1000) > held * 0.1,
+             "a note with no release set is still fading a millisecond after note-off");
+      expect(rms(cut, kRate / 4 + kRate / 50, kRate / 4 + kRate / 25) < held * 1.0e-4, "and is silent 20 ms after it");
+    }
+
     // Other oscillators keep following Env 1 while an instrument holds the voice.
     for (int mode = 0; mode < 2; ++mode) {
       auto run = [&](bool instrument_on, bool wavetable_on) {
@@ -971,6 +987,30 @@ namespace {
                                          { kRate / 2, juce::MidiMessage::controllerEvent(1, 64, 0) } });
     close(frequency(pedal, kRate / 5, kRate * 2 / 5), 220.0, "the body sustains under the pedal", 2.0);
     close(frequency(pedal, kRate / 2 + kRate / 20, kRate * 3 / 4), 880.0, "release sample at pedal up", 3.0);
+
+    // DecentSampler's hold times choose the release sample by how long the key was held.
+    writeWav(temp.folder.getChildFile("late.wav"), 440.0, kRate / 2);
+    writeText(temp.folder.getChildFile("held.dspreset"),
+              "<DecentSampler><groups>"
+              "<group release=\"0.01\"><sample path=\"body.wav\" rootNote=\"60\" loNote=\"60\" hiNote=\"60\"/></group>"
+              "<group trigger=\"release\" hiHoldTime=\"0.5\">"
+              "<sample path=\"rel.wav\" rootNote=\"60\" loNote=\"60\" hiNote=\"60\"/></group>"
+              "<group trigger=\"release\" loHoldTime=\"0.5\">"
+              "<sample path=\"late.wav\" rootNote=\"60\" loNote=\"60\" hiNote=\"60\"/></group>"
+              "</groups></DecentSampler>");
+    if (auto held_instrument = loadSfz(temp.folder.getChildFile("held.dspreset"))) {
+      auto play = [&](int held) {
+        SynthPlugin player;
+        preparePlayback(player);
+        setInstrument(player, 0, held_instrument);
+        return render(player, held + kRate / 2, { { 0, juce::MidiMessage::noteOn(1, 60, 1.0f) },
+                                                  { held, juce::MidiMessage::noteOff(1, 60) } });
+      };
+      close(frequency(play(kRate / 5), kRate / 5 + kRate / 20, kRate / 5 + kRate / 4), 880.0,
+            "a key held for less than hiHoldTime plays that release sample", 3.0);
+      close(frequency(play(kRate), kRate + kRate / 20, kRate + kRate / 4), 440.0,
+            "a key held for loHoldTime or longer plays the other", 3.0);
+    }
     return finish("release trigger");
   }
 
@@ -1385,6 +1425,39 @@ namespace {
     expect(result.error.empty(), "the preset parses: " + result.error);
     if (!result.instrument)
       return finish("decentsampler parser");
+
+    // The envelope's ampEnv spellings win over the plain ones on the same
+    // element, and hold times say which release sample a note plays.
+    const juce::File spelled = root.getChildFile("Spelled.dspreset");
+    writeText(spelled,
+              "<DecentSampler><groups attack=\"0.5\" ampEnvAttack=\"0.25\" ampEnvRelease=\"3\">"
+              "<group release=\"1\" ampEnvDelay=\"0.1\" ampEnvHold=\"0.2\" ampEnvDecay=\"0.4\" ampEnvSustain=\"0.5\">"
+              "<sample path=\"Samples/Low.wav\" rootNote=\"60\" loNote=\"60\" hiNote=\"60\"/></group>"
+              "<group trigger=\"release\" hiHoldTime=\"0.5\">"
+              "<sample path=\"Samples/high.wav\" rootNote=\"60\" loNote=\"60\" hiNote=\"60\"/></group>"
+              "<group trigger=\"release\" loHoldTime=\"0.5\">"
+              "<sample path=\"Samples/Low.wav\" rootNote=\"60\" loNote=\"60\" hiNote=\"60\"/></group>"
+              "</groups></DecentSampler>");
+    const SfzParser::Result spelled_result = DecentSamplerParser::parse(spelled);
+    expect(spelled_result.instrument != nullptr && spelled_result.instrument->regions.size() == 3,
+           "the preset with ampEnv spellings parses: " + spelled_result.error);
+    if (spelled_result.instrument != nullptr && spelled_result.instrument->regions.size() == 3) {
+      const auto& regions = spelled_result.instrument->regions;
+      close(regions[0].ampeg.attack, 0.25, "ampEnvAttack wins over attack on the same element");
+      close(regions[0].ampeg.release, 1.0, "the group's release still wins over the instrument's ampEnvRelease");
+      close(regions[1].ampeg.release, 3.0, "ampEnvRelease is inherited as release");
+      close(regions[0].ampeg.delay, 0.1, "ampEnvDelay");
+      close(regions[0].ampeg.hold, 0.2, "ampEnvHold");
+      close(regions[0].ampeg.decay, 0.4, "ampEnvDecay");
+      close(regions[0].ampeg.sustain, 0.5, "ampEnvSustain");
+      expect(regions[1].held_low == 0.0f && regions[1].held_high == 0.5f, "hiHoldTime ends the range of holds");
+      expect(regions[2].held_low == 0.5f && regions[2].held_high < 0.0f, "loHoldTime starts it, with no upper limit");
+      bool reported = false;
+      for (const std::string& warning : spelled_result.instrument->warnings)
+        reported = reported || juce::String(warning).containsIgnoreCase("ampenv") ||
+                   juce::String(warning).containsIgnoreCase("holdtime");
+      expect(!reported, "none of them is reported as ignored");
+    }
     const Instrument& instrument = *result.instrument;
     expect(instrument.format == "dspreset", "format is dspreset");
     expect(instrument.name == "Piano", "named after the file");
@@ -2828,6 +2901,66 @@ namespace {
     for (PopupMenu::MenuItemIterator it(grouped); it.next();)
       top++;
     expect(top == 3, "one submenu per bank");
+
+    // Previous and Next instrument step through the instruments beside one
+    // loaded from outside the libraries, and are dimmed when it is alone.
+    const juce::File pair = temp.folder.getChildFile("pair"), alone = temp.folder.getChildFile("alone");
+    for (const auto& file : { pair.getChildFile("a.sfz"), pair.getChildFile("b.sfz"), alone.getChildFile("solo.sfz") }) {
+      file.getParentDirectory().createDirectory();
+      writeWav(file.getSiblingFile("tone.wav"), 440.0, kRate / 4);
+      writeText(file, "<region> sample=tone.wav\n");
+    }
+    auto step_button = [&](const char* title) {
+      return section() ? dynamic_cast<Button*>(titledExactly(*section(), title)) : nullptr;
+    };
+    auto steps_enabled = [&] {
+      return step_button("Previous instrument") && step_button("Previous instrument")->isEnabled() &&
+             step_button("Next instrument") && step_button("Next instrument")->isEnabled();
+    };
+    auto status_names = [&](const String& name) {
+      return section() && findTitled(*section(), [name](const String& t) {
+        return t.startsWith("Instrument: " + name + ",");
+      }) != nullptr;
+    };
+    auto loaded_file = [&] { return juce::File(String::fromUTF8(multisample->spec(0).path.c_str())); };
+    auto step_to = [&](const char* button, const juce::File& expected, const std::string& what) {
+      if (auto* step = step_button(button))
+        step->triggerClick();
+      pumpUntil([&] { return loaded_file() == expected; }, 2000);
+      expect(loaded_file() == expected, what + ", got " + loaded_file().getFileName().toStdString());
+    };
+    multisample->loadFromUser(0, alone.getChildFile("solo.sfz"));
+    pumpUntil([&] { return status_names("solo"); });
+    expect(step_button("Previous instrument") && step_button("Next instrument") && !steps_enabled(),
+           "an instrument alone in its folder dims Previous and Next instrument");
+    multisample->loadFromUser(0, pair.getChildFile("a.sfz"));
+    pumpUntil([&] { return status_names("a") && steps_enabled(); });
+    expect(steps_enabled(), "another instrument in the folder enables Previous and Next instrument");
+    expectAccessibleButton(step_button("Previous instrument"), "Previous instrument");
+    expectAccessibleButton(step_button("Next instrument"), "Next instrument");
+    step_to("Next instrument", pair.getChildFile("b.sfz"), "Next instrument loads the next one in the folder");
+    step_to("Next instrument", pair.getChildFile("a.sfz"), "Next instrument wraps from the last to the first");
+    step_to("Previous instrument", pair.getChildFile("b.sfz"), "Previous instrument wraps from the first to the last");
+
+    // A step to another kind of instrument rebuilds the slot's rows: the
+    // focus stays on the button, so the next press steps on.
+    writeFont(testFont(), pair.getChildFile("c.sf2"));
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    editor.toFront(true);
+    pumpUntil([] { return false; }, 200);
+    if (auto* next_instrument = step_button("Next instrument")) {
+      editor.ensureComponentVisible(next_instrument);
+      next_instrument->grabKeyboardFocus();
+    }
+    expect(Component::getCurrentlyFocusedComponent() == step_button("Next instrument"), "Next instrument takes the focus");
+    step_to("Next instrument", pair.getChildFile("c.sf2"), "Next instrument reaches a SoundFont added to the folder");
+    pumpUntil([&] { return section() != nullptr && titledExactly(*section(), "1 Instrument preset") != nullptr; });
+    auto* focused = Component::getCurrentlyFocusedComponent();
+    expect(focused != nullptr && focused == step_button("Next instrument"),
+           "focus stays on Next instrument when the rows change, on " +
+           (focused != nullptr ? focused->getTitle().toStdString() : std::string("nothing")));
+
     container::setCacheRootForTesting({});
     return finish("editor");
   }

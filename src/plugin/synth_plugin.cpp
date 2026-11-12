@@ -605,8 +605,18 @@ AudioProcessorEditor* SynthPlugin::createEditor() {
   // against whatever Atlas folder the config names.
   const atlas::library::MigrationReport migration =
       loadedByHost() ? atlas::library::migrateIfNeeded() : atlas::library::MigrationReport();
+  // What an installer left in the default folder while the library is
+  // somewhere else joins the library, once in a process and never while the
+  // library is being moved.
+  static std::once_flag installed_content;
+  if (loadedByHost() && !atlas::library::relocationRunning())
+    std::call_once(installed_content, [] {
+      atlas::library::adoptInstalledContent(LoadSave::getDataDirectory(), LoadSave::getDefaultDataDirectory());
+    });
   auto* editor = new SynthEditor(*this);
   editor->announceLibraryMigration(migration);
+  if (loadedByHost())
+    editor->announceMissingLibrary();
   return editor;
 }
 

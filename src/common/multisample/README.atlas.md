@@ -47,7 +47,7 @@ Behaviour matches sfizz and FluidSynth where noted below.
   - `offset`, `offset_random`, `end` (`end=0` or `-1` silences a region), `delay`.
   - `loop_mode`, `loop_start`, `loop_end`. A loop stored in the WAV file is used when the SFZ names none.
   - `sample=*silence` regions play nothing but still trigger choke groups.
-- **Envelope:** `ampeg_delay|start|attack|hold|decay|sustain|release`, plus their `_onccN`/`ccN` forms, which add at note-on through their curve (linearly without one). With `ampeg_dynamic=1` the release and sustain follow their CCs while the note plays, and a release under way goes on at the new rate. The Experience NY S&S Model B lengthens the release to 15 s with the pedal down this way, and lifting the pedal damps the strings. Decay and release fall exponentially, reaching -96 dB at the release time.
+- **Envelope:** `ampeg_delay|start|attack|hold|decay|sustain|release`, plus their `_onccN`/`ccN` forms, which add at note-on through their curve (linearly without one). With `ampeg_dynamic=1` the release and sustain follow their CCs while the note plays, and a release under way goes on at the new rate. The Experience NY S&S Model B lengthens the release to 15 s with the pedal down this way, and lifting the pedal damps the strings. Decay and release fall exponentially, reaching -96 dB at the release time. No release is shorter than 6 ms: the 1 ms default is a cut that clicks, and sfizz has the same floor (its off time).
 - **Choke:** `group` (`polyphony_group`), `off_by`, `off_mode=fast|normal|time` and `off_time`.
 - **Controls:** `set_ccN`, `set_hdccN` and `label_ccN`.
 - **Ignored and reported:**
@@ -72,8 +72,8 @@ same way, from the preset's folder, ignoring case when the exact path is missing
   - `pan` inherits; `globalPan` and `groupPan` add to it, clamped to ±100.
   - `ampVelTrack` (default 1) with gain linear in velocity, so velocity 64 plays at about half.
 - **Playback:** `start`, `end` (inclusive), `delay` in seconds (`delayUnit=beats|samples` is reported), `loopEnabled`, `loopStart`, `loopEnd` (inclusive), `loopMode="pingpong"` (the loop plays forward to its last frame and back to its first; other modes play forward and are reported) and `loopDuringRelease="false"` (loop until release). Without `loopEnabled`, a loop stored in the WAV file is used, as for SFZ. `ampEnvEnabled="false"` plays to the end of the sample.
-- **Envelope:** `attack`, `decay`, `sustain` and `release`. DecentSampler documents no defaults; Atlas uses no attack or decay, full sustain and a 0.1 s release.
-- **Release samples:** `releaseTriggerDecay` in dB per second (`"3dB"`), or a linear share lost per second.
+- **Envelope:** `attack`, `decay`, `sustain` and `release`, also written `ampEnvAttack`, `ampEnvDecay`, `ampEnvSustain` and `ampEnvRelease`, which win where an element has both. `ampEnvDelay` keeps the note silent before the attack and `ampEnvHold` keeps it at full level before the decay. DecentSampler documents no defaults; Atlas uses no attack or decay, full sustain and a 0.1 s release.
+- **Release samples:** `releaseTriggerDecay` in dB per second (`"3dB"`), or a linear share lost per second. `loHoldTime` and `hiHoldTime`, in seconds, choose a release sample by how long the note was held: from `loHoldTime` up to, not including, `hiHoldTime`. DecentSampler counts the key's own time; Atlas counts up to the note-off its voice gets, which under the sustain pedal is when the pedal lifts.
 - **Tags:**
   - `tags` on groups and samples. `<tags>` sets each tag's `volume` and `enabled`.
   - `silencedByTags` becomes a choke group, with `silencingMode=fast|normal` and `silencingDecay`. Atlas regions have one choke group each, so a sample with several silencing tags chokes through the first one, and a `silencedByTags` list uses its first tag. Both cases are reported.
@@ -105,7 +105,7 @@ same way, from the preset's folder, ignoring case when the exact path is missing
   - `overridingRootKey`, `coarseTune`, `fineTune`, `scaleTuning` and the sample's pitch correction.
   - `pan`.
   - `initialAttenuation`, scaled by 0.4 as EMU hardware, FluidSynth and Polyphone do.
-  - The volume envelope: `delayVolEnv`, `attackVolEnv`, `holdVolEnv`, `decayVolEnv`, `sustainVolEnv`, `releaseVolEnv`, `keynumToVolEnvHold` and `keynumToVolEnvDecay`.
+  - The volume envelope: `delayVolEnv`, `attackVolEnv`, `holdVolEnv`, `decayVolEnv`, `sustainVolEnv`, `releaseVolEnv`, `keynumToVolEnvHold` and `keynumToVolEnvDecay`. The release is never shorter than -7200 timecents, about 16 ms, FluidSynth's floor against clicks; the format's default is 1 ms.
   - `exclusiveClass` becomes a choke group that cuts itself.
 - **Velocity:** follows the default velocity-to-attenuation modulator, so gain is velocity squared. Other modulators (`pmod`, `imod`) are ignored.
 - **Presets:** every preset in the file is listed. Switching presets rebuilds only the regions; the sample pool is shared.

@@ -150,6 +150,10 @@ namespace multisample {
     std::vector<std::pair<int, float>> velocity_points;
     std::array<float, 128> velocity_gain {};
     float rt_decay = 0.0f;
+    // A release-triggered region plays for notes held this many seconds: from
+    // held_low up to, not including, held_high (below zero: no upper limit).
+    float held_low = 0.0f;
+    float held_high = -1.0f;
     float delay = 0.0f;
 
     std::vector<CcMod> amplitude_cc;

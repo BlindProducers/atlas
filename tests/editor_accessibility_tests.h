@@ -1286,6 +1286,10 @@ namespace {
            editor.controlForParameter("lfo_1_morph") == nullptr &&
            titled(*editorSection(editor, "LFO 1"), "LFO 1 accessible editor") != nullptr,
            "the Custom view shows the shape editor and Phase, not Morph");
+    expect(editor.controlForParameter("lfo_1_tempo") != nullptr &&
+           editor.controlForParameter("lfo_1_frequency") == nullptr &&
+           editor.controlForParameter("lfo_1_keytrack_transpose") == nullptr,
+           "the Custom view shows only the rate row Sync uses");
 
     editor.ensureComponentVisible(simple);
     simple->grabKeyboardFocus();
@@ -1332,6 +1336,84 @@ namespace {
     focused = Component::getCurrentlyFocusedComponent();
     expect(focused != nullptr && focused == tab("Custom") && tab("Custom")->getToggleState(),
            "focus moves to the Custom tab, now checked");
+
+    // The Custom view follows Sync as the Simple view does.
+    expect(editor.controlForParameter("lfo_1_frequency") != nullptr &&
+           editor.controlForParameter("lfo_1_tempo") == nullptr,
+           "the Custom view keeps Frequency for Sync in seconds");
+    if (auto* sync_menu = dynamic_cast<ComboBox*>(editor.controlForParameter("lfo_1_sync"))) {
+      editor.ensureComponentVisible(sync_menu);
+      sync_menu->grabKeyboardFocus();
+      sync_menu->setSelectedItemIndex(sync_menu->getNumItems() - 1, sendNotificationSync);   // Keytrack
+    }
+    pumpUntil([&] { return editor.controlForParameter("lfo_1_keytrack_transpose") != nullptr; });
+    expect(editor.controlForParameter("lfo_1_keytrack_transpose") != nullptr &&
+           editor.controlForParameter("lfo_1_keytrack_tune") != nullptr &&
+           editor.controlForParameter("lfo_1_frequency") == nullptr &&
+           editor.controlForParameter("lfo_1_tempo") == nullptr &&
+           editor.controlForParameter("lfo_1_rate_x10") != nullptr,
+           "Keytrack in the Custom view shows Transpose and Tune in place of Frequency");
+    focused = Component::getCurrentlyFocusedComponent();
+    expect(focused != nullptr && focused == editor.controlForParameter("lfo_1_sync"),
+           "focus stays on Sync when it changes the Custom view's rows");
+
+    // Hertz is the Sync's last value, listed after Seconds: the rate of
+    // Seconds, read and typed in Hz.
+    const auto frequencyValue = [&]() -> std::unique_ptr<AccessibilityHandler> {
+      auto* frequency = dynamic_cast<Slider*>(editor.controlForParameter("lfo_1_frequency"));
+      return frequency != nullptr ? frequency->createAccessibilityHandler() : nullptr;
+    };
+    if (auto* sync_menu = dynamic_cast<ComboBox*>(editor.controlForParameter("lfo_1_sync"))) {
+      expect(sync_menu->getNumItems() == 6 && sync_menu->getItemText(0) == "Seconds" &&
+             sync_menu->getItemText(1) == "Hertz" && sync_menu->getItemText(2) == "Tempo" &&
+             sync_menu->getItemText(5) == "Keytrack",
+             "an LFO's Sync lists Hertz after Seconds");
+      sync_menu->setSelectedItemIndex(1, sendNotificationSync);
+    }
+    pumpUntil([&] { return editor.controlForParameter("lfo_1_frequency") != nullptr; });
+    expect(controls.at("lfo_1_sync")->value() == float(vital::SynthLfo::kHertz) &&
+           editor.controlForParameter("lfo_1_tempo") == nullptr,
+           "Hertz is stored as the Sync's last value and shows Frequency");
+    if (auto handler = frequencyValue()) {
+      handler->getValueInterface()->setValueAsString("0.5 Hz");
+      const String hertz = handler->getValueInterface()->getCurrentValueAsString();
+      expect(hertz == "0.5 Hz", "Frequency reads and takes Hz with Sync on Hertz: " + hertz.toStdString());
+    }
+    else
+      expect(false, "Sync on Hertz shows Frequency as a slider");
+    // The rows are rebuilt for the new readout: wait for the new Frequency row.
+    auto* hertz_row = editor.controlForParameter("lfo_1_frequency");
+    if (auto* sync_menu = dynamic_cast<ComboBox*>(editor.controlForParameter("lfo_1_sync")))
+      sync_menu->setSelectedItemIndex(0, sendNotificationSync);
+    pumpUntil([&] {
+      auto* row = editor.controlForParameter("lfo_1_frequency");
+      return row != nullptr && row != hertz_row;
+    });
+    if (auto handler = frequencyValue()) {
+      const String seconds = handler->getValueInterface()->getCurrentValueAsString();
+      expect(seconds == "2 secs", "back on Seconds the same rate reads in seconds: " + seconds.toStdString());
+    }
+
+    // A random generator follows its Sync the same way.
+    expect(editor.controlForParameter("random_1_tempo") != nullptr &&
+           editor.controlForParameter("random_1_frequency") == nullptr &&
+           editor.controlForParameter("random_1_keytrack_transpose") == nullptr,
+           "Random 1 shows only the rate row Sync uses");
+    if (auto* sync_menu = dynamic_cast<ComboBox*>(editor.controlForParameter("random_1_sync"))) {
+      editor.ensureComponentVisible(sync_menu);
+      sync_menu->grabKeyboardFocus();
+      sync_menu->setSelectedItemIndex(vital::SynthLfo::kTime, sendNotificationSync);
+    }
+    pumpUntil([&] { return editor.controlForParameter("random_1_frequency") != nullptr; });
+    expect(editor.controlForParameter("random_1_frequency") != nullptr &&
+           editor.controlForParameter("random_1_tempo") == nullptr &&
+           editor.controlForParameter("random_1_rate_x10") != nullptr,
+           "Sync in seconds shows Random 1's Rate in place of Tempo");
+    expect(dynamic_cast<ToggleButton*>(editor.controlForParameter("random_1_rate_x10")) != nullptr,
+           "a random generator's 10x Rate is a toggle, as an LFO's is");
+    focused = Component::getCurrentlyFocusedComponent();
+    expect(focused != nullptr && focused == editor.controlForParameter("random_1_sync"),
+           "focus stays on Random 1's Sync when it changes the rows");
 
     atlas::speech::setObserverForTesting(nullptr);
     editor.removeFromDesktop();
@@ -2164,6 +2246,32 @@ namespace {
       }
       return true;
     };
+
+    // Comma and period step from where the focus is, not from the section a
+    // key last reached: a group's letter and Tab move the focus without one.
+    auto envelope_3_then_filters = [&] {
+      press(KeyPress('e', ModifierKeys(), 'e'));
+      press(KeyPress('3', ModifierKeys(), '3'));
+      const bool on_envelope = focused_section() == "Envelope 3";
+      press(KeyPress('f', ModifierKeys(), 'f'));
+      return on_envelope && focused_title() == "Filters";
+    };
+    expect(envelope_3_then_filters(), "E, 3 and F reach Envelope 3 and then the Filters heading");
+    press(period);
+    expect(focused_section() == "Filter 1", "period on the Filters heading goes into Filter 1, got " +
+                                              focused_section().toStdString());
+    envelope_3_then_filters();
+    press(comma);
+    expect(focused_section().isNotEmpty() && !focused_section().startsWith("Envelope") &&
+           !focused_section().startsWith("Filter"),
+           "comma on the Filters heading goes to the section before Filter 1, got " + focused_section().toStdString());
+    envelope_3_then_filters();
+    press(KeyPress(KeyPress::tabKey));
+    const String tabbed_into = focused_section();
+    press(period);
+    expect(tabbed_into == "Filter 1" && focused_section() == "Filter 2",
+           "period after Tab into Filter 1 goes to Filter 2 (Tab reached " + tabbed_into.toStdString() + ", period " +
+           focused_section().toStdString() + ")");
 
     press(KeyPress('f', ModifierKeys(), 'f'));
     for (int digit = 1; digit <= 9 && focused_section() != "Filter 2"; ++digit)
@@ -3382,7 +3490,13 @@ namespace {
                text("modulation_1_amount", 0.0f) == "0%",
            "modulation amounts read from -100% to 100%: " + text("modulation_1_amount", 0.255f).toStdString());
     expect(text("volume", 5473.0404f).endsWith("dB"), "Global Gain keeps its decibels");
-    expect(!text("lfo_1_phase", 0.25f).endsWith("%"), "an LFO phase is a position, not an amount");
+    expect(text("lfo_1_phase", 0.25f) == "25%" && text("lfo_1_phase", 1.0f) == "100%",
+           "an LFO's Phase reads as a percentage of its cycle: " + text("lfo_1_phase", 0.25f).toStdString());
+    close(typed("lfo_1_phase", "50%"), 0.5f, "typing 50% sets Phase to half the cycle");
+    expect(text("lfo_1_stereo", -0.5f) == "0%" && text("lfo_1_stereo", 0.0f) == "50%" &&
+               text("lfo_1_stereo", 0.5f) == "100%",
+           "an LFO's Stereo reads 0% to 100%, 50% by default: " + text("lfo_1_stereo", 0.0f).toStdString());
+    close(typed("lfo_1_stereo", "75%"), 0.25f, "typing 75% sets Stereo halfway above its middle");
     close(typed("osc_1_level", "50%"), 0.5f, "typing 50% sets half the level");
     close(typed("osc_1_level", "25"), 0.25f, "a number beyond 1 is a percentage");
     close(typed("modulation_1_amount", "-25%"), -0.25f, "typing -25% sets a negative amount");
@@ -3475,16 +3589,34 @@ namespace {
       expect(!titled(*group, "Comb Blend Offset") && !titled(*group, "Formant X"),
              "Analog hides comb and vowel controls");
       checkStyles(group, { "12dB", "24dB", "Notch Blend", "Notch Spread", "B/P/N" });
-      auto* blend = slider(group, "Filter blend, low pass to high pass");
-      if (blend) {
-        for (int i = 0; i < 3; ++i) {
+      // Blend names what each style plays at its low end, middle and high end.
+      const StringArray blend_names[] = { { "Low pass", "Band pass", "High pass" },
+                                          { "Low pass", "Band pass", "High pass" },
+                                          { "Low pass", "Notch", "High pass" },
+                                          { "Band pass", "Two notches, 1.00", "Notch" },
+                                          { "Band pass", "Peak", "Notch" } };
+      Slider* blend = nullptr;
+      for (int style = 0; style < 5; ++style) {
+        synth.parameterChanged(filter_prefix + "style", style);
+        pumpEditorEvents();
+        group = editorSection(editor, section, 19);
+        blend = slider(group, "Filter blend");
+        for (int i = 0; blend && i < 3; ++i) {
           blend->setValue(i * 0.5, sendNotificationSync);
-          expect(valueText(blend) == StringArray { "Low pass", "Band pass", "High pass" }[i],
-                 "Filter FX blend announces the pass type");
+          expect(valueText(blend) == blend_names[style][i],
+                 "Filter FX blend names what style " + std::to_string(style) + " plays: " +
+                     valueText(blend).toStdString());
         }
+      }
+      if (blend) {
         blend->setValue(0.25, sendNotificationSync);
-        expect(valueText(blend) == "Between low pass and band pass, 0.50",
-               "Intermediate blend announces the value and surrounding pass types");
+        expect(valueText(blend) == "Between band pass and peak, 0.50",
+               "Intermediate blend announces the value and the responses around it");
+        auto handler = blend->createAccessibilityHandler();
+        handler->getValueInterface()->setValueAsString("Notch");
+        expect(blend->getValue() == 1.0, "Blend takes a typed response name");
+        handler->getValueInterface()->setValueAsString("Between band pass and peak, 0.50");
+        expect(valueText(blend) == "Between band pass and peak, 0.50", "Blend takes its own readout back");
       }
 
       // This change goes through the accessible row; let the normal timer refresh it.
@@ -3501,6 +3633,15 @@ namespace {
                  !titled(*group, "Drive"), "Comb shows its offset and hides drive and vowel controls");
       checkStyles(group, { "Low High Comb", "Low High Flange+", "Low High Flange-",
                            "Band Spread Comb", "Band Spread Flange+", "Band Spread Flange-" });
+      blend = slider(group, "Comb blend");
+      if (blend) {
+        // checkStyles left a Band Spread style, whose blend is the width of its band.
+        blend->setValue(0.5, sendNotificationSync);
+        expect(valueText(blend) == "50%", "A Band Spread comb's blend reads as a percentage");
+      }
+      synth.parameterChanged(filter_prefix + "style", 0);
+      pumpEditorEvents();
+      group = editorSection(editor, section, 19);
       blend = slider(group, "Comb blend");
       if (blend) {
         blend->setValue(0, sendNotificationSync);
@@ -3525,6 +3666,10 @@ namespace {
       pumpEditorEvents();
       group = editorSection(editor, section, 19);
       checkStyles(group, { "Low Shelf", "Low Cut" });
+      if (auto* diode_blend = slider(group, "Filter blend")) {
+        diode_blend->setValue(0.5, sendNotificationSync);
+        expect(valueText(diode_blend) == "50%", "Diode's blend has no response names and reads as a percentage");
+      }
       expect(group && !titled(*group, "Formant X") && !titled(*group, "Comb Blend Offset"),
              "Leaving vowel mode removes its controls");
 
@@ -3542,7 +3687,7 @@ namespace {
         expect(valueText(control).isNotEmpty(), "Every Reverb control has an accessible value");
       }
       expect(group && !titled(*group, "Filter style") && !titled(*group, "Drive") &&
-                 !titled(*group, "Filter blend, low pass to high pass"),
+                 !titled(*group, "Filter blend"),
              "Reverb hides unrelated slope, drive and pass blend controls");
       if (auto* cutoff = slider(group, "Reverb Cutoff")) {
         cutoff->keyPressed(KeyPress(KeyPress::endKey));
@@ -3563,7 +3708,7 @@ namespace {
       pumpEditorEvents();
       group = editorSection(editor, section, 19);
       for (const char* name : { "Distortion Drive", "Distortion Filter Order", "Cutoff", "Resonance",
-                                "Filter blend, low pass to high pass", "Mix" }) {
+                                "Filter blend", "Mix" }) {
         auto* control = group ? titled(*group, name) : nullptr;
         expect(control && control->isVisible() && control->getWidth() > 0,
                std::string("Distortion Filter FX exposes its control: ") + name);

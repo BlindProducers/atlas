@@ -114,6 +114,8 @@ namespace vital {
       const multisample::Region& region = instrument->regions[static_cast<size_t>(index)];
       if (state.velocity < region.lovel || state.velocity > region.hivel || !slot_->passesKeySwitch(region))
         continue;
+      if (held_seconds < region.held_low || (region.held_high >= 0.0f && held_seconds >= region.held_high))
+        continue;
       if (!slot_->advanceSequence(index))
         continue;
       if (!slot_->passesGates(region) || random < region.lorand || random >= region.hirand)

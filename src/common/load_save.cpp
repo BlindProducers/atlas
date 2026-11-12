@@ -2792,6 +2792,21 @@ File LoadSave::getDataDirectory() {
   return directory;
 }
 
+File LoadSave::getLibraryLocation() {
+  const json data = getConfigJson();
+  if (data.is_object() && data.count("data_directory") && data["data_directory"].is_string()) {
+    const String path(data["data_directory"].get<std::string>());
+    if (File::isAbsolutePath(path))
+      return File(path);
+  }
+  return getDefaultDataDirectory();
+}
+
+bool LoadSave::isLibraryLocationMissing() {
+  const File location = getLibraryLocation();
+  return location != getDefaultDataDirectory() && !location.isDirectory();
+}
+
 File LoadSave::getDefaultDataDirectory() {
   return File::getSpecialLocation(File::userDocumentsDirectory)
       .getChildFile("Blind Producers Plugins").getChildFile("Atlas");

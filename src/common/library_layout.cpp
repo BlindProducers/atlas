@@ -8,9 +8,11 @@
 #include "synth_constants.h"
 
 #include <algorithm>
+#include <atomic>
 #include <map>
 #include <mutex>
 #include <set>
+#include <thread>
 
 namespace atlas::library {
 
@@ -1259,6 +1261,527 @@ bool adoptContainerPreset(const juce::File& preset, const juce::File& data_direc
     return false;
   }
   return true;
+}
+
+// ---- The Atlas folder's location ----
+
+namespace {
+  constexpr const char* kDataDirectoryConfigKey = "data_directory";
+  constexpr const char* kPreviousLocationsConfigKey = "previous_data_directories";
+  constexpr int kMaxPreviousLocations = 8;
+  // The editor's preset index, kept in the Atlas folder with full paths.
+  constexpr const char* kPresetIndexName = "AtlasPresetIndex.db";
+  constexpr const char* kMoveFolderPrefix = ".Atlas move ";
+  // The copy, the pass that checks it, and two more for a library that
+  // changed meanwhile.
+  constexpr int kMaxCopyPasses = 4;
+
+  // Whether a folder holds nothing anyone put there: no folders, and only hidden files.
+  bool isEmptyFolder(const juce::File& folder) {
+    juce::Array<juce::File> children;
+    folder.findChildFiles(children, juce::File::findFilesAndDirectories, false);
+    for (const auto& child : children) {
+      if (child.isDirectory() || !(child.isHidden() || isHiddenName(child.getFileName())))
+        return false;
+    }
+    return true;
+  }
+
+  // Rewrites every path in a JSON value that `moves` carried elsewhere.
+  bool followMoves(json& value, const std::vector<Move>& moves) {
+    bool changed = false;
+    if (value.is_string()) {
+      const juce::String path(value.get<std::string>());
+      const juce::String moved = movedPath(path, moves);
+      if (moved != path) {
+        value = moved.toStdString();
+        changed = true;
+      }
+    }
+    else if (value.is_array() || value.is_object()) {
+      for (auto& item : value)
+        changed = followMoves(item, moves) || changed;
+    }
+    return changed;
+  }
+
+  juce::StringArray previousLocations(const json& config) {
+    juce::StringArray locations;
+    if (config.is_object() && config.count(kPreviousLocationsConfigKey) && config[kPreviousLocationsConfigKey].is_array()) {
+      for (const auto& entry : config[kPreviousLocationsConfigKey]) {
+        if (entry.is_string())
+          locations.add(juce::String(entry.get<std::string>()));
+      }
+    }
+    return locations;
+  }
+
+  // The preset index went with the folder; its paths still name the old one.
+  void rebasePresetIndex(const juce::File& from, const juce::File& to) {
+    const juce::File index = to.getChildFile(kPresetIndexName);
+    if (!index.existsAsFile())
+      return;
+    try {
+      json data = json::parse(index.loadFileAsString().toStdString(), nullptr, false);
+      if (!data.is_discarded() && followMoves(data, { { from, to } }))
+        index.replaceWithText(juce::String(data.dump(2)));
+    }
+    catch (const json::exception&) {
+      index.deleteFile();   // the next scan writes it again
+    }
+  }
+
+  enum class CopyEnd { kDone, kCancelled, kFailed };
+
+  // Copies everything in `from` into `staging`, then lists `from` again and
+  // checks each file against what was copied: one that changed or appeared
+  // meanwhile is copied again and one that went is removed, until a pass finds
+  // nothing to do. Sizes are compared, and a file is known to be the one that
+  // was copied by its size and date in `from`, since volumes keep dates at
+  // different resolutions.
+  CopyEnd copyLibrary(const juce::File& from, const juce::File& staging, const std::function<bool()>& cancelled,
+                      const std::function<void(double)>& progress, juce::String& error) {
+    struct Stamp {
+      juce::int64 size = 0;
+      juce::int64 modified = 0;
+      bool operator==(const Stamp& other) const { return size == other.size && modified == other.modified; }
+    };
+    if (!staging.createDirectory()) {
+      error = "Could not write to " + staging.getParentDirectory().getFullPathName();
+      return CopyEnd::kFailed;
+    }
+    std::map<juce::String, Stamp> copied;
+    for (int pass = 0; pass < kMaxCopyPasses; ++pass) {
+      juce::Array<juce::File> entries;
+      from.findChildFiles(entries, juce::File::findFilesAndDirectories, true, "*", juce::File::FollowSymlinks::noCycles);
+      juce::int64 total = 0;
+      if (pass == 0) {
+        for (const auto& entry : entries) {
+          if (!entry.isDirectory())
+            total += entry.getSize();
+        }
+        const juce::int64 free_bytes = staging.getBytesFreeOnVolume();
+        if (free_bytes > 0 && total > free_bytes) {
+          error = "Not enough free space. The library takes " + juce::File::descriptionOfSizeInBytes(total) +
+                  " and that disk has " + juce::File::descriptionOfSizeInBytes(free_bytes) + " free";
+          return CopyEnd::kFailed;
+        }
+      }
+      juce::int64 done = 0;
+      int changes = 0;
+      std::set<juce::String> present;
+      for (const auto& entry : entries) {
+        const juce::String relative = entry.getRelativePathFrom(from);
+        const juce::File target = staging.getChildFile(relative);
+        if (entry.isDirectory()) {
+          if (!target.isDirectory() && !target.createDirectory()) {
+            error = "Could not create " + target.getFullPathName();
+            return CopyEnd::kFailed;
+          }
+          continue;
+        }
+        if (!entry.existsAsFile())
+          continue;   // removed since it was listed
+        present.insert(relative);
+        const Stamp stamp { entry.getSize(), entry.getLastModificationTime().toMilliseconds() };
+        const auto found = copied.find(relative);
+        if (found != copied.end() && found->second == stamp && target.existsAsFile() && target.getSize() == stamp.size)
+          continue;
+        if (cancelled && cancelled())
+          return CopyEnd::kCancelled;
+        if (!target.getParentDirectory().createDirectory() || !entry.copyFileTo(target)) {
+          if (!entry.existsAsFile()) {
+            present.erase(relative);
+            continue;
+          }
+          error = "Could not copy " + relative;
+          return CopyEnd::kFailed;
+        }
+        copied[relative] = stamp;
+        ++changes;
+        done += stamp.size;
+        if (pass == 0 && progress && total > 0)
+          progress(juce::jmin(1.0, static_cast<double>(done) / static_cast<double>(total)));
+      }
+      for (auto it = copied.begin(); it != copied.end();) {
+        if (present.count(it->first) > 0) {
+          ++it;
+          continue;
+        }
+        staging.getChildFile(it->first).deleteFile();
+        it = copied.erase(it);
+        ++changes;
+      }
+      if (pass > 0 && changes == 0)
+        return CopyEnd::kDone;
+    }
+    error = "The library kept changing while it was copied";
+    return CopyEnd::kFailed;
+  }
+
+  std::atomic<bool>& copiesForTesting() {
+    static std::atomic<bool> copies { false };
+    return copies;
+  }
+
+  // The file work of a move, and what is left to do after it.
+  struct MovePlan {
+    Relocation result;
+    bool commit = false;       // the config and favourites are to name `to`
+    bool remove_old = false;   // `from` was copied and is to be removed once they do
+  };
+
+  MovePlan moveLibraryFiles(const juce::File& from, const juce::File& to, const std::function<bool()>& cancelled,
+                            const std::function<void(double)>& progress) {
+    using Outcome = Relocation::Outcome;
+    MovePlan plan;
+    Relocation& result = plan.result;
+    result.from = from;
+    result.to = to;
+    auto fail = [&](const juce::String& error) {
+      result.outcome = Outcome::kFailed;
+      result.error = error;
+      return plan;
+    };
+    if (to == juce::File())
+      return fail("No folder was chosen");
+    if (to == from) {
+      result.outcome = Outcome::kUnchanged;
+      return plan;
+    }
+    if (to.isAChildOf(from))
+      return fail("The folder is inside the library");
+    if (to.existsAsFile())
+      return fail(to.getFullPathName() + " is a file");
+    if (holdsLibrary(to)) {
+      result.outcome = Outcome::kSwitched;
+      plan.commit = true;
+      return plan;
+    }
+    if (to.isDirectory() && !isEmptyFolder(to))
+      return fail(to.getFullPathName() + " is not empty");
+    if (!to.getParentDirectory().createDirectory())
+      return fail("Could not create " + to.getParentDirectory().getFullPathName());
+
+    result.outcome = Outcome::kMoved;
+    if (!from.isDirectory()) {
+      // No library yet: it starts in the new place.
+      if (!to.createDirectory())
+        return fail("Could not create " + to.getFullPathName());
+      plan.commit = true;
+      return plan;
+    }
+    if (cancelled && cancelled()) {
+      result.outcome = Outcome::kCancelled;
+      return plan;
+    }
+    // On the same volume the folder is renamed, all at once. `to` holds
+    // hidden files at most. Across volumes, or with a file of the library open
+    // on Windows, the rename is refused and the library is copied instead.
+    if (to.isDirectory())
+      to.deleteRecursively();
+    if (copiesForTesting().load() || !from.moveFileTo(to)) {
+      const juce::File staging = to.getSiblingFile(kMoveFolderPrefix + juce::Uuid().toString());
+      juce::String error;
+      const CopyEnd copied = copyLibrary(from, staging, cancelled, progress, error);
+      if (copied == CopyEnd::kDone && !staging.moveFileTo(to)) {
+        staging.deleteRecursively();
+        return fail("Could not create " + to.getFullPathName());
+      }
+      if (copied != CopyEnd::kDone) {
+        staging.deleteRecursively();
+        if (copied == CopyEnd::kCancelled) {
+          result.outcome = Outcome::kCancelled;
+          return plan;
+        }
+        return fail(error);
+      }
+      plan.remove_old = true;
+    }
+    rebasePresetIndex(from, to);
+    appendLog(to, "Library moved", { "From " + from.getFullPathName(), "To " + to.getFullPathName() }, {});
+    plan.commit = true;
+    return plan;
+  }
+
+  std::atomic<int>& locationCounter() {
+    static std::atomic<int> generation { 0 };
+    return generation;
+  }
+
+  // The config names `to`, remembers `from` and has its other paths follow a
+  // move; the favourites follow too. After a switch to a library that was
+  // there already, a favourite follows only when that library holds its preset.
+  void commitRelocation(Relocation& result) {
+    const bool moved = result.outcome == Relocation::Outcome::kMoved;
+    const std::vector<Move> moves { { result.from, result.to } };
+    json config = LoadSave::getConfigJson();
+    if (!config.is_object())
+      config = json::object();
+    if (moved)
+      followMoves(config, moves);
+    juce::StringArray previous = previousLocations(config);
+    previous.removeString(result.from.getFullPathName());
+    previous.removeString(result.to.getFullPathName());
+    previous.insert(0, result.from.getFullPathName());
+    previous.removeRange(kMaxPreviousLocations, previous.size());
+    json listed = json::array();
+    for (const auto& location : previous)
+      listed.push_back(location.toStdString());
+    config[kPreviousLocationsConfigKey] = listed;
+    config[kDataDirectoryConfigKey] = result.to.getFullPathName().toStdString();
+    LoadSave::saveJsonToConfig(config);
+
+    if (moved)
+      result.favourites = rewriteFavourites(moves);
+    else {
+      const json favourites = LoadSave::getFavoritesJson();
+      if (favourites.is_object()) {
+        json rewritten = json::object();
+        for (const auto& entry : favourites.items()) {
+          const juce::String key(entry.key());
+          const juce::String followed = movedPath(key, moves);
+          const bool follows = followed != key && juce::File(followed).existsAsFile();
+          result.favourites += follows ? 1 : 0;
+          rewritten[(follows ? followed : key).toStdString()] = entry.value();
+        }
+        if (result.favourites > 0)
+          LoadSave::saveJsonToFavorites(rewritten);
+      }
+    }
+    locationCounter().fetch_add(1);
+  }
+
+  void removeOldFolder(Relocation& result) {
+    result.from.deleteRecursively();
+    result.old_folder_left = result.from.exists();
+  }
+
+  // Moves a folder's files into another across volumes too, replacing files
+  // of the same name. Counts the files moved.
+  bool takeIn(const juce::File& from, const juce::File& to, int& files) {
+    if (!to.createDirectory())
+      return false;
+    bool ok = true;
+    juce::Array<juce::File> children;
+    from.findChildFiles(children, juce::File::findFilesAndDirectories, false);
+    for (const auto& child : children) {
+      const juce::File target = to.getChildFile(child.getFileName());
+      if (child.isDirectory())
+        ok = takeIn(child, target, files) && ok;
+      else if (isHiddenName(child.getFileName()) || child.isHidden())
+        continue;
+      else if (child.moveFileTo(target))
+        ++files;
+      else
+        ok = false;
+    }
+    return ok;
+  }
+
+  // Whether a folder and everything below it holds no file but hidden ones.
+  bool holdsNoFiles(const juce::File& folder) {
+    juce::Array<juce::File> files;
+    folder.findChildFiles(files, juce::File::findFiles, true, "*", juce::File::FollowSymlinks::no);
+    for (const auto& file : files) {
+      if (!(file.isHidden() || isHiddenName(file.getFileName())))
+        return false;
+    }
+    return true;
+  }
+
+  struct RelocationJob {
+    std::mutex mutex;
+    std::thread thread;
+    std::atomic<bool> running { false };
+    std::atomic<bool> cancelled { false };
+    std::atomic<bool> closing { false };
+    std::atomic<double> progress { 0.0 };
+    bool has_result = false;
+    Relocation result;
+
+    ~RelocationJob() {
+      closing.store(true);
+      cancelled.store(true);
+      if (thread.joinable())
+        thread.join();
+    }
+  };
+
+  RelocationJob& relocationJob() {
+    static RelocationJob job;
+    return job;
+  }
+
+  // Writes the config and favourites on the message thread, where every
+  // other writer of them runs, and waits for it. Once the process is closing
+  // the message thread is waiting for this one, so the write happens here.
+  void commitOnMessageThread(Relocation& result, const std::atomic<bool>& closing) {
+    struct Commit {
+      Relocation result;
+      std::atomic<bool> taken { false };
+      juce::WaitableEvent done;
+    };
+    auto* messages = juce::MessageManager::getInstanceWithoutCreating();
+    if (messages == nullptr || messages->isThisTheMessageThread()) {
+      commitRelocation(result);
+      return;
+    }
+    auto commit = std::make_shared<Commit>();
+    commit->result = result;
+    const bool posted = juce::MessageManager::callAsync([commit] {
+      if (!commit->taken.exchange(true)) {
+        commitRelocation(commit->result);
+        commit->done.signal();
+      }
+    });
+    // The message thread may never get to it: the last instance closed and
+    // took the message loop with it, or the thread is held up. The files have
+    // moved by now, so the config must name them whatever happens.
+    constexpr int kWaitMs = 50;
+    constexpr int kMaxWaits = 100;
+    for (int waits = 0; !commit->done.wait(posted ? kWaitMs : 0); ++waits) {
+      const bool stranded = !posted || closing.load() || waits >= kMaxWaits ||
+                            juce::MessageManager::getInstanceWithoutCreating() == nullptr;
+      if (stranded && !commit->taken.exchange(true)) {
+        commitRelocation(commit->result);
+        break;
+      }
+    }
+    result = commit->result;
+  }
+}
+
+bool holdsLibrary(const juce::File& folder) {
+  for (Library library : libraries()) {
+    if (libraryDirectory(library, folder).isDirectory())
+      return true;
+  }
+  return false;
+}
+
+juce::File locationFor(const juce::File& chosen) {
+  if (!chosen.exists() || holdsLibrary(chosen) || (chosen.isDirectory() && isEmptyFolder(chosen)))
+    return chosen;
+  return chosen.getChildFile("Atlas");
+}
+
+Relocation relocate(const juce::File& from, const juce::File& to, const std::function<bool()>& cancelled,
+                    const std::function<void(double)>& progress) {
+  MovePlan plan = moveLibraryFiles(from, to, cancelled, progress);
+  if (plan.commit)
+    commitRelocation(plan.result);
+  if (plan.remove_old)
+    removeOldFolder(plan.result);
+  return plan.result;
+}
+
+void setRelocationCopiesForTesting(bool copies) {
+  copiesForTesting().store(copies);
+}
+
+bool startRelocation(const juce::File& from, const juce::File& to, const juce::File& default_directory) {
+  RelocationJob& job = relocationJob();
+  std::lock_guard<std::mutex> lock(job.mutex);
+  if (job.running.load())
+    return false;
+  if (job.thread.joinable())
+    job.thread.join();
+  job.cancelled.store(false);
+  job.progress.store(0.0);
+  job.has_result = false;
+  job.running.store(true);
+  job.thread = std::thread([&job, from, to, default_directory] {
+    adoptInstalledContent(from, default_directory);
+    MovePlan plan = moveLibraryFiles(from, to, [&job] { return job.cancelled.load(); },
+                                     [&job](double part) { job.progress.store(part); });
+    if (plan.commit)
+      commitOnMessageThread(plan.result, job.closing);
+    if (plan.remove_old)
+      removeOldFolder(plan.result);
+    {
+      std::lock_guard<std::mutex> result_lock(job.mutex);
+      job.result = plan.result;
+      job.has_result = true;
+    }
+    job.running.store(false);
+  });
+  return true;
+}
+
+bool relocationRunning() {
+  return relocationJob().running.load();
+}
+
+double relocationProgress() {
+  return relocationJob().progress.load();
+}
+
+void cancelRelocation() {
+  relocationJob().cancelled.store(true);
+}
+
+bool takeRelocationResult(Relocation& result) {
+  RelocationJob& job = relocationJob();
+  std::lock_guard<std::mutex> lock(job.mutex);
+  if (!job.has_result)
+    return false;
+  result = job.result;
+  job.has_result = false;
+  return true;
+}
+
+int locationGeneration() {
+  return locationCounter().load();
+}
+
+juce::File currentPath(const juce::File& file) {
+  if (file == juce::File() || file.exists())
+    return file;
+  const juce::StringArray previous = previousLocations(LoadSave::getConfigJson());
+  if (previous.isEmpty())
+    return file;
+  const juce::File current = LoadSave::getDataDirectory();
+  for (const auto& location : previous) {
+    if (!juce::File::isAbsolutePath(location))
+      continue;
+    const juce::String followed = movedPath(file.getFullPathName(), { { juce::File(location), current } });
+    if (followed != file.getFullPathName() && juce::File(followed).exists())
+      return juce::File(followed);
+  }
+  return file;
+}
+
+int adoptInstalledContent(const juce::File& data_directory, const juce::File& default_directory) {
+  if (default_directory == juce::File() || data_directory == default_directory || !data_directory.isDirectory() ||
+      default_directory.isAChildOf(data_directory) || data_directory.isAChildOf(default_directory))
+    return 0;
+  const juce::File installed = libraryDirectory(Library::kFactory, default_directory);
+  if (!installed.isDirectory() || holdsNoFiles(installed))
+    return 0;
+  // Only what an installer leaves: the four libraries, and files in Factory alone.
+  juce::Array<juce::File> top;
+  default_directory.findChildFiles(top, juce::File::findFilesAndDirectories, false);
+  for (const auto& child : top) {
+    const bool hidden_file = !child.isDirectory() && (child.isHidden() || isHiddenName(child.getFileName()));
+    Library library;
+    if (hidden_file)
+      continue;
+    if (!child.isDirectory() || !libraryFromName(child.getFileName(), library))
+      return 0;
+    if (library != Library::kFactory && !holdsNoFiles(child))
+      return 0;
+  }
+  int files = 0;
+  const bool complete = takeIn(installed, libraryDirectory(Library::kFactory, data_directory), files);
+  if (complete && holdsNoFiles(default_directory))
+    default_directory.deleteRecursively();
+  if (files > 0)
+    appendLog(data_directory, "Installed content taken in",
+              { juce::String(files) + (files == 1 ? " Factory file" : " Factory files") + " from " +
+                default_directory.getFullPathName() },
+              complete ? juce::StringArray() : juce::StringArray("Some files could not be moved"));
+  return files;
 }
 
 } // namespace atlas::library

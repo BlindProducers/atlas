@@ -418,6 +418,7 @@ namespace vital {
         kDottedMode,
         kTripletMode,
         kKeytrack,
+        kHertzMode,   // kFrequencyMode, which an LFO reads in Hz
         kNumSyncModes
       };
 

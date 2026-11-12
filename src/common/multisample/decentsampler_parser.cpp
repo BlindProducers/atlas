@@ -38,6 +38,19 @@ namespace multisample {
         attributes[lower(element.getAttributeName(i).toStdString())] =
             element.getAttributeValue(i).trim().toStdString();
       }
+      // The envelope's stages have a second spelling, which wins where an
+      // element has both.
+      static const std::pair<const char*, const char*> kEnvelopeSpellings[] = {
+        { "ampenvattack", "attack" }, { "ampenvdecay", "decay" }, { "ampenvsustain", "sustain" },
+        { "ampenvrelease", "release" },
+      };
+      for (const auto& spelling : kEnvelopeSpellings) {
+        const auto found = attributes.find(spelling.first);
+        if (found == attributes.end())
+          continue;
+        attributes[spelling.second] = found->second;
+        attributes.erase(found);
+      }
       return attributes;
     }
 
@@ -103,6 +116,7 @@ namespace multisample {
         "tuningignoreskeytrack", "trigger", "releasetriggerdecay", "tags", "silencedbytags", "silencingmode",
         "silencingdecay", "seqmode", "seqlength", "seqposition", "loopstart", "loopend", "loopenabled",
         "loopduringrelease", "loopmode", "loopcrossfade", "loopcrossfademode", "ampenvenabled", "attack", "decay", "sustain", "release", "ampveltrack", "delay",
+        "ampenvdelay", "ampenvhold", "loholdtime", "hiholdtime",
         "delayunit", "enabled", "name",
         // Informational, or about how DecentSampler reads files rather than how they sound.
         "length", "playbackmode",
@@ -780,6 +794,8 @@ namespace multisample {
                 region.loop_mode_set = true;
               }
 
+              region.ampeg.delay = static_cast<float>(std::max(0.0, inheritedNumber(group, sample, "ampenvdelay", 0.0)));
+              region.ampeg.hold = static_cast<float>(std::max(0.0, inheritedNumber(group, sample, "ampenvhold", 0.0)));
               region.ampeg.attack = static_cast<float>(std::max(0.0, inheritedNumber(group, sample, "attack", 0.0)));
               region.ampeg.decay = static_cast<float>(std::max(0.0, inheritedNumber(group, sample, "decay", 0.0)));
               region.ampeg.sustain = static_cast<float>(
@@ -796,6 +812,12 @@ namespace multisample {
                 region.trigger = Trigger::kLegato;
               else if (trigger == "continuous")
                 continuous++;
+
+              // A release sample plays for keys held from loHoldTime up to,
+              // not including, hiHoldTime.
+              region.held_low = static_cast<float>(std::max(0.0, inheritedNumber(group, sample, "loholdtime", 0.0)));
+              if (const std::string* longest = inherited(group, sample, "hiholdtime"))
+                region.held_high = static_cast<float>(std::max(0.0, toNumber(*longest)));
 
               // "3dB" falls 3 dB per second held; a linear value is the share lost per second.
               if (const std::string* decay = inherited(group, sample, "releasetriggerdecay")) {

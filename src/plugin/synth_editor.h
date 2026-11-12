@@ -383,6 +383,9 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     // Says what the library migration did (SynthPlugin::createEditor runs it
     // before the editor is made), once the editor is up.
     void announceLibraryMigration(const atlas::library::MigrationReport& migration);
+    // Said once in a process: the library's folder is missing, on a drive not
+    // plugged in, and the default folder is used meanwhile.
+    void announceMissingLibrary();
     // The SF2 preset menu: flat for a few presets, otherwise grouped by bank and
     // into runs of 16 programs so every submenu fits on screen (a screen reader
     // reaches only the menu items that are visible). Item ids are list positions + 1.
@@ -495,6 +498,7 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     bool chooseDefaultPatchForTesting(const File& preset) { return chooseDefaultPatch(preset, nullptr); }
     bool resetDefaultPatchForTesting() { return resetDefaultPatch(nullptr); }
     String defaultPatchNameForTesting() const { return defaultPatchName(); }
+    void moveLibraryToForTesting(const File& chosen) { moveLibraryTo(chosen); }
     void initializePatchForTesting() { initializePatch(); }
     // The grouped source menu a parameter row offers (tests walk it like the slot menus).
     PopupMenu createModulationSourceSubmenu(const String& destinationId, std::map<int, String>& choices,
@@ -525,14 +529,17 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     bool shouldShowParameterInSection(const String& sectionName, AudioProcessorParameter* parameter) const;
     bool refreshFilterRowsIfNeeded();
     bool refreshSeedRowsIfNeeded();
-    // An LFO's Simple and Custom views show different rows, and the Simple
-    // view shows the one rate row its Sync uses.
+    // An LFO's Simple and Custom views show different rows, and an LFO or a
+    // random generator ("lfo_1_", "random_1_") shows only the rate rows its
+    // Sync uses.
     static int lfoIndexForParameterId(const String& parameterId);
     bool isLfoSimpleView(int lfo) const;
-    int lfoSyncOption(int lfo) const;
-    int lfoRowLayout(int lfo) const;
+    int syncOption(const String& modulatorPrefix) const;
+    // An LFO's Frequency while its Sync is Hertz: read and typed in Hz.
+    bool lfoFrequencyInHertz(const String& parameterId) const;
+    int modulatorRowLayout(const String& modulatorPrefix) const;
     void setLfoView(int lfo, int view);
-    bool refreshLfoRowsIfNeeded();
+    bool refreshModulatorRowsIfNeeded();
     bool isAnalogOscillator(int oscillator) const;
     int sourceSlotType(int oscillator) const;
     void setAutomationProxyCallbacks(AccessibleParameterRow& row);
@@ -546,6 +553,8 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     // The SectionName of the focused control or its nearest group, so a rebuild
     // can find the same control when several sections share its title.
     String focusedSectionKey() const;
+    // The top-level group the focus is in or on the heading of; empty outside the rows.
+    String focusedGroup() const;
     Component* persistentFocusedComponent() const;
     // Focuses the control a rebuild replaced; false when there is none to focus.
     // refocusScreenReader moves the screen reader to it again once the rows
@@ -667,6 +676,15 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     bool resetDefaultPatch(Component* returnTo);
     // The default patch's name, "Untitled" when it has none; empty with no default patch.
     String defaultPatchName() const;
+    // Settings' Library location group (library_layout.h). Choosing a folder
+    // moves the library there, or uses the library the folder already holds;
+    // Reset moves it back to the default folder. The move runs in the
+    // background, and the timer says how far it is and how it ended.
+    void moveLibraryTo(const File& chosen);
+    void resetLibraryLocation();
+    void cancelLibraryMove();
+    // "Library location: <folder>.", with ", not found" for a folder that is missing.
+    static String libraryLocationText();
     File defaultPatchFile() const;
     // Command Z and Shift Command Z (or Command Y): undoes or redoes the last
     // change, shows the patch as it is then and says what was undone.
@@ -1001,6 +1019,13 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void chooseInstrumentFile(int oscillator);
     void loadInstrumentFile(int oscillator, const File& file);
     void showInstrumentBrowserMenu(int oscillator, Component& target);
+    // What Previous and Next instrument step through for a slot: the
+    // Multisamples of the library its instrument is in, the instruments beside
+    // one loaded from another folder, or every library's with nothing loaded.
+    std::vector<File> instrumentStepFiles(int oscillator);
+    void stepInstrument(int oscillator, int direction);
+    // The two buttons are dimmed while there is no other instrument.
+    void refreshInstrumentStepButtons(int oscillator);
     // Moves an SF2 slot to the previous (-1) or next (1) preset, wrapping.
     void stepInstrumentPreset(int oscillator, int direction);
     void openInstrumentInTextEditor(int oscillator);
@@ -1146,6 +1171,12 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void hideInlineTextPrompt();
     void hideInlineTextPromptNow();
     ValueBridge* parameterBridge(const String& id) const;
+    // The model and style of the filter whose parameter ids start with `prefix`.
+    std::pair<int, int> filterModelAndStyle(const String& prefix) const;
+    // A parameter's value as its row reads it, and the value (0 to 1) for
+    // text typed that way: a filter's Blend reads by its model and style.
+    String parameterValueText(const ValueBridge& bridge, double normalizedValue) const;
+    double parameterValueForText(const ValueBridge& bridge, const String& text) const;
     void setParameterEngineValue(const String& id, float engineValue);
     void randomizeSeed(const String& id);
     void setInternalParameterEngineValue(const String& id, float engineValue);
@@ -1566,7 +1597,7 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     int active_lfo_index_ = 0;
     std::map<String, std::pair<int, int>> last_filter_states_;
     std::map<String, bool> last_seed_modes_;
-    std::map<int, int> last_lfo_layouts_;
+    std::map<String, int> last_modulator_layouts_;
     std::map<String, int> last_oscillator_modes_;
     // An SF2 preset menu lists another SoundFont than its slot plays.
     bool instrument_preset_menu_stale_ = false;
@@ -1647,6 +1678,19 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     FocusReturn share_return_focus_;
     // The Settings window while it is open; closed with the editor.
     Component::SafePointer<DialogWindow> settings_window_;
+    void startLibraryMove(const File& to);
+    void pollLibraryMove();
+    // The paths this instance holds, where the library is now.
+    void followLibraryPaths();
+    // The library is somewhere else than when this editor last looked: its
+    // paths follow and its lists are read again.
+    void followLibraryLocation();
+    // This editor started the move that is running, and says how it goes.
+    bool library_move_started_ = false;
+    int library_move_ticks_ = 0;
+    int library_move_quarter_said_ = 0;
+    int library_generation_seen_ = atlas::library::locationGeneration();
+    File library_directory_seen_;
     // The login dialog (showCommunityLogin) while it is open.
     Component::SafePointer<DialogWindow> login_window_;
     // Where focus was when the save or metadata form opened; it goes back

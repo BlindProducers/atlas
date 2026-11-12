@@ -49,6 +49,7 @@
 #include "synth_strings.h"
 #include "tuning.h"
 #include "utils.h"
+#include "comb_filter.h"
 #include "formant_filter.h"
 #include "ring_mod_filter.h"
 #include "sample_hold_filter.h"
@@ -68,6 +69,7 @@
 #include "wave_window_modifier.h"
 
 #include <algorithm>
+#include <numeric>
 #include <cctype>
 #include <array>
 #include <cmath>
@@ -978,31 +980,114 @@ namespace {
     }
   }
 
-  String filterBlendText(int model, double normalized_value) {
-    const double engine_value = jlimit(0.0, 1.0, normalized_value) * 2.0;
-    if (model == vital::constants::kComb) {
-      if (engine_value <= 0.05)
-        return "Low comb";
-      if (engine_value >= 1.95)
-        return "High comb";
-      return "Low to high comb, " + String(engine_value, 2);
+  // What a filter's Blend plays at the positions that have a name, on the
+  // engine's 0 to 2 scale, as each model's setupFilter mixes its responses.
+  // `between` names every position between the first and last stop where that
+  // has a name of its own; without it a position reads as between its two
+  // neighbours. A model or style whose Blend is an amount rather than a morph
+  // has no stops and reads as a percentage.
+  struct FilterBlendStops {
+    struct Stop {
+      double position;
+      const char* name;
+    };
+    std::array<Stop, 3> stops;
+    int count = 0;
+    const char* between = nullptr;
+  };
+
+  FilterBlendStops filterBlendStops(int model, int style) {
+    static const FilterBlendStops kPasses { { { { 0.0, "Low pass" }, { 1.0, "Band pass" }, { 2.0, "High pass" } } }, 3 };
+    switch (static_cast<vital::constants::FilterModel>(model)) {
+      case vital::constants::kAnalog:
+      case vital::constants::kDirty:
+      case vital::constants::kLadder:
+      case vital::constants::kDigital:
+        switch (style) {
+          case vital::SynthFilter::k12Db:
+          case vital::SynthFilter::k24Db:
+            return kPasses;
+          case vital::SynthFilter::kNotchPassSwap:
+            return { { { { 0.0, "Low pass" }, { 1.0, "Notch" }, { 2.0, "High pass" } } }, 3 };
+          // Two notches, one each side of the cutoff, that meet at the top.
+          case vital::SynthFilter::kDualNotchBand:
+            return { { { { 0.0, "Band pass" }, { 2.0, "Notch" } } }, 2, "Two notches" };
+          case vital::SynthFilter::kBandPeakNotch:
+            return { { { { 0.0, "Band pass" }, { 1.0, "Peak" }, { 2.0, "Notch" } } }, 3 };
+          default:
+            return {};
+        }
+      // Its filter is a 12 dB state variable filter; Style is the distortion type.
+      case vital::constants::kDistortionFilter:
+        return kPasses;
+      // The outputs of 4, 8 and 12 all-pass stages, crossfaded.
+      case vital::constants::kPhase:
+        return { { { { 0.0, "4 stages" }, { 1.0, "8 stages" }, { 2.0, "12 stages" } } }, 3 };
+      // The Band Spread styles' Blend is the width of the band.
+      case vital::constants::kComb:
+        if (vital::CombFilter::getFilterStyle(style) == vital::CombFilter::kLowHighBlend)
+          return { { { { 0.0, "Low comb" }, { 2.0, "High comb" } } }, 2, "Low to high comb" };
+        return {};
+      // Diode's Blend is how much of the lows its shelf or cut takes out.
+      default:
+        return {};
     }
-    if (model == vital::constants::kPhase)
-      return "Phaser blend, " + String(engine_value, 2);
+  }
+
+  String filterBlendText(int model, int style, double normalized_value) {
+    const double engine_value = jlimit(0.0, 1.0, normalized_value) * 2.0;
     if (model == vital::constants::kSampleHoldFilter) {
       const float bits = vital::SampleHoldFilter::crushBits(static_cast<float>(engine_value));
       return bits <= 0.0f ? String("Off") : String(bits, 1) + " bits";
     }
 
-    if (engine_value <= 0.05)
-      return "Low pass";
-    if (std::abs(engine_value - 1.0) <= 0.05)
-      return "Band pass";
-    if (engine_value >= 1.95)
-      return "High pass";
-    if (engine_value < 1.0)
-      return "Between low pass and band pass, " + String(engine_value, 2);
-    return "Between band pass and high pass, " + String(engine_value, 2);
+    const FilterBlendStops blend = filterBlendStops(model, style);
+    if (blend.count == 0)
+      return compactFloat(static_cast<float>(engine_value * 50.0), 1) + "%";
+
+    // A name is read only where the two decimals shown beside it would round
+    // to its position, so nothing between two responses takes one's name.
+    int next = 0;
+    for (; next < blend.count; ++next) {
+      if (std::abs(engine_value - blend.stops[next].position) < 0.005)
+        return blend.stops[next].name;
+      if (blend.stops[next].position > engine_value)
+        break;
+    }
+    const String value = String(engine_value, 2);
+    if (blend.between != nullptr)
+      return String(blend.between) + ", " + value;
+    return "Between " + String(blend.stops[next - 1].name).toLowerCase() + " and " +
+           String(blend.stops[next].name).toLowerCase() + ", " + value;
+  }
+
+  // The Blend position (0 to 1, as the host parameter) for typed text: a name
+  // the readout uses, or a number as the readout shows it, alone or after the
+  // words read with it. Text with neither leaves `current` in place.
+  double filterBlendValueForText(int model, int style, const String& text, double current) {
+    const String typed = text.trim();
+    const FilterBlendStops blend = filterBlendStops(model, style);
+    for (int i = 0; i < blend.count; ++i) {
+      if (typed.equalsIgnoreCase(blend.stops[i].name))
+        return blend.stops[i].position * 0.5;
+    }
+
+    const bool sample_hold = model == vital::constants::kSampleHoldFilter;
+    if (sample_hold && typed.equalsIgnoreCase("off"))
+      return 0.0;
+    const String number = typed.fromLastOccurrenceOf(",", false, false);
+    if (!number.containsAnyOf("0123456789"))
+      return current;
+
+    const double value = number.getDoubleValue();
+    if (sample_hold) {
+      // crushBits the other way; no bits, or 16 and above, is Off.
+      if (value <= 0.0)
+        return 0.0;
+      const double range = vital::SampleHoldFilter::kMaxCrushBits - vital::SampleHoldFilter::kMinCrushBits;
+      return jlimit(0.0, 1.0, (vital::SampleHoldFilter::kMaxCrushBits - value) / range);
+    }
+    return jlimit(0.0, 1.0, value / (blend.count == 0 ? 100.0 : 2.0));
   }
 
   // A preference, so shared by every Atlas instance. The section and preset
@@ -1147,14 +1232,17 @@ namespace {
     return file_path == root_path || file_path.startsWith(root_path + File::getSeparatorString());
   }
 
+  constexpr const char* kInstrumentWildcard = "*.sfz;*.dspreset;*.sf2;*.SFZ;*.DSPRESET;*.SF2";
+
   void refreshBrowserFileCache(std::vector<File>& cache, const std::vector<File>& roots, const String& wildcard,
-                               const std::atomic<bool>* cancelled = nullptr) {
+                               const std::atomic<bool>* cancelled = nullptr, bool subfolders = true) {
     cache.clear();
     for (const auto& root : roots) {
       if (!root.isDirectory())
         continue;
 
-      for (const auto& entry : RangedDirectoryIterator(root, true, wildcard, File::findFiles | File::ignoreHiddenFiles)) {
+      for (const auto& entry : RangedDirectoryIterator(root, subfolders, wildcard,
+                                                       File::findFiles | File::ignoreHiddenFiles)) {
         if (cancelled && cancelled->load(std::memory_order_relaxed)) return;
         cache.push_back(entry.getFile());
       }
@@ -2108,6 +2196,53 @@ namespace {
     return value >= 0.5f ? 1 : 0;
   }
 
+  // "lfo_3_" or "random_2_" for a parameter of an LFO or a random generator,
+  // else empty.
+  String modulatorPrefix(const String& id) {
+    for (const char* kind : { "lfo_", "random_" }) {
+      if (!id.startsWith(kind))
+        continue;
+      const String number = id.substring(String(kind).length()).upToFirstOccurrenceOf("_", false, false);
+      if (number.isNotEmpty() && number.containsOnly("0123456789") && id.startsWith(kind + number + "_"))
+        return kind + number + "_";
+    }
+    return {};
+  }
+
+  // The rate rows of an LFO or a random generator. Its Sync picks the ones it
+  // shows: Frequency for seconds, Tempo for the three tempo options, and
+  // Transpose and Tune for Keytrack.
+  bool isRateRow(const String& suffix) {
+    return suffix == "frequency" || suffix == "tempo" || suffix == "keytrack_transpose" || suffix == "keytrack_tune";
+  }
+
+  bool syncUsesRateRow(const String& suffix, int sync) {
+    if (suffix == "frequency")
+      return sync == vital::SynthLfo::kTime || sync == vital::SynthLfo::kHertz;
+    if (suffix == "tempo")
+      return sync == vital::SynthLfo::kTempo || sync == vital::SynthLfo::kDottedTempo ||
+             sync == vital::SynthLfo::kTripletTempo;
+    return sync == vital::SynthLfo::kKeytrack;
+  }
+
+  // The order a menu lists a choice's values in, where it is not their own:
+  // an LFO's Sync has Hertz, its last value, after Seconds.
+  std::vector<int> menuValueOrder(const String& parameter_id, int steps) {
+    std::vector<int> order(static_cast<size_t>(jmax(0, steps)));
+    std::iota(order.begin(), order.end(), 0);
+    const String modulator = modulatorPrefix(parameter_id);
+    if (steps == vital::SynthLfo::kNumSyncOptions && modulator.startsWith("lfo_") && parameter_id == modulator + "sync")
+      std::rotate(order.begin() + vital::SynthLfo::kTime + 1, order.begin() + vital::SynthLfo::kHertz, order.end());
+    return order;
+  }
+
+  // An LFO's rate with Sync on Hertz. Slow rates keep enough digits to tell
+  // them apart: the range starts below 0.01 Hz.
+  String lfoHertzText(double hertz) {
+    const int decimals = hertz < 0.1 ? 4 : hertz < 1.0 ? 3 : hertz < 10.0 ? 2 : hertz < 100.0 ? 1 : 0;
+    return compactFloat(static_cast<float>(hertz), decimals) + " Hz";
+  }
+
   // Choices that change which rows the editor shows, so choosing one rebuilds
   // it: oscillator type and analog waveform, frequency morph type (Random
   // Amplitudes adds a seed), filter model and style, and the effect slot
@@ -2122,9 +2257,8 @@ namespace {
     const String filter_suffix = filterSuffixForParameter(id);
     if (filter_suffix == "model" || filter_suffix == "style")
       return true;
-    // An LFO's Sync picks which rate row its Simple view shows.
-    if (id.startsWith("lfo_") && id.endsWith("_sync") &&
-        id.fromFirstOccurrenceOf("lfo_", false, false).upToFirstOccurrenceOf("_", false, false).containsOnly("0123456789"))
+    // The Sync of an LFO or a random generator picks which rate rows it shows.
+    if (const String modulator = modulatorPrefix(id); modulator.isNotEmpty() && id == modulator + "sync")
       return true;
     for (const char* variant : { "dimension_expander_mode", "frequency_shifter_mode", "resonator_model", "analoguechorus_model",
                                  "analogueecho_medium", "analoguerotary_model", "analoguewah_model",
@@ -2648,22 +2782,22 @@ namespace {
         continue;
 
       const String suffix = id.fromFirstOccurrenceOf(prefix, false, false);
-      static const std::array<const char*, 8> random_order = {{
+      // As in an LFO, the rate rows Sync picks follow it directly, before 10x Rate.
+      static const std::array<const char*, 9> random_order = {{
         "style",
-        "frequency",
-        "rate_x10",
         "sync",
+        "frequency",
         "tempo",
+        "keytrack_transpose",
+        "keytrack_tune",
+        "rate_x10",
         "sync_type",
         "stereo",
-        "keytrack_transpose",
       }};
       for (int i = 0; i < static_cast<int>(random_order.size()); ++i) {
         if (suffix == random_order[i])
           return 7000 + random * 100 + i;
       }
-      if (suffix == "keytrack_tune")
-        return 7000 + random * 100 + 8;
       return 7000 + random * 100 + 90;
     }
 
@@ -2675,6 +2809,7 @@ namespace {
       const String suffix = id.fromFirstOccurrenceOf(prefix, false, false);
       // The Simple view reads Shape, Morph, Sync, the rate and Trigger Mode
       // in that order; the custom view skips those three and reads the rest.
+      // The rate rows Sync picks follow it directly, before 10x Rate.
       static const std::array<const char*, 19> lfo_order = {{
         "simple_shape",
         "morph",
@@ -2682,10 +2817,10 @@ namespace {
         "sync_type",
         "sync",
         "frequency",
-        "rate_x10",
         "tempo",
         "keytrack_transpose",
         "keytrack_tune",
+        "rate_x10",
         "simple_trigger",
         "view",
         "deform",
@@ -4042,7 +4177,7 @@ namespace {
       const String suffix = id.fromFirstOccurrenceOf("_", false, false).fromFirstOccurrenceOf("_", false, false);
       if (suffix == "frequency") return "Set the free-running LFO rate.";
       if (suffix == "tempo") return "Choose the tempo-synced LFO rate.";
-      if (suffix == "sync") return "Choose seconds, tempo, dotted, triplet, or keytracked timing.";
+      if (suffix == "sync") return "Choose seconds, hertz, tempo, dotted, triplet, or keytracked timing.";
       if (suffix == "sync_type") return "Choose whether the LFO restarts with each note, follows host transport, runs once as an envelope, or runs freely across notes.";
       if (suffix == "phase") return "Set where the LFO cycle starts.";
       if (suffix == "delay_time") return "Delay the LFO after note start.";
@@ -6267,7 +6402,7 @@ class AccessibleParameterRow : public Component {
         combo_.setWantsKeyboardFocus(true);
         // One item per choice in the row's range, named as the row reads it.
         const int steps = parameter_.getNumSteps();
-        for (int i = 0; i < steps; ++i) {
+        for (int i : menuValueOrder(parameter_id, steps)) {
           const double value = steps > 1 ? double(i) / double(steps - 1) : 0.0;
           if (value < min_normalized_value_ - 1.0e-6 || value > max_normalized_value_ + 1.0e-6)
             continue;
@@ -6342,7 +6477,9 @@ class AccessibleParameterRow : public Component {
         };
         slider_.valueFromTextFunction = [this](const String& text) {
           double parameter_value = static_cast<double>(parameter_.getValueForText(text));
-          if (auto* bridge = dynamic_cast<ValueBridge*>(&parameter_))
+          if (value_from_text_)
+            parameter_value = value_from_text_(text);
+          else if (auto* bridge = dynamic_cast<ValueBridge*>(&parameter_))
             parameter_value = accessibleParameterValueForText(*bridge, text);
           return sliderValueForParameterValue(parameter_value);
         };
@@ -6398,6 +6535,12 @@ class AccessibleParameterRow : public Component {
       modulation_removal_sources_callback_ = std::move(sources);
       modulation_remove_callback_ = std::move(remove);
       updateAccessibleCommand();
+    }
+
+    // The parameter value (0 to 1) for text in the row's own readout, where
+    // the parameter's own parsing would not read it.
+    void setValueFromText(std::function<double(const String&)> valueFromText) {
+      value_from_text_ = std::move(valueFromText);
     }
 
     void setValueEntryCallback(std::function<void(const String&, Component&)> callback) {
@@ -6755,7 +6898,9 @@ class AccessibleParameterRow : public Component {
       endParameterChange();
       refresh();
       String value_text = parameter_.getText(parameter_.getValue(), 128);
-      if (auto* bridge = dynamic_cast<ValueBridge*>(&parameter_))
+      if (text_from_value_)
+        value_text = text_from_value_(parameter_.getValue());
+      else if (auto* bridge = dynamic_cast<ValueBridge*>(&parameter_))
         value_text = accessibleParameterText(*bridge, parameter_.getValue());
       postPluginAnnouncement(parameter_.getName(128) + " reset to " + value_text,
                              AccessibilityHandler::AnnouncementPriority::high);
@@ -6767,6 +6912,7 @@ class AccessibleParameterRow : public Component {
     ParameterComboBox combo_;
     OffscreenToggleButton toggle_;
     std::function<String(double)> text_from_value_;
+    std::function<double(const String&)> value_from_text_;
     std::function<bool()> toggle_state_;
     std::function<float(bool)> toggle_value_;
     std::function<PopupMenu(const String&, std::map<int, String>&, int)> modulation_source_submenu_callback_;
@@ -7150,7 +7296,7 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
     table.getHeader().setStretchToFitActive(true);
     table.onFocusGained = [this] { ensurePresetListLoaded(); };
     table.onKeyPressed = [this, table_pointer = &table, kind](const KeyPress& key) {
-      if (key.getKeyCode() == KeyPress::returnKey || key.getKeyCode() == KeyPress::spaceKey) {
+      if (key.getKeyCode() == KeyPress::returnKey) {
         activatePresetFacet(kind, table_pointer->getSelectedRow());
         return true;
       }
@@ -7610,6 +7756,9 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   // the editor was closed before stays.
   synth_.undoHistory().ensureBaseline();
   updateToolbarUndoButtons(false);
+  // The library may have moved while this instance had no editor.
+  library_directory_seen_ = LoadSave::getDataDirectory();
+  followLibraryPaths();
   startTimerHz(20);
 }
 
@@ -8158,6 +8307,16 @@ std::unique_ptr<AccessibleParameterRow> SynthEditor::buildAccessibleParameterRow
         });
   }
 
+  // An LFO's Frequency reads in seconds or, with Sync on Hertz, in Hz.
+  if (const String modulator = modulatorPrefix(parameter_id);
+      modulator.startsWith("lfo_") && parameter_id == modulator + "frequency") {
+    auto row = std::make_unique<AccessibleParameterRow>(
+        parameter, accessibleParameterTitle(sectionName, parameter.getName(128)),
+        [this, bridge](double value) { return parameterValueText(*bridge, value); });
+    row->setValueFromText([this, bridge](const String& text) { return parameterValueForText(*bridge, text); });
+    return row;
+  }
+
   if (parameter_id.startsWith("random_")) {
     const String suffix = parameter_id.fromFirstOccurrenceOf("random_", false, false)
                                       .fromFirstOccurrenceOf("_", false, false);
@@ -8165,18 +8324,19 @@ std::unique_ptr<AccessibleParameterRow> SynthEditor::buildAccessibleParameterRow
       return std::make_unique<AccessibleParameterRow>(parameter, "Style");
     if (suffix == "frequency")
       return std::make_unique<AccessibleParameterRow>(parameter, "Rate");
+    // A toggle, as an LFO's is.
     if (suffix == "rate_x10")
-      return std::make_unique<AccessibleParameterRow>(
-          parameter, "10x rate",
-          [bridge](double value) { return bridge->getText(static_cast<float>(value), 128); }, 1.0, 0.0,
-          String(), String(),
-          "Multiply this random LFO rate by ten", true);
-    if (suffix == "sync")
+      return std::make_unique<AccessibleParameterRow>(parameter, "10x rate");
+    if (suffix == "sync") {
+      // Watched for changes: Sync picks the rate rows.
+      const String modulator = modulatorPrefix(parameter_id);
+      last_modulator_layouts_[modulator] = modulatorRowLayout(modulator);
       return std::make_unique<AccessibleParameterRow>(
           parameter, "Tempo sync type",
           [bridge](double value) { return bridge->getText(static_cast<float>(value), 128); }, 1.0, 0.0,
           String(), String(),
           "Choose seconds, tempo, dotted tempo, triplet tempo, or keytrack timing", true);
+    }
     if (suffix == "tempo")
       return std::make_unique<AccessibleParameterRow>(parameter, "Tempo");
     if (suffix == "sync_type")
@@ -8488,9 +8648,13 @@ std::unique_ptr<AccessibleParameterRow> SynthEditor::buildAccessibleParameterRow
   if (suffix == "blend") {
     const String name = model == vital::constants::kComb ? "Comb blend"
                       : model == vital::constants::kSampleHoldFilter ? "Bit crush"
-                                                                     : "Filter blend, low pass to high pass";
-    return std::make_unique<AccessibleParameterRow>(parameter, name,
-                                                    [model](double value) { return filterBlendText(model, value); });
+                                                                     : "Filter blend";
+    // Read by the model and style of the moment, not the pair the row was built for.
+    auto row = std::make_unique<AccessibleParameterRow>(parameter, name, [this, bridge](double value) {
+      return parameterValueText(*bridge, value);
+    });
+    row->setValueFromText([this, bridge](const String& text) { return parameterValueForText(*bridge, text); });
+    return row;
   }
 
   return std::make_unique<AccessibleParameterRow>(parameter,
@@ -8553,26 +8717,22 @@ bool SynthEditor::shouldShowParameterInSection(const String& sectionName, AudioP
       return !analog;
   }
 
+  // An LFO or a random generator shows only the rate rows its Sync uses.
   // View is the tabs at the top of an LFO. The Simple view shows its shape,
-  // Morph, Sync, the one rate row Sync uses and Trigger Mode; the custom view
-  // shows everything else.
-  if (const int lfo = lfoIndexForParameterId(parameter_id); lfo >= 0) {
-    const String suffix = parameter_id.fromFirstOccurrenceOf("lfo_" + String(lfo + 1) + "_", false, false);
-    if (suffix == "view")
-      return false;
-    const bool simple_only = suffix == "simple_shape" || suffix == "morph" || suffix == "simple_trigger";
-    if (!isLfoSimpleView(lfo))
-      return !simple_only;
-    if (simple_only || suffix == "sync")
-      return true;
-    const int sync = lfoSyncOption(lfo);
-    if (suffix == "frequency")
-      return sync == vital::SynthLfo::kTime;
-    if (suffix == "tempo")
-      return sync != vital::SynthLfo::kTime && sync != vital::SynthLfo::kKeytrack;
-    if (suffix == "keytrack_transpose" || suffix == "keytrack_tune")
-      return sync == vital::SynthLfo::kKeytrack;
-    return false;
+  // Morph, Sync, the rate and Trigger Mode; the custom view shows Sync, the
+  // rate and everything else.
+  if (const String modulator = modulatorPrefix(parameter_id); modulator.isNotEmpty()) {
+    const String suffix = parameter_id.substring(modulator.length());
+    if (isRateRow(suffix))
+      return syncUsesRateRow(suffix, syncOption(modulator));
+    if (const int lfo = lfoIndexForParameterId(parameter_id); lfo >= 0) {
+      if (suffix == "view")
+        return false;
+      if (suffix == "sync")
+        return true;
+      const bool simple_only = suffix == "simple_shape" || suffix == "morph" || suffix == "simple_trigger";
+      return simple_only == isLfoSimpleView(lfo);
+    }
   }
 
   for (int osc = 1; osc <= vital::kNumOscillators; ++osc) {
@@ -8619,19 +8779,7 @@ bool SynthEditor::shouldShowParameterInSection(const String& sectionName, AudioP
   if (!isFilterParameterSuffix(suffix))
     return false;
 
-  const String prefix = filterPrefixForParameter(parameter_id);
-  int model = 0;
-  int style = 0;
-  if (auto* model_bridge = parameterBridge(prefix + "model"))
-    model = static_cast<int>(std::round(model_bridge->convertToEngineValue(model_bridge->getValue())));
-  else if (const auto found = synth_.getControls().find((prefix + "model").toStdString());
-           found != synth_.getControls().end() && found->second != nullptr)
-    model = static_cast<int>(std::round(found->second->value()));   // effect slot filters have no host bridge
-  if (auto* style_bridge = parameterBridge(prefix + "style"))
-    style = static_cast<int>(std::round(style_bridge->convertToEngineValue(style_bridge->getValue())));
-  else if (const auto found = synth_.getControls().find((prefix + "style").toStdString());
-           found != synth_.getControls().end() && found->second != nullptr)
-    style = static_cast<int>(std::round(found->second->value()));
+  auto [model, style] = filterModelAndStyle(filterPrefixForParameter(parameter_id));
   if (model == vital::constants::kFormant)
     style = jlimit(0, vital::FormantFilter::kNumFormantStyles - 1, style);
 
@@ -8700,18 +8848,24 @@ bool SynthEditor::isLfoSimpleView(int lfo) const {
   return roundToInt(engineValueFor(parameterBridge("lfo_" + String(lfo + 1) + "_view"))) == vital::SynthLfo::kSimpleView;
 }
 
-int SynthEditor::lfoSyncOption(int lfo) const {
+int SynthEditor::syncOption(const String& modulatorPrefix) const {
   return jlimit(0, vital::SynthLfo::kNumSyncOptions - 1,
-                roundToInt(engineValueFor(parameterBridge("lfo_" + String(lfo + 1) + "_sync"))));
+                roundToInt(engineValueFor(parameterBridge(modulatorPrefix + "sync"))));
 }
 
-int SynthEditor::lfoRowLayout(int lfo) const {
-  if (!isLfoSimpleView(lfo))
-    return 0;
-  const int sync = lfoSyncOption(lfo);
-  if (sync == vital::SynthLfo::kTime)
-    return 1;
-  return sync == vital::SynthLfo::kKeytrack ? 3 : 2;
+int SynthEditor::modulatorRowLayout(const String& modulatorPrefix) const {
+  const int sync = syncOption(modulatorPrefix);
+  // Hertz shows the row of Seconds with another readout, so it is a layout too.
+  const int rate_rows = sync == vital::SynthLfo::kTime ? 0 : sync == vital::SynthLfo::kKeytrack ? 2 :
+                        sync == vital::SynthLfo::kHertz ? 3 : 1;
+  const int lfo = lfoIndexForParameterId(modulatorPrefix);
+  return rate_rows + (lfo >= 0 && isLfoSimpleView(lfo) ? 4 : 0);
+}
+
+bool SynthEditor::lfoFrequencyInHertz(const String& parameterId) const {
+  const String modulator = modulatorPrefix(parameterId);
+  return modulator.startsWith("lfo_") && parameterId == modulator + "frequency" &&
+         syncOption(modulator) == vital::SynthLfo::kHertz;
 }
 
 void SynthEditor::setLfoView(int lfo, int view) {
@@ -8720,10 +8874,10 @@ void SynthEditor::setLfoView(int lfo, int view) {
   setParameterEngineValue("lfo_" + String(lfo + 1) + "_view", static_cast<float>(view));
 }
 
-bool SynthEditor::refreshLfoRowsIfNeeded() {
+bool SynthEditor::refreshModulatorRowsIfNeeded() {
   bool changed = false;
-  for (auto& layout : last_lfo_layouts_) {
-    const int current = lfoRowLayout(layout.first);
+  for (auto& layout : last_modulator_layouts_) {
+    const int current = modulatorRowLayout(layout.first);
     changed |= layout.second != current;
     layout.second = current;
   }
@@ -8732,7 +8886,8 @@ bool SynthEditor::refreshLfoRowsIfNeeded() {
 
   const String parameter_id = focusedParameterId();
   const String accessible_title = focusedAccessibleTitle();
-  // Every LFO has the same tabs and rows: stay in this one.
+  // Every LFO has the same tabs and rows, and so has every random generator:
+  // stay in this one.
   const String section_key = focusedSectionKey();
   auto* persistent_focus = persistentFocusedComponent();
   keepFocusedSwitchingRow();
@@ -8774,6 +8929,15 @@ String SynthEditor::focusedSectionKey() const {
     const String key = component->getProperties()["SectionName"].toString();
     if (key.isNotEmpty())
       return key;
+  }
+  return {};
+}
+
+String SynthEditor::focusedGroup() const {
+  for (auto* component = Component::getCurrentlyFocusedComponent(); component != nullptr;
+       component = component->getParentComponent()) {
+    if (component->getParentComponent() == &rows_container_)
+      return group_sections_.count(component->getTitle()) != 0 ? component->getTitle() : String();
   }
   return {};
 }
@@ -9719,7 +9883,7 @@ void SynthEditor::clearSectionComponents() {
   rows_.clear();
   last_filter_states_.clear();
   last_seed_modes_.clear();
-  last_lfo_layouts_.clear();
+  last_modulator_layouts_.clear();
   last_oscillator_modes_.clear();
   instrument_preset_menu_stale_ = false;
   rows_container_.removeAllChildren();
@@ -10055,7 +10219,8 @@ void SynthEditor::showAllSections(bool announce) {
       else if (section_name.startsWith("LFO ")) {
         const int lfo = section_name.fromFirstOccurrenceOf("LFO ", false, false).getIntValue() - 1;
         if (isPositiveAndBelow(lfo, vital::kNumLfos)) {
-          last_lfo_layouts_[lfo] = lfoRowLayout(lfo);
+          const String modulator = "lfo_" + String(lfo + 1) + "_";
+          last_modulator_layouts_[modulator] = modulatorRowLayout(modulator);
           const bool simple = isLfoSimpleView(lfo);
           const int tab_x = flatten_section ? 16 : 10;
           const int tab_width = jmax(620, width - (flatten_section ? 32 : 34)) / 2;
@@ -10470,7 +10635,7 @@ namespace {
 // part, read and changed from the keyboard. Tab moves through every control in
 // order, and a screen reader enters one group at a time. Taller than the
 // screen, the groups scroll, and the focused control is scrolled into view.
-class AtlasSettingsContent : public Component, private FocusChangeListener {
+class AtlasSettingsContent : public Component, private FocusChangeListener, private Timer {
   public:
     explicit AtlasSettingsContent(SynthEditor& editor) : editor_(&editor) {
       setTitle("Atlas settings");
@@ -10514,6 +10679,29 @@ class AtlasSettingsContent : public Component, private FocusChangeListener {
       configureButton(reset_default_, "Reset default patch", "Moves the default patch to Trash");
       reset_default_.onClick = [this] { resetDefault(); };
       default_patch_.addChildComponent(reset_default_);
+
+      // Library location: where the Atlas folder is, and moving it.
+      inner_.addAndMakeVisible(library_);
+      library_status_.setTitle("Current library location");
+      library_.addAndMakeVisible(library_status_);
+      library_progress_.setTitle("Library move");
+      library_.addChildComponent(library_progress_);
+      configureButton(choose_library_, "Choose library location...", {});
+      choose_library_.onClick = [this] { chooseLibraryLocation(); };
+      library_.addAndMakeVisible(choose_library_);
+      configureButton(reset_library_, "Reset library location", {});
+      reset_library_.onClick = [this] {
+        if (editor_ != nullptr)
+          editor_->resetLibraryLocation();
+        updateLibraryLocation();
+      };
+      library_.addChildComponent(reset_library_);
+      configureButton(cancel_library_move_, "Cancel library move", {});
+      cancel_library_move_.onClick = [this] {
+        if (editor_ != nullptr)
+          editor_->cancelLibraryMove();
+      };
+      library_.addChildComponent(cancel_library_move_);
 
       // MIDI learn mappings: a button for each removes it.
       inner_.addAndMakeVisible(midi_);
@@ -10634,6 +10822,7 @@ class AtlasSettingsContent : public Component, private FocusChangeListener {
 
       updateTuning();
       updateDefaultPatch();
+      updateLibraryLocation();
       updateMappings();
       updateCommunityControls();
       refreshAccount();
@@ -10694,6 +10883,35 @@ class AtlasSettingsContent : public Component, private FocusChangeListener {
     }
 
     String accountText() const { return account_.getText(); }
+
+    // Read when the window opens, after its buttons, on a timer while a move
+    // runs and when the editor finds the library somewhere else. While a move
+    // runs the group shows how far it is and Cancel library move; Reset
+    // library location shows while the library is not in the default folder.
+    void updateLibraryLocation() {
+      const bool moving = atlas::library::relocationRunning();
+      const bool reset = !moving && LoadSave::getLibraryLocation() != LoadSave::getDefaultDataDirectory();
+      library_status_.setText(SynthEditor::libraryLocationText(), dontSendNotification);
+      if (moving)
+        library_progress_.setText("Moving library, " + String(roundToInt(atlas::library::relocationProgress() * 100.0)) +
+                                      "%.",
+                                  dontSendNotification);
+      if (moving != isTimerRunning()) {
+        if (moving)
+          startTimer(500);
+        else
+          stopTimer();
+      }
+      if (library_progress_.isVisible() == moving && reset_library_.isVisible() == reset)
+        return;
+      // Off a button before it goes, so the focus stays in the window.
+      if ((!reset && reset_library_.hasKeyboardFocus(false)) || (!moving && cancel_library_move_.hasKeyboardFocus(false)))
+        choose_library_.grabKeyboardFocus();
+      library_progress_.setVisible(moving);
+      cancel_library_move_.setVisible(moving);
+      reset_library_.setVisible(reset);
+      layout();
+    }
 
   private:
     void addLink(TextButton& button, const String& title, const String& url) {
@@ -10812,6 +11030,29 @@ class AtlasSettingsContent : public Component, private FocusChangeListener {
       reset_default_.setVisible(chosen);
       layout();
     }
+
+    // Library location. The folder chosen is where the library goes
+    // (atlas::library::locationFor); the editor moves it and says how it went.
+    void chooseLibraryLocation() {
+      if (editor_ == nullptr || library_chooser_ != nullptr)
+        return;
+      library_chooser_ = std::make_unique<FileChooser>("Choose Library Location",
+                                                       LoadSave::getLibraryLocation().getParentDirectory());
+      Component::SafePointer<AtlasSettingsContent> safe_this(this);
+      library_chooser_->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectDirectories,
+                                    [safe_this](const FileChooser& chooser) {
+        if (safe_this == nullptr)
+          return;
+        const File folder = chooser.getResult();
+        if (folder != File() && safe_this->editor_ != nullptr)
+          safe_this->editor_->moveLibraryTo(folder);
+        safe_this->updateLibraryLocation();
+        focusAfterOsWindow(safe_this->choose_library_);
+        safe_this->library_chooser_.reset();
+      });
+    }
+
+    void timerCallback() override { updateLibraryLocation(); }
 
     // MIDI learn mappings. Read when the window opens and after it changes
     // them: reading them takes the audio callback's lock, so nothing polls.
@@ -11051,6 +11292,8 @@ class AtlasSettingsContent : public Component, private FocusChangeListener {
       placeGroup(info_, { &version_, &issue_, &source_, &releases_ });
       placeGroup(tuning_, { &tuning_name_, &load_tuning_, &clear_tuning_ });
       placeGroup(default_patch_, { &default_status_, &browse_default_, &reset_default_ });
+      placeGroup(library_, { &library_status_, &library_progress_, &choose_library_, &reset_library_,
+                             &cancel_library_move_ });
       std::vector<Component*> midi_rows { &midi_status_ };
       for (auto& button : mapping_buttons_)
         midi_rows.push_back(button.get());
@@ -11089,6 +11332,10 @@ class AtlasSettingsContent : public Component, private FocusChangeListener {
     SettingsText default_status_;
     AccessibleTextButton browse_default_, reset_default_;
     std::unique_ptr<FileChooser> default_chooser_;
+    SettingsGroup library_ { "Library location" };
+    SettingsText library_status_, library_progress_;
+    AccessibleTextButton choose_library_, reset_library_, cancel_library_move_;
+    std::unique_ptr<FileChooser> library_chooser_;
     SettingsText midi_status_;
     std::vector<std::pair<int, std::string>> mappings_;
     std::vector<std::unique_ptr<AccessibleTextButton>> mapping_buttons_;
@@ -11281,6 +11528,127 @@ void SynthEditor::showSettings() {
         first->grabKeyboardFocus();
     });
   }
+}
+
+String SynthEditor::libraryLocationText() {
+  return "Library location: " + LoadSave::getLibraryLocation().getFullPathName() +
+         (LoadSave::isLibraryLocationMissing() ? ", not found." : ".");
+}
+
+void SynthEditor::announceMissingLibrary() {
+  static std::atomic<bool> announced { false };
+  if (!LoadSave::isLibraryLocationMissing() || announced.exchange(true))
+    return;
+  const String notice = "Library folder not found: " + LoadSave::getLibraryLocation().getFullPathName() + ". Using " +
+                        LoadSave::getDataDirectory().getFullPathName();
+  MessageManager::callAsync([safe_this = Component::SafePointer<SynthEditor>(this), notice] {
+    if (safe_this != nullptr)
+      postPluginAnnouncement(notice, AccessibilityHandler::AnnouncementPriority::high);
+  });
+}
+
+void SynthEditor::moveLibraryTo(const File& chosen) {
+  startLibraryMove(atlas::library::locationFor(chosen));
+}
+
+void SynthEditor::resetLibraryLocation() {
+  startLibraryMove(LoadSave::getDefaultDataDirectory());
+}
+
+void SynthEditor::cancelLibraryMove() {
+  atlas::library::cancelRelocation();
+}
+
+void SynthEditor::startLibraryMove(const File& to) {
+  // Only in a host is content an installer left in the default folder taken
+  // in first: a test never touches the real Atlas folder.
+  const File installed = synth_.loadedByHost() ? LoadSave::getDefaultDataDirectory() : File();
+  if (!atlas::library::startRelocation(LoadSave::getLibraryLocation(), to, installed)) {
+    postPresetActionAnnouncement("The library is already being moved", AccessibilityHandler::AnnouncementPriority::high);
+    return;
+  }
+  library_move_started_ = true;
+  library_move_ticks_ = 0;
+  library_move_quarter_said_ = 0;
+}
+
+void SynthEditor::pollLibraryMove() {
+  using Outcome = atlas::library::Relocation::Outcome;
+  constexpr auto kHigh = AccessibilityHandler::AnnouncementPriority::high;
+  if (atlas::library::relocationRunning()) {
+    // A rename is over at once and says only how it ended. A copy is said
+    // once it has run for a second, and then at each quarter.
+    constexpr int kTicksBeforeSaying = 20;
+    ++library_move_ticks_;
+    const int quarter = static_cast<int>(atlas::library::relocationProgress() * 4.0);
+    if (library_move_ticks_ == kTicksBeforeSaying)
+      postPresetActionAnnouncement("Moving library", AccessibilityHandler::AnnouncementPriority::medium);
+    else if (library_move_ticks_ > kTicksBeforeSaying && quarter > library_move_quarter_said_ && quarter < 4)
+      postPresetActionAnnouncement("Moving library, " + String(quarter * 25) + " percent",
+                                   AccessibilityHandler::AnnouncementPriority::medium);
+    library_move_quarter_said_ = jmax(library_move_quarter_said_, quarter);
+    return;
+  }
+  library_move_started_ = false;
+  atlas::library::Relocation result;
+  if (!atlas::library::takeRelocationResult(result))
+    return;
+  switch (result.outcome) {
+    case Outcome::kMoved:
+      postPresetActionAnnouncement("Library moved to " + result.to.getFullPathName() +
+                                       (result.old_folder_left
+                                            ? ". The old folder could not be removed: " + result.from.getFullPathName()
+                                            : String()),
+                                   kHigh);
+      break;
+    case Outcome::kSwitched:
+      postPresetActionAnnouncement("Using the library in " + result.to.getFullPathName() +
+                                       (result.from.isDirectory()
+                                            ? ". The library in " + result.from.getFullPathName() + " stays where it is"
+                                            : String()),
+                                   kHigh);
+      break;
+    case Outcome::kUnchanged:
+      postPresetActionAnnouncement("The library is already in " + result.to.getFullPathName(), kHigh);
+      break;
+    case Outcome::kCancelled:
+      postPresetActionAnnouncement("Library move cancelled", kHigh);
+      break;
+    case Outcome::kFailed:
+      postPresetActionAnnouncement("Unable to move the library. " + result.error, kHigh);
+      break;
+  }
+  if (auto* window = settings_window_.getComponent())
+    if (auto* content = dynamic_cast<AtlasSettingsContent*>(window->getContentComponent()))
+      content->updateLibraryLocation();
+}
+
+void SynthEditor::followLibraryPaths() {
+  synth_.setActiveFile(atlas::library::currentPath(synth_.getActiveFile()));
+  synth_.getMultiSampleManager()->followLibraryLocation();
+  if (File::isAbsolutePath(last_preset_path_))
+    last_preset_path_ = atlas::library::currentPath(File(last_preset_path_)).getFullPathName();
+}
+
+void SynthEditor::followLibraryLocation() {
+  library_generation_seen_ = atlas::library::locationGeneration();
+  library_directory_seen_ = LoadSave::getDataDirectory();
+  followLibraryPaths();
+  // Every list read from the old folder is read again when it is next wanted.
+  for (auto& cache : preset_file_caches_)
+    cache.valid = false;
+  wavetable_browser_cache_valid_ = false;
+  sample_browser_cache_valid_ = false;
+  ir_browser_cache_valid_ = false;
+  {
+    const ScopedLock lock(presetBrowserCacheLock());
+    cachedPresetBrowserItemsValid() = false;
+  }
+  if (preset_list_loaded_ || preset_list_loading_)
+    refreshPresetList(false);
+  if (auto* window = settings_window_.getComponent())
+    if (auto* content = dynamic_cast<AtlasSettingsContent*>(window->getContentComponent()))
+      content->updateLibraryLocation();
 }
 
 void SynthEditor::updateToolbarUndoButtons(bool evenIfPending) {
@@ -11524,7 +11892,7 @@ String SynthEditor::keyboardHelpText() {
       "\n"
       "Settings (the Settings button in the toolbar)\n"
       "  Tab / Shift+Tab - Move through the controls of every group: Plugin info, Tuning, "
-      "Default patch, MIDI learn mappings, Accessibility, Online community browser and Keyboard help\n"
+      "Default patch, Library location, MIDI learn mappings, Accessibility, Online community browser and Keyboard help\n"
       "  A screen reader presents each group with its controls inside it\n"
       "  Escape - Close Settings\n";
 
@@ -11701,7 +12069,7 @@ String SynthEditor::undoAnnouncement(const UndoHistory::Outcome& outcome, bool r
   // One control: its name and the value it has now, as its row reads it.
   if (!outcome.reloaded && outcome.controls.size() == 1) {
     if (auto* bridge = parameterBridge(String(outcome.controls.front())))
-      return verb + bridge->getName(128) + ", " + accessibleParameterText(*bridge, bridge->getValue());
+      return verb + bridge->getName(128) + ", " + parameterValueText(*bridge, bridge->getValue());
   }
   String message = verb + outcome.description;
   if (outcome.preset_name_changed)
@@ -12003,6 +12371,9 @@ void SynthEditor::showPresetControls() {
 }
 
 void SynthEditor::ensurePresetListLoaded() {
+  // Another host moved the library, or its drive went or came back.
+  if (LoadSave::getDataDirectory() != library_directory_seen_)
+    followLibraryLocation();
   if (inCommunityCollection())
     ensureCommunityListLoaded();
   if (inCommunityBankCollection())
@@ -12564,8 +12935,6 @@ void SynthEditor::downloadCommunityBank(const PresetBrowserItem& item) {
     }
   }
   data_directory.createDirectory();
-  if (!LoadSave::hasDataDirectory())
-    LoadSave::saveDataDirectory(data_directory);
   const auto& download = beginCommunityDownload(key, name, fetch ? item.file_size : -1);
   const int generation = download.generation;
   const auto download_cancelled = download.cancelled;
@@ -14325,8 +14694,6 @@ void SynthEditor::chooseBankFile() {
 void SynthEditor::importBankFile(const File& file) {
   File data_directory = LoadSave::getDataDirectory();
   data_directory.createDirectory();
-  if (!LoadSave::hasDataDirectory())
-    LoadSave::saveDataDirectory(data_directory);
 
   const auto imported = atlas::library::importBankArchive(file, atlas::library::Library::kThirdParty, data_directory,
                                                           file.getFileNameWithoutExtension());
@@ -16979,6 +17346,47 @@ void SynthEditor::setLfoPointCurve(int curve_index) {
     postLfoAnnouncement("Changed curve for " + String(static_cast<int>(indices.size())) + " selected points");
 }
 
+std::pair<int, int> SynthEditor::filterModelAndStyle(const String& prefix) const {
+  const auto engine_value = [this](const String& id) {
+    if (auto* bridge = parameterBridge(id))
+      return static_cast<int>(std::round(bridge->convertToEngineValue(bridge->getValue())));
+    // Effect slot filters have no host bridge.
+    const auto found = synth_.getControls().find(id.toStdString());
+    return found != synth_.getControls().end() && found->second != nullptr
+        ? static_cast<int>(std::round(found->second->value())) : 0;
+  };
+  return { engine_value(prefix + "model"), engine_value(prefix + "style") };
+}
+
+String SynthEditor::parameterValueText(const ValueBridge& bridge, double normalizedValue) const {
+  const String id = bridge.getParameterId();
+  if (filterSuffixForParameter(id) == "blend") {
+    const auto [model, style] = filterModelAndStyle(filterPrefixForParameter(id));
+    return filterBlendText(model, style, normalizedValue);
+  }
+  // The stored value is the base two logarithm of the rate in Hz.
+  if (lfoFrequencyInHertz(id))
+    return lfoHertzText(std::exp2(bridge.convertToEngineValue(static_cast<float>(normalizedValue))));
+  return accessibleParameterText(bridge, normalizedValue);
+}
+
+double SynthEditor::parameterValueForText(const ValueBridge& bridge, const String& text) const {
+  const String id = bridge.getParameterId();
+  if (filterSuffixForParameter(id) == "blend") {
+    const auto [model, style] = filterModelAndStyle(filterPrefixForParameter(id));
+    return filterBlendValueForText(model, style, text, bridge.getValue());
+  }
+  if (lfoFrequencyInHertz(id)) {
+    const String typed = text.removeCharacters(" ").toLowerCase();
+    const double hertz = typed.getDoubleValue() * (typed.endsWith("khz") || typed.endsWith("k") ? 1000.0 : 1.0);
+    if (hertz <= 0.0)
+      return bridge.getValue();
+    const auto& details = bridge.getDetails();
+    return bridge.convertToPluginValue(jlimit(details.min, details.max, static_cast<float>(std::log2(hertz))));
+  }
+  return accessibleParameterValueForText(bridge, text);
+}
+
 ValueBridge* SynthEditor::parameterBridge(const String& id) const {
   const auto found = parameters_by_id_.find(id);
   return found == parameters_by_id_.end() ? nullptr : found->second;
@@ -19000,7 +19408,7 @@ void SynthEditor::promptForInitialModulationAmount(const String& sourceId, const
       if (auto* amount_bridge = parameterBridge("modulation_" + String(connection + 1) + "_amount"))
         amount = amount_bridge->convertToEngineValue(amount_bridge->getValue());
     peak = modulationTargetValue(*bridge, amount);
-    peak_value = accessibleParameterText(*bridge, peak);
+    peak_value = parameterValueText(*bridge, peak);
     modulation_amount_at_open_ = amount;
   }
   modulation_amount_editor_.setText(peak_value, dontSendNotification);
@@ -19031,11 +19439,11 @@ void SynthEditor::setUpModulationAmountSlider(ValueBridge* destination, double p
   // destination's own, so the slider covers its range in its own steps and
   // reads each value as its control does.
   setParameterSliderSteps(modulation_amount_slider_, *destination, 0.0, 1.0);
-  modulation_amount_slider_.textFromValueFunction = [destination](double value) {
-    return accessibleParameterText(*destination, value);
+  modulation_amount_slider_.textFromValueFunction = [this, destination](double value) {
+    return parameterValueText(*destination, value);
   };
-  modulation_amount_slider_.valueFromTextFunction = [destination](const String& text) {
-    return accessibleParameterValueForText(*destination, text);
+  modulation_amount_slider_.valueFromTextFunction = [this, destination](const String& text) {
+    return parameterValueForText(*destination, text);
   };
   modulation_amount_slider_.setValue(peakValue, dontSendNotification);
   // Backspace (or a double click) goes back to where the destination is now.
@@ -19134,7 +19542,7 @@ void SynthEditor::promptForParameterValue(const String& parameterId, Component& 
   rememberPromptFocus(target);
 
   const String name = bridge->getName(128);
-  String value = accessibleParameterText(*bridge, bridge->getValue());
+  String value = parameterValueText(*bridge, bridge->getValue());
   const int macro_index = macroIndexForControlId(parameterId);
   if (macro_index >= 0 && isMacroBipolar(macro_index))
     value = String(roundToInt((bridge->getValue() * 2.0f - 1.0f) * 100.0f)) + "%";
@@ -19481,7 +19889,7 @@ float SynthEditor::modulationAmountFromPeakText(const String& destinationId, con
   // Modulation is continuous even on stepped controls: Transpose moves by
   // fractions of a semitone. Converting through the control's own value
   // would round 0.5 semitones to a whole step (or to nothing).
-  return modulationAmountForTarget(*bridge, accessibleParameterValueForText(*bridge, trimmed));
+  return modulationAmountForTarget(*bridge, parameterValueForText(*bridge, trimmed));
 }
 
 float SynthEditor::modulationAmountForTarget(const ValueBridge& destination, double targetValue) const {
@@ -19537,7 +19945,7 @@ void SynthEditor::applyParameterValue() {
       value = static_cast<float>(jlimit(0.0, 1.0, normalized));
     }
     else {
-      value = static_cast<float>(accessibleParameterValueForText(*bridge, modulation_amount_editor_.getText()));
+      value = static_cast<float>(parameterValueForText(*bridge, modulation_amount_editor_.getText()));
     }
     const int macro_index = macroIndexForControlId(parameter_id);
     if (macro_index >= 0) {
@@ -19590,7 +19998,7 @@ void SynthEditor::applyParameterValue() {
                                              AccessibilityHandler::AnnouncementPriority::high);
     }
     else {
-      postPluginAnnouncement(bridge->getName(128) + " " + accessibleParameterText(*bridge, bridge->getValue()),
+      postPluginAnnouncement(bridge->getName(128) + " " + parameterValueText(*bridge, bridge->getValue()),
                                              AccessibilityHandler::AnnouncementPriority::high);
     }
   }
@@ -22877,6 +23285,12 @@ void SynthEditor::addMultiSampleControlsGroup(int oscillator, Component& parent,
                               {});
     browse->onClick = [this, oscillator, browse] { showInstrumentBrowserMenu(oscillator, *browse); };
   }
+  // Dimmed while there is no other instrument to step to.
+  add_button("Previous instrument", "Load the previous instrument into " + section_name,
+             [this, oscillator] { stepInstrument(oscillator, -1); })->getProperties().set("InstrumentStep", oscillator);
+  add_button("Next instrument", "Load the next instrument into " + section_name,
+             [this, oscillator] { stepInstrument(oscillator, 1); })->getProperties().set("InstrumentStep", oscillator);
+  refreshInstrumentStepButtons(oscillator);
 
   // The status reads what is loaded; Enter speaks the details.
   const String status_title = instrumentStatusTitle(oscillator);
@@ -23314,6 +23728,70 @@ void SynthEditor::showInstrumentBrowserMenu(int oscillator, Component& target) {
                      });
 }
 
+std::vector<File> SynthEditor::instrumentStepFiles(int oscillator) {
+  auto* manager = synth_.getMultiSampleManager();
+  const std::string path = manager != nullptr ? manager->spec(oscillator).path : std::string();
+  const auto& library_files = presetFiles(PresetFileList::kInstruments);
+  // Nothing loaded: every library's instruments.
+  if (path.empty())
+    return library_files;
+
+  // In a library: all of that library's instruments, whatever folders they are in.
+  const File current(String::fromUTF8(path.c_str()));
+  for (const auto& root : preset_file_caches_[static_cast<size_t>(PresetFileList::kInstruments)].roots) {
+    if (!current.isAChildOf(root))
+      continue;
+    std::vector<File> files;
+    for (const auto& file : library_files) {
+      if (file.isAChildOf(root))
+        files.push_back(file);
+    }
+    return files;
+  }
+
+  // Loaded from another folder: the instruments beside it.
+  std::vector<File> files;
+  refreshBrowserFileCache(files, { current.getParentDirectory() }, kInstrumentWildcard, nullptr, false);
+  return files;
+}
+
+void SynthEditor::stepInstrument(int oscillator, int direction) {
+  auto* manager = synth_.getMultiSampleManager();
+  if (manager == nullptr || !isPositiveAndBelow(oscillator, vital::kNumOscillators))
+    return;
+  const std::string path = manager->spec(oscillator).path;
+  const File current = path.empty() ? File() : File(String::fromUTF8(path.c_str()));
+  const auto files = instrumentStepFiles(oscillator);
+  // With nothing loaded, Next starts at the first and Previous at the last.
+  const File next = files.empty() ? File()
+                  : current == File() && direction < 0 ? files.back() : shiftedBrowserFile(files, current, direction);
+  if (next == File() || next == current) {
+    postPluginAnnouncement("No other instrument found", AccessibilityHandler::AnnouncementPriority::high);
+    return;
+  }
+  loadInstrumentFile(oscillator, next);
+}
+
+void SynthEditor::refreshInstrumentStepButtons(int oscillator) {
+  bool scanned = false;
+  bool others = false;
+  for (auto& component : section_headers_) {
+    const var& property = component != nullptr ? component->getProperties()["InstrumentStep"] : var();
+    if (property.isVoid() || static_cast<int>(property) != oscillator)
+      continue;
+    // One scan for the pair, and none for a slot that shows no buttons.
+    if (!scanned) {
+      auto* manager = synth_.getMultiSampleManager();
+      const std::string path = manager != nullptr ? manager->spec(oscillator).path : std::string();
+      const File current = path.empty() ? File() : File(String::fromUTF8(path.c_str()));
+      for (const auto& file : instrumentStepFiles(oscillator))
+        others = others || file != current;
+      scanned = true;
+    }
+    component->setEnabled(others);
+  }
+}
+
 void SynthEditor::openInstrumentInTextEditor(int oscillator) {
   auto* manager = synth_.getMultiSampleManager();
   const File file = manager != nullptr ? manager->editableFile(oscillator) : File();
@@ -23425,6 +23903,7 @@ void SynthEditor::refreshMultiSampleStatus() {
     }
     syncInstrumentPresetMenu(oscillator);
     syncInstrumentControls(oscillator);
+    refreshInstrumentStepButtons(oscillator);
 
     const String prefix = "Oscillator " + String(oscillator + 1) + " instrument";
     if (status.state == vital::multisample::SlotStatus::kLoading) {
@@ -23989,8 +24468,6 @@ namespace {
       return String(data["effect"].get<std::string>());
     return {};
   }
-
-  constexpr const char* kInstrumentWildcard = "*.sfz;*.dspreset;*.sf2;*.SFZ;*.DSPRESET;*.SF2";
 }
 
 const std::vector<File>& SynthEditor::presetFiles(PresetFileList list) {
@@ -24057,6 +24534,10 @@ void SynthEditor::showPresetFileMenu(PresetFileList list, const std::vector<File
       return;
     if (result == kBrowserRescanMenuId) {
       safe_this->preset_file_caches_[static_cast<size_t>(list)].valid = false;
+      if (list == PresetFileList::kInstruments) {
+        for (int oscillator = 0; oscillator < vital::kNumOscillators; ++oscillator)
+          safe_this->refreshInstrumentStepButtons(oscillator);
+      }
       if (reopen)
         reopen();
       return;
@@ -24390,10 +24871,24 @@ void SynthEditor::moveToSection(int direction) {
     return;
   if (kSectionKeysStepThroughEffectSlots && moveThroughEffectSlots(direction))
     return;
-  int current = section_names_.indexOf(last_section_name_);
+  // The step starts where the focus is. A group's letter, Tab and the arrows
+  // move the focus without a section key, so last_section_name_, the section
+  // a key last reached, only stands in when the focus is outside the rows.
+  int current = section_names_.indexOf(focusedSectionKey());
+  bool on_group_heading = false;
+  if (current < 0) {
+    // On a group's heading: period goes into its first section, and comma to
+    // the section before that.
+    const auto found = group_sections_.find(focusedGroup());
+    if (found != group_sections_.end() && !found->second.isEmpty()) {
+      current = section_names_.indexOf(found->second[0]);
+      on_group_heading = current >= 0;
+    }
+  }
   if (current < 0)
-    current = 0;
-  const String next = section_names_[(current + direction + count) % count];
+    current = jmax(0, section_names_.indexOf(last_section_name_));
+  const int step = on_group_heading && direction > 0 ? 0 : direction;
+  const String next = section_names_[(current + step + count) % count];
   // Back onto an effects chain, the step before the element after it is the
   // chain's last stop: its last slot, or the last grouping inside it.
   if (kSectionKeysStepThroughEffectSlots && direction < 0 && isEffectChainSection(next) &&
@@ -24637,7 +25132,10 @@ bool SynthEditor::focusShortcutTarget(const KeyPress& key) {
 
   if (key.getKeyCode() >= '1' && key.getKeyCode() <= '9') {
     const int index = key.getKeyCode() - '1';
-    const auto found = group_sections_.find(current_group_);
+    // The group the focus is in, however it got there; outside the rows, the
+    // group a letter last chose.
+    const String focused_group = focusedGroup();
+    const auto found = group_sections_.find(focused_group.isNotEmpty() ? focused_group : current_group_);
     if (found != group_sections_.end() && isPositiveAndBelow(index, found->second.size())) {
       selectSectionByName(found->second[index], true);
       return true;
@@ -24891,8 +25389,8 @@ bool SynthEditor::keyPressed(const KeyPress& key) {
       return true;
     }
   }
-  if ((key.getKeyCode() == KeyPress::returnKey || key.getKeyCode() == KeyPress::spaceKey) &&
-      preset_table_.hasKeyboardFocus(true)) {
+  // Return alone: Space in the preset tables is the host's (play and stop).
+  if (key.getKeyCode() == KeyPress::returnKey && preset_table_.hasKeyboardFocus(true)) {
     loadSelectedPreset();
     return true;
   }
@@ -24926,6 +25424,10 @@ void SynthEditor::timerCallback() {
   if (cpu_meter_ != nullptr && cpu_meter_->isShowing())
     cpu_meter_->refresh();
   synth_.dispatchPendingGuiUpdates(*this);
+  if (library_move_started_)
+    pollLibraryMove();
+  if (library_generation_seen_ != atlas::library::locationGeneration())
+    followLibraryLocation();
   updateToolbarUndoButtons(false);
   // Slot rows depend on these choices (Dimension Expander mode, Resonator model).
   // A queued rebuild re-reads every slot, and a swap in progress makes these
@@ -24948,7 +25450,7 @@ void SynthEditor::timerCallback() {
     return;
   if (refreshSeedRowsIfNeeded())
     return;
-  if (refreshLfoRowsIfNeeded())
+  if (refreshModulatorRowsIfNeeded())
     return;
   if (refreshOscillatorModeRowsIfNeeded())
     return;

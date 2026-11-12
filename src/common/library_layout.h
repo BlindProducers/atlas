@@ -243,4 +243,73 @@ juce::File placeInstrument(const juce::File& library_directory, const juce::Stri
 // converted; false with an empty `error` when the preset is no container.
 bool adoptContainerPreset(const juce::File& preset, const juce::File& data_directory, juce::String& error);
 
+// ---- The Atlas folder's location ----
+
+// The config names the Atlas folder (LoadSave::getLibraryLocation), and
+// Settings moves the library to another folder. On the same volume that is one
+// rename. On another volume the library is copied into a hidden folder beside
+// the new place, every file is checked against the original, that folder takes
+// the new name, the config names it and only then is the old folder removed:
+// a failure or a cancel on the way leaves the library where it was. The
+// favourites, the paths in the config and the preset index follow, and the
+// config keeps the folders the library was moved out of
+// (previous_data_directories), so a path saved before the move, in a project's
+// state for one, is still found (currentPath).
+
+// Whether `folder` holds one of the four libraries.
+bool holdsLibrary(const juce::File& folder);
+// Where the library goes when `chosen` is picked: the folder itself when it
+// is missing, empty or holds a library, and an Atlas folder inside otherwise.
+juce::File locationFor(const juce::File& chosen);
+
+struct Relocation {
+  enum class Outcome {
+    kMoved,       // the library is in `to`
+    kSwitched,    // `to` held a library already: it is used as it is, and `from` stays
+    kUnchanged,   // `to` is where the library is
+    kCancelled,
+    kFailed,
+  };
+  Outcome outcome = Outcome::kFailed;
+  juce::File from;
+  juce::File to;
+  juce::String error;              // why it failed
+  int favourites = 0;              // favourites rewritten
+  bool old_folder_left = false;    // moved, but the old folder could not be removed
+};
+// Moves the library in `from` to `to`, which must be missing, empty or hold a
+// library, and never inside `from`. Two libraries are never merged.
+// `cancelled` is asked before each file and `progress` told the part copied,
+// from 0 to 1. Runs on the calling thread.
+Relocation relocate(const juce::File& from, const juce::File& to, const std::function<bool()>& cancelled = {},
+                    const std::function<void(double)>& progress = {});
+// Tests: copy, as onto another volume, where a rename would do.
+void setRelocationCopiesForTesting(bool copies);
+
+// The one move a process runs at a time, on a thread of its own: closing the
+// Settings window or the editor does not stop it, and every instance sees it.
+// Installed content waiting in `default_directory` is taken in first
+// (adoptInstalledContent). The config and favourites are written on the
+// message thread. False while a move is running.
+bool startRelocation(const juce::File& from, const juce::File& to, const juce::File& default_directory);
+bool relocationRunning();
+double relocationProgress();
+void cancelRelocation();
+// The result of the move that ended since the last call; false when there is none.
+bool takeRelocationResult(Relocation& result);
+// Goes up each time a move changes the library location in this process.
+int locationGeneration();
+
+// `file`, or where it went with the library: a path that is gone from a folder
+// the library was moved out of and is in the Atlas folder now.
+juce::File currentPath(const juce::File& file);
+
+// The installers put the Factory banks and every library's empty folders in
+// the default Atlas folder, wherever the library is. While the library is
+// elsewhere and `default_directory` holds nothing but that, its Factory files
+// go into the library's Factory, replacing files of the same name, and the
+// folders left are removed. A default folder holding anything else is left
+// alone. Returns how many files were taken in.
+int adoptInstalledContent(const juce::File& data_directory, const juce::File& default_directory);
+
 } // namespace atlas::library
