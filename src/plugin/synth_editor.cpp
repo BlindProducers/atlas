@@ -7293,7 +7293,7 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
     table.getHeader().setStretchToFitActive(true);
     table.onFocusGained = [this] { ensurePresetListLoaded(); };
     table.onKeyPressed = [this, table_pointer = &table, kind](const KeyPress& key) {
-      if (key.getKeyCode() == KeyPress::returnKey || key.getKeyCode() == KeyPress::spaceKey) {
+      if (key.getKeyCode() == KeyPress::returnKey) {
         activatePresetFacet(kind, table_pointer->getSelectedRow());
         return true;
       }
@@ -25082,8 +25082,8 @@ bool SynthEditor::keyPressed(const KeyPress& key) {
       return true;
     }
   }
-  if ((key.getKeyCode() == KeyPress::returnKey || key.getKeyCode() == KeyPress::spaceKey) &&
-      preset_table_.hasKeyboardFocus(true)) {
+  // Return alone: Space in the preset tables is the host's (play and stop).
+  if (key.getKeyCode() == KeyPress::returnKey && preset_table_.hasKeyboardFocus(true)) {
     loadSelectedPreset();
     return true;
   }

@@ -494,6 +494,12 @@ namespace {
     results->grabKeyboardFocus();
     pumpEditorEvents();
     spoken.messages.clear();
+    // Space is the host's (play and stop): neither the table nor the editor takes it.
+    const KeyPress space(KeyPress::spaceKey, ModifierKeys(), ' ');
+    expect(!results->keyPressed(space) && !editor.keyPressed(space), "Space on the row is left to the host");
+    pumpEditorEvents();
+    expect(!editor.isCommunityDownloadBusy() && !expected.existsAsFile() && synth.getActiveFile() != expected,
+           "Space downloads and loads nothing");
     expect(results->keyPressed(KeyPress(KeyPress::returnKey)), "Return on the row is handled");
     pumpUntil([&] { return !editor.isCommunityDownloadBusy() && synth.getActiveFile() == expected; }, 10000);
     expect(expected.existsAsFile() && sha256OfFile(expected) == sha256OfFile(shared),
