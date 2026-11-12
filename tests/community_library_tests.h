@@ -1975,6 +1975,7 @@ namespace {
       { "Plugin info", "Report an issue on GitHub" },
       { "Tuning", "Load tuning file..." },
       { "Default patch", "Browse default patch..." },
+      { "Library location", "Choose library location..." },
       { "MIDI learn mappings", nullptr },
       { "Accessibility", "Other announcements" },
       { "Online community browser", "Show the community library in the preset browser" },

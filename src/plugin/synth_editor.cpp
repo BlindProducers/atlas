@@ -7753,6 +7753,9 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   // the editor was closed before stays.
   synth_.undoHistory().ensureBaseline();
   updateToolbarUndoButtons(false);
+  // The library may have moved while this instance had no editor.
+  library_directory_seen_ = LoadSave::getDataDirectory();
+  followLibraryPaths();
   startTimerHz(20);
 }
 
@@ -10620,7 +10623,7 @@ namespace {
 // part, read and changed from the keyboard. Tab moves through every control in
 // order, and a screen reader enters one group at a time. Taller than the
 // screen, the groups scroll, and the focused control is scrolled into view.
-class AtlasSettingsContent : public Component, private FocusChangeListener {
+class AtlasSettingsContent : public Component, private FocusChangeListener, private Timer {
   public:
     explicit AtlasSettingsContent(SynthEditor& editor) : editor_(&editor) {
       setTitle("Atlas settings");
@@ -10664,6 +10667,29 @@ class AtlasSettingsContent : public Component, private FocusChangeListener {
       configureButton(reset_default_, "Reset default patch", "Moves the default patch to Trash");
       reset_default_.onClick = [this] { resetDefault(); };
       default_patch_.addChildComponent(reset_default_);
+
+      // Library location: where the Atlas folder is, and moving it.
+      inner_.addAndMakeVisible(library_);
+      library_status_.setTitle("Current library location");
+      library_.addAndMakeVisible(library_status_);
+      library_progress_.setTitle("Library move");
+      library_.addChildComponent(library_progress_);
+      configureButton(choose_library_, "Choose library location...", {});
+      choose_library_.onClick = [this] { chooseLibraryLocation(); };
+      library_.addAndMakeVisible(choose_library_);
+      configureButton(reset_library_, "Reset library location", {});
+      reset_library_.onClick = [this] {
+        if (editor_ != nullptr)
+          editor_->resetLibraryLocation();
+        updateLibraryLocation();
+      };
+      library_.addChildComponent(reset_library_);
+      configureButton(cancel_library_move_, "Cancel library move", {});
+      cancel_library_move_.onClick = [this] {
+        if (editor_ != nullptr)
+          editor_->cancelLibraryMove();
+      };
+      library_.addChildComponent(cancel_library_move_);
 
       // MIDI learn mappings: a button for each removes it.
       inner_.addAndMakeVisible(midi_);
@@ -10784,6 +10810,7 @@ class AtlasSettingsContent : public Component, private FocusChangeListener {
 
       updateTuning();
       updateDefaultPatch();
+      updateLibraryLocation();
       updateMappings();
       updateCommunityControls();
       refreshAccount();
@@ -10844,6 +10871,35 @@ class AtlasSettingsContent : public Component, private FocusChangeListener {
     }
 
     String accountText() const { return account_.getText(); }
+
+    // Read when the window opens, after its buttons, on a timer while a move
+    // runs and when the editor finds the library somewhere else. While a move
+    // runs the group shows how far it is and Cancel library move; Reset
+    // library location shows while the library is not in the default folder.
+    void updateLibraryLocation() {
+      const bool moving = atlas::library::relocationRunning();
+      const bool reset = !moving && LoadSave::getLibraryLocation() != LoadSave::getDefaultDataDirectory();
+      library_status_.setText(SynthEditor::libraryLocationText(), dontSendNotification);
+      if (moving)
+        library_progress_.setText("Moving library, " + String(roundToInt(atlas::library::relocationProgress() * 100.0)) +
+                                      "%.",
+                                  dontSendNotification);
+      if (moving != isTimerRunning()) {
+        if (moving)
+          startTimer(500);
+        else
+          stopTimer();
+      }
+      if (library_progress_.isVisible() == moving && reset_library_.isVisible() == reset)
+        return;
+      // Off a button before it goes, so the focus stays in the window.
+      if ((!reset && reset_library_.hasKeyboardFocus(false)) || (!moving && cancel_library_move_.hasKeyboardFocus(false)))
+        choose_library_.grabKeyboardFocus();
+      library_progress_.setVisible(moving);
+      cancel_library_move_.setVisible(moving);
+      reset_library_.setVisible(reset);
+      layout();
+    }
 
   private:
     void addLink(TextButton& button, const String& title, const String& url) {
@@ -10962,6 +11018,29 @@ class AtlasSettingsContent : public Component, private FocusChangeListener {
       reset_default_.setVisible(chosen);
       layout();
     }
+
+    // Library location. The folder chosen is where the library goes
+    // (atlas::library::locationFor); the editor moves it and says how it went.
+    void chooseLibraryLocation() {
+      if (editor_ == nullptr || library_chooser_ != nullptr)
+        return;
+      library_chooser_ = std::make_unique<FileChooser>("Choose Library Location",
+                                                       LoadSave::getLibraryLocation().getParentDirectory());
+      Component::SafePointer<AtlasSettingsContent> safe_this(this);
+      library_chooser_->launchAsync(FileBrowserComponent::openMode | FileBrowserComponent::canSelectDirectories,
+                                    [safe_this](const FileChooser& chooser) {
+        if (safe_this == nullptr)
+          return;
+        const File folder = chooser.getResult();
+        if (folder != File() && safe_this->editor_ != nullptr)
+          safe_this->editor_->moveLibraryTo(folder);
+        safe_this->updateLibraryLocation();
+        focusAfterOsWindow(safe_this->choose_library_);
+        safe_this->library_chooser_.reset();
+      });
+    }
+
+    void timerCallback() override { updateLibraryLocation(); }
 
     // MIDI learn mappings. Read when the window opens and after it changes
     // them: reading them takes the audio callback's lock, so nothing polls.
@@ -11201,6 +11280,8 @@ class AtlasSettingsContent : public Component, private FocusChangeListener {
       placeGroup(info_, { &version_, &issue_, &source_, &releases_ });
       placeGroup(tuning_, { &tuning_name_, &load_tuning_, &clear_tuning_ });
       placeGroup(default_patch_, { &default_status_, &browse_default_, &reset_default_ });
+      placeGroup(library_, { &library_status_, &library_progress_, &choose_library_, &reset_library_,
+                             &cancel_library_move_ });
       std::vector<Component*> midi_rows { &midi_status_ };
       for (auto& button : mapping_buttons_)
         midi_rows.push_back(button.get());
@@ -11239,6 +11320,10 @@ class AtlasSettingsContent : public Component, private FocusChangeListener {
     SettingsText default_status_;
     AccessibleTextButton browse_default_, reset_default_;
     std::unique_ptr<FileChooser> default_chooser_;
+    SettingsGroup library_ { "Library location" };
+    SettingsText library_status_, library_progress_;
+    AccessibleTextButton choose_library_, reset_library_, cancel_library_move_;
+    std::unique_ptr<FileChooser> library_chooser_;
     SettingsText midi_status_;
     std::vector<std::pair<int, std::string>> mappings_;
     std::vector<std::unique_ptr<AccessibleTextButton>> mapping_buttons_;
@@ -11431,6 +11516,127 @@ void SynthEditor::showSettings() {
         first->grabKeyboardFocus();
     });
   }
+}
+
+String SynthEditor::libraryLocationText() {
+  return "Library location: " + LoadSave::getLibraryLocation().getFullPathName() +
+         (LoadSave::isLibraryLocationMissing() ? ", not found." : ".");
+}
+
+void SynthEditor::announceMissingLibrary() {
+  static std::atomic<bool> announced { false };
+  if (!LoadSave::isLibraryLocationMissing() || announced.exchange(true))
+    return;
+  const String notice = "Library folder not found: " + LoadSave::getLibraryLocation().getFullPathName() + ". Using " +
+                        LoadSave::getDataDirectory().getFullPathName();
+  MessageManager::callAsync([safe_this = Component::SafePointer<SynthEditor>(this), notice] {
+    if (safe_this != nullptr)
+      postPluginAnnouncement(notice, AccessibilityHandler::AnnouncementPriority::high);
+  });
+}
+
+void SynthEditor::moveLibraryTo(const File& chosen) {
+  startLibraryMove(atlas::library::locationFor(chosen));
+}
+
+void SynthEditor::resetLibraryLocation() {
+  startLibraryMove(LoadSave::getDefaultDataDirectory());
+}
+
+void SynthEditor::cancelLibraryMove() {
+  atlas::library::cancelRelocation();
+}
+
+void SynthEditor::startLibraryMove(const File& to) {
+  // Only in a host is content an installer left in the default folder taken
+  // in first: a test never touches the real Atlas folder.
+  const File installed = synth_.loadedByHost() ? LoadSave::getDefaultDataDirectory() : File();
+  if (!atlas::library::startRelocation(LoadSave::getLibraryLocation(), to, installed)) {
+    postPresetActionAnnouncement("The library is already being moved", AccessibilityHandler::AnnouncementPriority::high);
+    return;
+  }
+  library_move_started_ = true;
+  library_move_ticks_ = 0;
+  library_move_quarter_said_ = 0;
+}
+
+void SynthEditor::pollLibraryMove() {
+  using Outcome = atlas::library::Relocation::Outcome;
+  constexpr auto kHigh = AccessibilityHandler::AnnouncementPriority::high;
+  if (atlas::library::relocationRunning()) {
+    // A rename is over at once and says only how it ended. A copy is said
+    // once it has run for a second, and then at each quarter.
+    constexpr int kTicksBeforeSaying = 20;
+    ++library_move_ticks_;
+    const int quarter = static_cast<int>(atlas::library::relocationProgress() * 4.0);
+    if (library_move_ticks_ == kTicksBeforeSaying)
+      postPresetActionAnnouncement("Moving library", AccessibilityHandler::AnnouncementPriority::medium);
+    else if (library_move_ticks_ > kTicksBeforeSaying && quarter > library_move_quarter_said_ && quarter < 4)
+      postPresetActionAnnouncement("Moving library, " + String(quarter * 25) + " percent",
+                                   AccessibilityHandler::AnnouncementPriority::medium);
+    library_move_quarter_said_ = jmax(library_move_quarter_said_, quarter);
+    return;
+  }
+  library_move_started_ = false;
+  atlas::library::Relocation result;
+  if (!atlas::library::takeRelocationResult(result))
+    return;
+  switch (result.outcome) {
+    case Outcome::kMoved:
+      postPresetActionAnnouncement("Library moved to " + result.to.getFullPathName() +
+                                       (result.old_folder_left
+                                            ? ". The old folder could not be removed: " + result.from.getFullPathName()
+                                            : String()),
+                                   kHigh);
+      break;
+    case Outcome::kSwitched:
+      postPresetActionAnnouncement("Using the library in " + result.to.getFullPathName() +
+                                       (result.from.isDirectory()
+                                            ? ". The library in " + result.from.getFullPathName() + " stays where it is"
+                                            : String()),
+                                   kHigh);
+      break;
+    case Outcome::kUnchanged:
+      postPresetActionAnnouncement("The library is already in " + result.to.getFullPathName(), kHigh);
+      break;
+    case Outcome::kCancelled:
+      postPresetActionAnnouncement("Library move cancelled", kHigh);
+      break;
+    case Outcome::kFailed:
+      postPresetActionAnnouncement("Unable to move the library. " + result.error, kHigh);
+      break;
+  }
+  if (auto* window = settings_window_.getComponent())
+    if (auto* content = dynamic_cast<AtlasSettingsContent*>(window->getContentComponent()))
+      content->updateLibraryLocation();
+}
+
+void SynthEditor::followLibraryPaths() {
+  synth_.setActiveFile(atlas::library::currentPath(synth_.getActiveFile()));
+  synth_.getMultiSampleManager()->followLibraryLocation();
+  if (File::isAbsolutePath(last_preset_path_))
+    last_preset_path_ = atlas::library::currentPath(File(last_preset_path_)).getFullPathName();
+}
+
+void SynthEditor::followLibraryLocation() {
+  library_generation_seen_ = atlas::library::locationGeneration();
+  library_directory_seen_ = LoadSave::getDataDirectory();
+  followLibraryPaths();
+  // Every list read from the old folder is read again when it is next wanted.
+  for (auto& cache : preset_file_caches_)
+    cache.valid = false;
+  wavetable_browser_cache_valid_ = false;
+  sample_browser_cache_valid_ = false;
+  ir_browser_cache_valid_ = false;
+  {
+    const ScopedLock lock(presetBrowserCacheLock());
+    cachedPresetBrowserItemsValid() = false;
+  }
+  if (preset_list_loaded_ || preset_list_loading_)
+    refreshPresetList(false);
+  if (auto* window = settings_window_.getComponent())
+    if (auto* content = dynamic_cast<AtlasSettingsContent*>(window->getContentComponent()))
+      content->updateLibraryLocation();
 }
 
 void SynthEditor::updateToolbarUndoButtons(bool evenIfPending) {
@@ -11674,7 +11880,7 @@ String SynthEditor::keyboardHelpText() {
       "\n"
       "Settings (the Settings button in the toolbar)\n"
       "  Tab / Shift+Tab - Move through the controls of every group: Plugin info, Tuning, "
-      "Default patch, MIDI learn mappings, Accessibility, Online community browser and Keyboard help\n"
+      "Default patch, Library location, MIDI learn mappings, Accessibility, Online community browser and Keyboard help\n"
       "  A screen reader presents each group with its controls inside it\n"
       "  Escape - Close Settings\n";
 
@@ -12153,6 +12359,9 @@ void SynthEditor::showPresetControls() {
 }
 
 void SynthEditor::ensurePresetListLoaded() {
+  // Another host moved the library, or its drive went or came back.
+  if (LoadSave::getDataDirectory() != library_directory_seen_)
+    followLibraryLocation();
   if (inCommunityCollection())
     ensureCommunityListLoaded();
   if (inCommunityBankCollection())
@@ -12714,8 +12923,6 @@ void SynthEditor::downloadCommunityBank(const PresetBrowserItem& item) {
     }
   }
   data_directory.createDirectory();
-  if (!LoadSave::hasDataDirectory())
-    LoadSave::saveDataDirectory(data_directory);
   const auto& download = beginCommunityDownload(key, name, fetch ? item.file_size : -1);
   const int generation = download.generation;
   const auto download_cancelled = download.cancelled;
@@ -14475,8 +14682,6 @@ void SynthEditor::chooseBankFile() {
 void SynthEditor::importBankFile(const File& file) {
   File data_directory = LoadSave::getDataDirectory();
   data_directory.createDirectory();
-  if (!LoadSave::hasDataDirectory())
-    LoadSave::saveDataDirectory(data_directory);
 
   const auto imported = atlas::library::importBankArchive(file, atlas::library::Library::kThirdParty, data_directory,
                                                           file.getFileNameWithoutExtension());
@@ -25117,6 +25322,10 @@ void SynthEditor::timerCallback() {
   if (cpu_meter_ != nullptr && cpu_meter_->isShowing())
     cpu_meter_->refresh();
   synth_.dispatchPendingGuiUpdates(*this);
+  if (library_move_started_)
+    pollLibraryMove();
+  if (library_generation_seen_ != atlas::library::locationGeneration())
+    followLibraryLocation();
   updateToolbarUndoButtons(false);
   // Slot rows depend on these choices (Dimension Expander mode, Resonator model).
   // A queued rebuild re-reads every slot, and a swap in progress makes these

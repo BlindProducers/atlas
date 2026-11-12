@@ -663,4 +663,149 @@ namespace {
                                                        "Import LFO preset", "Save LFO preset" },
            "an LFO's presets group: " + groupTitles("LFO presets").joinIntoString(", ").toStdString());
   }
+
+  // The library moves to another folder (library_layout.h, "The Atlas
+  // folder's location"): copied and checked or renamed, with the config, the
+  // favourites and paths saved before following; a folder that holds a library
+  // is used as it is; and what an installer leaves in the default folder is
+  // taken in. Every folder is a temporary one.
+  void testLibraryMoves() {
+    using Outcome = lib::Relocation::Outcome;
+    LayoutTestLibrary library(lib::kLayoutVersion);
+    expect(library.isolated(), "the test's Atlas folder is its own temporary folder");
+    if (!library.isolated())
+      return;
+    const File home = library.folder;
+    const File root = File::getSpecialLocation(File::tempDirectory).getNonexistentChildFile("AtlasMoveTest", "", false);
+    struct Cleanup {
+      File folder;
+      ~Cleanup() {
+        lib::setRelocationCopiesForTesting(false);
+        folder.deleteRecursively();
+      }
+    } cleanup { root };
+    root.createDirectory();
+
+    const String preset = "User/Banks/My Bank/Bass/Deep.atp";
+    const String sample = "User/Samples/Kick.wav";
+    expect(writeLayoutPreset(home.getChildFile(preset), "Tester") &&
+               writeLayoutFile(home.getChildFile(sample), String::repeatedString("kick", 5000)) &&
+               home.getChildFile("Third Party/Banks").createDirectory(),
+           "a library with a preset, a sample and an empty folder");
+    LoadSave::addFavorite(home.getChildFile(preset));
+
+    // Where a chosen folder puts the library.
+    const File busy = root.getChildFile("Busy");
+    writeLayoutFile(busy.getChildFile("notes.txt"));
+    expect(lib::locationFor(root.getChildFile("New")) == root.getChildFile("New") &&
+               lib::locationFor(busy) == busy.getChildFile("Atlas") && lib::locationFor(home) == home,
+           "a missing folder or a library is the place itself; a folder of other files gets an Atlas folder inside");
+
+    // Refused, and the library stays: a folder inside it, and one holding other files.
+    expect(lib::relocate(home, home.getChildFile("User/Inside")).outcome == Outcome::kFailed &&
+               lib::relocate(home, busy).outcome == Outcome::kFailed && LoadSave::getDataDirectory() == home &&
+               home.getChildFile(preset).existsAsFile() && busy.getChildFile("notes.txt").existsAsFile(),
+           "a folder inside the library and a folder that is not empty are refused");
+
+    // A cancel during the copy leaves the library and removes the copy.
+    lib::setRelocationCopiesForTesting(true);
+    const File first = root.getChildFile("First");
+    int asked = 0;
+    const auto cancelled = lib::relocate(home, first, [&] { return ++asked > 1; });
+    expect(cancelled.outcome == Outcome::kCancelled && !first.exists() &&
+               root.getNumberOfChildFiles(File::findFilesAndDirectories) == 1 && home.getChildFile(preset).existsAsFile() &&
+               LoadSave::getDataDirectory() == home,
+           "a cancelled move leaves the library where it was and nothing beside the new place");
+
+    // Copied, as onto another disk: every file and empty folder arrives, the
+    // old folder goes and the records follow.
+    const int generation = lib::locationGeneration();
+    const auto moved = lib::relocate(home, first);
+    expect(moved.outcome == Outcome::kMoved && !moved.old_folder_left && !home.exists(),
+           "the library is copied and the old folder removed: " + moved.error.toStdString());
+    expectLayout(first, { preset, sample, "Third Party/Banks" }, "after the copy");
+    expect(first.getChildFile(sample).getSize() == 20000 && root.getNumberOfChildFiles(File::findFilesAndDirectories) == 2,
+           "the sample arrives whole and no copy folder is left");
+    expect(LoadSave::getDataDirectory() == first && LoadSave::getLibraryLocation() == first &&
+               lib::locationGeneration() == generation + 1,
+           "the config names the new folder");
+    expect(moved.favourites == 1 &&
+               LoadSave::getFavorites().count(first.getChildFile(preset).getFullPathName().toStdString()) == 1,
+           "the favourite follows");
+    expect(lib::currentPath(home.getChildFile(preset)) == first.getChildFile(preset),
+           "a path saved before the move is found in the new folder");
+    expect(migrationLog(first).contains("Library moved"), "Migration.txt records the move");
+
+    // Renamed on the same disk, into an empty folder that is there already.
+    lib::setRelocationCopiesForTesting(false);
+    const File second = root.getChildFile("Second");
+    second.createDirectory();
+    const auto renamed = lib::relocate(first, second);
+    expect(renamed.outcome == Outcome::kMoved && !first.exists() && second.getChildFile(preset).existsAsFile() &&
+               LoadSave::getDataDirectory() == second &&
+               lib::currentPath(home.getChildFile(preset)) == second.getChildFile(preset),
+           "the library is renamed, and a path from two moves ago still leads to it");
+
+    // A folder that holds a library is used as it is; nothing is merged.
+    const File other = root.getChildFile("Other");
+    const String only_here = "User/Banks/My Bank/Only here.atp";
+    writeLayoutPreset(other.getChildFile(preset), "Someone else");
+    writeLayoutPreset(second.getChildFile(only_here), "Tester");
+    LoadSave::addFavorite(second.getChildFile(only_here));
+    const auto switched = lib::relocate(second, other);
+    expect(switched.outcome == Outcome::kSwitched && LoadSave::getDataDirectory() == other &&
+               second.getChildFile(preset).existsAsFile() && !other.getChildFile(only_here).exists(),
+           "a folder holding a library is used as it is, and the other library stays");
+    const auto favourites = LoadSave::getFavorites();
+    expect(switched.favourites == 1 && favourites.count(other.getChildFile(preset).getFullPathName().toStdString()) == 1 &&
+               favourites.count(second.getChildFile(only_here).getFullPathName().toStdString()) == 1,
+           "a favourite follows only when that library holds its preset");
+
+    // What an installer leaves in the default folder joins the library, but
+    // not while that folder holds anything else.
+    const File installed = root.getChildFile("Default");
+    const String fresh = "Factory/Banks/Atlas/Lead/New.atp";
+    const String updated = "Factory/Banks/Atlas/Lead/Old.atp";
+    writeLayoutPreset(installed.getChildFile(fresh), "Atlas");
+    writeLayoutPreset(installed.getChildFile(updated), "Atlas, updated");
+    installed.getChildFile("Community/Samples").createDirectory();
+    writeLayoutPreset(other.getChildFile(updated), "Atlas");
+    const File mine = installed.getChildFile("User/Banks/My Bank/Mine.atp");
+    writeLayoutPreset(mine, "Tester");
+    expect(lib::adoptInstalledContent(other, installed) == 0 && installed.getChildFile(fresh).existsAsFile() &&
+               !other.getChildFile(fresh).exists(),
+           "a default folder holding a preset of the user's is left alone");
+    mine.deleteFile();
+    expect(lib::adoptInstalledContent(other, installed) == 2 && !installed.exists(),
+           "Factory files alone are taken in and the folders left removed");
+    expect(other.getChildFile(fresh).existsAsFile() &&
+               other.getChildFile(updated).loadFileAsString().contains("Atlas, updated"),
+           "a new Factory preset arrives and one of the same name is replaced");
+
+    // The way Settings moves it: on a thread of its own, with the editor
+    // saying how it ended and listing the presets where they are now.
+    SpokenMessages spoken;
+    SynthPlugin synth;
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    pumpEditorEvents();
+    editor.refreshPresetLibrary();
+    pumpUntil([&] { return !editor.isPresetLibraryBusy(); }, 60000);
+    const File last = root.getChildFile("Last");
+    const String said = "Library moved to " + last.getFullPathName();
+    auto listedIn = [&](const File& folder) {
+      return !editor.isPresetLibraryBusy() && editor.presetRowCount() == 3 && editor.presetFileAtRow(0).isAChildOf(folder);
+    };
+    expect(listedIn(other), "the editor lists the library's three presets");
+    editor.moveLibraryToForTesting(last);
+    pumpUntil([&] { return !lib::relocationRunning() && spoken.messages.contains(said) && listedIn(last); }, 60000);
+    expect(LoadSave::getDataDirectory() == last && !other.exists() && last.getChildFile(preset).existsAsFile(),
+           "the editor moves the library in the background");
+    expect(spoken.messages.contains(said), "the move is said when it ends: " +
+                                               spoken.messages.joinIntoString(" | ").toStdString());
+    expect(listedIn(last), "the preset list is read again from the new folder");
+    editor.removeFromDesktop();
+  }
 }

@@ -383,6 +383,9 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     // Says what the library migration did (SynthPlugin::createEditor runs it
     // before the editor is made), once the editor is up.
     void announceLibraryMigration(const atlas::library::MigrationReport& migration);
+    // Said once in a process: the library's folder is missing, on a drive not
+    // plugged in, and the default folder is used meanwhile.
+    void announceMissingLibrary();
     // The SF2 preset menu: flat for a few presets, otherwise grouped by bank and
     // into runs of 16 programs so every submenu fits on screen (a screen reader
     // reaches only the menu items that are visible). Item ids are list positions + 1.
@@ -495,6 +498,7 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     bool chooseDefaultPatchForTesting(const File& preset) { return chooseDefaultPatch(preset, nullptr); }
     bool resetDefaultPatchForTesting() { return resetDefaultPatch(nullptr); }
     String defaultPatchNameForTesting() const { return defaultPatchName(); }
+    void moveLibraryToForTesting(const File& chosen) { moveLibraryTo(chosen); }
     void initializePatchForTesting() { initializePatch(); }
     // The grouped source menu a parameter row offers (tests walk it like the slot menus).
     PopupMenu createModulationSourceSubmenu(const String& destinationId, std::map<int, String>& choices,
@@ -670,6 +674,15 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     bool resetDefaultPatch(Component* returnTo);
     // The default patch's name, "Untitled" when it has none; empty with no default patch.
     String defaultPatchName() const;
+    // Settings' Library location group (library_layout.h). Choosing a folder
+    // moves the library there, or uses the library the folder already holds;
+    // Reset moves it back to the default folder. The move runs in the
+    // background, and the timer says how far it is and how it ended.
+    void moveLibraryTo(const File& chosen);
+    void resetLibraryLocation();
+    void cancelLibraryMove();
+    // "Library location: <folder>.", with ", not found" for a folder that is missing.
+    static String libraryLocationText();
     File defaultPatchFile() const;
     // Command Z and Shift Command Z (or Command Y): undoes or redoes the last
     // change, shows the patch as it is then and says what was undone.
@@ -1656,6 +1669,19 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     FocusReturn share_return_focus_;
     // The Settings window while it is open; closed with the editor.
     Component::SafePointer<DialogWindow> settings_window_;
+    void startLibraryMove(const File& to);
+    void pollLibraryMove();
+    // The paths this instance holds, where the library is now.
+    void followLibraryPaths();
+    // The library is somewhere else than when this editor last looked: its
+    // paths follow and its lists are read again.
+    void followLibraryLocation();
+    // This editor started the move that is running, and says how it goes.
+    bool library_move_started_ = false;
+    int library_move_ticks_ = 0;
+    int library_move_quarter_said_ = 0;
+    int library_generation_seen_ = atlas::library::locationGeneration();
+    File library_directory_seen_;
     // The login dialog (showCommunityLogin) while it is open.
     Component::SafePointer<DialogWindow> login_window_;
     // Where focus was when the save or metadata form opened; it goes back

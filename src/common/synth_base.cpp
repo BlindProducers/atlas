@@ -1309,15 +1309,24 @@ bool SynthBase::writePresetFile(const File& preset, std::string* error) {
     multisample::InstrumentSpec spec = multisample_manager_->spec(slot);
     if (result == nullptr || result->hash != spec.hash)
       continue;
+    // The instrument's files where they are now: the library may have moved
+    // since it was loaded.
+    std::vector<multisample::FileInfo> followed;
+    if (!result->files.empty() && !result->files.front().file.exists()) {
+      followed = result->files;
+      for (multisample::FileInfo& file : followed)
+        file.file = atlas::library::currentPath(file.file);
+    }
+    const std::vector<multisample::FileInfo>& files = followed.empty() ? result->files : followed;
     std::map<std::string, std::string> path_overrides;
-    for (const multisample::FileInfo& file : result->files) {
+    for (const multisample::FileInfo& file : files) {
       if (file.relative.rfind("_external/", 0) == 0 && !file.written.empty())
         path_overrides[file.written] = file.relative;
     }
     if (into_bank) {
       String place_error;
       const File entry = atlas::library::placeInstrument(library, String(spec.name), result->hash, result->entry,
-                                                         spec.format, result->files, path_overrides, {}, place_error);
+                                                         spec.format, files, path_overrides, {}, place_error);
       if (entry != File()) {
         spec.library_instrument = atlas::library::libraryInstrumentPath(entry, library).toStdString();
         spec.path = entry.getFullPathName().toStdString();
@@ -1330,10 +1339,10 @@ bool SynthBase::writePresetFile(const File& preset, std::string* error) {
                               atlas::library::instrumentsDirectory(library).getFullPathName() + ": " + place_error +
                               ". The preset carries it instead.");
     }
-    spec.files = result->files;
+    spec.files = files;
     spec.path_overrides = path_overrides;
     settings[key] = spec.toJson(true);
-    instruments.push_back({ result->hash, result->files });
+    instruments.push_back({ result->hash, files });
   }
 
   if (instruments.empty())

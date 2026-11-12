@@ -1222,6 +1222,7 @@ int main(int argc, char** argv) {
     testWindowsNamesAndCase();
 #endif
     testBankArchivesRoundTrip();
+    testLibraryMoves();
     testPresetBrowsersFilterAndLoad();
     if (failures == 0)
       std::cout << "Atlas library layout tests passed\n";

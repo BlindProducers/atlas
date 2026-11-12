@@ -176,7 +176,15 @@ class LoadSave {
     static void saveAdditionalFolders(const std::string& name, std::vector<std::string> folders);
     static std::vector<std::string> getAdditionalFolders(const std::string& name);
 
+    // The Atlas folder in use: the library location while that folder is
+    // there, and the default folder otherwise.
     static File getDataDirectory();
+    // Where the library is kept: the folder the config names (Settings moves
+    // the library, library_layout.h), there or not, and the default folder
+    // while it names none. A folder that is missing, on a drive not plugged
+    // in, stays the location; getDataDirectory uses the default meanwhile.
+    static File getLibraryLocation();
+    static bool isLibraryLocationMissing();
     // Documents/Blind Producers Plugins/Atlas; the library used to live in
     // Documents/Alessio Plugins/Atlas and is moved from there once.
     static File getDefaultDataDirectory();

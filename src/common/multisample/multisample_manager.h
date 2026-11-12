@@ -110,6 +110,10 @@ namespace multisample {
       // Tests: waits for the cache copy and pruning as well.
       bool waitForCacheWork(int timeout_ms);
 
+      // The library was moved (library_layout.h): the slots' instruments in
+      // it are reloaded and saved from where they are now.
+      void followLibraryLocation();
+
       // Every cached instrument a slot uses (kept by cache pruning).
       std::set<std::string> hashesInUse() const;
 

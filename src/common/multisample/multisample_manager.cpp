@@ -615,7 +615,8 @@ namespace multisample {
     job.load.sf2_program = spec.sf2_program;
     job.load.sf2_name = spec.sf2_name;
 
-    const juce::File original(juce::String(spec.path));
+    // Where the path leads now: the library may have moved since it was saved.
+    const juce::File original = atlas::library::currentPath(juce::File(juce::String(spec.path)));
     bool found = false;
     // The preset's own library first: the copy it was saved with.
     if (library != juce::File() && !spec.library_instrument.empty())
@@ -751,6 +752,23 @@ namespace multisample {
       std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
     return true;
+  }
+
+  void Manager::followLibraryLocation() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (Slot& slot : slots_) {
+      if (slot.from_cache || slot.loaded_file == juce::File() || slot.loaded_file.exists())
+        continue;
+      const juce::String before = slot.loaded_file.getFullPathName();
+      slot.loaded_file = atlas::library::currentPath(slot.loaded_file);
+      const std::string now = slot.loaded_file.getFullPathName().toStdString();
+      for (InstrumentSpec* spec : { &slot.spec, &slot.applied_spec }) {
+        if (juce::String(spec->path) == before)
+          spec->path = now;
+      }
+      for (auto& path_override : slot.sfz_options.path_overrides)
+        path_override.second = atlas::library::currentPath(path_override.second);
+    }
   }
 
   std::set<std::string> Manager::hashesInUse() const {
