@@ -802,6 +802,31 @@ namespace {
     if (!settings.count("osc_2_destination"))
       settings["osc_2_destination"] = static_cast<float>(vital::constants::kFilter2);
   }
+
+  // Destroy's Drive and Level defaulted to 25 % and 0.5 before behaviour
+  // version 3. A state leaves out an effect's controls at their defaults, so
+  // a slot holding Destroy in an older state gets those values back where it
+  // left them out. Slots holding another effect keep the new defaults.
+  void migrateDestroyDefaults(json& settings) {
+    if (!settings.is_object())
+      return;
+    auto migrate_chain = [&settings](const std::string& chain_prefix) {
+      for (int slot = 1; slot <= vital::constants::kMaxEffectSlots; ++slot) {
+        const std::string slot_prefix = chain_prefix + "fx_slot_" + std::to_string(slot) + "_";
+        float type = 0.0f;
+        if (!getJsonFloat(settings, slot_prefix + "type", type) ||
+            static_cast<int>(type + 0.5f) != vital::constants::kDestroy + 1)
+          continue;
+        if (!settings.count(slot_prefix + "destroy_drive"))
+          settings[slot_prefix + "destroy_drive"] = 25.0f;
+        if (!settings.count(slot_prefix + "destroy_level"))
+          settings[slot_prefix + "destroy_level"] = 0.5f;
+      }
+    };
+    migrate_chain("");
+    for (int bus = 1; bus <= vital::kNumBuses; ++bus)
+      migrate_chain("bus_" + std::to_string(bus) + "_");
+  }
 }
 
 void LoadSave::loadConvolutionIrs(SynthBase* synth, const json& convolution_irs) {
@@ -1738,6 +1763,8 @@ bool LoadSave::jsonToState(SynthBase* synth, std::map<std::string, String>& save
   // Behaviour version 2 is the sample-accurate modulation engine. Older
   // presets are intentionally migrated to the corrected clock/event rules;
   // subsequent saves persist this marker instead of silently changing again.
+  // Version 3 is Destroy's new Drive and Level defaults
+  // (migrateDestroyDefaults).
   int engine_behavior_version = 1;
   if (data.count("engine_behavior_version") && data["engine_behavior_version"].is_number_integer())
     engine_behavior_version = data["engine_behavior_version"].get<int>();
@@ -1756,6 +1783,8 @@ bool LoadSave::jsonToState(SynthBase* synth, std::map<std::string, String>& save
   migrateSlotTypeLevels(settings, modulations);
   migrateAnalogAging(settings);
   migrateSourceDestinations(settings);
+  if (engine_behavior_version < 3)
+    migrateDestroyDefaults(settings);
   json wavetables = arrayFieldOrEmpty(settings, "wavetables");
   json lfos = arrayFieldOrEmpty(settings, "lfos");
 

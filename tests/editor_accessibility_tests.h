@@ -2796,7 +2796,7 @@ namespace {
     }
     for (const auto* control : { "filter_frequency", "filter_q", "filter_morph" })
       check(destroy + control, "no row");
-    reads(destroy + "drive", "25%");
+    reads(destroy + "drive", "0%");
     reads(destroy + "level", "0 dB");
     synth.parameterChanged((destroy + "filter").toStdString(), 2.0f);
     synth.parameterChanged((destroy + "level").toStdString(), 0.0f);
@@ -2817,9 +2817,9 @@ namespace {
              "typing 2 kHz or 100 Hz sets a Destroy filter frequency that reads back the same");
       const std::string level_id = (destroy + "level").toStdString();
       ValueBridge level(level_id, synth.getControls().at(level_id));
-      expect(level.getText(level.getValueForText("6 dB"), 100) == "6 dB" &&
+      expect(level.getText(level.getValueForText("-6 dB"), 100) == "-6 dB" &&
              level.getText(level.getValueForText("-inf"), 100) == "-inf dB",
-             "typing 6 dB or -inf sets a Destroy level that reads back the same");
+             "typing -6 dB or -inf sets a Destroy level that reads back the same");
     }
 
     // Distortion: Type is a menu of Vital's six curves and the eight JSFX
