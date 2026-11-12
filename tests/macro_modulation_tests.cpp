@@ -382,6 +382,26 @@ namespace {
       else
         expect(between > int(values.size()) / 2, "the Custom view plays its own triangle");
     }
+
+    // Sync on Hertz is the rate of Seconds; only the readout differs.
+    std::vector<float> rates[2];
+    for (int hertz = 0; hertz < 2; ++hertz) {
+      SynthPlugin synth;
+      prepare(synth);
+      auto& controls = synth.getControls();
+      controls.at("lfo_1_sync")->set(hertz ? float(SynthLfo::kHertz) : float(SynthLfo::kTime));
+      controls.at("lfo_1_frequency")->set(2.0f);
+      controls.at("lfo_1_sync_type")->set(float(SynthLfo::kFreeRunning));
+      auto* route = connect(synth, "lfo_1", "delay_dry_wet");
+      for (int block = 0; route != nullptr && block < 200; ++block) {
+        MidiBuffer none;
+        renderMidi(synth, none);
+        rates[hertz].push_back(route->modulation_processor->output()->buffer[0][0]);
+      }
+    }
+    const auto [slowest, fastest] = std::minmax_element(rates[0].begin(), rates[0].end());
+    expect(!rates[0].empty() && *fastest - *slowest > 0.2f && rates[0] == rates[1],
+           "Sync on Hertz runs the LFO at the rate of Seconds");
   }
 
   void testSameSampleNoteOnOffDoesNotStick() {

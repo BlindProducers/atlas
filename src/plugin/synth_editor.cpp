@@ -69,6 +69,7 @@
 #include "wave_window_modifier.h"
 
 #include <algorithm>
+#include <numeric>
 #include <cctype>
 #include <array>
 #include <cmath>
@@ -2214,10 +2215,29 @@ namespace {
 
   bool syncUsesRateRow(const String& suffix, int sync) {
     if (suffix == "frequency")
-      return sync == vital::SynthLfo::kTime;
+      return sync == vital::SynthLfo::kTime || sync == vital::SynthLfo::kHertz;
     if (suffix == "tempo")
-      return sync != vital::SynthLfo::kTime && sync != vital::SynthLfo::kKeytrack;
+      return sync == vital::SynthLfo::kTempo || sync == vital::SynthLfo::kDottedTempo ||
+             sync == vital::SynthLfo::kTripletTempo;
     return sync == vital::SynthLfo::kKeytrack;
+  }
+
+  // The order a menu lists a choice's values in, where it is not their own:
+  // an LFO's Sync has Hertz, its last value, after Seconds.
+  std::vector<int> menuValueOrder(const String& parameter_id, int steps) {
+    std::vector<int> order(static_cast<size_t>(jmax(0, steps)));
+    std::iota(order.begin(), order.end(), 0);
+    const String modulator = modulatorPrefix(parameter_id);
+    if (steps == vital::SynthLfo::kNumSyncOptions && modulator.startsWith("lfo_") && parameter_id == modulator + "sync")
+      std::rotate(order.begin() + vital::SynthLfo::kTime + 1, order.begin() + vital::SynthLfo::kHertz, order.end());
+    return order;
+  }
+
+  // An LFO's rate with Sync on Hertz. Slow rates keep enough digits to tell
+  // them apart: the range starts below 0.01 Hz.
+  String lfoHertzText(double hertz) {
+    const int decimals = hertz < 0.1 ? 4 : hertz < 1.0 ? 3 : hertz < 10.0 ? 2 : hertz < 100.0 ? 1 : 0;
+    return compactFloat(static_cast<float>(hertz), decimals) + " Hz";
   }
 
   // Choices that change which rows the editor shows, so choosing one rebuilds
@@ -4154,7 +4174,7 @@ namespace {
       const String suffix = id.fromFirstOccurrenceOf("_", false, false).fromFirstOccurrenceOf("_", false, false);
       if (suffix == "frequency") return "Set the free-running LFO rate.";
       if (suffix == "tempo") return "Choose the tempo-synced LFO rate.";
-      if (suffix == "sync") return "Choose seconds, tempo, dotted, triplet, or keytracked timing.";
+      if (suffix == "sync") return "Choose seconds, hertz, tempo, dotted, triplet, or keytracked timing.";
       if (suffix == "sync_type") return "Choose whether the LFO restarts with each note, follows host transport, runs once as an envelope, or runs freely across notes.";
       if (suffix == "phase") return "Set where the LFO cycle starts.";
       if (suffix == "delay_time") return "Delay the LFO after note start.";
@@ -6379,7 +6399,7 @@ class AccessibleParameterRow : public Component {
         combo_.setWantsKeyboardFocus(true);
         // One item per choice in the row's range, named as the row reads it.
         const int steps = parameter_.getNumSteps();
-        for (int i = 0; i < steps; ++i) {
+        for (int i : menuValueOrder(parameter_id, steps)) {
           const double value = steps > 1 ? double(i) / double(steps - 1) : 0.0;
           if (value < min_normalized_value_ - 1.0e-6 || value > max_normalized_value_ + 1.0e-6)
             continue;
@@ -8281,6 +8301,16 @@ std::unique_ptr<AccessibleParameterRow> SynthEditor::buildAccessibleParameterRow
         });
   }
 
+  // An LFO's Frequency reads in seconds or, with Sync on Hertz, in Hz.
+  if (const String modulator = modulatorPrefix(parameter_id);
+      modulator.startsWith("lfo_") && parameter_id == modulator + "frequency") {
+    auto row = std::make_unique<AccessibleParameterRow>(
+        parameter, accessibleParameterTitle(sectionName, parameter.getName(128)),
+        [this, bridge](double value) { return parameterValueText(*bridge, value); });
+    row->setValueFromText([this, bridge](const String& text) { return parameterValueForText(*bridge, text); });
+    return row;
+  }
+
   if (parameter_id.startsWith("random_")) {
     const String suffix = parameter_id.fromFirstOccurrenceOf("random_", false, false)
                                       .fromFirstOccurrenceOf("_", false, false);
@@ -8819,9 +8849,17 @@ int SynthEditor::syncOption(const String& modulatorPrefix) const {
 
 int SynthEditor::modulatorRowLayout(const String& modulatorPrefix) const {
   const int sync = syncOption(modulatorPrefix);
-  const int rate_rows = sync == vital::SynthLfo::kTime ? 0 : sync == vital::SynthLfo::kKeytrack ? 2 : 1;
+  // Hertz shows the row of Seconds with another readout, so it is a layout too.
+  const int rate_rows = sync == vital::SynthLfo::kTime ? 0 : sync == vital::SynthLfo::kKeytrack ? 2 :
+                        sync == vital::SynthLfo::kHertz ? 3 : 1;
   const int lfo = lfoIndexForParameterId(modulatorPrefix);
-  return rate_rows + (lfo >= 0 && isLfoSimpleView(lfo) ? 3 : 0);
+  return rate_rows + (lfo >= 0 && isLfoSimpleView(lfo) ? 4 : 0);
+}
+
+bool SynthEditor::lfoFrequencyInHertz(const String& parameterId) const {
+  const String modulator = modulatorPrefix(parameterId);
+  return modulator.startsWith("lfo_") && parameterId == modulator + "frequency" &&
+         syncOption(modulator) == vital::SynthLfo::kHertz;
 }
 
 void SynthEditor::setLfoView(int lfo, int view) {
@@ -17109,6 +17147,9 @@ String SynthEditor::parameterValueText(const ValueBridge& bridge, double normali
     const auto [model, style] = filterModelAndStyle(filterPrefixForParameter(id));
     return filterBlendText(model, style, normalizedValue);
   }
+  // The stored value is the base two logarithm of the rate in Hz.
+  if (lfoFrequencyInHertz(id))
+    return lfoHertzText(std::exp2(bridge.convertToEngineValue(static_cast<float>(normalizedValue))));
   return accessibleParameterText(bridge, normalizedValue);
 }
 
@@ -17117,6 +17158,14 @@ double SynthEditor::parameterValueForText(const ValueBridge& bridge, const Strin
   if (filterSuffixForParameter(id) == "blend") {
     const auto [model, style] = filterModelAndStyle(filterPrefixForParameter(id));
     return filterBlendValueForText(model, style, text, bridge.getValue());
+  }
+  if (lfoFrequencyInHertz(id)) {
+    const String typed = text.removeCharacters(" ").toLowerCase();
+    const double hertz = typed.getDoubleValue() * (typed.endsWith("khz") || typed.endsWith("k") ? 1000.0 : 1.0);
+    if (hertz <= 0.0)
+      return bridge.getValue();
+    const auto& details = bridge.getDetails();
+    return bridge.convertToPluginValue(jlimit(details.min, details.max, static_cast<float>(std::log2(hertz))));
   }
   return accessibleParameterValueForText(bridge, text);
 }

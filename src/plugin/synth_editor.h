@@ -531,6 +531,8 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     static int lfoIndexForParameterId(const String& parameterId);
     bool isLfoSimpleView(int lfo) const;
     int syncOption(const String& modulatorPrefix) const;
+    // An LFO's Frequency while its Sync is Hertz: read and typed in Hz.
+    bool lfoFrequencyInHertz(const String& parameterId) const;
     int modulatorRowLayout(const String& modulatorPrefix) const;
     void setLfoView(int lfo, int view);
     bool refreshModulatorRowsIfNeeded();

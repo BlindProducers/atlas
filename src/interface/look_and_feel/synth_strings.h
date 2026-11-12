@@ -553,6 +553,16 @@ namespace strings {
     "Keytrack"
   };
 
+  // An LFO's Sync, by value: kFrequencySyncNames and then Hertz.
+  const std::string kLfoSyncNames[] = {
+    "Seconds",
+    "Tempo",
+    "Tempo Dotted",
+    "Tempo Triplets",
+    "Keytrack",
+    "Hertz"
+  };
+
   const std::string kDistortionTypeShortNames[] = {
     "Soft Clip",
     "Hard Clip",

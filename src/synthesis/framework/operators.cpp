@@ -401,7 +401,7 @@ namespace vital {
     poly_float dotted_mult = utils::maskLoad(1.0f, dotted_ratio, dotted_mask);
     poly_float tempo_adjusted = triplet_mult * dotted_mult * tempo_value;
 
-    poly_mask frequency_mask = poly_float::equal(sync, kFrequencyMode);
+    poly_mask frequency_mask = poly_float::equal(sync, kFrequencyMode) | poly_float::equal(sync, kHertzMode);
 
     poly_mask keytrack_mask = poly_float::equal(sync, kKeytrack);
     poly_float midi = input(kKeytrackTranspose)->at(0) + input(kKeytrackTune)->at(0) + input(kMidi)->at(0);

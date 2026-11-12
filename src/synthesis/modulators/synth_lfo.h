@@ -90,6 +90,9 @@ namespace vital {
         kDottedTempo,
         kTripletTempo,
         kKeytrack,
+        // The rate of kTime, read in Hz. Last, so saved values keep their
+        // meaning; the editor lists it after kTime.
+        kHertz,
         kNumSyncOptions
       };
 

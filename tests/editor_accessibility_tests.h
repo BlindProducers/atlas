@@ -1344,7 +1344,7 @@ namespace {
     if (auto* sync_menu = dynamic_cast<ComboBox*>(editor.controlForParameter("lfo_1_sync"))) {
       editor.ensureComponentVisible(sync_menu);
       sync_menu->grabKeyboardFocus();
-      sync_menu->setSelectedItemIndex(vital::SynthLfo::kKeytrack, sendNotificationSync);
+      sync_menu->setSelectedItemIndex(sync_menu->getNumItems() - 1, sendNotificationSync);   // Keytrack
     }
     pumpUntil([&] { return editor.controlForParameter("lfo_1_keytrack_transpose") != nullptr; });
     expect(editor.controlForParameter("lfo_1_keytrack_transpose") != nullptr &&
@@ -1356,6 +1356,43 @@ namespace {
     focused = Component::getCurrentlyFocusedComponent();
     expect(focused != nullptr && focused == editor.controlForParameter("lfo_1_sync"),
            "focus stays on Sync when it changes the Custom view's rows");
+
+    // Hertz is the Sync's last value, listed after Seconds: the rate of
+    // Seconds, read and typed in Hz.
+    const auto frequencyValue = [&]() -> std::unique_ptr<AccessibilityHandler> {
+      auto* frequency = dynamic_cast<Slider*>(editor.controlForParameter("lfo_1_frequency"));
+      return frequency != nullptr ? frequency->createAccessibilityHandler() : nullptr;
+    };
+    if (auto* sync_menu = dynamic_cast<ComboBox*>(editor.controlForParameter("lfo_1_sync"))) {
+      expect(sync_menu->getNumItems() == 6 && sync_menu->getItemText(0) == "Seconds" &&
+             sync_menu->getItemText(1) == "Hertz" && sync_menu->getItemText(2) == "Tempo" &&
+             sync_menu->getItemText(5) == "Keytrack",
+             "an LFO's Sync lists Hertz after Seconds");
+      sync_menu->setSelectedItemIndex(1, sendNotificationSync);
+    }
+    pumpUntil([&] { return editor.controlForParameter("lfo_1_frequency") != nullptr; });
+    expect(controls.at("lfo_1_sync")->value() == float(vital::SynthLfo::kHertz) &&
+           editor.controlForParameter("lfo_1_tempo") == nullptr,
+           "Hertz is stored as the Sync's last value and shows Frequency");
+    if (auto handler = frequencyValue()) {
+      handler->getValueInterface()->setValueAsString("0.5 Hz");
+      const String hertz = handler->getValueInterface()->getCurrentValueAsString();
+      expect(hertz == "0.5 Hz", "Frequency reads and takes Hz with Sync on Hertz: " + hertz.toStdString());
+    }
+    else
+      expect(false, "Sync on Hertz shows Frequency as a slider");
+    // The rows are rebuilt for the new readout: wait for the new Frequency row.
+    auto* hertz_row = editor.controlForParameter("lfo_1_frequency");
+    if (auto* sync_menu = dynamic_cast<ComboBox*>(editor.controlForParameter("lfo_1_sync")))
+      sync_menu->setSelectedItemIndex(0, sendNotificationSync);
+    pumpUntil([&] {
+      auto* row = editor.controlForParameter("lfo_1_frequency");
+      return row != nullptr && row != hertz_row;
+    });
+    if (auto handler = frequencyValue()) {
+      const String seconds = handler->getValueInterface()->getCurrentValueAsString();
+      expect(seconds == "2 secs", "back on Seconds the same rate reads in seconds: " + seconds.toStdString());
+    }
 
     // A random generator follows its Sync the same way.
     expect(editor.controlForParameter("random_1_tempo") != nullptr &&
