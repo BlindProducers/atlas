@@ -2828,6 +2828,66 @@ namespace {
     for (PopupMenu::MenuItemIterator it(grouped); it.next();)
       top++;
     expect(top == 3, "one submenu per bank");
+
+    // Previous and Next instrument step through the instruments beside one
+    // loaded from outside the libraries, and are dimmed when it is alone.
+    const juce::File pair = temp.folder.getChildFile("pair"), alone = temp.folder.getChildFile("alone");
+    for (const auto& file : { pair.getChildFile("a.sfz"), pair.getChildFile("b.sfz"), alone.getChildFile("solo.sfz") }) {
+      file.getParentDirectory().createDirectory();
+      writeWav(file.getSiblingFile("tone.wav"), 440.0, kRate / 4);
+      writeText(file, "<region> sample=tone.wav\n");
+    }
+    auto step_button = [&](const char* title) {
+      return section() ? dynamic_cast<Button*>(titledExactly(*section(), title)) : nullptr;
+    };
+    auto steps_enabled = [&] {
+      return step_button("Previous instrument") && step_button("Previous instrument")->isEnabled() &&
+             step_button("Next instrument") && step_button("Next instrument")->isEnabled();
+    };
+    auto status_names = [&](const String& name) {
+      return section() && findTitled(*section(), [name](const String& t) {
+        return t.startsWith("Instrument: " + name + ",");
+      }) != nullptr;
+    };
+    auto loaded_file = [&] { return juce::File(String::fromUTF8(multisample->spec(0).path.c_str())); };
+    auto step_to = [&](const char* button, const juce::File& expected, const std::string& what) {
+      if (auto* step = step_button(button))
+        step->triggerClick();
+      pumpUntil([&] { return loaded_file() == expected; }, 2000);
+      expect(loaded_file() == expected, what + ", got " + loaded_file().getFileName().toStdString());
+    };
+    multisample->loadFromUser(0, alone.getChildFile("solo.sfz"));
+    pumpUntil([&] { return status_names("solo"); });
+    expect(step_button("Previous instrument") && step_button("Next instrument") && !steps_enabled(),
+           "an instrument alone in its folder dims Previous and Next instrument");
+    multisample->loadFromUser(0, pair.getChildFile("a.sfz"));
+    pumpUntil([&] { return status_names("a") && steps_enabled(); });
+    expect(steps_enabled(), "another instrument in the folder enables Previous and Next instrument");
+    expectAccessibleButton(step_button("Previous instrument"), "Previous instrument");
+    expectAccessibleButton(step_button("Next instrument"), "Next instrument");
+    step_to("Next instrument", pair.getChildFile("b.sfz"), "Next instrument loads the next one in the folder");
+    step_to("Next instrument", pair.getChildFile("a.sfz"), "Next instrument wraps from the last to the first");
+    step_to("Previous instrument", pair.getChildFile("b.sfz"), "Previous instrument wraps from the first to the last");
+
+    // A step to another kind of instrument rebuilds the slot's rows: the
+    // focus stays on the button, so the next press steps on.
+    writeFont(testFont(), pair.getChildFile("c.sf2"));
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    editor.toFront(true);
+    pumpUntil([] { return false; }, 200);
+    if (auto* next_instrument = step_button("Next instrument")) {
+      editor.ensureComponentVisible(next_instrument);
+      next_instrument->grabKeyboardFocus();
+    }
+    expect(Component::getCurrentlyFocusedComponent() == step_button("Next instrument"), "Next instrument takes the focus");
+    step_to("Next instrument", pair.getChildFile("c.sf2"), "Next instrument reaches a SoundFont added to the folder");
+    pumpUntil([&] { return section() != nullptr && titledExactly(*section(), "1 Instrument preset") != nullptr; });
+    auto* focused = Component::getCurrentlyFocusedComponent();
+    expect(focused != nullptr && focused == step_button("Next instrument"),
+           "focus stays on Next instrument when the rows change, on " +
+           (focused != nullptr ? focused->getTitle().toStdString() : std::string("nothing")));
+
     container::setCacheRootForTesting({});
     return finish("editor");
   }

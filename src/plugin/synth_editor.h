@@ -1019,6 +1019,13 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void chooseInstrumentFile(int oscillator);
     void loadInstrumentFile(int oscillator, const File& file);
     void showInstrumentBrowserMenu(int oscillator, Component& target);
+    // What Previous and Next instrument step through for a slot: the
+    // Multisamples of the library its instrument is in, the instruments beside
+    // one loaded from another folder, or every library's with nothing loaded.
+    std::vector<File> instrumentStepFiles(int oscillator);
+    void stepInstrument(int oscillator, int direction);
+    // The two buttons are dimmed while there is no other instrument.
+    void refreshInstrumentStepButtons(int oscillator);
     // Moves an SF2 slot to the previous (-1) or next (1) preset, wrapping.
     void stepInstrumentPreset(int oscillator, int direction);
     void openInstrumentInTextEditor(int oscillator);

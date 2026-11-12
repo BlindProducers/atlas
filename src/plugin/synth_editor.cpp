@@ -1232,14 +1232,17 @@ namespace {
     return file_path == root_path || file_path.startsWith(root_path + File::getSeparatorString());
   }
 
+  constexpr const char* kInstrumentWildcard = "*.sfz;*.dspreset;*.sf2;*.SFZ;*.DSPRESET;*.SF2";
+
   void refreshBrowserFileCache(std::vector<File>& cache, const std::vector<File>& roots, const String& wildcard,
-                               const std::atomic<bool>* cancelled = nullptr) {
+                               const std::atomic<bool>* cancelled = nullptr, bool subfolders = true) {
     cache.clear();
     for (const auto& root : roots) {
       if (!root.isDirectory())
         continue;
 
-      for (const auto& entry : RangedDirectoryIterator(root, true, wildcard, File::findFiles | File::ignoreHiddenFiles)) {
+      for (const auto& entry : RangedDirectoryIterator(root, subfolders, wildcard,
+                                                       File::findFiles | File::ignoreHiddenFiles)) {
         if (cancelled && cancelled->load(std::memory_order_relaxed)) return;
         cache.push_back(entry.getFile());
       }
@@ -23282,6 +23285,12 @@ void SynthEditor::addMultiSampleControlsGroup(int oscillator, Component& parent,
                               {});
     browse->onClick = [this, oscillator, browse] { showInstrumentBrowserMenu(oscillator, *browse); };
   }
+  // Dimmed while there is no other instrument to step to.
+  add_button("Previous instrument", "Load the previous instrument into " + section_name,
+             [this, oscillator] { stepInstrument(oscillator, -1); })->getProperties().set("InstrumentStep", oscillator);
+  add_button("Next instrument", "Load the next instrument into " + section_name,
+             [this, oscillator] { stepInstrument(oscillator, 1); })->getProperties().set("InstrumentStep", oscillator);
+  refreshInstrumentStepButtons(oscillator);
 
   // The status reads what is loaded; Enter speaks the details.
   const String status_title = instrumentStatusTitle(oscillator);
@@ -23719,6 +23728,70 @@ void SynthEditor::showInstrumentBrowserMenu(int oscillator, Component& target) {
                      });
 }
 
+std::vector<File> SynthEditor::instrumentStepFiles(int oscillator) {
+  auto* manager = synth_.getMultiSampleManager();
+  const std::string path = manager != nullptr ? manager->spec(oscillator).path : std::string();
+  const auto& library_files = presetFiles(PresetFileList::kInstruments);
+  // Nothing loaded: every library's instruments.
+  if (path.empty())
+    return library_files;
+
+  // In a library: all of that library's instruments, whatever folders they are in.
+  const File current(String::fromUTF8(path.c_str()));
+  for (const auto& root : preset_file_caches_[static_cast<size_t>(PresetFileList::kInstruments)].roots) {
+    if (!current.isAChildOf(root))
+      continue;
+    std::vector<File> files;
+    for (const auto& file : library_files) {
+      if (file.isAChildOf(root))
+        files.push_back(file);
+    }
+    return files;
+  }
+
+  // Loaded from another folder: the instruments beside it.
+  std::vector<File> files;
+  refreshBrowserFileCache(files, { current.getParentDirectory() }, kInstrumentWildcard, nullptr, false);
+  return files;
+}
+
+void SynthEditor::stepInstrument(int oscillator, int direction) {
+  auto* manager = synth_.getMultiSampleManager();
+  if (manager == nullptr || !isPositiveAndBelow(oscillator, vital::kNumOscillators))
+    return;
+  const std::string path = manager->spec(oscillator).path;
+  const File current = path.empty() ? File() : File(String::fromUTF8(path.c_str()));
+  const auto files = instrumentStepFiles(oscillator);
+  // With nothing loaded, Next starts at the first and Previous at the last.
+  const File next = files.empty() ? File()
+                  : current == File() && direction < 0 ? files.back() : shiftedBrowserFile(files, current, direction);
+  if (next == File() || next == current) {
+    postPluginAnnouncement("No other instrument found", AccessibilityHandler::AnnouncementPriority::high);
+    return;
+  }
+  loadInstrumentFile(oscillator, next);
+}
+
+void SynthEditor::refreshInstrumentStepButtons(int oscillator) {
+  bool scanned = false;
+  bool others = false;
+  for (auto& component : section_headers_) {
+    const var& property = component != nullptr ? component->getProperties()["InstrumentStep"] : var();
+    if (property.isVoid() || static_cast<int>(property) != oscillator)
+      continue;
+    // One scan for the pair, and none for a slot that shows no buttons.
+    if (!scanned) {
+      auto* manager = synth_.getMultiSampleManager();
+      const std::string path = manager != nullptr ? manager->spec(oscillator).path : std::string();
+      const File current = path.empty() ? File() : File(String::fromUTF8(path.c_str()));
+      for (const auto& file : instrumentStepFiles(oscillator))
+        others = others || file != current;
+      scanned = true;
+    }
+    component->setEnabled(others);
+  }
+}
+
 void SynthEditor::openInstrumentInTextEditor(int oscillator) {
   auto* manager = synth_.getMultiSampleManager();
   const File file = manager != nullptr ? manager->editableFile(oscillator) : File();
@@ -23830,6 +23903,7 @@ void SynthEditor::refreshMultiSampleStatus() {
     }
     syncInstrumentPresetMenu(oscillator);
     syncInstrumentControls(oscillator);
+    refreshInstrumentStepButtons(oscillator);
 
     const String prefix = "Oscillator " + String(oscillator + 1) + " instrument";
     if (status.state == vital::multisample::SlotStatus::kLoading) {
@@ -24394,8 +24468,6 @@ namespace {
       return String(data["effect"].get<std::string>());
     return {};
   }
-
-  constexpr const char* kInstrumentWildcard = "*.sfz;*.dspreset;*.sf2;*.SFZ;*.DSPRESET;*.SF2";
 }
 
 const std::vector<File>& SynthEditor::presetFiles(PresetFileList list) {
@@ -24462,6 +24534,10 @@ void SynthEditor::showPresetFileMenu(PresetFileList list, const std::vector<File
       return;
     if (result == kBrowserRescanMenuId) {
       safe_this->preset_file_caches_[static_cast<size_t>(list)].valid = false;
+      if (list == PresetFileList::kInstruments) {
+        for (int oscillator = 0; oscillator < vital::kNumOscillators; ++oscillator)
+          safe_this->refreshInstrumentStepButtons(oscillator);
+      }
       if (reopen)
         reopen();
       return;
