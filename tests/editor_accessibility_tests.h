@@ -1593,6 +1593,65 @@ namespace {
              std::string(shortcut.name) + " focuses the " + shortcut.heading + (shortcut.group ? " group" : " section") +
                  " heading, got " + focusedText());
     }
+
+    // A group laid out flat, with one section and no heading of its own for
+    // it (Presets, Macros, Modulation, Global), is reached at its group
+    // heading. Period there goes on to the next section, not into the group,
+    // and comma to the one before.
+    const KeyPress comma(',', ModifierKeys(), ','), period('.', ModifierKeys(), '.');
+    const KeyPress backslash('\\', ModifierKeys(), '\\');
+    auto focused_group = [] {
+      for (auto* component = Component::getCurrentlyFocusedComponent(); component != nullptr;
+           component = component->getParentComponent())
+        if (component->getDescription().startsWith("Control group "))
+          return component->getTitle();
+      return String();
+    };
+    const std::pair<KeyPress, const char*> flat_groups[] = {
+      { KeyPress('`', ModifierKeys(), '`'), "Presets" },
+      { backslash, "Macros" },
+      { KeyPress('m', ModifierKeys(), 'm'), "Modulation" },
+      { KeyPress('g', ModifierKeys(), 'g'), "Global" },
+    };
+    const std::pair<KeyPress, const char*> steps[] = { { period, "period" }, { comma, "comma" } };
+    for (const auto& [key, group] : flat_groups) {
+      for (const auto& [step, what] : steps) {
+        press(key);
+        expect(onHeading(group, true), std::string(group) + " is reached at its group heading, got " + focusedText());
+        press(step);
+        expect(focused_group().isNotEmpty() && focused_group() != group,
+               std::string(what) + " on the " + group + " heading leaves the group, got " + focusedText());
+      }
+    }
+
+    // Into Macros from each neighbour and out again either way, from its
+    // heading and from a control in it.
+    press(backslash);
+    press(comma);
+    const String before_macros = focused_group();
+    press(period);
+    expect(onHeading("Macros", true),
+           "period from " + before_macros.toStdString() + " arrives on the Macros heading, got " + focusedText());
+    press(period);
+    const String after_macros = focused_group();
+    expect(after_macros.isNotEmpty() && after_macros != "Macros", "period again leaves Macros, got " + focusedText());
+    press(comma);
+    expect(onHeading("Macros", true),
+           "comma from " + after_macros.toStdString() + " arrives on the Macros heading, got " + focusedText());
+    press(period);
+    expect(focused_group() == after_macros, "period after arriving by comma leaves Macros, got " + focusedText());
+    auto from_macro_1 = [&](const KeyPress& key, const String& group, const std::string& what) {
+      auto* macro = editor.controlForParameter("macro_control_1");
+      expect(macro != nullptr, "the editor has Macro 1");
+      if (macro == nullptr)
+        return;
+      editor.ensureComponentVisible(macro);
+      macro->grabKeyboardFocus();
+      press(key);
+      expect(focused_group() == group, what + " from Macro 1 goes to " + group.toStdString() + ", got " + focusedText());
+    };
+    from_macro_1(period, after_macros, "period");
+    from_macro_1(comma, before_macros, "comma");
     editor.removeFromDesktop();
     atlas::speech::setObserverForTesting(nullptr);
   }
