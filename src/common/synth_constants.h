@@ -222,6 +222,7 @@ namespace vital {
       kSampleHoldFilter,
       kFilterTable,
       kDistortionFilter,
+      kBandRejectFilter,
       kNumFilterModels
     };
 

@@ -517,6 +517,11 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void buildSections();
     void buildGroups();
     void selectSectionByName(const String& section, bool announce);
+    // The control a step to `section` lands on: the first that names the
+    // section (its heading, or an effects chain's summary), else the one with
+    // its title, else its group's heading, where a group laid out flat
+    // (Macros) is reached. Null before the rows are built.
+    Component* sectionFocusTarget(const String& section) const;
     void showAllSections(bool announce);
     void clearSectionComponents();
     std::unique_ptr<AccessibleParameterRow> createAccessibleParameterRow(AudioProcessorParameter& parameter,

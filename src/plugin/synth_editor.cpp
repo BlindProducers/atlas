@@ -3106,6 +3106,12 @@ namespace {
     return bus == 0 ? "Main effects bus" : "Bus " + String(bus);
   }
 
+  // Whether a step to `section` lands on its Bus heading, as a bus's effects
+  // chain does on Windows (kBusChainsStepToTheirHeading).
+  bool stepsToBusHeading(const String& section) {
+    return kBusChainsStepToTheirHeading && isEffectChainSection(section) && fxBusForSection(section) > 0;
+  }
+
   String accessibleSectionTitle(const String& section) {
     if (!section.startsWith("Bus "))
       return section;
@@ -4148,13 +4154,13 @@ namespace {
       if (suffix == "scream_autogain") return "Compensate Scream's output level. Env 1 controls the voice's release; there is no additional resonance tail.";
       if (suffix == "distortion_drive") return "Drive the Distortion model from minus 30 to plus 30 dB, as in the Distortion effect. For Bit Crush, more drive leaves fewer levels; for Down Sample, it lowers the sample rate.";
       if (suffix == "distortion_filter_order") return "Choose where the Distortion model's filter sits: None leaves it out, Pre filters before the distortion and Post after it. Cutoff, Resonance and Blend set the filter.";
-      if (suffix == "model") return "Choose the filter model. Wavetable turns a wavetable frame's spectrum into the filter response: harmonic 24 sits at Cutoff, so a saw is flat and a frame's spectral shape becomes the curve. Distortion is the Distortion effect working on each note on its own, so a chord gains no extra tones between its notes.";
+      if (suffix == "model") return "Choose the filter model. Wavetable turns a wavetable frame's spectrum into the filter response: harmonic 24 sits at Cutoff, so a saw is flat and a frame's spectral shape becomes the curve. Distortion is the Distortion effect working on each note on its own, so a chord gains no extra tones between its notes. Band Reject runs a lowpass below Cutoff and a highpass above it in parallel; Blend sets how far apart they sit.";
       if (suffix == "table_frame") return "Choose the frame of the filter's wavetable, 0 to 256; scanning frames morphs the response. Load any Atlas wavetable or sample from this filter's wavetable controls.";
       if (suffix == "style") return "Choose the filter style or slope inside the selected model. For the Wavetable model, choose the phase mode: Minimum is tight and adds no delay, Raw uses the frame waveform itself as the kernel, and in Filter FX Linear keeps every phase aligned and Original keeps the wavetable's phases, both adding 2048 samples of compensated delay. For Ring Mod, choose the carrier waveform: sine, square, saw or triangle. For Sample & Hold, choose Hold for steps, Smooth for ramps between held values, or Inverted, which leaves only the aliasing residue at 50% Mix. For Distortion, choose the type: Soft Clip, Hard Clip, Linear Fold, Sine Fold, Bit Crush or Down Sample.";
       if (suffix == "cutoff") return "Set the main filter cutoff frequency. For Ring Mod, set the carrier frequency that multiplies the input. For Sample & Hold, set the hold rate; with Key Track, aliasing follows the played note. For Distortion, set the cutoff of its filter.";
       if (suffix == "resonance") return "Boost frequencies around the cutoff point. For the Wavetable model, exaggerate or flatten the frame's peaks and troughs: 50 percent leaves its shape as it is, 100 percent raises it to the fourth power, 0 percent to the fourth root.";
       if (suffix == "drive") return "Drive the filter input for more saturation.";
-      if (suffix == "blend") return "Morph between the available responses of the selected filter model. For Sample & Hold, reduce bit depth from off to 1 bit.";
+      if (suffix == "blend") return "Morph between the available responses of the selected filter model. For Sample & Hold, reduce bit depth from off to 1 bit. For Band Reject, set the width of the notch, from 1.3 semitones at 0% to 128 semitones at 100%.";
       if (suffix == "blend_transpose") return "Tune the comb filter blend pitch.";
       if (suffix == "keytrack") return "Control how much filter cutoff follows the played note.";
       if (suffix == "formant_x") return "Move the formant filter along its X vowel axis.";
@@ -8095,6 +8101,31 @@ void SynthEditor::buildGroups() {
     current_group_ = group_names_.isEmpty() ? String() : group_names_[0];
 }
 
+Component* SynthEditor::sectionFocusTarget(const String& section) const {
+  // On Windows a bus's chain is reached at its Bus heading (the group search
+  // below) and called by the bus: the chain is all the Bus group holds, and
+  // its own name, "Chain and routing", is the same on every bus.
+  if (!stepsToBusHeading(section)) {
+    for (auto* component : row_focus_order_) {
+      if (component != nullptr && component->getProperties()["SectionName"].toString() == section)
+        return component;
+    }
+    const String title = accessibleSectionTitle(section);
+    for (auto* component : row_focus_order_) {
+      if (component != nullptr && component->getTitle() == title)
+        return component;
+    }
+  }
+  // The group's own heading: an effect's groups may share its name
+  // (Glitch Delay's and Multiband Dynamics' Global).
+  const String group = groupForSection(section);
+  for (auto* component : row_focus_order_) {
+    if (isGroupHeading(component, group))
+      return component;
+  }
+  return nullptr;
+}
+
 void SynthEditor::selectSectionByName(const String& section, bool announce) {
   if (!section_names_.contains(section))
     return;
@@ -8102,46 +8133,12 @@ void SynthEditor::selectSectionByName(const String& section, bool announce) {
   last_section_name_ = section;
   if (row_focus_order_.empty())
     showAllSections(false);
-  // On Windows a bus's chain is reached at its Bus heading (the group search
-  // below) and called by the bus: the chain is all the Bus group holds, and
-  // its own name, "Chain and routing", is the same on every bus.
-  const bool bus_heading = kBusChainsStepToTheirHeading && isEffectChainSection(section) &&
-                           fxBusForSection(section) > 0;
-  Component* target = nullptr;
-  if (!bus_heading) {
-    for (auto* component : row_focus_order_) {
-      if (component != nullptr && component->getProperties()["SectionName"].toString() == section) {
-        target = component;
-        break;
-      }
-    }
-  }
-  if (target == nullptr && !bus_heading) {
-    const String title = accessibleSectionTitle(section);
-    for (auto* component : row_focus_order_) {
-      if (component != nullptr && component->getTitle() == title) {
-        target = component;
-        break;
-      }
-    }
-  }
-  if (target == nullptr) {
-    // The group's own heading: an effect's groups may share its name
-    // (Glitch Delay's and Multiband Dynamics' Global).
-    const String group = groupForSection(section);
-    for (auto* component : row_focus_order_) {
-      if (isGroupHeading(component, group)) {
-        target = component;
-        break;
-      }
-    }
-  }
-  if (target != nullptr) {
+  if (auto* target = sectionFocusTarget(section)) {
     ensureComponentVisible(target);
     target->grabKeyboardFocus();
   }
   if (announce) {
-    if (bus_heading)
+    if (stepsToBusHeading(section))
       postNavigationAnnouncement(fxBusNameForSection(section));
     else
       postPluginAnnouncement(accessibleSectionTitle(section), AccessibilityHandler::AnnouncementPriority::high);
@@ -8661,6 +8658,7 @@ std::unique_ptr<AccessibleParameterRow> SynthEditor::buildAccessibleParameterRow
   if (suffix == "blend") {
     const String name = model == vital::constants::kComb ? "Comb blend"
                       : model == vital::constants::kSampleHoldFilter ? "Bit crush"
+                      : model == vital::constants::kBandRejectFilter ? "Width"
                                                                      : "Filter blend";
     // Read by the model and style of the moment, not the pair the row was built for.
     auto row = std::make_unique<AccessibleParameterRow>(parameter, name, [this, bridge](double value) {
@@ -8819,6 +8817,9 @@ bool SynthEditor::shouldShowParameterInSection(const String& sectionName, AudioP
   // Sample & Hold uses Cutoff as its hold rate and Blend as bit crush.
   if (model == vital::constants::kSampleHoldFilter &&
       (suffix == "resonance" || suffix == "drive" || suffix == "blend_transpose"))
+    return false;
+  // Band Reject: Cutoff, Resonance, Drive, Key Track and Mix, with Blend as the width of its notch.
+  if (model == vital::constants::kBandRejectFilter && (suffix == "style" || suffix == "blend_transpose"))
     return false;
   // Distortion has its own drive; Cutoff, Resonance and Blend set its filter.
   const bool distortion = model == vital::constants::kDistortionFilter;
@@ -24899,11 +24900,17 @@ void SynthEditor::moveToSection(int direction) {
   bool on_group_heading = false;
   if (current < 0) {
     // On a group's heading: period goes into its first section, and comma to
-    // the section before that.
+    // the section before that. Not in a group laid out flat (Macros,
+    // Modulation): its one section has no heading of its own and its rows
+    // name none, so a step to the section lands on the group's heading.
+    // There, and on a control in the group, the focus is in the section
+    // already, and period goes on to the section after it.
+    auto* focused = Component::getCurrentlyFocusedComponent();
     const auto found = group_sections_.find(focusedGroup());
     if (found != group_sections_.end() && !found->second.isEmpty()) {
       current = section_names_.indexOf(found->second[0]);
-      on_group_heading = current >= 0;
+      on_group_heading = current >= 0 && isGroupHeading(focused, found->first) &&
+                         sectionFocusTarget(found->second[0]) != focused;
     }
   }
   if (current < 0)

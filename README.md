@@ -66,6 +66,7 @@ In addition to Vital's models (Analog, Dirty, Ladder, Digital, Diode, Formant, C
 
 - **Wavetable**: Uses any loaded wavetable frame as a custom filter frequency response curve.
 - **Distortion**: Runs Atlas’s distortion algorithms per-voice before summing, preventing intermodulation distortion.
+- **Band Reject**: A lowpass below the cutoff and a highpass above it in parallel, modelled on Serum 2's Bandreject filter; Blend sets the width of the notch.
 - **Reverb & Scream**
 - **Ring Modulation & Sample & Hold**
 

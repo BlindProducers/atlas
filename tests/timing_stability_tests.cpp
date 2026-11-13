@@ -2958,6 +2958,7 @@ namespace {
 #include "release_velocity_glide_tests.h"
 #include "analog_oscillator_tests.h"
 #include "distortion_filter_tests.h"
+#include "band_reject_filter_tests.h"
 #include "fourier_transform_tests.h"
 #include "maim_tests.h"
 #include "dc_offset_tests.h"
@@ -2965,6 +2966,8 @@ namespace {
 int main(int argc, char** argv) {
   if (argc > 1 && std::string(argv[1]) == "--distortion-filter")
     return distortion_filter_tests::run();
+  if (argc > 1 && std::string(argv[1]) == "--band-reject-filter")
+    return band_reject_filter_tests::run();
   if (argc > 1 && std::string(argv[1]) == "--fourier-transform")
     return fourier_transform_tests::run();
   if (argc > 1 && std::string(argv[1]) == "--maim")

@@ -125,6 +125,13 @@ statement. Its modes are inspired by the distortion in Xfer Records' Serum and
 modelled from measurements of it, not from its code
 (src/synthesis/effects/distortion_modes/README.atlas.md).
 
+The Band Reject filter model is a native port of the Bandreject type of a
+filter JSFX by Alessio Scala (version 1.0), supplied for Atlas and not
+included in this repository; the script carries no licence statement. The
+type is inspired by the Bandreject filter in Xfer Records' Serum 2 and
+modelled from measurements of it, not from its code
+(src/synthesis/filters/README.atlas.md).
+
 The Erosion, Trance gate, Resonator, Dimension Expander mode 2, Reverb filter,
 Analogue effects, Spectral Balance, Suppressor, Spectral Compressor, Filter Table ("Wavetable" filter model) and oscillator slot code are
 Atlas's own, under the GPL v3. Product and company names mentioned in the

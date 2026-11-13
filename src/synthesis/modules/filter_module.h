@@ -21,6 +21,7 @@
 #include "formant_module.h"
 
 namespace vital {
+  class BandRejectFilter;
   class CombModule;
   class DigitalSvf;
   class DiodeFilter;
@@ -115,6 +116,7 @@ namespace vital {
       ScreamFilter* scream_filter_;
       RingModFilter* ring_mod_filter_;
       SampleHoldFilter* sample_hold_filter_;
+      BandRejectFilter* band_reject_filter_;
       TableFilter* table_filter_;
 
       JUCE_LEAK_DETECTOR(FilterModule)
