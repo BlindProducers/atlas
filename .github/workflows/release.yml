@@ -14,6 +14,8 @@
 # marked as a pre-release, and a push to main turns it into the release. A
 # version is announced on Discord when its release is first published and
 # when its pre-release becomes the release (.github/scripts/announce-release.sh).
+# A run by hand with a tag in "announce" builds nothing and announces that
+# release, for one Discord has not heard of or to post again.
 name: Build and publish
 
 env:
@@ -38,17 +40,25 @@ on:
       - '**.md'
       - 'docs/**'
   # Run by hand from the Actions tab to rebuild and republish the head of dev
-  # or main, for example after a force-push, which starts no run.
+  # or main, for example after a force-push, which starts no run. With a tag
+  # in "announce" the run builds nothing: it announces that release on Discord.
   workflow_dispatch:
+    inputs:
+      announce:
+        description: Announce this release on Discord instead of building, by its tag (v2.0.0.3)
+        required: false
+        type: string
 
-# A newer push cancels the build still running for an older one.
+# A newer push cancels the build still running for an older one. A run that
+# only announces is in a group of its own, so it cancels no build.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}${{ inputs.announce && '-announce' || '' }}
   cancel-in-progress: true
 
 jobs:
   macos:
     name: macOS arm64
+    if: ${{ !inputs.announce }}
     runs-on: macos-26
     timeout-minutes: 60
     steps:
@@ -98,6 +108,7 @@ jobs:
 
   windows:
     name: Windows x64
+    if: ${{ !inputs.announce }}
     # Visual Studio 2022, the Windows SDK (its MIDL generates the NVDA
     # controller stub during the build) and Inno Setup come with the image.
     runs-on: windows-2022
@@ -231,7 +242,6 @@ jobs:
           fi
           {
             echo "tag=$tag"
-            echo "title=$title"
             echo "announce=$announce"
           } >> "$GITHUB_OUTPUT"
 
@@ -241,8 +251,35 @@ jobs:
         if: steps.publish.outputs.announce != ''
         continue-on-error: true
         env:
+          GH_TOKEN: ${{ github.token }}
           DISCORD_RELEASES_WEBHOOK: ${{ secrets.DISCORD_RELEASES_WEBHOOK }}
           TAG: ${{ steps.publish.outputs.tag }}
-          TITLE: ${{ steps.publish.outputs.title }}
           ANNOUNCE: ${{ steps.publish.outputs.announce }}
         run: bash .github/scripts/announce-release.sh
+
+  # A run by hand with a tag in "announce": the release with that tag is
+  # announced, whatever Discord has heard of it before.
+  announce:
+    name: Announce on Discord
+    if: ${{ inputs.announce }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The script and the release notes are all it reads.
+          sparse-checkout: |
+            .github
+            docs/releases
+
+      - name: Announce
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DISCORD_RELEASES_WEBHOOK: ${{ secrets.DISCORD_RELEASES_WEBHOOK }}
+          TAG: ${{ inputs.announce }}
+        run: |
+          if [ -z "$DISCORD_RELEASES_WEBHOOK" ]; then
+            echo "::error::The DISCORD_RELEASES_WEBHOOK secret is not set, so there is nowhere to post."
+            exit 1
+          fi
+          bash .github/scripts/announce-release.sh
