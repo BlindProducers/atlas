@@ -11,7 +11,9 @@
 # ATLAS_PRERELEASE starts a new pre-release, and bumping the version in
 # CMakeLists.txt a new release. An update to a released version (2.0.0.1) has
 # no beta or RC: with ATLAS_PRERELEASE empty, dev publishes v<version> itself,
-# marked as a pre-release, and a push to main turns it into the release.
+# marked as a pre-release, and a push to main turns it into the release. A
+# version is announced on Discord when its release is first published and
+# when its pre-release becomes the release (.github/scripts/announce-release.sh).
 name: Build and publish
 
 env:
@@ -158,6 +160,7 @@ jobs:
           merge-multiple: true
 
       - name: Publish
+        id: publish
         env:
           GH_TOKEN: ${{ github.token }}
           REPOSITORY_URL: ${{ github.server_url }}/${{ github.repository }}
@@ -205,7 +208,10 @@ jobs:
           ls -l dist
           git tag -f "$tag" "$GITHUB_SHA"
           git push -f origin "refs/tags/$tag"
-          if gh release view "$tag" > /dev/null 2>&1; then
+          # What the release was before this run: prerelease, release, or none
+          # for a version published for the first time.
+          was=$(gh release view "$tag" --json isPrerelease --jq 'if .isPrerelease then "prerelease" else "release" end' 2> /dev/null || echo none)
+          if [ "$was" != none ]; then
             gh release view "$tag" --json assets --jq '.assets[].name' | while read -r asset; do
               gh release delete-asset "$tag" "$asset" --yes
             done
@@ -214,3 +220,29 @@ jobs:
             gh release create "$tag" --verify-tag "${kind[@]}" --title "$title" --notes "$notes"
           fi
           gh release upload "$tag" dist/*
+          # Discord hears of a version once: when its release is first
+          # published, and again when its pre-release becomes the release. A
+          # rebuild of the same release announces nothing.
+          announce=""
+          if [ "$was" = none ]; then
+            announce=new
+          elif [ "$was" = prerelease ] && [ "$ATLAS_OFFICIAL" = true ]; then
+            announce=promoted
+          fi
+          {
+            echo "tag=$tag"
+            echo "title=$title"
+            echo "announce=$announce"
+          } >> "$GITHUB_OUTPUT"
+
+      # The channel is the one behind the DISCORD_RELEASES_WEBHOOK secret. The
+      # release stands whether or not Discord takes the message.
+      - name: Announce on Discord
+        if: steps.publish.outputs.announce != ''
+        continue-on-error: true
+        env:
+          DISCORD_RELEASES_WEBHOOK: ${{ secrets.DISCORD_RELEASES_WEBHOOK }}
+          TAG: ${{ steps.publish.outputs.tag }}
+          TITLE: ${{ steps.publish.outputs.title }}
+          ANNOUNCE: ${{ steps.publish.outputs.announce }}
+        run: bash .github/scripts/announce-release.sh
