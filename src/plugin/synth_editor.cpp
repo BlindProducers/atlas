@@ -3106,6 +3106,12 @@ namespace {
     return bus == 0 ? "Main effects bus" : "Bus " + String(bus);
   }
 
+  // Whether a step to `section` lands on its Bus heading, as a bus's effects
+  // chain does on Windows (kBusChainsStepToTheirHeading).
+  bool stepsToBusHeading(const String& section) {
+    return kBusChainsStepToTheirHeading && isEffectChainSection(section) && fxBusForSection(section) > 0;
+  }
+
   String accessibleSectionTitle(const String& section) {
     if (!section.startsWith("Bus "))
       return section;
@@ -8095,6 +8101,31 @@ void SynthEditor::buildGroups() {
     current_group_ = group_names_.isEmpty() ? String() : group_names_[0];
 }
 
+Component* SynthEditor::sectionFocusTarget(const String& section) const {
+  // On Windows a bus's chain is reached at its Bus heading (the group search
+  // below) and called by the bus: the chain is all the Bus group holds, and
+  // its own name, "Chain and routing", is the same on every bus.
+  if (!stepsToBusHeading(section)) {
+    for (auto* component : row_focus_order_) {
+      if (component != nullptr && component->getProperties()["SectionName"].toString() == section)
+        return component;
+    }
+    const String title = accessibleSectionTitle(section);
+    for (auto* component : row_focus_order_) {
+      if (component != nullptr && component->getTitle() == title)
+        return component;
+    }
+  }
+  // The group's own heading: an effect's groups may share its name
+  // (Glitch Delay's and Multiband Dynamics' Global).
+  const String group = groupForSection(section);
+  for (auto* component : row_focus_order_) {
+    if (isGroupHeading(component, group))
+      return component;
+  }
+  return nullptr;
+}
+
 void SynthEditor::selectSectionByName(const String& section, bool announce) {
   if (!section_names_.contains(section))
     return;
@@ -8102,46 +8133,12 @@ void SynthEditor::selectSectionByName(const String& section, bool announce) {
   last_section_name_ = section;
   if (row_focus_order_.empty())
     showAllSections(false);
-  // On Windows a bus's chain is reached at its Bus heading (the group search
-  // below) and called by the bus: the chain is all the Bus group holds, and
-  // its own name, "Chain and routing", is the same on every bus.
-  const bool bus_heading = kBusChainsStepToTheirHeading && isEffectChainSection(section) &&
-                           fxBusForSection(section) > 0;
-  Component* target = nullptr;
-  if (!bus_heading) {
-    for (auto* component : row_focus_order_) {
-      if (component != nullptr && component->getProperties()["SectionName"].toString() == section) {
-        target = component;
-        break;
-      }
-    }
-  }
-  if (target == nullptr && !bus_heading) {
-    const String title = accessibleSectionTitle(section);
-    for (auto* component : row_focus_order_) {
-      if (component != nullptr && component->getTitle() == title) {
-        target = component;
-        break;
-      }
-    }
-  }
-  if (target == nullptr) {
-    // The group's own heading: an effect's groups may share its name
-    // (Glitch Delay's and Multiband Dynamics' Global).
-    const String group = groupForSection(section);
-    for (auto* component : row_focus_order_) {
-      if (isGroupHeading(component, group)) {
-        target = component;
-        break;
-      }
-    }
-  }
-  if (target != nullptr) {
+  if (auto* target = sectionFocusTarget(section)) {
     ensureComponentVisible(target);
     target->grabKeyboardFocus();
   }
   if (announce) {
-    if (bus_heading)
+    if (stepsToBusHeading(section))
       postNavigationAnnouncement(fxBusNameForSection(section));
     else
       postPluginAnnouncement(accessibleSectionTitle(section), AccessibilityHandler::AnnouncementPriority::high);
@@ -24899,11 +24896,17 @@ void SynthEditor::moveToSection(int direction) {
   bool on_group_heading = false;
   if (current < 0) {
     // On a group's heading: period goes into its first section, and comma to
-    // the section before that.
+    // the section before that. Not in a group laid out flat (Macros,
+    // Modulation): its one section has no heading of its own and its rows
+    // name none, so a step to the section lands on the group's heading.
+    // There, and on a control in the group, the focus is in the section
+    // already, and period goes on to the section after it.
+    auto* focused = Component::getCurrentlyFocusedComponent();
     const auto found = group_sections_.find(focusedGroup());
     if (found != group_sections_.end() && !found->second.isEmpty()) {
       current = section_names_.indexOf(found->second[0]);
-      on_group_heading = current >= 0;
+      on_group_heading = current >= 0 && isGroupHeading(focused, found->first) &&
+                         sectionFocusTarget(found->second[0]) != focused;
     }
   }
   if (current < 0)
