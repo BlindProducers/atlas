@@ -16,6 +16,7 @@
 
 #include "filter_module.h"
 
+#include "band_reject_filter.h"
 #include "comb_module.h"
 #include "digital_svf.h"
 #include "diode_filter.h"
@@ -48,6 +49,7 @@ namespace vital {
         case constants::kPhase:
         case constants::kScreamFilter:
         case constants::kRingModFilter:
+        case constants::kBandRejectFilter:
           return true;
         default:
           return false;
@@ -66,6 +68,7 @@ namespace vital {
     scream_filter_ = new ScreamFilter();
     ring_mod_filter_ = new RingModFilter();
     sample_hold_filter_ = new SampleHoldFilter();
+    band_reject_filter_ = new BandRejectFilter();
     comb_filter_ = new CombModule();
     digital_svf_ = new DigitalSvf();
     diode_filter_ = new DiodeFilter();
@@ -85,6 +88,7 @@ namespace vital {
     addProcessor(scream_filter_);
     addProcessor(ring_mod_filter_);
     addProcessor(sample_hold_filter_);
+    addProcessor(band_reject_filter_);
     addProcessor(comb_filter_);
     addProcessor(digital_svf_);
     addProcessor(diode_filter_);
@@ -187,6 +191,14 @@ namespace vital {
     sample_hold_filter_->plug(blend, SampleHoldFilter::kCrush);
     sample_hold_filter_->useOutput(output());
 
+    band_reject_filter_->useInput(input(kAudio), BandRejectFilter::kAudio);
+    band_reject_filter_->useInput(input(kReset), BandRejectFilter::kReset);
+    band_reject_filter_->plug(midi_cutoff, BandRejectFilter::kMidiCutoff);
+    band_reject_filter_->plug(resonance, BandRejectFilter::kResonance);
+    band_reject_filter_->plug(drive, BandRejectFilter::kDriveGain);
+    band_reject_filter_->plug(blend, BandRejectFilter::kWidth);
+    band_reject_filter_->useOutput(output());
+
     table_filter_->useInput(input(kAudio), TableFilter::kAudio);
     table_filter_->useInput(input(kReset), TableFilter::kReset);
     table_filter_->plug(midi_cutoff, TableFilter::kMidiCutoff);
@@ -281,6 +293,7 @@ namespace vital {
     scream_filter_->enable(false);
     ring_mod_filter_->enable(false);
     sample_hold_filter_->enable(false);
+    band_reject_filter_->enable(false);
     comb_filter_->enable(false);
     digital_svf_->enable(false);
     diode_filter_->enable(false);
@@ -298,6 +311,7 @@ namespace vital {
     getLocalProcessor(scream_filter_)->hardReset();
     getLocalProcessor(ring_mod_filter_)->hardReset();
     getLocalProcessor(sample_hold_filter_)->hardReset();
+    getLocalProcessor(band_reject_filter_)->hardReset();
     getLocalProcessor(table_filter_)->hardReset();
     reverb_gain_ = 1.0f;
     if (keytrack_smoother_)
@@ -325,6 +339,7 @@ namespace vital {
     scream_filter_->enable(new_model == constants::kScreamFilter);
     ring_mod_filter_->enable(new_model == constants::kRingModFilter);
     sample_hold_filter_->enable(new_model == constants::kSampleHoldFilter);
+    band_reject_filter_->enable(new_model == constants::kBandRejectFilter);
     table_filter_->enable(new_model == constants::kFilterTable);
     comb_filter_->enable(new_model == constants::kComb);
     digital_svf_->enable(new_model == constants::kDigital);
@@ -348,6 +363,8 @@ namespace vital {
       to_reset = ring_mod_filter_;
     else if (new_model == constants::kSampleHoldFilter)
       to_reset = sample_hold_filter_;
+    else if (new_model == constants::kBandRejectFilter)
+      to_reset = band_reject_filter_;
     else if (new_model == constants::kFilterTable)
       to_reset = table_filter_;
     else if (new_model == constants::kAnalog)
@@ -438,6 +455,7 @@ namespace vital {
     mono_ = mono;
     scream_filter_->setFxMode(mono);
     reverb_filter_->setFxMode(mono);
+    band_reject_filter_->setFxMode(mono);
     formant_filter_->setMono(mono);
     table_filter_->setMono(mono);
   }

@@ -222,6 +222,9 @@ target_sources(Atlas PRIVATE
   src/synthesis/modules/defuse_module.cpp
   src/synthesis/filters/scream_filter.cpp
   src/synthesis/filters/scream_tanh.cpp
+  # The Band Reject filter model: the script's double arithmetic, operation for operation.
+  src/synthesis/filters/band_reject_core.cpp
+  src/synthesis/filters/band_reject_filter.cpp
   src/synthesis/modules/spectral_compressor_module.cpp
   src/synthesis/modules/spectral_lock_module.cpp
   src/synthesis/effects/spectral_lock/spectral_lock_engine.cpp
@@ -334,6 +337,9 @@ set_source_files_properties(${ATLAS_ZL_COMPRESSOR_SOURCES} ${ATLAS_MAIM_SOURCES}
 # The Scream filter's feedback loop amplifies any rounding difference, so its
 # SVFs and waveshaper round alike on arm64 and x64.
 set_source_files_properties(src/synthesis/filters/scream_filter.cpp src/synthesis/filters/scream_tanh.cpp PROPERTIES
+  COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:precise>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffp-contract=off;-fno-fast-math>")
+# The Band Reject model mirrors its script's double arithmetic, so it rounds alike on arm64 and x64.
+set_source_files_properties(src/synthesis/filters/band_reject_core.cpp src/synthesis/filters/band_reject_filter.cpp PROPERTIES
   COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:precise>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffp-contract=off;-fno-fast-math>")
 
 # Braids is written for the firmware's two's-complement integer arithmetic.
@@ -718,6 +724,7 @@ if(ATLAS_BUILD_TIMING_TESTS)
   add_test(NAME atlas_ring_mod_filter COMMAND AtlasTimingTests --ring-mod-filter)
   add_test(NAME atlas_sample_hold_filter COMMAND AtlasTimingTests --sample-hold-filter)
   add_test(NAME atlas_distortion_filter COMMAND AtlasTimingTests --distortion-filter)
+  add_test(NAME atlas_band_reject_filter COMMAND AtlasTimingTests --band-reject-filter)
   add_test(NAME atlas_filter_keytrack COMMAND AtlasTimingTests --filter-keytrack)
   add_test(NAME atlas_filter_routing COMMAND AtlasTimingTests --filter-routing)
   add_test(NAME atlas_release_velocity_glide COMMAND AtlasTimingTests --release-velocity-glide)
@@ -1391,6 +1398,19 @@ if(ATLAS_BUILD_TIMING_TESTS)
     target_link_libraries(AtlasDistortionModesReferenceTests PRIVATE AtlasEelReference)
     if(EXISTS "${ATLAS_DISTORTION_JSFX}")
       add_test(NAME atlas_distortion_modes_reference COMMAND AtlasDistortionModesReferenceTests "${ATLAS_DISTORTION_JSFX}")
+    endif()
+    # The Band Reject filter model against the filter JSFX it is ported from,
+    # which is not in the repository either: the test is added once
+    # ATLAS_BAND_REJECT_JSFX names it.
+    set(ATLAS_BAND_REJECT_JSFX "" CACHE FILEPATH "Path to the filter JSFX the Band Reject model is ported from, for its reference test")
+    add_executable(AtlasBandRejectReferenceTests tests/band_reject/reference_tests.cpp
+      src/synthesis/filters/band_reject_core.cpp)
+    target_include_directories(AtlasBandRejectReferenceTests PRIVATE src/synthesis/filters)
+    set_source_files_properties(tests/band_reject/reference_tests.cpp PROPERTIES
+      COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:precise>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffp-contract=off;-fno-fast-math>")
+    target_link_libraries(AtlasBandRejectReferenceTests PRIVATE AtlasEelReference)
+    if(EXISTS "${ATLAS_BAND_REJECT_JSFX}")
+      add_test(NAME atlas_band_reject_reference COMMAND AtlasBandRejectReferenceTests "${ATLAS_BAND_REJECT_JSFX}")
     endif()
     add_executable(AtlasResonatorReferenceTests tests/resonator/reference_tests.cpp)
     target_include_directories(AtlasResonatorReferenceTests PRIVATE src/synthesis/effects)

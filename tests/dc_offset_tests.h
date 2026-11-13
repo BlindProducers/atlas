@@ -71,7 +71,8 @@ namespace dc_offset_tests {
       { vital::constants::kComb, "Comb" }, { vital::constants::kPhase, "Phase" },
       { vital::constants::kReverbFilter, "Reverb" }, { vital::constants::kScreamFilter, "Scream" },
       { vital::constants::kRingModFilter, "Ring Mod" }, { vital::constants::kSampleHoldFilter, "Sample & Hold" },
-      { vital::constants::kDistortionFilter, "Distortion" }
+      { vital::constants::kDistortionFilter, "Distortion" },
+      { vital::constants::kBandRejectFilter, "Band Reject" }
     };
     for (const auto& model : models) for (int style : { 0, 1 }) for (float resonance : { .5f, .9f }) {
       analog_oscillator_tests::AnalogFixture source(kRate, A::kSaw);

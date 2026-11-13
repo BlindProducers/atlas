@@ -619,6 +619,7 @@ namespace strings {
     "Sample & Hold",
     "Wavetable",
     "Distortion",
+    "Band Reject",
   };
 
   // Wavetable filter phase modes: Filter FX offers all four, the voice filters
