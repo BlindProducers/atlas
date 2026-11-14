@@ -10,6 +10,9 @@
 #include "community_library.h"
 #include "credential_store.h"
 #include "library_layout.h"
+#if JUCE_MAC
+  #include <sys/socket.h>
+#endif
 
 namespace {
   // Two patches as /api/v1/presets/ describes them: one complete, one with
@@ -1390,6 +1393,26 @@ namespace {
         return true;
       }
 
+      // readSome leaves the socket non-blocking, so one send may take only
+      // part of a large answer: send the rest as the socket drains. A send
+      // that fails once the socket is writable means the client has gone.
+      static bool sendAll(StreamingSocket& socket, const char* data, size_t size) {
+        bool waited = false;
+        while (size > 0) {
+          const int sent = socket.write(data, static_cast<int>(std::min<size_t>(size, 1 << 20)));
+          if (sent > 0) {
+            data += sent;
+            size -= static_cast<size_t>(sent);
+            waited = false;
+          }
+          else if (waited || socket.waitUntilReady(false, 5000) <= 0)
+            return false;
+          else
+            waited = true;
+        }
+        return true;
+      }
+
       static int headerEnd(const MemoryBlock& data) {
         const auto* bytes = static_cast<const char*>(data.getData());
         for (size_t i = 0; i + 3 < data.getSize(); ++i) {
@@ -1400,6 +1423,12 @@ namespace {
       }
 
       void handle(StreamingSocket& socket) {
+#if JUCE_MAC
+        // A client gone mid-answer (a cancelled download) makes the write
+        // below fail rather than raise SIGPIPE, which would end the tests.
+        const int no_sigpipe = 1;
+        setsockopt(socket.getRawSocketHandle(), SOL_SOCKET, SO_NOSIGPIPE, &no_sigpipe, sizeof(no_sigpipe));
+#endif
         MemoryBlock data;
         int end = -1;
         while ((end = headerEnd(data)) < 0) {
@@ -1446,17 +1475,17 @@ namespace {
                             "\r\nConnection: close\r\n\r\n";
         if (reply.chunk_bytes <= 0 || reply.chunk_delay_ms <= 0) {
           const std::string text = head.toStdString() + body;
-          socket.write(text.data(), static_cast<int>(text.size()));
+          sendAll(socket, text.data(), text.size());
           return;
         }
         // Slowly: the head, then the body a chunk at a time, until the client
         // has gone (a cancelled download closes its connection).
         const std::string head_text = head.toStdString();
-        if (socket.write(head_text.data(), static_cast<int>(head_text.size())) < 0)
+        if (!sendAll(socket, head_text.data(), head_text.size()))
           return;
         for (size_t sent = 0; sent < body.size() && !threadShouldExit(); sent += static_cast<size_t>(reply.chunk_bytes)) {
           const int piece = static_cast<int>(std::min<size_t>(static_cast<size_t>(reply.chunk_bytes), body.size() - sent));
-          if (socket.write(body.data() + sent, piece) < 0)
+          if (!sendAll(socket, body.data() + sent, static_cast<size_t>(piece)))
             return;
           Thread::sleep(reply.chunk_delay_ms);
         }
