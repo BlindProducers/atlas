@@ -67,9 +67,10 @@ namespace {
         contents = json::object();
       contents["data_directory"] = folder.getFullPathName().toStdString();
       // Never the user's community login, nor an old token an older Atlas
-      // left in their config.
+      // left in their config, nor the preview they share with.
       for (const char* key : { "community_api_token", "community_account_username", "community_account_name",
-                               "community_logins" })
+                               "community_logins", "share_preview_source", "share_preview_notes",
+                               "share_preview_midi", "share_preview_octave" })
         contents.erase(key);
       config.getFile().replaceWithText(contents.dump());
       LoadSave::setConfigFileForTesting(config.getFile());

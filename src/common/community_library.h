@@ -216,7 +216,30 @@ struct ShareFields {
   juce::String genre;               // a genre slug; required for banks
   juce::String tags;                // "dark, 808"
   juce::String description;
+  juce::File preview;               // an audio file sent as the patch's preview; none sends none
 };
+
+// The audio files the library takes as a preview ("*.mp3;*.flac;..."), and
+// the most it takes of one.
+juce::String previewFilePatterns();
+constexpr juce::int64 kMaxPreviewBytes = 40ll * 1024 * 1024;
+
+// What the Share patch form's preview played last, kept in the config: the
+// generated notes or the user's MIDI file, the notes (one of Atlas's MIDI
+// files by its name, or empty for the single note), the MIDI file chosen
+// last (File() for none) and the octave.
+struct SharePreviewSetting {
+  enum class Source { kGenerated, kMidiFile };
+  static constexpr int kMinOctave = 1;
+  static constexpr int kMaxOctave = 7;
+  static constexpr int kDefaultOctave = 4;
+  Source source = Source::kGenerated;
+  juce::String notes;
+  juce::File midi_file;
+  int octave = kDefaultOctave;
+};
+SharePreviewSetting storedSharePreview();
+void storeSharePreview(const SharePreviewSetting& choice);
 
 // An upload as it goes out: the endpoint with the fields and the file as
 // multipart form data, and the headers that carry the token.

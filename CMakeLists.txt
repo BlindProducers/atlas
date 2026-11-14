@@ -566,19 +566,24 @@ target_compile_definitions(atlas_espeak INTERFACE LIBESPEAK_NG_EXPORT=1)
 # espeak-ng's compiled data, which the bundles copy below.
 add_dependencies(Atlas data)
 
-# Copy the Tape effect's noise recordings before the final signature, including
-# AU bundles whose linker signature alone does not seal resource files. Asset
-# edits trigger relinking, and the bundle's folder is emptied first so that a
-# recording removed from Factory does not linger in a bundle built earlier.
-file(GLOB ATLAS_TAPE_ASSETS CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/Factory/Samples/Tape/*.wav")
-set_property(TARGET Atlas_VST3 APPEND PROPERTY LINK_DEPENDS "${ATLAS_TAPE_ASSETS}")
+# Copy the Tape effect's noise recordings and the MIDI files Share patch plays
+# for a preview before the final signature, including AU bundles whose linker
+# signature alone does not seal resource files. Asset edits trigger relinking,
+# and the bundle's folders are emptied first so that a file removed from
+# Factory does not linger in a bundle built earlier.
+file(GLOB ATLAS_BUNDLE_ASSETS CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/Factory/Samples/Tape/*.wav"
+     "${CMAKE_SOURCE_DIR}/Factory/Preview MIDI/*.mid")
+set_property(TARGET Atlas_VST3 APPEND PROPERTY LINK_DEPENDS "${ATLAS_BUNDLE_ASSETS}")
 if(APPLE)
-  set_property(TARGET Atlas_AU APPEND PROPERTY LINK_DEPENDS "${ATLAS_TAPE_ASSETS}")
+  set_property(TARGET Atlas_AU APPEND PROPERTY LINK_DEPENDS "${ATLAS_BUNDLE_ASSETS}")
   foreach(format AU VST3)
     add_custom_command(TARGET Atlas_${format} POST_BUILD
       COMMAND ${CMAKE_COMMAND} -E rm -rf "$<TARGET_BUNDLE_DIR:Atlas_${format}>/Contents/Resources/Tape"
       COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Factory/Samples/Tape"
         "$<TARGET_BUNDLE_DIR:Atlas_${format}>/Contents/Resources/Tape"
+      COMMAND ${CMAKE_COMMAND} -E rm -rf "$<TARGET_BUNDLE_DIR:Atlas_${format}>/Contents/Resources/Preview MIDI"
+      COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Factory/Preview MIDI"
+        "$<TARGET_BUNDLE_DIR:Atlas_${format}>/Contents/Resources/Preview MIDI"
       COMMAND ${CMAKE_COMMAND} -E rm -rf "$<TARGET_BUNDLE_DIR:Atlas_${format}>/Contents/Resources/espeak-ng-data"
       COMMAND ${CMAKE_COMMAND} -E copy_directory "${ATLAS_ESPEAK_DATA_ROOT}/espeak-ng-data"
         "$<TARGET_BUNDLE_DIR:Atlas_${format}>/Contents/Resources/espeak-ng-data"
@@ -639,6 +644,9 @@ elseif(WIN32)
     COMMAND ${CMAKE_COMMAND} -E rm -rf "$<TARGET_FILE_DIR:Atlas_VST3>/../Resources/Tape"
     COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Factory/Samples/Tape"
       "$<TARGET_FILE_DIR:Atlas_VST3>/../Resources/Tape"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "$<TARGET_FILE_DIR:Atlas_VST3>/../Resources/Preview MIDI"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Factory/Preview MIDI"
+      "$<TARGET_FILE_DIR:Atlas_VST3>/../Resources/Preview MIDI"
     COMMAND ${CMAKE_COMMAND} -E rm -rf "$<TARGET_FILE_DIR:Atlas_VST3>/../Resources/espeak-ng-data"
     COMMAND ${CMAKE_COMMAND} -E copy_directory "${ATLAS_ESPEAK_DATA_ROOT}/espeak-ng-data"
       "$<TARGET_FILE_DIR:Atlas_VST3>/../Resources/espeak-ng-data" VERBATIM)
@@ -647,6 +655,9 @@ else()
     COMMAND ${CMAKE_COMMAND} -E rm -rf "$<TARGET_FILE_DIR:Atlas_VST3>/../Resources/Tape"
     COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Factory/Samples/Tape"
       "$<TARGET_FILE_DIR:Atlas_VST3>/../Resources/Tape"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "$<TARGET_FILE_DIR:Atlas_VST3>/../Resources/Preview MIDI"
+    COMMAND ${CMAKE_COMMAND} -E copy_directory "${CMAKE_SOURCE_DIR}/Factory/Preview MIDI"
+      "$<TARGET_FILE_DIR:Atlas_VST3>/../Resources/Preview MIDI"
     COMMAND ${CMAKE_COMMAND} -E rm -rf "$<TARGET_FILE_DIR:Atlas_VST3>/../Resources/espeak-ng-data"
     COMMAND ${CMAKE_COMMAND} -E copy_directory "${ATLAS_ESPEAK_DATA_ROOT}/espeak-ng-data"
       "$<TARGET_FILE_DIR:Atlas_VST3>/../Resources/espeak-ng-data" VERBATIM)
@@ -856,8 +867,10 @@ if(ATLAS_BUILD_TIMING_TESTS)
   # Undo and redo of values, presets, the default patch, effects, routes and LFO edits.
   add_test(NAME atlas_editor_undo COMMAND AtlasMacroTests --editor-undo)
   # The Community collection: the library's pages parse, downloads are checked
-  # against its checksums, and the browser lists and fetches from a saved copy.
-  add_test(NAME atlas_community_library COMMAND AtlasMacroTests --community-library)
+  # against its checksums, and the browser lists and fetches from a saved copy;
+  # Share patch renders a preview, plays it and uploads it with the patch.
+  add_test(NAME atlas_community_library COMMAND AtlasMacroTests --community-library
+           "${CMAKE_SOURCE_DIR}/Factory/Preview MIDI")
   # The library layout (library, bank, kind, category): paths, the banks a
   # library lists, the one-time migration from the older layout, stray banks
   # adopted into Third Party, and bank archives written and imported.

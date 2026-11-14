@@ -10,6 +10,7 @@
 #include "community_library.h"
 #include "credential_store.h"
 #include "library_layout.h"
+#include "preset_preview.h"
 #if JUCE_MAC
   #include <sys/socket.h>
 #endif
@@ -1545,6 +1546,184 @@ namespace {
     result = atlas::community::uploadPreset(server.url(), kTestToken, preset, fields);
     expect(result.tokenRefused() && !result.shared(), "a 401 from the library is a refused token: " +
                                                           std::to_string(result.status) + " " + result.error.toStdString());
+
+    // A preview goes as the preview part, typed by its extension; a file the
+    // library would not take as one is refused before anything is sent.
+    fields.preview = folder.getChildFile("Glow Lead preview.flac");
+    fields.preview.replaceWithText("fLaC preview");
+    server.answer("POST", "/api/v1/presets/", 201, presetAnswer(65, "Glow Lead"));
+    result = atlas::community::uploadPreset(server.url(), kTestToken, preset, fields);
+    const auto with_preview = server.requests();
+    expect(result.shared() && !with_preview.empty() &&
+               with_preview.back().bodyContains("name=\"preview\"; filename=\"Glow Lead preview.flac\"") &&
+               with_preview.back().bodyContains("Content-Type: audio/flac") &&
+               with_preview.back().bodyContains("fLaC preview") &&
+               with_preview.back().bodyContains("name=\"file\"; filename=\"Glow Lead.atp\""),
+           "the patch goes with its preview, as FLAC");
+    fields.preview = folder.getChildFile("Notes.txt");
+    fields.preview.replaceWithText("notes");
+    expect(atlas::community::buildPresetUpload(server.url(), preset, fields, kTestToken).error.contains("as the preview"),
+           "a preview the library would not take is refused here");
+    folder.deleteRecursively();
+  }
+
+  // A preview as Share patch renders it: 44.1 kHz stereo FLAC, the start of
+  // each sounding stretch (in seconds), its length and its peak.
+  struct RenderedPreview {
+    double sample_rate = 0.0;
+    int channels = 0;
+    double seconds = 0.0;
+    float peak = 0.0f;
+    float end_peak = 1.0f;          // over its last 10 ms
+    std::vector<double> onsets;
+    // Upward zero crossings a second in the left channel from 0.1 s to 0.4 s:
+    // the first note's pitch, or near it.
+    double crossings = 0.0;
+  };
+
+  RenderedPreview readRenderedPreview(const File& file) {
+    RenderedPreview preview;
+    FlacAudioFormat flac;
+    std::unique_ptr<AudioFormatReader> reader(flac.createReaderFor(file.createInputStream().release(), true));
+    if (reader == nullptr)
+      return preview;
+    preview.sample_rate = reader->sampleRate;
+    preview.channels = static_cast<int>(reader->numChannels);
+    const int length = static_cast<int>(reader->lengthInSamples);
+    preview.seconds = length / reader->sampleRate;
+    AudioBuffer<float> audio(2, length);
+    reader->read(&audio, 0, length, 0, true, true);
+    preview.peak = audio.getMagnitude(0, length);
+    const int window = static_cast<int>(reader->sampleRate / 100.0);
+    preview.end_peak = audio.getMagnitude(std::max(0, length - window), std::min(length, window));
+    bool sounding = false;
+    for (int start = 0; start + window <= length; start += window) {
+      const bool now = audio.getMagnitude(start, window) > 0.002f;
+      if (now && !sounding)
+        preview.onsets.push_back(start / reader->sampleRate);
+      sounding = now;
+    }
+    const int from = static_cast<int>(0.1 * reader->sampleRate);
+    const int to = std::min(length, static_cast<int>(0.4 * reader->sampleRate));
+    const float* left = audio.getReadPointer(0);
+    int crossings = 0;
+    for (int i = from + 1; i < to; ++i)
+      crossings += left[i - 1] < 0.0f && left[i] >= 0.0f ? 1 : 0;
+    preview.crossings = to > from ? crossings * reader->sampleRate / (to - from) : 0.0;
+    return preview;
+  }
+
+  // The preview Share patch sends: the patch played on an engine of its own,
+  // one C held and left to ring out, in the octave chosen, or a MIDI file from
+  // its first note, moved by the octave from C4, at its own tempo or else the
+  // patch's; Atlas's own MIDI files (in `atlas_midi`, the source folder) each
+  // render.
+  void testPreviewRendersThePatch(const File& atlas_midi) {
+    const File folder = File::getSpecialLocation(File::tempDirectory).getNonexistentChildFile("AtlasPreview", "", false);
+    folder.createDirectory();
+    const File preset = folder.getChildFile("Patch.atp");
+    {
+      SynthPlugin synth;
+      expect(synth.saveCopyToFile(preset), "the init patch is written");
+    }
+    String error;
+    auto render = [&](const File& midi, int octave, const String& name) {
+      const File output = folder.getChildFile(name + ".flac");
+      auto renderer = atlas::preview::Renderer::create(preset, midi, octave, error);
+      if (renderer != nullptr)
+        error = renderer->render(output);
+      return renderer != nullptr && error.isEmpty() ? readRenderedPreview(output) : RenderedPreview {};
+    };
+
+    const double made = Time::getMillisecondCounterHiRes();
+    auto renderer = atlas::preview::Renderer::create(preset, {}, 4, error);
+    const double ready = Time::getMillisecondCounterHiRes();
+    expect(renderer != nullptr && error.isEmpty(), "the patch loads into an engine of its own: " + error.toStdString());
+    if (renderer == nullptr) {
+      folder.deleteRecursively();
+      return;
+    }
+    const File note = folder.getChildFile("Note.flac");
+    error = renderer->render(note);
+    const double rendered = Time::getMillisecondCounterHiRes();
+    renderer.reset();
+    std::cout << "Preview engine built and loaded in " << static_cast<int>(ready - made) << " ms, rendered in "
+              << static_cast<int>(rendered - ready) << " ms\n";
+    expect(error.isEmpty() && note.existsAsFile(), "the note renders: " + error.toStdString());
+    auto c4 = readRenderedPreview(note);
+    expect(c4.sample_rate == 44100.0 && c4.channels == 2, "as 44.1 kHz stereo FLAC");
+    expect(c4.onsets.size() == 1 && c4.onsets[0] < 0.05 && c4.seconds > 2.0 && c4.seconds < 8.0 &&
+               c4.end_peak < 0.002f,
+           "one note at once, held two seconds and left to end: " + std::to_string(c4.onsets.size()) + " notes, " +
+               std::to_string(c4.seconds) + " s");
+    expect(c4.peak > 0.01f && c4.peak <= 0.892f, "never above -1 dBFS: " + std::to_string(c4.peak));
+    const auto c5 = render({}, 5, "C5");
+    expect(c4.crossings > 0.0 && std::abs(c5.crossings / c4.crossings - 2.0) < 0.15,
+           "the octave chosen is the C played: " + std::to_string(c4.crossings) + " and " +
+               std::to_string(c5.crossings) + " crossings a second");
+
+    // A MIDI file whose first note waits a beat: C4 for a beat, then G4 three
+    // beats later; with a tempo of 150 BPM and without one.
+    auto writeMidi = [&](const String& name, bool with_tempo) {
+      const File file = folder.getChildFile(name + ".mid");
+      MidiMessageSequence track;
+      if (with_tempo)
+        track.addEvent(MidiMessage::tempoMetaEvent(400000), 0.0);
+      track.addEvent(MidiMessage::noteOn(1, 60, static_cast<uint8>(100)), 960.0);
+      track.addEvent(MidiMessage::noteOff(1, 60), 1920.0);
+      track.addEvent(MidiMessage::noteOn(1, 67, static_cast<uint8>(100)), 3840.0);
+      track.addEvent(MidiMessage::noteOff(1, 67), 4800.0);
+      track.updateMatchedPairs();
+      MidiFile midi;
+      midi.setTicksPerQuarterNote(960);
+      midi.addTrack(track);
+      FileOutputStream out(file);
+      expect(out.openedOk() && midi.writeTo(out), "the MIDI file is written");
+      return file;
+    };
+    const auto timed = render(writeMidi("Timed", true), 4, "Timed");
+    expect(error.isEmpty() && timed.onsets.size() == 2 && timed.onsets[0] < 0.05 &&
+               std::abs(timed.onsets[1] - 1.2) < 0.03,
+           "a MIDI file plays from its first note at its own tempo: " + error.toStdString() + ", " +
+               std::to_string(timed.onsets.size()) + " notes, the second at " +
+               std::to_string(timed.onsets.size() > 1 ? timed.onsets[1] : -1.0));
+    expect(timed.seconds > 1.6 && timed.seconds < 5.0, "and ends when the last note has: " +
+                                                           std::to_string(timed.seconds) + " s");
+    expect(std::abs(timed.crossings / c4.crossings - 1.0) < 0.08, "in C4 as written: " + std::to_string(timed.crossings));
+    // The init patch's tempo is 120 BPM.
+    const auto untimed = render(writeMidi("Untimed", false), 5, "Untimed");
+    expect(error.isEmpty() && untimed.onsets.size() == 2 &&
+               std::abs(untimed.onsets[1] - 1.5) < 0.03,
+           "without a tempo, at the patch's: " + error.toStdString() + ", the second note at " +
+               std::to_string(untimed.onsets.size() > 1 ? untimed.onsets[1] : -1.0));
+    expect(std::abs(untimed.crossings / c4.crossings - 2.0) < 0.15,
+           "and moved an octave up in C5: " + std::to_string(untimed.crossings));
+
+    // Atlas's own MIDI files, in the order of their names.
+    const auto files = atlas::preview::atlasMidiFiles(atlas_midi);
+    expect(files.size() >= 19 && files.getFirst().getFileName() == "Arpeggio.mid" &&
+               files.getLast().getFileName() == "Velocity ramp.mid",
+           "Atlas's MIDI files are listed by name from " + atlas_midi.getFullPathName().toStdString() + ": " +
+               std::to_string(files.size()));
+    for (const File& file : files) {
+      const auto preview = render(file, 4, file.getFileNameWithoutExtension());
+      expect(error.isEmpty() && !preview.onsets.empty() && preview.onsets[0] < 0.05 && preview.seconds > 1.0 &&
+                 preview.seconds < 20.0,
+             file.getFileName().toStdString() + " renders from its first note: " + error.toStdString() + ", " +
+                 std::to_string(preview.seconds) + " s");
+    }
+
+    // Stopped: nothing written. Not a MIDI file: said, and no engine.
+    renderer = atlas::preview::Renderer::create(preset, {}, 4, error);
+    const File stopped = folder.getChildFile("Stopped.flac");
+    if (renderer != nullptr)
+      error = renderer->render(stopped, [] { return true; });
+    expect(error == "Cancelled" && !stopped.exists(), "a render stopped writes nothing");
+    const File not_midi = folder.getChildFile("Notes.mid");
+    not_midi.replaceWithText("not a MIDI file");
+    renderer = atlas::preview::Renderer::create(preset, not_midi, 4, error);
+    expect(renderer == nullptr && error == "Notes.mid is not a MIDI file", "a file that is not MIDI is refused: " +
+                                                                               error.toStdString());
     folder.deleteRecursively();
   }
 
@@ -1719,6 +1898,66 @@ namespace {
     style->setSelectedItemIndex(lead, sendNotificationSync);
     tags->setText("glow, test", true);
 
+    // The preview, in a group of its own: generated notes, the single note in
+    // C4, until something else is chosen. A MIDI or an audio file shows a
+    // button to choose it in place of the notes, and nothing opens until it is
+    // pressed; with none chosen, Play preview says so. Play preview renders the
+    // notes, plays them and stops them; Share then sends that preview, since
+    // the patch has not changed.
+    auto* source = dynamic_cast<ComboBox*>(titled(editor, "Preview source"));
+    auto* notes = dynamic_cast<ComboBox*>(titled(editor, "Preview notes"));
+    auto* choose = dynamic_cast<Button*>(titled(editor, "Choose MIDI file"));
+    auto* octave = dynamic_cast<ComboBox*>(titled(editor, "Preview octave"));
+    auto* play = dynamic_cast<Button*>(titled(editor, "Play preview"));
+    const auto at = [&](const Component* control) { return std::find(order.begin(), order.end(), control); };
+    const bool found = source != nullptr && notes != nullptr && choose != nullptr && octave != nullptr && play != nullptr;
+    expect(found && source->getParentComponent() != nullptr && source->getParentComponent()->getTitle() == "Preview" &&
+               notes->getParentComponent() == source->getParentComponent() &&
+               choose->getParentComponent() == source->getParentComponent() &&
+               octave->getParentComponent() == source->getParentComponent() &&
+               play->getParentComponent() == source->getParentComponent(),
+           "the patch form's preview controls are in the Preview group");
+    if (found) {
+      expect(source->isShowing() && notes->isShowing() && octave->isShowing() && play->isShowing() &&
+                 !choose->isVisible() && at(source) != order.end() && at(notes) == at(source) + 1 &&
+                 at(octave) == at(notes) + 1 && at(play) == at(octave) + 1,
+             "generated notes show Preview notes and Preview octave, in Tab order before Play preview");
+      expect(source->getText() == "Generated notes" && source->getNumItems() == 3 &&
+                 source->getItemText(1) == "MIDI file" && source->getItemText(2) == "Audio file" &&
+                 notes->getText() == "Single note",
+             "the source starts on generated notes, playing the single note: " + source->getText().toStdString() +
+                 ", " + notes->getText().toStdString());
+      expect(octave->getText() == "C4" && octave->getNumItems() == 7 && octave->getItemText(0) == "C1" &&
+                 octave->getItemText(6) == "C7",
+             "the octave is C4 of C1 to C7: " + octave->getText().toStdString());
+
+      source->setSelectedId(2, sendNotificationSync);
+      expect(choose->isShowing() && !notes->isVisible() && octave->isShowing() && at(choose) == at(source) + 1 &&
+                 at(octave) == at(choose) + 1,
+             "a MIDI file shows Choose MIDI file beside the source, and the octave");
+      spoken.messages.clear();
+      play->onClick();
+      expect(said("Unable to play the preview. No MIDI file is chosen") && play->getTitle() == "Play preview",
+             "nothing opens on its own, and with no file chosen Play preview says so: " + heard());
+      source->setSelectedId(3, sendNotificationSync);
+      expect(choose->getTitle() == "Choose audio file" && choose->isShowing() && !octave->isVisible() &&
+                 at(play) == at(choose) + 1,
+             "an audio file shows Choose audio file and no octave: " + choose->getTitle().toStdString());
+      source->setSelectedId(1, sendNotificationSync);
+      expect(notes->isShowing() && !choose->isVisible() && octave->isShowing(), "generated notes bring the notes back");
+
+      spoken.messages.clear();
+      play->onClick();
+      expect(said("Rendering preview of Shared Patch") && play->getTitle() == "Stop preview",
+             "Play preview renders the preview, and its button stops it meanwhile: " + heard());
+      pumpUntil([&] { return said("Playing preview of Shared Patch"); }, 15000);
+      expect(said("Playing preview of Shared Patch") && play->getTitle() == "Stop preview",
+             "then plays it: " + heard());
+      spoken.messages.clear();
+      play->onClick();
+      expect(said("Stopped") && play->getTitle() == "Play preview", "Stop preview stops it: " + heard());
+    }
+
     // The library refuses a field: the progress bar has the focus while the
     // patch uploads; the answer is said, the form stays open and Share has
     // the focus again.
@@ -1740,6 +1979,7 @@ namespace {
     expect(said("Uploading Shared Patch, ") &&
                said("Unable to share Shared Patch. The upload was not accepted. Name: Ensure this value has at most 120 characters."),
            "the upload is said with how to stop it, and the library's field errors are said: " + heard());
+    expect(!said("Rendering preview"), "the preview played is sent, not rendered again: " + heard());
     expect(editor.isShareFormVisible() && !progress->isVisible() && share->hasKeyboardFocus(false),
            "the form stays open, the bar goes and Share has the focus");
     expect(titled(editor, "Cancel sharing") != nullptr && titled(editor, "Cancel upload") == nullptr,
@@ -1761,11 +2001,15 @@ namespace {
     const auto shared_patch = std::find_if(requests.rbegin(), requests.rend(),
                                            [](const auto& request) { return request.path == "/api/v1/presets/"; });
     if (shared_patch != requests.rend()) {
-      const String body = shared_patch->bodyText();
-      expect(shared_patch->headers["authorization"] == "Bearer " + kTestToken &&
-                 body.contains("filename=\"Shared Patch.atp\"") && body.contains("name=\"style\"\r\n\r\nlead\r\n") &&
-                 body.contains("name=\"tags\"\r\n\r\nglow, test\r\n") && body.contains("\"settings\""),
+      // The body holds the preview's FLAC, which is not text.
+      const auto& sent = *shared_patch;
+      expect(sent.headers["authorization"] == "Bearer " + kTestToken &&
+                 sent.bodyContains("filename=\"Shared Patch.atp\"") && sent.bodyContains("name=\"style\"\r\n\r\nlead\r\n") &&
+                 sent.bodyContains("name=\"tags\"\r\n\r\nglow, test\r\n") && sent.bodyContains("\"settings\""),
              "the patch went with its name, style, tags and the saved token");
+      expect(sent.bodyContains("name=\"preview\"; filename=\"Shared Patch preview.flac\"") &&
+                 sent.bodyContains("Content-Type: audio/flac\r\nContent-Transfer-Encoding: binary\r\n\r\nfLaC"),
+             "and with the preview rendered for it");
     }
 
     // The bank form, logged in: no dialog; the folder, a genre, the saved token.
@@ -2548,7 +2792,7 @@ namespace {
     finish();
   }
 
-  int runCommunityLibraryTests() {
+  int runCommunityLibraryTests(const File& atlas_midi) {
     testSha256MatchesTheStandardVectors();
     testPresetsPageParses();
     testDownloadsLandInTheCommunityFolder();
@@ -2562,6 +2806,7 @@ namespace {
     testShareRequestsAndAnswers();
     testApiTokenIsKeptInTheCredentialStore();
     testUploadReachesTheLibrary();
+    testPreviewRendersThePatch(atlas_midi);
     testShareFormsUploadAndSpeak();
     testAccountsAndTheBrowserSetting();
     testAccountIsAskedOfTheLibrary();

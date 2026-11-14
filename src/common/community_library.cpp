@@ -915,6 +915,22 @@ juce::String banksEndpoint(const juce::String& library_url) {
 }
 
 namespace {
+  // The preview types the library takes, by extension, as it lists them.
+  constexpr std::pair<const char*, const char*> kPreviewTypes[] = {
+    { "mp3", "audio/mpeg" }, { "ogg", "audio/ogg" }, { "oga", "audio/ogg" }, { "opus", "audio/ogg" },
+    { "wav", "audio/wav" }, { "flac", "audio/flac" }, { "m4a", "audio/mp4" }, { "aac", "audio/aac" },
+    { "aif", "audio/aiff" }, { "aiff", "audio/aiff" } };
+
+  // Empty for a file the library would not take as a preview.
+  juce::String previewContentType(const juce::File& file) {
+    const juce::String extension = file.getFileExtension().trimCharactersAtStart(".").toLowerCase();
+    for (const auto& [known, type] : kPreviewTypes) {
+      if (extension == known)
+        return type;
+    }
+    return {};
+  }
+
   UploadRequest buildUpload(const juce::String& endpoint, const juce::File& file, const juce::String& mime_type,
                             const ShareFields& fields, bool with_style, bool with_genre, const juce::String& token) {
     UploadRequest request;
@@ -930,6 +946,23 @@ namespace {
     if (!file.existsAsFile()) {
       request.error = "The file to share, " + file.getFileName() + ", is missing";
       return request;
+    }
+    const juce::File& preview = fields.preview;
+    const juce::String preview_type = previewContentType(preview);
+    if (preview != juce::File()) {
+      if (!preview.existsAsFile()) {
+        request.error = "The preview, " + preview.getFileName() + ", is missing";
+        return request;
+      }
+      if (preview_type.isEmpty()) {
+        request.error = "The library takes an MP3, Ogg, Opus, WAV, FLAC, AIFF or M4A file as the preview";
+        return request;
+      }
+      if (preview.getSize() > kMaxPreviewBytes) {
+        request.error = "The preview is " + juce::File::descriptionOfSizeInBytes(preview.getSize()) +
+                        ", more than the 40 MB the library takes";
+        return request;
+      }
     }
     const juce::String key = token.trim();
     if (key.isEmpty()) {
@@ -949,6 +982,8 @@ namespace {
     add("tags", fields.tags);
     add("description", fields.description);
     request.url = url.withFileToUpload("file", file, mime_type);
+    if (preview != juce::File())
+      request.url = request.url.withFileToUpload("preview", preview, preview_type);
     // No line breaks may reach the headers from the token.
     request.headers = "User-Agent: " + userAgent() + "\r\nAccept: application/json\r\nAuthorization: Bearer " +
                       key.removeCharacters("\r\n") + "\r\n";
@@ -962,6 +997,13 @@ namespace {
       return "File";
     return field.substring(0, 1).toUpperCase() + field.substring(1).replaceCharacter('_', ' ');
   }
+}
+
+juce::String previewFilePatterns() {
+  juce::StringArray patterns;
+  for (const auto& [extension, type] : kPreviewTypes)
+    patterns.add("*." + juce::String(extension));
+  return patterns.joinIntoString(";");
 }
 
 UploadRequest buildPresetUpload(const juce::String& library_url, const juce::File& preset, const ShareFields& fields,
@@ -1352,6 +1394,45 @@ void setBrowserShown(bool shown) {
   if (!config.is_object())
     config = json::object();
   config[kBrowserShownKey] = shown;
+  LoadSave::saveJsonToConfig(config);
+}
+
+namespace {
+  constexpr const char* kSharePreviewSourceKey = "share_preview_source";
+  constexpr const char* kSharePreviewNotesKey = "share_preview_notes";
+  constexpr const char* kSharePreviewMidiKey = "share_preview_midi";
+  constexpr const char* kSharePreviewOctaveKey = "share_preview_octave";
+  constexpr const char* kMidiFileSource = "midi_file";
+}
+
+SharePreviewSetting storedSharePreview() {
+  const json config = LoadSave::getConfigJson();
+  SharePreviewSetting choice;
+  if (!config.is_object())
+    return choice;
+  const auto midi = config.find(kSharePreviewMidiKey);
+  if (midi != config.end() && midi->is_string() && juce::File::isAbsolutePath(midi->get<std::string>()))
+    choice.midi_file = juce::File(midi->get<std::string>());
+  const auto source = config.find(kSharePreviewSourceKey);
+  if (source != config.end() && source->is_string() && source->get<std::string>() == kMidiFileSource)
+    choice.source = SharePreviewSetting::Source::kMidiFile;
+  const auto notes = config.find(kSharePreviewNotesKey);
+  if (notes != config.end() && notes->is_string())
+    choice.notes = juce::String::fromUTF8(notes->get<std::string>().c_str());
+  const auto octave = config.find(kSharePreviewOctaveKey);
+  if (octave != config.end() && octave->is_number_integer())
+    choice.octave = juce::jlimit(SharePreviewSetting::kMinOctave, SharePreviewSetting::kMaxOctave, octave->get<int>());
+  return choice;
+}
+
+void storeSharePreview(const SharePreviewSetting& choice) {
+  json config = LoadSave::getConfigJson();
+  if (!config.is_object())
+    config = json::object();
+  config[kSharePreviewSourceKey] = choice.source == SharePreviewSetting::Source::kMidiFile ? kMidiFileSource : "generated";
+  config[kSharePreviewNotesKey] = choice.notes.toStdString();
+  config[kSharePreviewMidiKey] = choice.midi_file.getFullPathName().toStdString();
+  config[kSharePreviewOctaveKey] = choice.octave;
   LoadSave::saveJsonToConfig(config);
 }
 

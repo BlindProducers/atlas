@@ -916,6 +916,37 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void nameShareCancel(bool uploading);
     void finishShare(const atlas::community::UploadResult& result, const String& name, bool bank, int generation);
     bool shareFormHasFocus() const;
+    // The Share patch form's Preview group: Preview source picks generated
+    // notes, a MIDI file or an audio file of the user's. Generated notes shows
+    // Preview notes (the single note atlas::preview::Renderer plays, or one of
+    // Atlas's MIDI files); the other two show a button beside it that chooses
+    // the file. Preview octave, hidden for an audio file, is the C the note
+    // plays and moves a MIDI file from C4. All but an audio file is kept in
+    // the config. Play preview renders the preview if need be and plays it
+    // beside the synth, as a community preview plays, and Share sends it with
+    // the patch. A rendered preview is kept, for the patch as it was then,
+    // until the patch, the source, the notes or the octave changes or the form
+    // closes.
+    void populateSharePreviewControls();
+    void sharePreviewSourceChanged();
+    void sharePreviewNotesChanged();
+    void sharePreviewOctaveChanged();
+    void storeSharePreviewSetting();
+    // Shows the controls the source calls for and names the choose button.
+    void updateSharePreviewControls();
+    void chooseSharePreviewFile();
+    void toggleSharePreview();
+    // Calls `done` on the message thread with the preview for the patch
+    // written to `preset`, or with what went wrong. Returns true when it
+    // renders one, calling `done` once that is over; otherwise it has called
+    // `done` already. A render stopped, or replaced by a later one, gives
+    // `done` neither a file nor an error.
+    bool prepareSharePreview(const File& preset, std::function<void(const File&, const String&)> done);
+    // Stops a render under way and the preview if it is playing.
+    void stopSharePreview();
+    void forgetSharePreview();
+    bool isSharePreviewPlaying() const;
+    void updateSharePlayButton();
     void savePresetFile(const File& file);
     void showPresetControls();
     void updatePresetSummary();
@@ -1382,6 +1413,12 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     AccessibleComboBox share_genre_;
     AccessibleTextEditor share_tags_;
     AccessibleTextEditor share_description_;
+    std::unique_ptr<Component> share_preview_group_;
+    AccessibleComboBox share_source_;
+    AccessibleComboBox share_notes_;
+    AccessibleTextButton share_choose_ { "Choose MIDI file" };
+    AccessibleComboBox share_octave_;
+    AccessibleTextButton share_play_ { "Play preview" };
     AccessibleTextButton share_ok_ { "Share" };
     AccessibleTextButton share_cancel_ { "Cancel" };
     std::unique_ptr<TransferProgressBar> share_progress_;
@@ -1681,6 +1718,25 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     bool share_genres_loading_ = false;
     std::unique_ptr<FileChooser> share_folder_chooser_;
     FocusReturn share_return_focus_;
+    // The preview's source; Atlas's MIDI files (read when the form opens) and
+    // the one played as the generated notes (File() for the single note); the
+    // user's files; the octave; the preview kept (its file in a scratch folder
+    // of its own, and what it was rendered from); and a render under way,
+    // which `share_preview_cancelled_` stops.
+    enum class SharePreviewSource { kGenerated, kMidi, kAudio };
+    SharePreviewSource share_preview_source_ = SharePreviewSource::kGenerated;
+    Array<File> share_atlas_midi_files_;
+    File share_preview_notes_;
+    File share_preview_midi_;
+    File share_preview_audio_;
+    int share_preview_octave_ = atlas::community::SharePreviewSetting::kDefaultOctave;
+    File share_preview_folder_;
+    File share_preview_file_;
+    String share_preview_key_;
+    bool share_preview_rendering_ = false;
+    int share_preview_generation_ = 0;
+    std::shared_ptr<std::atomic<bool>> share_preview_cancelled_;
+    std::unique_ptr<FileChooser> share_preview_chooser_;
     // The Settings window while it is open; closed with the editor.
     Component::SafePointer<DialogWindow> settings_window_;
     void startLibraryMove(const File& to);

@@ -36,6 +36,7 @@
 #include "sound_engine.h"
 #include "load_save.h"
 #include "community_library.h"
+#include "preset_preview.h"
 #include "line_generator.h"
 #include "modulation_connection_processor.h"
 #include "producers_module.h"
@@ -7217,6 +7218,45 @@ void SynthEditor::addCpuMeter(Component& parent, int x, int& y, int width, int& 
   y += 48;
 }
 
+namespace {
+  // A titled group of controls: the Settings window's and the share form's
+  // Preview. It is a focus container, so a screen reader presents it with its
+  // controls inside it: VoiceOver enters it (VO Shift Down) and NVDA names it
+  // as the focus moves in. It is not a keyboard focus container, so Tab still
+  // moves through the controls of every group in turn. A screen reader
+  // reaches it while it is scrolled out of view.
+  class TitledGroup : public Component {
+    public:
+      explicit TitledGroup(const String& title) {
+        setTitle(title);
+        setName(title);
+        setFocusContainerType(FocusContainerType::focusContainer);
+      }
+
+      static constexpr int kHeadingHeight = 28;
+
+      void paint(Graphics& g) override {
+        g.setColour(Colour(0xff2a2f37));
+        g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(0.5f), 5.0f, 1.0f);
+        g.setColour(Colours::white);
+        g.setFont(FontOptions(15.0f, Font::bold));
+        g.drawText(getTitle(), 10, 4, getWidth() - 20, kHeadingHeight - 4, Justification::centredLeft, true);
+      }
+
+      std::unique_ptr<AccessibilityHandler> createAccessibilityHandler() override {
+        class Handler final : public AccessibilityHandler {
+          public:
+            explicit Handler(Component& group) : AccessibilityHandler(group, AccessibilityRole::group) { }
+
+            AccessibleState getCurrentState() const override {
+              return AccessibilityHandler::getCurrentState().withAccessibleOffscreen();
+            }
+        };
+        return std::make_unique<Handler>(*this);
+      }
+  };
+}
+
 SynthEditor::SynthEditor(SynthPlugin& synth) :
     AudioProcessorEditor(&synth), SynthGuiInterface(&synth, false), synth_(synth),
     last_section_name_(synth.getEditorMemory().section_name),
@@ -7619,6 +7659,15 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   };
   configureShareChoice(share_style_, "Share style", "The patch's style on the library");
   configureShareChoice(share_genre_, "Share genre", "The bank's genre on the library, which it requires");
+  configureShareChoice(share_source_, "Preview source", {});
+  share_source_.onChange = [this] { sharePreviewSourceChanged(); };
+  configureShareChoice(share_notes_, "Preview notes", {});
+  share_notes_.onChange = [this] { sharePreviewNotesChanged(); };
+  configureShareChoice(share_octave_, "Preview octave", {});
+  for (int octave = atlas::community::SharePreviewSetting::kMinOctave;
+       octave <= atlas::community::SharePreviewSetting::kMaxOctave; ++octave)
+    share_octave_.addItem("C" + String(octave), octave);
+  share_octave_.onChange = [this] { sharePreviewOctaveChanged(); };
 
   auto configureShareButton = [this](TextButton& button, const String& title, const String& help) {
     button.setTitle(title);
@@ -7627,6 +7676,16 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
     button.setWantsKeyboardFocus(true);
     addChildComponent(button);
   };
+  configureShareButton(share_choose_, "Choose MIDI file", {});
+  share_choose_.onClick = [this] { chooseSharePreviewFile(); };
+  configureShareButton(share_play_, "Play preview", {});
+  share_play_.onClick = [this] { toggleSharePreview(); };
+  share_preview_group_ = std::make_unique<TitledGroup>("Preview");
+  for (Component* control : { static_cast<Component*>(&share_source_), static_cast<Component*>(&share_notes_),
+                              static_cast<Component*>(&share_choose_), static_cast<Component*>(&share_octave_),
+                              static_cast<Component*>(&share_play_) })
+    share_preview_group_->addChildComponent(control);
+  addChildComponent(*share_preview_group_);
   configureShareButton(share_ok_, "Share", "Upload to the community library");
   share_ok_.onClick = [this] { commitShareForm(); };
   configureShareButton(share_cancel_, "Cancel sharing", "Close the share form without uploading");
@@ -7814,6 +7873,9 @@ SynthEditor::~SynthEditor() {
   preset_scan_cancelled_->store(true);
   for (auto& scan : preset_scans_)
     if (scan.thread.joinable()) scan.thread.join();
+  // Nothing renders into the share preview's folder once the scans have stopped.
+  if (share_preview_folder_ != File())
+    share_preview_folder_.deleteRecursively();
   // Tear down dynamic controls while the focus lists are still alive.
   clearSectionComponents();
   preset_collection_table_.setModel(nullptr);
@@ -7899,6 +7961,16 @@ void SynthEditor::resized() {
       share_genre_.setBounds(second_row.removeFromLeft(second_row.getWidth() / 3).reduced(3));
     share_tags_.setBounds(second_row.removeFromLeft(second_row.getWidth() / 2).reduced(3));
     share_description_.setBounds(second_row.reduced(3));
+    if (!share_bank_) {
+      share_preview_group_->setBounds(bounds.removeFromTop(TitledGroup::kHeadingHeight + 44).reduced(3, 0));
+      auto preview_row = share_preview_group_->getLocalBounds().withTrimmedTop(TitledGroup::kHeadingHeight).reduced(3);
+      share_play_.setBounds(preview_row.removeFromRight(140).reduced(3));
+      if (share_octave_.isVisible())
+        share_octave_.setBounds(preview_row.removeFromRight(120).reduced(3));
+      share_source_.setBounds(preview_row.removeFromLeft(preview_row.getWidth() * 2 / 5).reduced(3));
+      share_notes_.setBounds(preview_row.reduced(3));
+      share_choose_.setBounds(preview_row.removeFromLeft(std::min(preview_row.getWidth(), 180)).reduced(3));
+    }
     auto third_row = bounds.removeFromTop(38);
     share_ok_.setBounds(third_row.removeFromLeft(120).reduced(3));
     share_cancel_.setBounds(third_row.removeFromLeft(120).reduced(3));
@@ -10510,43 +10582,6 @@ void SynthEditor::armOrCancelMidiLearn(const String& parameterId) {
 namespace {
   constexpr const char* kRepositoryUrl = "https://github.com/BlindProducers/atlas";
 
-  // A titled group of the Settings window. It is a focus container, so a
-  // screen reader presents it with its controls inside it: VoiceOver enters it
-  // (VO Shift Down) and NVDA names it as the focus moves in. It is not a
-  // keyboard focus container, so Tab still moves through the controls of every
-  // group in turn. Like everything in the window, a screen reader reaches it
-  // while it is scrolled out of view.
-  class SettingsGroup : public Component {
-    public:
-      explicit SettingsGroup(const String& title) {
-        setTitle(title);
-        setName(title);
-        setFocusContainerType(FocusContainerType::focusContainer);
-      }
-
-      static constexpr int kHeadingHeight = 28;
-
-      void paint(Graphics& g) override {
-        g.setColour(Colour(0xff2a2f37));
-        g.drawRoundedRectangle(getLocalBounds().toFloat().reduced(0.5f), 5.0f, 1.0f);
-        g.setColour(Colours::white);
-        g.setFont(FontOptions(15.0f, Font::bold));
-        g.drawText(getTitle(), 10, 4, getWidth() - 20, kHeadingHeight - 4, Justification::centredLeft, true);
-      }
-
-      std::unique_ptr<AccessibilityHandler> createAccessibilityHandler() override {
-        class Handler final : public AccessibilityHandler {
-          public:
-            explicit Handler(Component& group) : AccessibilityHandler(group, AccessibilityRole::group) { }
-
-            AccessibleState getCurrentState() const override {
-              return AccessibilityHandler::getCurrentState().withAccessibleOffscreen();
-            }
-        };
-        return std::make_unique<Handler>(*this);
-      }
-  };
-
   // The parts of the Settings window that only hold and scroll its groups.
   // Screen readers skip them, so the groups are the window's own elements
   // rather than sitting inside unnamed, empty ones.
@@ -11145,9 +11180,9 @@ class AtlasSettingsContent : public Component, private FocusChangeListener, priv
       if (focused == nullptr || !inner_.isParentOf(focused))
         return;
       auto area = inner_.getLocalArea(focused, focused->getLocalBounds());
-      if (auto* group = focused->findParentComponentOfClass<SettingsGroup>()) {
+      if (auto* group = focused->findParentComponentOfClass<TitledGroup>()) {
         const auto group_area = inner_.getLocalArea(group, group->getLocalBounds());
-        if (area.getY() - group_area.getY() <= SettingsGroup::kHeadingHeight + 8)
+        if (area.getY() - group_area.getY() <= TitledGroup::kHeadingHeight + 8)
           area = area.withTop(group_area.getY());
       }
       area = area.expanded(0, 8);
@@ -11291,8 +11326,8 @@ class AtlasSettingsContent : public Component, private FocusChangeListener, priv
       constexpr int kWidth = 560;
       const int inner = kWidth - 2 * kMargin - 20;
       int y = kMargin;
-      auto placeGroup = [&](SettingsGroup& group, const std::vector<Component*>& rows) {
-        int row_y = SettingsGroup::kHeadingHeight;
+      auto placeGroup = [&](TitledGroup& group, const std::vector<Component*>& rows) {
+        int row_y = TitledGroup::kHeadingHeight;
         for (auto* row : rows) {
           if (row == nullptr || !row->isVisible())
             continue;
@@ -11331,13 +11366,13 @@ class AtlasSettingsContent : public Component, private FocusChangeListener, priv
     Component::SafePointer<SynthEditor> editor_;
     SettingsViewport viewport_;
     SettingsLayout inner_;
-    SettingsGroup info_ { "Plugin info" };
-    SettingsGroup tuning_ { "Tuning" };
-    SettingsGroup default_patch_ { "Default patch" };
-    SettingsGroup midi_ { "MIDI learn mappings" };
-    SettingsGroup accessibility_ { "Accessibility" };
-    SettingsGroup community_ { "Online community browser" };
-    SettingsGroup keyboard_help_ { "Keyboard help" };
+    TitledGroup info_ { "Plugin info" };
+    TitledGroup tuning_ { "Tuning" };
+    TitledGroup default_patch_ { "Default patch" };
+    TitledGroup midi_ { "MIDI learn mappings" };
+    TitledGroup accessibility_ { "Accessibility" };
+    TitledGroup community_ { "Online community browser" };
+    TitledGroup keyboard_help_ { "Keyboard help" };
     SettingsText version_;
     AccessibleTextButton issue_, source_, releases_;
     SettingsText tuning_name_;
@@ -11346,7 +11381,7 @@ class AtlasSettingsContent : public Component, private FocusChangeListener, priv
     SettingsText default_status_;
     AccessibleTextButton browse_default_, reset_default_;
     std::unique_ptr<FileChooser> default_chooser_;
-    SettingsGroup library_ { "Library location" };
+    TitledGroup library_ { "Library location" };
     SettingsText library_status_, library_progress_;
     AccessibleTextButton choose_library_, reset_library_, cancel_library_move_;
     std::unique_ptr<FileChooser> library_chooser_;
@@ -12148,9 +12183,17 @@ void SynthEditor::rebuildFocusOrder() {
       share_controls.push_back(&share_folder_);
     share_controls.push_back(&share_name_);
     share_controls.push_back(share_bank_ ? static_cast<Component*>(&share_genre_) : &share_style_);
-    for (Component* control : { static_cast<Component*>(&share_tags_), static_cast<Component*>(&share_description_),
-                                static_cast<Component*>(&share_ok_) })
-      share_controls.push_back(control);
+    share_controls.push_back(&share_tags_);
+    share_controls.push_back(&share_description_);
+    if (!share_bank_) {
+      for (Component* control : { static_cast<Component*>(&share_source_), static_cast<Component*>(&share_notes_),
+                                  static_cast<Component*>(&share_choose_), static_cast<Component*>(&share_octave_),
+                                  static_cast<Component*>(&share_play_) }) {
+        if (control->isVisible())
+          share_controls.push_back(control);
+      }
+    }
+    share_controls.push_back(&share_ok_);
     if (share_progress_->isVisible())
       share_controls.push_back(share_progress_.get());
     share_controls.push_back(&share_cancel_);
@@ -13953,6 +13996,8 @@ void SynthEditor::presetSelectionChanged(int row, bool allowAutoload) {
 }
 
 void SynthEditor::updatePresetManagementControls() {
+  // The share form's Play preview follows the preview playing, as the browser's controls do.
+  updateSharePlayButton();
   const File file = selectedPresetFile();
   const auto* item = presetItemForFile(file);
   // A community preset is selectable before its file is here.
@@ -14836,6 +14881,10 @@ void SynthEditor::showShareForm(bool bank, const String& preface) {
     hideSavePresetDialog();
   if (!share_form_visible_)
     share_return_focus_ = focusToReturnTo();
+  // The preview menu starts from what was chosen last when the patch form opens.
+  const bool opening_patch_form = !bank && (!share_form_visible_ || share_bank_);
+  if (bank)
+    stopSharePreview();
   share_bank_ = bank;
   const String host = atlas::community::libraryHost();
 
@@ -14875,6 +14924,21 @@ void SynthEditor::showShareForm(bool bank, const String& preface) {
     share_style_.setSelectedItemIndex(selected, dontSendNotification);
     share_tags_.setText(synth_.getTags(), false);
     share_description_.setText(synth_.getComments(), false);
+    if (opening_patch_form) {
+      using Source = atlas::community::SharePreviewSetting::Source;
+      const auto stored = atlas::community::storedSharePreview();
+      share_atlas_midi_files_ = atlas::preview::atlasMidiFiles();
+      share_preview_midi_ = stored.midi_file;
+      share_preview_notes_ = File();
+      for (const File& file : share_atlas_midi_files_) {
+        if (file.getFileNameWithoutExtension() == stored.notes)
+          share_preview_notes_ = file;
+      }
+      share_preview_octave_ = stored.octave;
+      share_preview_source_ = stored.source == Source::kMidiFile ? SharePreviewSource::kMidi
+                                                                 : SharePreviewSource::kGenerated;
+      populateSharePreviewControls();
+    }
   }
   const String what = bank ? "Share bank" : "Share patch";
   share_prompt_.setText(what + " on " + host + (bank ? ". Choose the folder, its name, genre, tags and description"
@@ -14894,6 +14958,9 @@ void SynthEditor::showShareForm(bool bank, const String& preface) {
   share_genre_.setVisible(bank);
   share_tags_.setVisible(true);
   share_description_.setVisible(true);
+  share_preview_group_->setVisible(!bank);
+  updateSharePreviewControls();
+  updateSharePlayButton();
   share_ok_.setVisible(true);
   share_progress_->setVisible(share_busy_);
   share_cancel_.setVisible(true);
@@ -14916,6 +14983,9 @@ bool SynthEditor::shareFormHasFocus() const {
   for (const Component* control : { static_cast<const Component*>(&share_folder_), static_cast<const Component*>(&share_name_),
                                     static_cast<const Component*>(&share_style_), static_cast<const Component*>(&share_genre_),
                                     static_cast<const Component*>(&share_tags_), static_cast<const Component*>(&share_description_),
+                                    static_cast<const Component*>(&share_source_), static_cast<const Component*>(&share_notes_),
+                                    static_cast<const Component*>(&share_choose_), static_cast<const Component*>(&share_octave_),
+                                    static_cast<const Component*>(&share_play_),
                                     static_cast<const Component*>(&share_ok_), static_cast<const Component*>(share_progress_.get()),
                                     static_cast<const Component*>(&share_cancel_) }) {
     if (control->hasKeyboardFocus(true))
@@ -14929,6 +14999,7 @@ void SynthEditor::hideShareForm() {
   const ScopedAnnouncementHold hold;
   if (share_busy_)
     stopShareUpload();
+  forgetSharePreview();
   // Back where the form was opened from, as the Save patch form does, when
   // the focus is still in the form.
   const FocusReturn focus = std::exchange(share_return_focus_, {});
@@ -14940,7 +15011,8 @@ void SynthEditor::hideShareForm() {
   for (Component* control : { static_cast<Component*>(&share_prompt_), static_cast<Component*>(&share_folder_),
                               static_cast<Component*>(&share_name_), static_cast<Component*>(&share_style_),
                               static_cast<Component*>(&share_genre_), static_cast<Component*>(&share_tags_),
-                              static_cast<Component*>(&share_description_), static_cast<Component*>(&share_ok_),
+                              static_cast<Component*>(&share_description_), share_preview_group_.get(),
+                              static_cast<Component*>(&share_ok_),
                               static_cast<Component*>(share_progress_.get()), static_cast<Component*>(&share_cancel_) })
     control->setVisible(false);
   rebuildFocusOrder();
@@ -15185,6 +15257,287 @@ void SynthEditor::loadShareGenres() {
   });
 }
 
+void SynthEditor::populateSharePreviewControls() {
+  // The source names the user's file once there is one.
+  share_source_.clear(dontSendNotification);
+  share_source_.addItem("Generated notes", 1);
+  share_source_.addItem(share_preview_midi_ != File() ? "MIDI file, " + share_preview_midi_.getFileName()
+                                                      : String("MIDI file"), 2);
+  share_source_.addItem(share_preview_audio_ != File() ? "Audio file, " + share_preview_audio_.getFileName()
+                                                       : String("Audio file"), 3);
+  share_source_.setSelectedId(static_cast<int>(share_preview_source_) + 1, dontSendNotification);
+  share_notes_.clear(dontSendNotification);
+  share_notes_.addItem("Single note", 1);
+  for (int i = 0; i < share_atlas_midi_files_.size(); ++i)
+    share_notes_.addItem(share_atlas_midi_files_[i].getFileNameWithoutExtension(), i + 2);
+  // Notes gone since they were chosen leave the single note.
+  const int notes = share_atlas_midi_files_.indexOf(share_preview_notes_) + 1;
+  if (notes == 0)
+    share_preview_notes_ = File();
+  share_notes_.setSelectedItemIndex(notes, dontSendNotification);
+  share_octave_.setSelectedId(share_preview_octave_, dontSendNotification);
+  updateSharePreviewControls();
+}
+
+void SynthEditor::sharePreviewSourceChanged() {
+  const int id = share_source_.getSelectedId();
+  if (id == 0 || id == static_cast<int>(share_preview_source_) + 1)
+    return;
+  if (share_busy_) {
+    // The preview being shared stays the choice.
+    share_source_.setSelectedId(static_cast<int>(share_preview_source_) + 1, dontSendNotification);
+    postPresetActionAnnouncement("Still sharing", AccessibilityHandler::AnnouncementPriority::medium);
+    return;
+  }
+  stopSharePreview();
+  share_preview_source_ = static_cast<SharePreviewSource>(id - 1);
+  storeSharePreviewSetting();
+  updateSharePreviewControls();
+}
+
+void SynthEditor::sharePreviewNotesChanged() {
+  const int index = share_notes_.getSelectedItemIndex();
+  if (index < 0)
+    return;
+  const File notes = index > 0 && index <= share_atlas_midi_files_.size() ? share_atlas_midi_files_[index - 1] : File();
+  if (notes == share_preview_notes_)
+    return;
+  if (share_busy_) {
+    share_notes_.setSelectedItemIndex(share_atlas_midi_files_.indexOf(share_preview_notes_) + 1, dontSendNotification);
+    postPresetActionAnnouncement("Still sharing", AccessibilityHandler::AnnouncementPriority::medium);
+    return;
+  }
+  stopSharePreview();
+  share_preview_notes_ = notes;
+  storeSharePreviewSetting();
+}
+
+void SynthEditor::sharePreviewOctaveChanged() {
+  const int octave = share_octave_.getSelectedId();
+  if (octave == 0 || octave == share_preview_octave_)
+    return;
+  if (share_busy_) {
+    share_octave_.setSelectedId(share_preview_octave_, dontSendNotification);
+    postPresetActionAnnouncement("Still sharing", AccessibilityHandler::AnnouncementPriority::medium);
+    return;
+  }
+  stopSharePreview();
+  share_preview_octave_ = octave;
+  storeSharePreviewSetting();
+}
+
+void SynthEditor::storeSharePreviewSetting() {
+  using Setting = atlas::community::SharePreviewSetting;
+  // An audio file is chosen for one share; the source before it is kept.
+  if (share_preview_source_ == SharePreviewSource::kAudio)
+    return;
+  Setting setting;
+  setting.source = share_preview_source_ == SharePreviewSource::kMidi ? Setting::Source::kMidiFile
+                                                                      : Setting::Source::kGenerated;
+  setting.notes = share_preview_notes_.getFileNameWithoutExtension();
+  setting.midi_file = share_preview_midi_;
+  setting.octave = share_preview_octave_;
+  atlas::community::storeSharePreview(setting);
+}
+
+void SynthEditor::updateSharePreviewControls() {
+  const bool generated = share_preview_source_ == SharePreviewSource::kGenerated;
+  const String choose = share_preview_source_ == SharePreviewSource::kAudio ? "Choose audio file" : "Choose MIDI file";
+  if (share_choose_.getTitle() != choose) {
+    share_choose_.setButtonText(choose);
+    share_choose_.setTitle(choose);
+    if (auto* handler = share_choose_.getAccessibilityHandler())
+      handler->notifyAccessibilityEvent(AccessibilityEvent::titleChanged);
+  }
+  bool changed = false;
+  auto show = [&changed](Component& control, bool shown) {
+    if (control.isVisible() != shown) {
+      control.setVisible(shown);
+      changed = true;
+    }
+  };
+  show(share_source_, true);
+  show(share_notes_, generated);
+  show(share_choose_, !generated);
+  show(share_octave_, share_preview_source_ != SharePreviewSource::kAudio);
+  show(share_play_, true);
+  if (changed && share_form_visible_) {
+    rebuildFocusOrder();
+    resized();
+  }
+}
+
+void SynthEditor::chooseSharePreviewFile() {
+  if (share_busy_) {
+    postPresetActionAnnouncement("Still sharing", AccessibilityHandler::AnnouncementPriority::medium);
+    return;
+  }
+  const bool audio = share_preview_source_ == SharePreviewSource::kAudio;
+  const File current = audio ? share_preview_audio_ : share_preview_midi_;
+  share_preview_chooser_ = std::make_unique<FileChooser>(
+      audio ? "Choose an audio file for the preview" : "Choose a MIDI file for the preview",
+      current.existsAsFile() ? current : File::getSpecialLocation(File::userMusicDirectory),
+      audio ? atlas::community::previewFilePatterns() : String("*.mid;*.midi"));
+  launchFileChooser(*share_preview_chooser_, FileBrowserComponent::openMode | FileBrowserComponent::canSelectFiles,
+                    [this, audio](const FileChooser& chooser) {
+    const File file = chooser.getResult();
+    share_preview_chooser_.reset();
+    if (!share_form_visible_ || share_bank_ || share_busy_ || !file.existsAsFile())
+      return;
+    stopSharePreview();
+    (audio ? share_preview_audio_ : share_preview_midi_) = file;
+    storeSharePreviewSetting();
+    populateSharePreviewControls();
+    postPresetActionAnnouncement(share_source_.getText(), AccessibilityHandler::AnnouncementPriority::medium);
+  });
+}
+
+bool SynthEditor::isSharePreviewPlaying() const {
+  return preview_reader_ != nullptr && preview_file_ != File() &&
+         (preview_file_ == share_preview_file_ || preview_file_ == share_preview_audio_);
+}
+
+void SynthEditor::updateSharePlayButton() {
+  const String title = share_preview_rendering_ || isSharePreviewPlaying() ? "Stop preview" : "Play preview";
+  if (share_play_.getTitle() == title)
+    return;
+  share_play_.setButtonText(title);
+  share_play_.setTitle(title);
+  if (auto* handler = share_play_.getAccessibilityHandler())
+    handler->notifyAccessibilityEvent(AccessibilityEvent::titleChanged);
+}
+
+void SynthEditor::toggleSharePreview() {
+  if (share_busy_) {
+    postPresetActionAnnouncement("Still sharing", AccessibilityHandler::AnnouncementPriority::medium);
+    return;
+  }
+  if (share_preview_rendering_ || isSharePreviewPlaying()) {
+    stopSharePreview();
+    postPresetActionAnnouncement("Stopped", AccessibilityHandler::AnnouncementPriority::medium);
+    return;
+  }
+  const String typed = share_name_.getText().trim();
+  const String name = typed.isNotEmpty() ? typed
+                    : synth_.getPresetName().isNotEmpty() ? synth_.getPresetName() : String("Untitled");
+  // The patch as it is now; its instruments load from this file while the
+  // preview renders, so it goes once the preview is ready.
+  const File scratch = shareScratchFolder();
+  const File preset = scratch.getChildFile("Preview." + String(vital::kPresetExtension));
+  if (!synth_.saveCopyToFile(preset)) {
+    scratch.deleteRecursively();
+    postPresetActionAnnouncement("Unable to play the preview. The patch could not be written to a file",
+                                 AccessibilityHandler::AnnouncementPriority::high);
+    return;
+  }
+  Component::SafePointer<SynthEditor> safe_this(this);
+  const bool rendering = prepareSharePreview(preset, [safe_this, scratch, name](const File& preview, const String& error) {
+    scratch.deleteRecursively();
+    if (safe_this == nullptr || !safe_this->share_form_visible_ || (preview == File() && error.isEmpty()))
+      return;
+    if (error.isNotEmpty()) {
+      postPresetActionAnnouncement("Unable to play the preview. " + error, AccessibilityHandler::AnnouncementPriority::high);
+      return;
+    }
+    safe_this->detachCommunityPreview();
+    safe_this->preview_file_ = preview;
+    safe_this->preview_name_ = name;
+    safe_this->playCommunityPreview(preview, name, safe_this->preview_generation_);
+  });
+  if (rendering)
+    postPresetActionAnnouncement("Rendering preview of " + name, AccessibilityHandler::AnnouncementPriority::medium);
+}
+
+bool SynthEditor::prepareSharePreview(const File& preset, std::function<void(const File&, const String&)> done) {
+  if (share_preview_source_ == SharePreviewSource::kAudio) {
+    const File audio = share_preview_audio_;
+    const String error = audio == File()        ? "No audio file is chosen"
+                       : !audio.existsAsFile() ? "The audio file " + audio.getFileName() + " is missing"
+                                               : String();
+    done(error.isEmpty() ? audio : File(), error);
+    return false;
+  }
+  const bool user_midi = share_preview_source_ == SharePreviewSource::kMidi;
+  const File midi = user_midi ? share_preview_midi_ : share_preview_notes_;
+  if (user_midi && midi == File()) {
+    done({}, "No MIDI file is chosen");
+    return false;
+  }
+  const int octave = share_preview_octave_;
+  // The patch, the MIDI file and the octave the preview is for.
+  std::unique_ptr<FileInputStream> patch = preset.createInputStream();
+  const String key = (patch != nullptr ? atlas::community::sha256Hex(*patch) : String()) + "|" +
+                     midi.getFullPathName() + "|" + String(midi.getLastModificationTime().toMilliseconds()) + "|" +
+                     String(octave);
+  patch.reset();
+  if (key == share_preview_key_ && share_preview_file_.existsAsFile()) {
+    done(share_preview_file_, {});
+    return false;
+  }
+  stopSharePreview();
+  String error;
+  std::shared_ptr<atlas::preview::Renderer> renderer = atlas::preview::Renderer::create(preset, midi, octave, error);
+  if (renderer == nullptr) {
+    done({}, error);
+    return false;
+  }
+  if (share_preview_folder_ == File())
+    share_preview_folder_ = shareScratchFolder();
+  const int generation = ++share_preview_generation_;
+  const File output = share_preview_folder_.getChildFile("Preview " + String(generation) + ".flac");
+  auto cancelled = std::make_shared<std::atomic<bool>>(false);
+  share_preview_cancelled_ = cancelled;
+  share_preview_rendering_ = true;
+  updateSharePlayButton();
+  Component::SafePointer<SynthEditor> safe_this(this);
+  runPresetBackgroundTask([safe_this, renderer, output, key, generation, cancelled, done](
+                              const std::shared_ptr<std::atomic<bool>>& closing) mutable {
+    const String error = renderer->render(output, [&] { return closing->load() || cancelled->load(); });
+    // The engine goes on the message thread, where it was made.
+    MessageManager::callAsync([safe_this, renderer = std::move(renderer), output, key, generation, error, done]() mutable {
+      renderer.reset();
+      if (safe_this == nullptr || generation != safe_this->share_preview_generation_) {
+        done({}, {});
+        return;
+      }
+      safe_this->share_preview_rendering_ = false;
+      safe_this->share_preview_cancelled_.reset();
+      if (error.isEmpty()) {
+        safe_this->share_preview_file_ = output;
+        safe_this->share_preview_key_ = key;
+      }
+      safe_this->updateSharePlayButton();
+      done(error.isEmpty() ? output : File(), error);
+    });
+  });
+  return true;
+}
+
+void SynthEditor::stopSharePreview() {
+  if (share_preview_cancelled_ != nullptr)
+    share_preview_cancelled_->store(true);
+  share_preview_cancelled_.reset();
+  if (share_preview_rendering_) {
+    ++share_preview_generation_;   // what it renders is never used
+    share_preview_rendering_ = false;
+  }
+  if (isSharePreviewPlaying()) {
+    detachCommunityPreview();
+    updatePresetManagementControls();
+  }
+  updateSharePlayButton();
+}
+
+void SynthEditor::forgetSharePreview() {
+  stopSharePreview();
+  if (share_preview_folder_ != File())
+    share_preview_folder_.deleteRecursively();
+  share_preview_folder_ = File();
+  share_preview_file_ = File();
+  share_preview_key_.clear();
+  share_preview_audio_ = File();
+}
+
 void SynthEditor::commitShareForm() {
   if (share_busy_) {
     postPresetActionAnnouncement("Still sharing", AccessibilityHandler::AnnouncementPriority::medium);
@@ -15292,18 +15645,50 @@ void SynthEditor::commitShareForm() {
                                  AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
-  startShareUpload(transferText("Uploading", name, preset.getSize()));
-  runPresetBackgroundTask([safe_this, scratch, preset, name, fields, token, library_url, generation, cancelled_share,
-                           progress](const std::shared_ptr<std::atomic<bool>>& cancelled) {
-    const auto result = atlas::community::uploadPreset(library_url, token, preset, fields, cancelled.get(), progress);
-    scratch.deleteRecursively();
-    if (cancelled->load() || cancelled_share->load())
+  // The preview first, rendered unless the one kept is for this patch; then
+  // the patch and a copy of the preview go from the share's own folder.
+  auto send = [safe_this, scratch, preset, name, fields, token, library_url, generation, cancelled_share,
+               progress](const File& preview, const String& error) mutable {
+    if (safe_this == nullptr || generation != safe_this->share_generation_) {
+      scratch.deleteRecursively();
       return;
-    MessageManager::callAsync([safe_this, result, name, generation] {
-      if (safe_this != nullptr)
-        safe_this->finishShare(result, name, false, generation);
+    }
+    atlas::community::UploadResult failed;
+    if (error.isNotEmpty()) {
+      failed.error = "The preview could not be made. " + error;
+    }
+    else if (preview == File()) {
+      failed.error = "The preview was stopped";
+    }
+    else {
+      fields.preview = scratch.getChildFile(shareFileName(name, "Untitled") + " preview" + preview.getFileExtension());
+      if (!preview.copyFileTo(fields.preview))
+        failed.error = "The preview could not be copied for the upload";
+    }
+    if (failed.error.isNotEmpty()) {
+      scratch.deleteRecursively();
+      safe_this->finishShare(failed, name, false, generation);
+      return;
+    }
+    const String message = transferText("Uploading", name, preset.getSize() + fields.preview.getSize());
+    if (safe_this->share_busy_)
+      postPresetActionAnnouncement(message, AccessibilityHandler::AnnouncementPriority::medium);
+    else
+      safe_this->startShareUpload(message);
+    safe_this->runPresetBackgroundTask([safe_this, scratch, preset, name, fields, token, library_url, generation,
+                                        cancelled_share, progress](const std::shared_ptr<std::atomic<bool>>& cancelled) {
+      const auto result = atlas::community::uploadPreset(library_url, token, preset, fields, cancelled.get(), progress);
+      scratch.deleteRecursively();
+      if (cancelled->load() || cancelled_share->load())
+        return;
+      MessageManager::callAsync([safe_this, result, name, generation] {
+        if (safe_this != nullptr)
+          safe_this->finishShare(result, name, false, generation);
+      });
     });
-  });
+  };
+  if (prepareSharePreview(preset, send))
+    startShareUpload("Rendering preview of " + name);
 }
 
 void SynthEditor::finishShare(const atlas::community::UploadResult& result, const String& name, bool bank,

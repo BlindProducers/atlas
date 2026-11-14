@@ -1232,7 +1232,8 @@ int main(int argc, char** argv) {
   if (argc > 1 && String(argv[1]) == "--community-library") {
     // What is said must not depend on the user's own speech settings.
     atlas::speech::useDefaultSettingsForTesting();
-    return runCommunityLibraryTests();
+    // Atlas's preview MIDI files, Factory/Preview MIDI in the source folder.
+    return runCommunityLibraryTests(argc > 2 ? File(String(argv[2])) : File());
   }
   if (argc > 1 && String(argv[1]) == "--editor-undo") {
     // What is said must not depend on the user's own speech settings.
