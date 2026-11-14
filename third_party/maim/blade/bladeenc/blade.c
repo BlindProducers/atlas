@@ -1,5 +1,6 @@
 #include "blade.h"
 #include "codec.h"
+#include "formatbitstream2.h"
 
 #include <stdlib.h>
 #include <math.h>
@@ -63,8 +64,39 @@ int blade_encode_chunk(encoder_flags_and_data* flags, float* left, float* right,
 	return codecEncodeChunk (flags, 2304, readBuffer, output);
 }
 
+static void free_header_chain(Header* header)
+{
+	while (header != NULL) {
+		Header* next = header->pNext;
+		free(header);
+		header = next;
+	}
+}
+
+// The bit holders the first frame sets up and the frame headers, which
+// codecExit would free while flushing the stream; nothing calls it here.
 void blade_deinit(encoder_flags_and_data* flags)
 {
+	if (flags == NULL) {
+		return;
+	}
+	if (flags->PartHoldersInitialized) {
+		BF_FrameData* frame = &flags->sFrameData;
+		exitBitHolder(&frame->header);
+		exitBitHolder(&frame->frameSI);
+		exitBitHolder(&frame->userFrameData);
+		for (int ch = 0; ch < MAX_CHANNELS; ++ch) {
+			exitBitHolder(&frame->channelSI[ch]);
+			for (int gr = 0; gr < MAX_GRANULES; ++gr) {
+				exitBitHolder(&frame->spectrumSI[gr][ch]);
+				exitBitHolder(&frame->scaleFactors[gr][ch]);
+				exitBitHolder(&frame->codedData[gr][ch]);
+				exitBitHolder(&frame->userSpectrum[gr][ch]);
+			}
+		}
+	}
+	free_header_chain(flags->pHeaderChain);
+	free_header_chain(flags->pFreeHeaderChain);
 	free(flags);
 }
 

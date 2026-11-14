@@ -85,8 +85,12 @@ processing rate. Drive, Low Cut, High Cut, Makeup and Mix are Maim's sidebar.
 - The Error bend's shuffles used `rand()`, one generator for the whole
   process; `third_party/maim/lame/libmp3lame/encoder.c` and
   `third_party/maim/blade/bladeenc/codec.c` carry one per encoder
-  (`bend_random`), the only change to the libraries. The packet codecs use
-  the same kind of generator in place of `juce::Random`.
+  (`bend_random`). The packet codecs use the same kind of generator in
+  place of `juce::Random`.
+- `blade_deinit` (`third_party/maim/blade/bladeenc/blade.c`) frees the bit
+  holders and frame headers a Blade encoder sets up on its first frame. Maim
+  freed only the encoder's state, losing about 50 KB each time a Blade
+  encoder closed.
 - The MP3 encoders report frames they cannot code or decode as silence
   instead of printing to the console.
 - LAME builds from one configuration header, `atlas_config/config.h`, on
