@@ -14969,6 +14969,10 @@ void SynthEditor::showShareForm(bool bank, const String& preface) {
   MessageManager::callAsync([safe_this, first, what, host, preface] {
     if (safe_this == nullptr || first == nullptr || !first->isShowing())
       return;
+    // Opened from the login dialog, the focus that dialog gives back on
+    // Windows (restoreFocusAfterOsWindow) still has a grab queued, which
+    // would take it from the form back to the Preset menu.
+    ++safe_this->rebuild_focus_grab_generation_;
     first->grabKeyboardFocus();
     postPresetActionAnnouncement(preface + what + " on " + host, AccessibilityHandler::AnnouncementPriority::medium);
   });
