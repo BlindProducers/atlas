@@ -143,6 +143,8 @@ class LoadSave {
     static bool shouldAnimateWidgets();
     static bool shouldScanDownloads();
     static bool displayHzFrequency();
+    // The preset browser's Autoload preset when scrolling, shared by every instance.
+    static bool presetAutoload();
     static bool authenticated();
     static int getOversamplingAmount();
     static float loadWindowSize();
@@ -161,6 +163,7 @@ class LoadSave {
     static void saveAnimateWidgets(bool animate_widgets);
     static void saveScanDownloads(bool scan_downloads);
     static void saveDisplayHzFrequency(bool display_hz);
+    static void savePresetAutoload(bool autoload);
     static void saveAuthenticated(bool authenticated);
     static void saveWindowSize(float window_size);
     static void saveMidiMapConfig(MidiManager* midi_manager);

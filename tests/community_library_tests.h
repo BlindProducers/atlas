@@ -2792,12 +2792,138 @@ namespace {
     finish();
   }
 
+  // The preset browser keeps its place: Autoload preset when scrolling is a
+  // preference in the config, and the bank and preset come back when the
+  // window reopens and in a copy of the instance (a host's Duplicate, or a
+  // project opening), while an open editor stays where the user is.
+  void testPresetBrowserKeepsItsPlace() {
+    TemporaryUndoLibrary library;
+    expect(library.isolated(), "the test's library is its own temporary folder");
+    if (!library.isolated())
+      return;
+    const String bank_name = "Memory test bank";
+    const String extension = "." + String(vital::kPresetExtension);
+    const File bank = atlas::library::bankDirectory(atlas::library::Library::kUser, bank_name,
+                                                    LoadSave::getDataDirectory());
+    const File other_bank = atlas::library::bankDirectory(atlas::library::Library::kUser, "Other bank",
+                                                          LoadSave::getDataDirectory());
+    bool made = bank.createDirectory().wasOk() && other_bank.createDirectory().wasOk();
+    {
+      SynthPlugin maker;
+      for (int i = 1; i <= 40; ++i)
+        made = made && maker.saveCopyToFile(bank.getChildFile("Preset " + String(i).paddedLeft('0', 2) + extension));
+      made = made && maker.saveCopyToFile(other_bank.getChildFile("Other" + extension));
+    }
+    expect(made, "the test banks are saved");
+    if (!made)
+      return;
+
+    // Opened as a host opens it, so the plugin knows its editor is open.
+    struct OpenEditor {
+      std::unique_ptr<AudioProcessorEditor> window;
+      SynthEditor& editor;
+      TableListBox* results = nullptr;
+      TableListBox* banks = nullptr;
+      Button* autoload = nullptr;
+      explicit OpenEditor(SynthPlugin& synth) :
+          window(synth.createEditorAndMakeActive()), editor(*dynamic_cast<SynthEditor*>(window.get())) {
+        editor.updateFullGui();
+        editor.addToDesktop(0);
+        editor.setVisible(true);
+        pumpUntil([&] { return !editor.isPresetLibraryBusy() && editor.presetLibrarySize() > 0; }, 60000);
+        pumpEditorEvents();
+        results = tableTitled(editor, "Preset results table");
+        banks = tableTitled(editor, "Bank");
+        autoload = dynamic_cast<Button*>(titled(editor, "Autoload preset when scrolling"));
+      }
+      ~OpenEditor() {
+        editor.removeFromDesktop();
+        // As a host's wrapper does before it deletes the editor.
+        window->processor.editorBeingDeleted(window.get());
+      }
+      bool ready() const { return results != nullptr && banks != nullptr && autoload != nullptr; }
+      String selected() const { return editor.presetFileAtRow(results->getSelectedRow()).getFileNameWithoutExtension(); }
+      bool selectedRowInView() const {
+        const int row_height = jmax(1, results->getRowHeight());
+        const int first = results->getViewport()->getViewPositionY() / row_height;
+        const int shown = results->getViewport()->getViewHeight() / row_height;
+        return first <= results->getSelectedRow() && results->getSelectedRow() < first + jmax(1, shown);
+      }
+    };
+    auto in_bank = [&](SynthPlugin& synth, OpenEditor& open) {
+      return synth.getEditorMemory().preset_bank == bank_name && open.editor.presetRowCount() == 40;
+    };
+
+    SynthPlugin synth;
+    {
+      OpenEditor open(synth);
+      expect(open.ready(), "the editor has its preset browser");
+      if (!open.ready())
+        return;
+      expect(!open.autoload->getToggleState(), "Autoload preset when scrolling starts off");
+      open.autoload->setToggleState(true, sendNotificationSync);
+      expect(LoadSave::presetAutoload(), "turning it on is saved in the config");
+      open.autoload->setToggleState(false, sendNotificationSync);
+      expect(!LoadSave::presetAutoload(), "and so is turning it off");
+      // Left on in the config for the next editor, but off here, so moving
+      // the selection loads nothing.
+      open.autoload->setToggleState(true, sendNotificationSync);
+      open.autoload->setToggleState(false, dontSendNotification);
+      // Into the test bank; Return loads Preset 31, and the selection moves on to Preset 34.
+      for (int row = 0; row < open.banks->getNumRows(); ++row) {
+        if (open.banks->getModel()->getCellTooltip(row, 1).startsWith(bank_name)) {
+          open.banks->selectRow(row);
+          break;
+        }
+      }
+      pumpEditorEvents();
+      expect(in_bank(synth, open), "the Bank list shows the test bank");
+      open.results->selectRow(30);
+      open.results->grabKeyboardFocus();
+      open.editor.getPeer()->handleKeyPress(KeyPress(KeyPress::returnKey));
+      pumpUntil([&] { return synth.getActiveFile().getFileNameWithoutExtension() == "Preset 31"; }, 5000);
+      expect(synth.getActiveFile().getFileNameWithoutExtension() == "Preset 31", "Return loads Preset 31");
+      open.results->selectRow(33);
+      pumpEditorEvents();
+    }
+    {
+      SynthPlugin another;
+      OpenEditor open(another);
+      expect(open.ready() && open.autoload->getToggleState(),
+             "another instance's editor starts with Autoload preset when scrolling on");
+    }
+    {
+      OpenEditor open(synth);
+      expect(open.ready() && in_bank(synth, open) && open.selected() == "Preset 34" && open.selectedRowInView(),
+             "reopening the window returns to the bank on Preset 34, in view, got " + open.selected().toStdString());
+    }
+
+    MemoryBlock state;
+    synth.getStateInformation(state);
+    SynthPlugin copy;
+    copy.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+    OpenEditor open(copy);
+    expect(open.ready() && in_bank(copy, open) && open.selected() == "Preset 34" && open.selectedRowInView(),
+           "a copy of the instance opens on the bank and Preset 34, in view, got " + open.selected().toStdString());
+
+    // The host's undo or a host preset, with the window open: the browser
+    // stays where the user is.
+    SynthPlugin fresh;
+    MemoryBlock fresh_state;
+    fresh.getStateInformation(fresh_state);
+    copy.setStateInformation(fresh_state.getData(), static_cast<int>(fresh_state.getSize()));
+    pumpEditorEvents();
+    expect(in_bank(copy, open) && open.selected() == "Preset 34",
+           "a state set while the editor is open leaves its browser in place, got " + open.selected().toStdString());
+  }
+
   int runCommunityLibraryTests(const File& atlas_midi) {
     testSha256MatchesTheStandardVectors();
     testPresetsPageParses();
     testDownloadsLandInTheCommunityFolder();
     testDownloadRecords();
     testSavedLibraryRoundTrip();
+    testPresetBrowserKeepsItsPlace();
     testCommunityCollectionListsAndDownloads();
     testDownloadProgressAndCancel();
     testCommunityPreviewPlays();

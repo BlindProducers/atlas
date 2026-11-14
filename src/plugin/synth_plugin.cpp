@@ -37,6 +37,9 @@ namespace {
   // have played (SpeechSlot), saved with the host's project rather than
   // with presets.
   constexpr const char* kSpeechSongKey = "speech_song";
+  // The preset browser's filters and preset (EditorMemory), saved with the
+  // host's project rather than with presets.
+  constexpr const char* kPresetBrowserStateKey = "preset_browser";
 
   std::string fxBusPrefix(int bus) {
     return bus == 0 ? "" : "bus_" + std::to_string(bus) + "_";
@@ -1093,6 +1096,10 @@ void SynthPlugin::getStateInformation(MemoryBlock& dest_data) {
   json data = LoadSave::stateToJson(this, getCallbackLock());
   data["tuning"] = getTuning()->stateToJson();
   data[kFxAutomationStateKey] = fxAutomationAssignmentsToJson();
+  // The editor changes its memory on the message thread, where hosts ask for
+  // the state; a host asking from another thread gets the state without it.
+  if (MessageManager::existsAndIsCurrentThread())
+    data[kPresetBrowserStateKey] = presetBrowserStateToJson();
   std::vector<double> song_notes[vital::kNumOscillators];
   std::vector<vital::SpeechSlot::Range> song_played[vital::kNumOscillators];
   bool any_song = false;
@@ -1166,11 +1173,13 @@ void SynthPlugin::setStateInformation(const void* data, int size_in_bytes) {
       // jsonToState takes the state over; read the rest first.
       const bool has_fx_automation = json_data.is_object() && json_data.count(kFxAutomationStateKey);
       const bool has_tuning = json_data.is_object() && json_data.count("tuning");
+      const bool has_browser = json_data.is_object() && json_data.count(kPresetBrowserStateKey);
       const bool has_song = json_data.is_object() && json_data.count(kSpeechSongKey) &&
                             json_data[kSpeechSongKey].is_array();
       const json song = has_song ? std::move(json_data[kSpeechSongKey]) : json();
       const json fx_automation = has_fx_automation ? std::move(json_data[kFxAutomationStateKey]) : json();
       const json tuning = has_tuning ? std::move(json_data["tuning"]) : json();
+      const json browser = has_browser ? std::move(json_data[kPresetBrowserStateKey]) : json();
       LoadSave::jsonToState(this, save_info_, std::move(json_data));
       prepareSelectedSources();
 
@@ -1181,6 +1190,12 @@ void SynthPlugin::setStateInformation(const void* data, int size_in_bytes) {
 
       if (has_tuning)
         getTuning()->jsonToState(tuning);
+
+      // A new instance (a duplicate, a project opening) takes the browser's
+      // place; an open editor keeps the user where they are, through the
+      // host's undo or a host preset.
+      if (has_browser && getActiveEditor() == nullptr && MessageManager::existsAndIsCurrentThread())
+        loadPresetBrowserState(browser);
 
       for (int i = 0; i < vital::kNumOscillators; ++i) {
         std::vector<double> notes;
@@ -1222,6 +1237,52 @@ void SynthPlugin::setStateInformation(const void* data, int size_in_bytes) {
     // The editor is open: what the user does next starts from this state.
     undo_history_.ensureBaseline();
   }
+}
+
+json SynthPlugin::presetBrowserStateToJson() const {
+  const EditorMemory& memory = editor_memory_;
+  return { { "collection", memory.preset_collection.toStdString() },
+           { "library", memory.preset_library.toStdString() },
+           { "bank", memory.preset_bank.toStdString() },
+           { "category", memory.preset_category.toStdString() },
+           { "tag", memory.preset_tag.toStdString() },
+           { "search", memory.preset_search.toStdString() },
+           { "preset", memory.preset_path.toStdString() },
+           { "sort_column", memory.preset_sort_column },
+           { "sort_ascending", memory.preset_sort_ascending },
+           { "shown", memory.preset_browser_shown } };
+}
+
+void SynthPlugin::loadPresetBrowserState(const json& data) {
+  if (!data.is_object())
+    return;
+  auto read_text = [&data](const char* key, String& value) {
+    const auto found = data.find(key);
+    if (found != data.end() && found->is_string())
+      value = String::fromUTF8(found->get_ref<const std::string&>().c_str());
+  };
+  auto read_bool = [&data](const char* key, bool& value) {
+    const auto found = data.find(key);
+    if (found != data.end() && found->is_boolean())
+      value = found->get<bool>();
+  };
+  // Names this library lacks (another computer's banks, a column gone) fall
+  // back to all when the editor builds its lists.
+  EditorMemory& memory = editor_memory_;
+  read_text("collection", memory.preset_collection);
+  read_text("library", memory.preset_library);
+  read_text("bank", memory.preset_bank);
+  read_text("category", memory.preset_category);
+  read_text("tag", memory.preset_tag);
+  read_text("search", memory.preset_search);
+  read_text("preset", memory.preset_path);
+  // A path saved before the library moved.
+  if (File::isAbsolutePath(memory.preset_path))
+    memory.preset_path = atlas::library::currentPath(File(memory.preset_path)).getFullPathName();
+  if (const auto found = data.find("sort_column"); found != data.end() && found->is_number_integer())
+    memory.preset_sort_column = found->get<int>();
+  read_bool("sort_ascending", memory.preset_sort_ascending);
+  read_bool("shown", memory.preset_browser_shown);
 }
 
 AudioProcessor* JUCE_CALLTYPE createPluginFilter() {

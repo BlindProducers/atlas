@@ -1091,10 +1091,6 @@ namespace {
     return jlimit(0.0, 1.0, value / (blend.count == 0 ? 100.0 : 2.0));
   }
 
-  // A preference, so shared by every Atlas instance. The section and preset
-  // browser state are per instance: SynthPlugin::EditorMemory.
-  bool last_preset_preview = false;
-
   force_inline int chunkNameToData(const char* chunk_name) {
     return static_cast<int>(ByteOrder::littleEndianInt(chunk_name));
   }
@@ -7476,19 +7472,20 @@ SynthEditor::SynthEditor(SynthPlugin& synth) :
   addChildComponent(preset_table_);
 
   preset_preview_.setTitle("Autoload preset when scrolling");
-  preset_preview_.setDescription("Automatically load presets as you move through the preset list");
-  preset_preview_.setHelpText("Turn this on to load presets while scrolling. Leave it off to load only when pressing Enter.");
   preset_preview_.setWantsKeyboardFocus(true);
-  preset_preview_.setToggleState(last_preset_preview, dontSendNotification);
+  // A preference in the config, so every instance, and the next session,
+  // starts with the user's last choice.
+  preset_preview_.setToggleState(LoadSave::presetAutoload(), dontSendNotification);
   preset_preview_.onClick = [this] {
-    last_preset_preview = preset_preview_.getToggleState();
+    const bool autoload = preset_preview_.getToggleState();
+    LoadSave::savePresetAutoload(autoload);
 #if JUCE_WINDOWS
     // NVDA says nothing when a check box changes (see SpokenToggleButton), so
     // this is the only answer to the key press.
-    postPresetActionAnnouncement(last_preset_preview ? "Preset autoload enabled" : "Preset autoload disabled",
+    postPresetActionAnnouncement(autoload ? "Preset autoload enabled" : "Preset autoload disabled",
                                  AccessibilityHandler::AnnouncementPriority::medium);
 #else
-    postPluginAnnouncement(last_preset_preview ? "Preset autoload enabled" : "Preset autoload disabled",
+    postPluginAnnouncement(autoload ? "Preset autoload enabled" : "Preset autoload disabled",
                                            AccessibilityHandler::AnnouncementPriority::medium);
 #endif
   };

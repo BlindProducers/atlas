@@ -137,7 +137,9 @@ class SynthPlugin : public SynthBase, public AudioProcessor, public ValueBridge:
     // Where this instance's editor was left: its section and preset browser
     // filters. Kept here so they outlive the editor window without being shared
     // with the other Atlas instances a host loads into the same process.
-    // Message thread only; not saved with the host's project.
+    // Message thread only. The preset browser's part is saved with the host's
+    // project (presetBrowserStateToJson), so a duplicated instance or a
+    // reopened project shows the browser where it was.
     struct EditorMemory {
       String section_name;
       String preset_path;
@@ -210,6 +212,8 @@ class SynthPlugin : public SynthBase, public AudioProcessor, public ValueBridge:
     void clearFxAutomationAssignments(bool notifyHost);
     json fxAutomationAssignmentsToJson() const;
     void loadFxAutomationAssignments(const json& data);
+    json presetBrowserStateToJson() const;
+    void loadPresetBrowserState(const json& data);
 
     // Undo reads and loads the state, and sets values back as the editor does.
     friend class UndoHistory;

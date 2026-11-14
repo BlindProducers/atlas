@@ -2308,6 +2308,12 @@ void LoadSave::saveDisplayHzFrequency(bool hz_frequency) {
   saveJsonToConfig(data);
 }
 
+void LoadSave::savePresetAutoload(bool autoload) {
+  json data = getConfigJson();
+  data["preset_autoload"] = autoload;
+  saveJsonToConfig(data);
+}
+
 void LoadSave::saveAuthenticated(bool authenticated) {
   json data = getConfigJson();
   data["authenticated"] = authenticated;
@@ -2609,6 +2615,12 @@ bool LoadSave::displayHzFrequency() {
   std::lock_guard<std::mutex> lock(cache.mutex);
   const json& data = currentConfig(cache);
   const auto found = data.is_object() ? data.find("hz_frequency") : data.end();
+  return found != data.end() && found->is_boolean() && found->get<bool>();
+}
+
+bool LoadSave::presetAutoload() {
+  const json data = getConfigJson();
+  const auto found = data.is_object() ? data.find("preset_autoload") : data.end();
   return found != data.end() && found->is_boolean() && found->get<bool>();
 }
 
