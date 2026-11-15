@@ -3614,6 +3614,25 @@ namespace {
     }
   }
 
+  // The Polyphony row runs to every voice the engine has, and reads the count.
+  void testPolyphonyRowReachesEveryVoice() {
+    SynthPlugin synth;
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    auto* row = dynamic_cast<ParameterSlider*>(editor.controlForParameter("polyphony"));
+    expect(row != nullptr, "the editor has a Polyphony row");
+    if (row == nullptr)
+      return;
+    row->keyPressed(KeyPress(KeyPress::homeKey));
+    close(synth.getControls().at("polyphony")->value(), static_cast<float>(vital::kMaxActivePolyphony),
+          "Home takes Polyphony to the engine's voice limit");
+    const String text = row->getTextFromValue(row->getValue());
+    expect(text == String(vital::kMaxActivePolyphony) + " voices",
+           "the Polyphony row reads the voice count: " + text.toStdString());
+    row->keyPressed(KeyPress(KeyPress::endKey));
+    close(synth.getControls().at("polyphony")->value(), 1.0f, "End takes Polyphony to one voice");
+  }
+
   void testFilterFxModelControlsAndValues() {
     SynthPlugin synth;
     for (int chain = 0; chain <= vital::kNumBuses; ++chain) {

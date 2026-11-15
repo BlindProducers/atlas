@@ -33,8 +33,8 @@ namespace vital {
   constexpr int kNumBuses = 3;
   constexpr int kNumFormants = 4;
   constexpr int kNumChannels = 2;
-  constexpr int kMaxPolyphony = 33;
-  constexpr int kMaxActivePolyphony = 32;
+  constexpr int kMaxPolyphony = 65;
+  constexpr int kMaxActivePolyphony = 64;
   constexpr int kLfoDataResolution = 2048;
   constexpr int kMaxModulationConnections = 64;
 

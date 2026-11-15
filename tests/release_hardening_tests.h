@@ -52,7 +52,7 @@ namespace {
       most = std::max(most, synth.getEngine()->getNumActiveVoices());
     }
     // About 8 notes a second each ringing half a second, against the whole
-    // pool of 34 when every note-off restarted the older tails.
+    // pool when every note-off restarted the older tails.
     expect(most <= 10, "arpeggiator tails end after their Release (" + std::to_string(most) + " voices at most)");
 
     controls.at("arp_1_on")->set(0.0f);
@@ -74,7 +74,10 @@ namespace {
   // voice limit there (Kill override, legato off) used to hand a voice that
   // did not exist to the audio thread.
   void testKeyboardNotesSurviveAFullVoicePool() {
-    static constexpr int kVoices = 5;
+    // The pool holds every voice, made in pairs; the seven arpeggiated slots'
+    // tails together must overfill it.
+    static constexpr int kPool = (vital::kMaxPolyphony + 1) / 2 * 2;
+    static constexpr int kVoices = (kPool + vital::kNumOscillators - 2) / (vital::kNumOscillators - 1);
     SynthPlugin synth;
     prepare(synth);
     auto& controls = synth.getControls();
@@ -91,21 +94,25 @@ namespace {
       keys.addEvent(MidiMessage::noteOn(1, 52 + key, 1.0f), 0);
     renderMidi(synth, keys);
     MidiBuffer empty;
-    for (int i = 0; i < 2000 && synth.getEngine()->getNumActiveVoices() < 34; ++i)
+    for (int i = 0; i < 2000 && synth.getEngine()->getNumActiveVoices() < kPool; ++i)
       renderMidi(synth, empty);
-    expect(synth.getEngine()->getNumActiveVoices() == 34, "arpeggiator tails fill the voice pool");
+    expect(synth.getEngine()->getNumActiveVoices() == kPool, "arpeggiator tails fill the voice pool");
 
+    const int extra_key = 52 + kVoices;  // above the held keys
     MidiBuffer one_more;
-    one_more.addEvent(MidiMessage::noteOn(1, 60, 1.0f), 0);
+    one_more.addEvent(MidiMessage::noteOn(1, extra_key, 1.0f), 0);
     renderMidi(synth, one_more);
-    expect(synth.getEngine()->getNumPressedNotes() == kVoices + 1, "a key pressed with the pool full is played");
+    expect(synth.getEngine()->getNumPressedNotes() == kVoices + 1, "a key pressed with the pool full is played (" +
+           std::to_string(synth.getEngine()->getNumPressedNotes()) + " pressed, " +
+           std::to_string(synth.getEngine()->getNumActiveVoices()) + " voices)");
     MidiBuffer release;
-    release.addEvent(MidiMessage::noteOff(1, 60), 0);
+    release.addEvent(MidiMessage::noteOff(1, extra_key), 0);
     renderMidi(synth, release);
     for (int i = 0; i < 10; ++i)
       renderMidi(synth, empty);
-    expect(synth.getEngine()->getNumPressedNotes() == kVoices, "releasing it returns to the held keys");
-    expect(synth.getEngine()->getNumActiveVoices() >= 33, "the pool stays in use and nothing breaks");
+    expect(synth.getEngine()->getNumPressedNotes() == kVoices, "releasing it returns to the held keys (" +
+           std::to_string(synth.getEngine()->getNumPressedNotes()) + " pressed)");
+    expect(synth.getEngine()->getNumActiveVoices() >= kPool - 1, "the pool stays in use and nothing breaks");
   }
 
   // A MIDI-learn mapping in Atlas.config, which every Atlas build shares,
