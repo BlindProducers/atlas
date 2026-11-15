@@ -1279,6 +1279,7 @@ int main(int argc, char** argv) {
     testFilterFxModelControlsAndValues();
     testGranularSizeModeNamesBothChoices();
     testLevelsAndAmountsReadAsPercent();
+    testPolyphonyRowReachesEveryVoice();
     testSlotTypeRowsFollowTheType();
     testArpeggiatorRatesOfferOnlyFreeRunningSources();
     testWavetableEditingOnASlotSwitchedToWavetable();
