@@ -123,6 +123,15 @@ set(ATLAS_OPENWURLI_SOURCES
   src/synthesis/effects/openwurli/wurli_speaker.cpp
   src/synthesis/effects/openwurli/wurli_amp.cpp)
 
+# The Piano oscillator type: the modelled grand's engine, built as the
+# original is (IEEE arithmetic, no fast-math) so it sounds the same.
+set(ATLAS_PIANO_SOURCES
+  src/synthesis/effects/piano/Design.cpp
+  src/synthesis/effects/piano/Soundboard.cpp
+  src/synthesis/effects/piano/Model.cpp
+  src/synthesis/effects/piano/piano_instrument.cpp
+  src/synthesis/effects/piano/piano_model_service.cpp)
+
 # The OpenB3 port (setBfree's tonegen, vibrato and whirl) keeps the C code's
 # separate multiplies and adds, so the whirl and scanner match it sample for
 # sample: no FMA contraction and no fast-math.
@@ -287,6 +296,10 @@ target_sources(Atlas PRIVATE
   src/synthesis/producers/openb3_source.cpp
   src/synthesis/modules/openb3_module.cpp
   src/synthesis/modules/scanner_vibrato_module.cpp
+  # Piano (GPL-3.0): the modelled concert grand.
+  ${ATLAS_PIANO_SOURCES}
+  src/synthesis/producers/piano_source.cpp
+  src/synthesis/modules/piano_module.cpp
   # Saturator, Overdrive, Dynamic Tube and Multiband Dynamics (Alessio Scala's JSFX).
   ${ATLAS_DRIVE_DYNAMICS_SOURCES}
   src/synthesis/modules/drive_dynamics_modules.cpp
@@ -330,6 +343,9 @@ set_source_files_properties(${ATLAS_OPENWURLI_SOURCES} src/synthesis/producers/o
 set_source_files_properties(${ATLAS_OPENB3_SOURCES} src/synthesis/producers/openb3_source.cpp
   src/synthesis/modules/openb3_module.cpp src/synthesis/modules/scanner_vibrato_module.cpp PROPERTIES
   COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:precise>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffp-contract=off;-fno-fast-math>")
+set_source_files_properties(${ATLAS_PIANO_SOURCES} src/synthesis/producers/piano_source.cpp
+  src/synthesis/modules/piano_module.cpp PROPERTIES
+  COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:precise>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-fno-fast-math>")
 set_source_files_properties(${ATLAS_ZL_COMPRESSOR_SOURCES} ${ATLAS_MAIM_SOURCES}
   ${ATLAS_DRIVE_DYNAMICS_SOURCES} src/synthesis/modules/drive_dynamics_modules.cpp ${ATLAS_BODE_SOURCES}
   ${ATLAS_DESTROY_SOURCES} ${ATLAS_DISTORTION_MODES_SOURCES} PROPERTIES
@@ -498,6 +514,7 @@ target_include_directories(Atlas PRIVATE
   src/synthesis/effects
   src/synthesis/effects/braids
   src/synthesis/effects/openwurli
+  src/synthesis/effects/piano
   src/synthesis/effects/stmlib
   src/synthesis/filters
   src/synthesis/framework
@@ -1062,6 +1079,39 @@ if(ATLAS_BUILD_TIMING_TESTS)
     message(STATUS "OpenWurli reference tests skipped: "
                    "git submodule update --init --checkout third_party/openwurli third_party/melange")
   endif()
+
+  # The piano engine on its own, without JUCE: the port against the original
+  # engine (tests/piano/reference_engine.*, built as the port is), its
+  # behaviour and its cost.
+  add_executable(AtlasPianoEngineTests
+    tests/piano/engine_tests.cpp
+    tests/piano/reference_engine.cpp
+    ${ATLAS_PIANO_SOURCES})
+  target_include_directories(AtlasPianoEngineTests PRIVATE src/synthesis/effects/piano tests/piano)
+  target_compile_options(AtlasPianoEngineTests PRIVATE
+    "$<$<CXX_COMPILER_ID:MSVC>:/fp:precise>" "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-fno-fast-math>")
+  foreach(piano_engine_test reference behaviour)
+    add_test(NAME atlas_piano_engine_${piano_engine_test} COMMAND AtlasPianoEngineTests --${piano_engine_test})
+  endforeach()
+  add_test(NAME atlas_piano_engine_cpu COMMAND AtlasPianoEngineTests --cpu)
+  set_tests_properties(atlas_piano_engine_cpu PROPERTIES LABELS cpu)
+
+  juce_add_console_app(AtlasPianoTests PRODUCT_NAME "Atlas Piano Tests")
+  juce_generate_juce_header(AtlasPianoTests)
+  target_sources(AtlasPianoTests PRIVATE tests/piano_tests.cpp)
+  target_include_directories(AtlasPianoTests PRIVATE
+    src/common src/common/multisample src/common/wavetable src/plugin src/interface/look_and_feel
+    src/synthesis/framework src/synthesis/modules src/synthesis/effects src/synthesis/effects/piano
+    src/synthesis/filters src/synthesis/producers src/synthesis/synth_engine
+    src/synthesis/lookups src/synthesis/modulators src/synthesis/utilities third_party)
+  target_compile_definitions(AtlasPianoTests PRIVATE
+    VITAL_ACCESSIBLE_UI=1 HEADLESS=0 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_DSP_USE_SHARED_FFTW=0
+    JUCE_MODAL_LOOPS_PERMITTED=1)
+  target_link_libraries(AtlasPianoTests PRIVATE
+    Atlas juce::juce_audio_utils juce::juce_dsp juce::juce_gui_extra juce::juce_recommended_config_flags)
+  foreach(piano_test oscillator envelope pedals parameters editor)
+    add_test(NAME atlas_piano_${piano_test} COMMAND AtlasPianoTests --${piano_test})
+  endforeach()
 
   juce_add_console_app(AtlasOpenB3Tests PRODUCT_NAME "Atlas OpenB3 Tests")
   juce_generate_juce_header(AtlasOpenB3Tests)

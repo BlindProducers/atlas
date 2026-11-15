@@ -44,6 +44,8 @@ namespace vital {
         kAmplitudeEnvelope,
         // How many voices are sounding, for the Analog oscillator's supply sag.
         kSoundingVoices,
+        // Whether the voice's key is up (the Piano's dampers follow the key, not the pedal).
+        kKeyLifted,
         kNumInputs
       };
 

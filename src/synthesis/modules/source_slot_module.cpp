@@ -23,6 +23,7 @@
 #include "noise_module.h"
 #include "openb3_module.h"
 #include "openwurli_module.h"
+#include "piano_module.h"
 #include "oscillator_module.h"
 #include "sample_module.h"
 #include "sample_source.h"
@@ -110,6 +111,8 @@ namespace vital {
         return new BraidsModule(source_types::groupPrefix(slot, type), source_types::slotPrefix(slot));
       case source_types::kOpenWurli:
         return new OpenWurliModule(source_types::groupPrefix(slot, type), source_types::slotPrefix(slot));
+      case source_types::kPiano:
+        return new PianoModule(source_types::groupPrefix(slot, type), source_types::slotPrefix(slot));
       case source_types::kOpenB3:
         return new OpenB3Module(source_types::groupPrefix(slot, type), source_types::slotPrefix(slot));
       case source_types::kNoise:
@@ -140,6 +143,7 @@ namespace vital {
     wurli_amp_env_ = find_control("wurli_amp_env");
     b3_amp_env_ = find_control("b3_amp_env");
     speech_amp_env_ = find_control("speech_amp_env");
+    piano_amp_env_ = find_control("piano_amp_env");
     SynthModule::init();
   }
 
@@ -285,6 +289,20 @@ namespace vital {
         state_->modulation_target = wurli;
         break;
       }
+      case source_types::kPiano: {
+        auto* piano = static_cast<PianoModule*>(module);
+        piano->useInput(input(kReset), PianoModule::kReset);
+        piano->useInput(input(kVoiceEvent), PianoModule::kVoiceEvent);
+        piano->useInput(input(kMidi), PianoModule::kMidi);
+        piano->useInput(input(kVelocity), PianoModule::kVelocity);
+        piano->useInput(input(kActiveVoices), PianoModule::kActiveVoices);
+        piano->useInput(input(kKeyLifted), PianoModule::kKeyLifted);
+        piano->useOutput(output(kRaw), PianoModule::kRaw);
+        piano->useOutput(output(kLevelled), PianoModule::kLevelled);
+        piano->useOutput(output(kHold), PianoModule::kHold);
+        state_->modulation_target = piano;
+        break;
+      }
       case source_types::kOpenB3: {
         auto* organ = static_cast<OpenB3Module*>(module);
         organ->useInput(input(kReset), OpenB3Module::kReset);
@@ -402,7 +420,15 @@ namespace vital {
       return b3_amp_env_ != nullptr && b3_amp_env_->value() < 0.5f;
     if (state_->active_type == source_types::kSpeech)
       return speech_amp_env_ != nullptr && speech_amp_env_->value() < 0.5f;
+    if (state_->active_type == source_types::kPiano)
+      return piano_amp_env_ != nullptr && piano_amp_env_->value() < 0.5f;
     return false;
+  }
+
+  PianoModule* SourceSlotModule::pianoModule() const {
+    if (state_->module == nullptr || state_->active_type != source_types::kPiano)
+      return nullptr;
+    return static_cast<PianoModule*>(state_->module);
   }
 
   void SourceSlotModule::setModulatorOutput(int position, Output* output) {
@@ -450,9 +476,10 @@ namespace vital {
       output(kHold)->clearBuffer();
       playhead_->output()->buffer[0] = 0.0f;
     }
-    // Only a sounding Multi-sample, OpenWurli, OpenB3 or Speech type holds the voice open.
+    // Only a sounding Multi-sample, OpenWurli, OpenB3, Speech or Piano type holds the voice open.
     if (!on || (state.active_type != source_types::kMultiSample && state.active_type != source_types::kOpenWurli &&
-                state.active_type != source_types::kOpenB3 && state.active_type != source_types::kSpeech)) {
+                state.active_type != source_types::kOpenB3 && state.active_type != source_types::kSpeech &&
+                state.active_type != source_types::kPiano)) {
       Output* hold = output(kHold);
       if (poly_float::notEqual(hold->buffer[0], 0.0f).anyMask())
         hold->clearBuffer();

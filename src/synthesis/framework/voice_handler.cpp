@@ -123,6 +123,7 @@ namespace vital {
     velocity_.owner = &voice_router_;
     midi_key_.owner = &voice_router_;
     lift_.owner = &voice_router_;
+    key_lifted_.owner = &voice_router_;
     aftertouch_.owner = &voice_router_;
     slide_.owner = &voice_router_;
     active_mask_.owner = &voice_router_;
@@ -225,6 +226,9 @@ namespace vital {
       if (voice->released())
         lift = voice->state().lift;
       lift_.trigger_value = utils::maskLoad(lift_.trigger_value, lift, mask);
+      const bool key_up = voice->released() || voice->sustained();
+      key_lifted_.trigger_value = utils::maskLoad(key_lifted_.trigger_value,
+                                                  key_up ? 1.0f + voice->state().lift : 0.0f, mask);
 
       aftertouch_.trigger_value = utils::maskLoad(aftertouch_.trigger_value, voice->aftertouch(), mask);
       slide_.trigger_value = utils::maskLoad(slide_.trigger_value, voice->slide(), mask);

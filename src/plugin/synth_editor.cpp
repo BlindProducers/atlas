@@ -2786,6 +2786,20 @@ namespace {
       }
     }
 
+    // Piano: the touch, then the instrument's body and voicing, then the
+    // envelope mode; Transpose sits with the pitch rows.
+    if (id.startsWith("piano_")) {
+      const String suffix = id.fromFirstOccurrenceOf("piano_", false, false);
+      static const std::array<const char*, 11> piano_order = {{
+        "dynamics", "hardness", "action_noise", "sympathetic", "width", "tuning", "stretch", "unison", "sustain",
+        "amp_env", "transpose"
+      }};
+      for (int i = 0; i < static_cast<int>(piano_order.size()); ++i) {
+        if (suffix == piano_order[i])
+          return 5790 + i;
+      }
+    }
+
     for (int random = 1; random <= vital::kNumRandomLfos; ++random) {
       const String prefix = "random_" + String(random) + "_";
       if (!id.startsWith(prefix))
@@ -4053,6 +4067,40 @@ namespace {
       if (suffix == "transpose")
         return "Transpose the organ in semitones. The nearest of the 61 keys, from C2 to C7, gives the wiring.";
       if (suffix == "tune") return "Fine tune the organ in cents.";
+    }
+
+    if (legacy_id.startsWith("piano_")) {
+      const String suffix = legacy_id.fromFirstOccurrenceOf("piano_", false, false);
+      if (suffix == "amp_env")
+        return "Choose what shapes each note. Piano lets the strings ring and decay as on the instrument, with "
+               "the damper stopping them when the key is released, and keeps the voice open while the note "
+               "sounds. Envelope 1 shapes the note with Envelope 1 instead.";
+      if (suffix == "dynamics")
+        return "Set how much key velocity changes the blow. At 0% every note is struck mezzo forte.";
+      if (suffix == "hardness")
+        return "Set the stiffness of the hammer felt. Harder felt is brighter; 100% is the model's own.";
+      if (suffix == "action_noise")
+        return "Set the knock of the key and hammer on the body, at the attack and when the key returns. Harder "
+               "blows and quicker releases knock more.";
+      if (suffix == "sympathetic")
+        return "Set how much the undamped strings ring with the notes played, with the sustain pedal or the "
+               "keys held down. The sympathetic strings play after the voice filters and Envelope 1.";
+      if (suffix == "width")
+        return "Set the stereo width. 0% is mono; 100% is the player's image, bass to the left and treble to "
+               "the right.";
+      if (suffix == "tuning") return "Set the pitch of A4 in hertz. Changing it rebuilds the model.";
+      if (suffix == "stretch")
+        return "Set how far octaves are widened to match the strings' inharmonic partials. 0% is equal "
+               "temperament. Changing it rebuilds the model.";
+      if (suffix == "unison")
+        return "Set the spread between the two or three strings of a note. More gives slower beating and a longer "
+               "second stage of decay. Changing it rebuilds the model.";
+      if (suffix == "sustain")
+        return "Set how fast the strings give their energy to the soundboard. More is a longer decay. Changing "
+               "it rebuilds the model.";
+      if (suffix == "transpose")
+        return "Transpose the note in semitones. The piano plays A0 to C8; pitch bend and glide do not move a "
+               "note once it is struck.";
     }
 
     if (legacy_id.startsWith("speech_")) {
@@ -8556,7 +8604,7 @@ std::unique_ptr<AccessibleParameterRow> SynthEditor::buildAccessibleParameterRow
         return std::make_unique<AccessibleParameterRow>(
             parameter, String(), std::function<String(double)>(), 1.0, 0.0, String(), String(),
             "Choose this oscillator's type: Wavetable, Analog, Sample, Granular, Spectral, Noise, Multi-sample, Macro, "
-            "OpenWurli or OpenB3. "
+            "OpenWurli, OpenB3, Speech or Piano. "
             "Each type keeps its own settings, wavetable and sample for when you switch back.", true);
       }
       if (suffix == "analog_waveform")

@@ -26,6 +26,8 @@
 #include "synth_strings.h"
 #include "multisample_manager.h"
 #include "speech_manager.h"
+#include "piano_model_service.h"
+#include "piano_module.h"
 #include "speech_slot.h"
 
 #include <limits>
@@ -523,6 +525,17 @@ void SynthPlugin::processBlock(AudioSampleBuffer& buffer, MidiBuffer& midi_messa
   if (isNonRealtime() && speech_manager_->hasPendingWork()) {
     speech_manager_->waitForPendingWork(300000);
     speech_manager_->processPendingResults(false);
+  }
+  // And for a Piano whose model is still being built for this block's settings.
+  if (isNonRealtime()) {
+    for (int i = 0; i < vital::kNumOscillators; ++i) {
+      const vital::PianoModule* piano = engine_->getSourceSlot(i)->pianoModule();
+      if (piano == nullptr)
+        continue;
+      piano->wantModel(static_cast<float>(engine_->getVoiceSampleRate()));
+      pm::ModelService::waitForModel(piano->instrument().get(), 300000);
+      piano->instrument()->takeOffer();
+    }
   }
 
   updateHostLatency();

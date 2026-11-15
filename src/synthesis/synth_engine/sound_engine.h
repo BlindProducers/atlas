@@ -116,6 +116,9 @@ namespace vital {
       Wavetable* getWavetable(int index);
       Sample* getSample(int index);
       SourceSlotModule* getSourceSlot(int index);
+      // The rate the voices render at (the engine's times the oversampling).
+      int getVoiceSampleRate() const;
+      const MultiSampleMidiState* getMultiSampleMidiState() const { return multisample_midi_state_.get(); }
       MultiSampleSlot* getMultiSample(int index);
       ReorderableEffectChain* getMainEffectChain() { return effect_chain_; }
       SpeechSlot* getSpeechSlot(int index);

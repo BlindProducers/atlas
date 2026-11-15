@@ -36,6 +36,8 @@ namespace vital {
   class RandomLfoModule;
   class TriggerRandom;
 
+  struct MultiSampleMidiState;
+
   class SynthVoiceHandler : public VoiceHandler {
     public:
       SynthVoiceHandler(Output* beats_per_second);
@@ -68,6 +70,8 @@ namespace vital {
       bool takeReverbMemoryRequest();
       Sample* getSample(int index) { return producers_->getSample(index); }
       SourceSlotModule* getSourceSlot(int index) { return producers_->slot(index); }
+      // The block's MIDI controllers, which the Piano reads its pedals from.
+      void setMidiState(const MultiSampleMidiState* state) { midi_state_ = state; }
       // Message thread with processing paused: build every slot's active type module.
       bool prepareSelectedSources() { return producers_->prepareSelectedSources(); }
       LineGenerator* getLfoSource(int index) { return &lfo_sources_[index]; }
@@ -104,9 +108,12 @@ namespace vital {
       void createFilters(Output* keytrack);
 
       void setupPolyModulationReadouts();
-      // Mixes Multi-sample CC-triggered regions (pedal noises), which play
-      // outside any voice, into the voice outputs.
-      void mixMultiSampleTails(int num_samples, bool voices_rendered);
+      // Mixes what the slots play outside any voice into the voice outputs:
+      // Multi-sample CC-triggered regions (pedal noises) and the Piano's
+      // sympathetic strings.
+      void mixSlotTails(int num_samples, bool voices_rendered);
+      // Gives each Piano slot the block's pedals and the model it wants.
+      void preparePianos();
       // Tells each Speech slot which keyboard notes are down in this block.
       void prepareSpeechHolds(int num_samples);
 
@@ -120,6 +127,7 @@ namespace vital {
       };
       TailControls tail_controls_[kNumOscillators];
       bool tails_written_ = false;
+      const MultiSampleMidiState* midi_state_ = nullptr;
 
       ModulationConnectionBank modulation_bank_;
       CircularQueue<ModulationConnectionProcessor*> enabled_modulation_processors_;

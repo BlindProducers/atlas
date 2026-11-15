@@ -232,6 +232,7 @@ namespace strings {
     "OpenWurli",
     "OpenB3",
     "Speech",
+    "Piano",
   };
 
   // The Speech oscillator's espeak-ng languages and voice variants, in the
@@ -270,6 +271,11 @@ namespace strings {
 
   const std::string kSpeechAmpEnvNames[] = {
     "Voice",
+    "Envelope 1",
+  };
+
+  const std::string kPianoAmpEnvNames[] = {
+    "Piano",
     "Envelope 1",
   };
 

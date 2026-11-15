@@ -31,6 +31,9 @@
 #include "modulation_connection_processor.h"
 #include "futils.h"
 #include "multisample_slot.h"
+#include "piano_module.h"
+#include "piano_instrument.h"
+#include "piano_source.h"
 #include "speech_slot.h"
 
 #include <cstdlib>
@@ -231,6 +234,7 @@ namespace vital {
     producers_->plug(active_mask(), ProducersModule::kActiveVoices);
     producers_->plug(midi_key(), ProducersModule::kMidiKey);
     producers_->plug(&num_voices_, ProducersModule::kSoundingVoices);
+    producers_->plug(key_lifted(), ProducersModule::kKeyLifted);
     addSubmodule(producers_);
     addProcessor(producers_);
   }
@@ -479,8 +483,9 @@ namespace vital {
     const Voice* rendered_voice = getCurrentVoice();
     const bool voices_rendered = getNumActiveVoices() > 0;
     prepareSpeechHolds(num_samples);
+    preparePianos();
     VoiceHandler::process(num_samples);
-    mixMultiSampleTails(num_samples, voices_rendered);
+    mixSlotTails(num_samples, voices_rendered);
     // Speech slots time note-ons to group a chord on one syllable.
     for (int i = 0; i < kNumOscillators; ++i)
       producers_->slot(i)->getSpeech()->advanceClock(num_samples, getSampleRate());
@@ -520,7 +525,24 @@ namespace vital {
     }
   }
 
-  void SynthVoiceHandler::mixMultiSampleTails(int num_samples, bool voices_rendered) {
+  void SynthVoiceHandler::preparePianos() {
+    const int oversample = getOversampleAmount();
+    for (int i = 0; i < kNumOscillators; ++i) {
+      const PianoModule* piano = producers_->slot(i)->pianoModule();
+      if (piano == nullptr)
+        continue;
+      piano->wantModel(static_cast<float>(getSampleRate()));
+      piano->pedalEvents(midi_state_, oversample);
+      // The notes struck in this block, so that one still sounding in another
+      // voice stops at the strike and changes hands there (PianoSource).
+      for (Voice* voice : activeVoices()) {
+        if (voice->hasNewEvent() && voice->state().event == kVoiceOn)
+          piano->instrument()->announceStrike(piano->noteFor(voice->state().tuned_note), voice->event_sample() * oversample);
+      }
+    }
+  }
+
+  void SynthVoiceHandler::mixSlotTails(int num_samples, bool voices_rendered) {
     bool any_solo = false;
     for (const TailControls& controls : tail_controls_)
       any_solo = any_solo || (controls.solo != nullptr && controls.solo->value() >= 0.5f);
@@ -544,25 +566,42 @@ namespace vital {
     tails_written_ = false;
     for (int i = 0; i < kNumOscillators; ++i) {
       const TailControls& controls = tail_controls_[i];
-      MultiSampleSlot* slot = producers_->slot(i)->getMultiSample();
-      if (slot == nullptr || slot->get() == nullptr || controls.on == nullptr || controls.type == nullptr)
+      if (controls.on == nullptr || controls.type == nullptr)
         continue;
-      const bool active = controls.on->value() >= 0.5f &&
-                          static_cast<int>(controls.type->value() + 0.5f) == source_types::kMultiSample &&
-                          !(any_solo && (controls.solo == nullptr || controls.solo->value() < 0.5f));
-      if (!active) {
-        if (slot->tailsActive())
-          slot->fadeOutAll(getSampleRate());
-        else
-          continue;
-      }
+      const int type = static_cast<int>(controls.type->value() + 0.5f);
+      const bool slot_active = controls.on->value() >= 0.5f &&
+                               !(any_solo && (controls.solo == nullptr || controls.solo->value() < 0.5f));
 
       mono_float left[kMaxBufferSize * kMaxOversample];
       mono_float right[kMaxBufferSize * kMaxOversample];
       const int count = std::min(num_samples, kMaxBufferSize * kMaxOversample);
-      std::fill(left, left + count, 0.0f);
-      std::fill(right, right + count, 0.0f);
-      if (!slot->renderTails(left, right, count, static_cast<float>(getSampleRate()), getOversampleAmount()))
+      bool rendered = false;
+      if (const PianoModule* piano = producers_->slot(i)->pianoModule()) {
+        // The sympathetic strings ring on whatever the voices do; a slot
+        // switched off still closes its block, so the histories keep pace.
+        piano->instrument()->renderBody(left, right, count);
+        for (int s = 0; s < count; ++s) {
+          left[s] *= PianoSource::kOutputScale;
+          right[s] *= PianoSource::kOutputScale;
+        }
+        rendered = slot_active;
+      }
+      else {
+        MultiSampleSlot* slot = producers_->slot(i)->getMultiSample();
+        if (slot == nullptr || slot->get() == nullptr)
+          continue;
+        const bool active = slot_active && type == source_types::kMultiSample;
+        if (!active) {
+          if (slot->tailsActive())
+            slot->fadeOutAll(getSampleRate());
+          else
+            continue;
+        }
+        std::fill(left, left + count, 0.0f);
+        std::fill(right, right + count, 0.0f);
+        rendered = slot->renderTails(left, right, count, static_cast<float>(getSampleRate()), getOversampleAmount());
+      }
+      if (!rendered)
         continue;
 
       Output* target = output_->output();
