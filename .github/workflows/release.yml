@@ -15,7 +15,10 @@
 # version is announced on Discord when its release is first published and
 # when its pre-release becomes the release (.github/scripts/announce-release.sh).
 # A run by hand with a tag in "announce" builds nothing and announces that
-# release, for one Discord has not heard of or to post again.
+# release, for one Discord has not heard of or to post again. A run by hand
+# with "build_only" builds the two installers and publishes and announces
+# nothing, for a test build of a branch: each installer is its own download
+# on the run's page, unzipped, for 30 days.
 name: Build and publish
 
 env:
@@ -48,6 +51,11 @@ on:
         description: Announce this release on Discord instead of building, by its tag (v2.0.0.3)
         required: false
         type: string
+      build_only:
+        description: Build the installers for testing, without publishing or announcing a release
+        required: false
+        type: boolean
+        default: false
 
 # A newer push cancels the build still running for an older one. A run that
 # only announces is in a group of its own, so it cancels no build.
@@ -100,11 +108,21 @@ jobs:
           done
 
       - uses: actions/upload-artifact@v7
+        if: ${{ !inputs.build_only }}
         with:
           name: macos
           path: dist/*
           if-no-files-found: error
           retention-days: 7
+
+      # A test build: the installer alone, named after its file.
+      - uses: actions/upload-artifact@v7
+        if: ${{ inputs.build_only }}
+        with:
+          path: dist/*.pkg
+          archive: false
+          if-no-files-found: error
+          retention-days: 30
 
   windows:
     name: Windows x64
@@ -148,15 +166,25 @@ jobs:
           Get-ChildItem dist | Select-Object Name, Length
 
       - uses: actions/upload-artifact@v7
+        if: ${{ !inputs.build_only }}
         with:
           name: windows
           path: dist/*
           if-no-files-found: error
           retention-days: 7
 
+      - uses: actions/upload-artifact@v7
+        if: ${{ inputs.build_only }}
+        with:
+          path: dist/*.exe
+          archive: false
+          if-no-files-found: error
+          retention-days: 30
+
   publish:
     name: Publish the release
     needs: [macos, windows]
+    if: ${{ !inputs.build_only }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
