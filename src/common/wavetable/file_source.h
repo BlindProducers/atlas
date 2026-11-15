@@ -23,6 +23,8 @@
 #include "wave_source.h"
 #include "utils.h"
 
+#include <algorithm>
+
 class FileSource : public WavetableComponent {
   public:
     static constexpr float kMaxFileSourceSamples = 176400;
@@ -35,6 +37,7 @@ class FileSource : public WavetableComponent {
       kNoInterpolate,
       kTimeInterpolate,
       kFreqInterpolate,
+      kCycleBlend,
       kNumFadeStyles
     };
 
@@ -68,6 +71,7 @@ class FileSource : public WavetableComponent {
         void renderNoInterpolate(vital::WaveFrame* wave_frame);
         void renderTimeInterpolate(vital::WaveFrame* wave_frame);
         void renderFreqInterpolate(vital::WaveFrame* wave_frame);
+        void renderCycleBlend(vital::WaveFrame* wave_frame);
         json stateToJson() override;
         void jsonToState(json data) override;
 
@@ -118,6 +122,11 @@ class FileSource : public WavetableComponent {
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(FileSourceKeyframe)
     };
+
+    // The last cycle Cycle blend can loop, which reads the cycle after it too.
+    static int lastLoopedCycle(int num_samples, double window_size) {
+      return std::max(0, static_cast<int>(num_samples / window_size) - 2);
+    }
 
     FileSource();
     virtual ~FileSource() { }

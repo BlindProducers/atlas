@@ -108,6 +108,8 @@ void FileSource::FileSourceKeyframe::render(vital::WaveFrame* wave_frame) {
     renderTimeInterpolate(wave_frame);
   else if (fade_style_ == kFreqInterpolate)
     renderFreqInterpolate(wave_frame);
+  else if (fade_style_ == kCycleBlend)
+    renderCycleBlend(wave_frame);
 
   if (phase_style_ == kClear || phase_style_ == kVocode) {
     for (int i = 0; i < vital::WaveFrame::kWaveformSize; ++i) {
@@ -208,6 +210,39 @@ void FileSource::FileSourceKeyframe::renderFreqInterpolate(vital::WaveFrame* wav
   to_wave_frame->toFrequencyDomain();
   interpolate_from_frame_->linearFrequencyInterpolate(from_wave_frame, to_wave_frame, transition);
   wave_frame->copy(interpolate_from_frame_->wave_frame());
+}
+
+// Whole cycles, crossfaded in time as Time interpolate crossfades them, each
+// looped as Wave blend loops its window: over the window fade the cycle starts
+// as the next cycle does and blends into its own, so its end runs on into its
+// start without a step. Every frame starts on a cycle, so the frames' phases
+// line up and the table moves evenly.
+void FileSource::FileSourceKeyframe::renderCycleBlend(vital::WaveFrame* wave_frame) {
+  static constexpr int kSize = vital::WaveFrame::kWaveformSize;
+  const int last_cycle = lastLoopedCycle(sample_buffer_->size, window_size_);
+  const double cycles_in = std::max(0.0, start_position_ / window_size_);
+  const int from_cycle = std::min(static_cast<int>(cycles_in), last_cycle);
+  const int to_cycle = std::min(from_cycle + 1, last_cycle);
+  const float transition = cycles_in - static_cast<int>(cycles_in);
+  const int fade_samples = window_fade_ * kSize;
+
+  // Within the fade, fade is how much of the next cycle the sample takes.
+  auto loopedSample = [&](int cycle, int i, float fade) {
+    const double position = (cycle + i / (kSize * 1.0)) * window_size_;
+    const float sample = getScaledInterpolatedSample(position);
+    if (i >= fade_samples)
+      return sample;
+    return linearTween(sample, getScaledInterpolatedSample(position + window_size_), fade);
+  };
+
+  for (int i = 0; i < kSize; ++i) {
+    const float fade = i < fade_samples ? 0.5f + 0.5f * cosf(vital::kPi * i / fade_samples) : 0.0f;
+    const float from_sample = loopedSample(from_cycle, i, fade);
+    const float to_sample = to_cycle == from_cycle ? from_sample : loopedSample(to_cycle, i, fade);
+    wave_frame->time_domain[i] = vital::utils::interpolate(from_sample, to_sample, transition);
+  }
+
+  wave_frame->toFrequencyDomain();
 }
 
 json FileSource::FileSourceKeyframe::stateToJson() {

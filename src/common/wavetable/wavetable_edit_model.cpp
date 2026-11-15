@@ -135,9 +135,10 @@ namespace atlas::wavetable_edit {
     if (auto* file = dynamic_cast<FileSource*>(component)) {
       list.push_back(keyframeInterpolation("the start position in the audio"));
       list.push_back(choice("fade_style", "Frame blend",
-          "How each frame is cut from the audio: File blend crossfades whole cycles found in the file, None takes "
-          "the window as it is, Time crossfades neighbouring windows, Spectral blends their harmonics",
-          { "File blend", "None", "Time", "Spectral" }));
+          "How each frame is cut from the audio: File blend loops each window by blending it into the next, None "
+          "takes the window as it is, Time crossfades neighbouring windows, Spectral blends their harmonics, Cycle "
+          "blend crossfades whole cycles and loops each as File blend does",
+          { "File blend", "None", "Time", "Spectral", "Cycle blend" }));
       list.push_back(choice("phase_style", "Phase style",
           "None keeps the audio's phases, Clear zeroes them for a clean tone, Vocode randomises them for a "
           "breathy, vocoded tone", { "None", "Clear", "Vocode" }));

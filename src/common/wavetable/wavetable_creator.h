@@ -64,6 +64,9 @@ class WavetableCreator {
     void initBasicShapes();
     void initFromAudioFile(const float* audio_buffer, int num_samples, int sample_rate,
                            AudioFileLoadStyle load_style, FileSource::FadeStyle fade_style);
+    // A held note of a known period, as preset resynthesis captures one: Cycle
+    // blend frames from the first whole cycle to the last.
+    void initFromCycles(const float* audio_buffer, int num_samples, int sample_rate, double period);
 
     void setName(const std::string& name) { wavetable_->setName(name); }
     void setAuthor(const std::string& author) { wavetable_->setAuthor(author); }

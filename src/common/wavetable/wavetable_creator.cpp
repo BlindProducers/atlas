@@ -265,6 +265,28 @@ void WavetableCreator::initFromAudioFile(const float* audio_buffer, int num_samp
     initFromSplicedAudioFile(audio_buffer, num_samples, sample_rate, fade_style);
 }
 
+void WavetableCreator::initFromCycles(const float* audio_buffer, int num_samples, int sample_rate, double period) {
+  clear();
+  const int beginning_sample = getFirstNonZeroSample(audio_buffer, num_samples);
+  num_samples -= beginning_sample;
+  period = std::max(1.0, period);
+
+  WavetableGroup* new_group = new WavetableGroup();
+  FileSource* file_source = new FileSource();
+
+  file_source->loadBuffer(audio_buffer + beginning_sample, num_samples, sample_rate);
+  file_source->setWindowSize(period);
+  file_source->setFadeStyle(FileSource::kCycleBlend);
+  file_source->insertNewKeyframe(0);
+  file_source->insertNewKeyframe(vital::kNumOscillatorWaveFrames - 1);
+  file_source->getKeyframe(0)->setStartPosition(0);
+  file_source->getKeyframe(1)->setStartPosition(FileSource::lastLoopedCycle(num_samples, period) * period);
+
+  new_group->addComponent(file_source);
+  addGroup(new_group);
+  render();
+}
+
 void WavetableCreator::initFromSplicedAudioFile(const float* audio_buffer, int num_samples, int sample_rate,
                                                 FileSource::FadeStyle fade_style) {
   clear();

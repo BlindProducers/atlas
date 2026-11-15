@@ -14,6 +14,7 @@
 #include "wavetable_edit_model.h"
 #include "wavetable_group.h"
 
+#include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <memory>
@@ -309,6 +310,92 @@ namespace {
     expect(window >= 479.0 && std::abs(periods - std::round(periods)) * 480.0 < 1.0,
            "a long file still gets its detected period (window " + std::to_string(window) + ")");
   }
+
+  // Preset resynthesis: a held note under a filter sweep becomes frames cut on
+  // whole cycles, each looping without a step, that move evenly through the
+  // sweep. (Wave blend cuts its windows at every phase, so every third frame
+  // or so moved several times further than its neighbours.)
+  void testResynthesisCycles() {
+    constexpr int kRate = 48000;
+    constexpr int kSize = vital::WaveFrame::kWaveformSize;
+    const double pitch = 440.0 * std::pow(2.0, (16 - 69) / 12.0);
+    const double period = kRate / pitch;
+    // Two seconds of a saw under a cutoff rising from 60 Hz to 2.4 kHz, started
+    // a quarter of a cycle in so that its reset is not where the frames loop.
+    std::vector<float> audio(2 * kRate);
+    for (int i = 0; i < int(audio.size()); ++i) {
+      const double t = double(i) / kRate;
+      const double cutoff = 60.0 * std::pow(40.0, t / 2.0);
+      const double phase = 6.283185307179586 * (pitch * t + 0.25);
+      double value = 0.0;
+      for (int h = 1; h * pitch < 2500.0; ++h) {
+        const double ratio = h * pitch / cutoff;
+        value += std::sin(h * phase) / (h * std::sqrt(1.0 + ratio * ratio * ratio * ratio));
+      }
+      audio[i] = float(0.5 * value);
+    }
+
+    Table table;
+    table.creator.initFromCycles(audio.data(), int(audio.size()), kRate, period);
+    auto* file = table.creator.numGroups() > 0 && table.creator.getGroup(0)->numComponents() > 0 ?
+        dynamic_cast<FileSource*>(table.creator.getGroup(0)->getComponent(0)) : nullptr;
+    expect(file != nullptr && file->getFadeStyle() == FileSource::kCycleBlend &&
+           std::abs(file->getWindowSize() - period) < 1.0e-9, "resynthesis cuts Cycle blend frames of its period");
+
+    const auto* data = table.wavetable.getAllData();
+    if (file == nullptr || data == nullptr)
+      return;
+    // The loop point's step against the frame's typical step, and the change
+    // in harmonics from each frame to the next.
+    double worst_loop = 0.0;
+    std::vector<double> changes;
+    std::vector<float> previous;
+    for (int f = 0; f < data->num_frames; ++f) {
+      const float* wave = data->wave_data[f];
+      std::vector<float> steps;
+      for (int i = 0; i + 1 < kSize; ++i)
+        steps.push_back(std::abs(wave[i + 1] - wave[i]));
+      std::nth_element(steps.begin(), steps.begin() + steps.size() / 2, steps.end());
+      worst_loop = std::max(worst_loop, double(std::abs(wave[0] - wave[kSize - 1]) / steps[steps.size() / 2]));
+
+      vital::WaveFrame frame;
+      for (int i = 0; i < kSize; ++i)
+        frame.time_domain[i] = wave[i];
+      frame.toFrequencyDomain();
+      std::vector<float> magnitudes(128);
+      for (int h = 0; h < 128; ++h)
+        magnitudes[h] = std::abs(frame.frequency_domain[h + 1]);
+      if (!previous.empty()) {
+        double change = 0.0;
+        for (int h = 0; h < 128; ++h)
+          change += std::abs(magnitudes[h] - previous[h]);
+        changes.push_back(change);
+      }
+      previous = magnitudes;
+    }
+    // Each frame's change against the mean of the nine around it.
+    double worst_uneven = 0.0;
+    for (int f = 4; f < int(changes.size()) - 4; ++f) {
+      double local = 0.0;
+      for (int k = -4; k <= 4; ++k)
+        local += changes[f + k];
+      worst_uneven = std::max(worst_uneven, std::abs(changes[f] * 9.0 / local - 1.0));
+    }
+    // Time interpolate, which loops a cycle as it is, steps 5.7 times further;
+    // Wave blend is off by up to 1.07.
+    expect(worst_loop < 2.0, "every resynthesized frame loops without a step (up to " +
+                                 std::to_string(worst_loop) + " typical steps)");
+    expect(worst_uneven < 0.25, "resynthesized frames move evenly through the sweep (off by up to " +
+                                    std::to_string(worst_uneven) + ")");
+
+    // A saved table keeps the cycle its last frame loops into.
+    Table loaded;
+    loaded.creator.jsonToState(table.creator.stateToJson());
+    const int last = data->num_frames - 1;
+    const double reloaded = difference(frameAt(loaded, last), frameAt(table, last));
+    expect(reloaded < 1.0e-3, "a reloaded resynthesis plays its last frame as before (off by " +
+                                  std::to_string(reloaded) + ")");
+  }
 }
 
 int main() {
@@ -318,6 +405,7 @@ int main() {
   testKeyframesAndModifiers();
   testLayersAndLines();
   testShortAudioImports();
+  testResynthesisCycles();
   std::cout << "Wavetable edit failures: " << failures << '\n';
   return failures == 0 ? 0 : 1;
 }

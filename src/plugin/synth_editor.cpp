@@ -21175,19 +21175,12 @@ void SynthEditor::synthesizePresetToWavetable(int oscillator) {
       if (creator == nullptr)
         throw std::runtime_error("The destination oscillator has no wavetable creator");
 
-      creator->initFromAudioFile(audio.get(), total_samples, sample_rate,
-                                 WavetableCreator::kPitched, FileSource::kWaveBlend);
+      creator->initFromCycles(audio.get(), total_samples, sample_rate,
+                              sample_rate / vital::utils::midiNoteToFrequency(kCaptureNote));
       creator->setName("Preset resynthesis");
       creator->setAuthor("");
       creator->setFileLoaded(std::string());
-      auto* group = creator->numGroups() > 0 ? creator->getGroup(0) : nullptr;
-      auto* file_source = group != nullptr && group->numComponents() > 0 ?
-          dynamic_cast<FileSource*>(group->getComponent(0)) : nullptr;
-      if (file_source != nullptr) {
-        file_source->setWindowSize(sample_rate / vital::utils::midiNoteToFrequency(kCaptureNote));
-        creator->render();
-        safe_this->synth_.markStateChanged(safe_this->wavetableUndoBlock(creator));
-      }
+      safe_this->synth_.markStateChanged(safe_this->wavetableUndoBlock(creator));
 
       auto& state = safe_this->wavetable_keyboard_state_[oscillator];
       state.frame = 0;
