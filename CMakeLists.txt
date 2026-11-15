@@ -935,6 +935,7 @@ if(ATLAS_BUILD_TIMING_TESTS)
   target_link_libraries(AtlasSourceSlotTests PRIVATE
     Atlas juce::juce_audio_utils juce::juce_dsp juce::juce_gui_extra juce::juce_recommended_config_flags)
   add_test(NAME atlas_source_slots COMMAND AtlasSourceSlotTests --behaviour)
+  add_test(NAME atlas_smooth_interpolation COMMAND AtlasSourceSlotTests --smooth-interpolation)
   add_test(NAME atlas_source_slot_cpu COMMAND AtlasSourceSlotTests --cpu)
   set_tests_properties(atlas_source_slot_cpu PROPERTIES LABELS cpu)
   # Bit-exact regression against renders captured before the slot engine

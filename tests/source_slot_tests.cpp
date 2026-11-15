@@ -22,9 +22,14 @@
 #include "load_save.h"
 #include "fx_automation_parameter.h"
 #include "value_bridge.h"
+#include "wave_frame.h"
+#include "wave_source.h"
+#include "wavetable.h"
+#include "wavetable_group.h"
 
 #include <chrono>
 #include <cmath>
+#include <complex>
 #include <iomanip>
 #include <thread>
 #include <fstream>
@@ -1795,8 +1800,122 @@ namespace {
   }
 }
 
+// Smooth interpolation: a wave frame between two frames plays both, crossfaded.
+namespace {
+  void prepareWavetablePlugin(SynthPlugin& plugin) {
+    plugin.setPlayConfigDetails(0, 2, kSampleRate, 128);
+    plugin.prepareToPlay(kSampleRate, 128);
+    set(plugin, "oversampling", 0.0f);
+    for (int chain = 0; chain < 4; ++chain) {
+      const auto prefix = chain == 0 ? std::string() : "bus_" + std::to_string(chain) + "_";
+      for (int i = 1; i <= 20; ++i)
+        set(plugin, prefix + "fx_slot_" + std::to_string(i) + "_type", 0.0f);
+    }
+  }
+
+  // The left channel of a held note.
+  std::vector<float> playNote(SynthPlugin& plugin, int note, int samples) {
+    std::vector<float> left(samples);
+    for (int offset = 0; offset < samples; offset += 128) {
+      const int count = std::min(128, samples - offset);
+      juce::AudioBuffer<float> buffer(2, count);
+      juce::MidiBuffer midi;
+      buffer.clear();
+      if (offset == 0)
+        midi.addEvent(juce::MidiMessage::noteOn(1, note, 0.7f), 0);
+      plugin.processBlock(buffer, midi);
+      std::copy(buffer.getReadPointer(0), buffer.getReadPointer(0) + count, left.begin() + offset);
+    }
+    return left;
+  }
+
+  std::complex<double> harmonicOf(const float* samples, int count, double cycles_per_sample) {
+    std::complex<double> sum;
+    for (int i = 0; i < count; ++i)
+      sum += double(samples[i]) * std::polar(1.0, -2.0 * M_PI * cycles_per_sample * i);
+    return sum * (2.0 / count);
+  }
+
+  // A two-frame table: a sine, then a square.
+  void loadSineSquareTable(SynthPlugin& plugin) {
+    WavetableCreator* creator = plugin.getWavetableCreator(0);
+    creator->clear();
+    auto* group = new WavetableGroup();
+    auto* source = new WaveSource();
+    source->insertNewKeyframe(0);
+    source->insertNewKeyframe(1);
+    for (int k = 0; k < 2; ++k) {
+      vital::WaveFrame* frame = source->getKeyframe(k)->wave_frame();
+      for (int i = 0; i < vital::WaveFrame::kWaveformSize; ++i) {
+        const float phase = float(i) / vital::WaveFrame::kWaveformSize;
+        frame->time_domain[i] = k == 0 ? 0.8f * std::sin(2.0f * float(M_PI) * phase) : (phase < 0.5f ? 0.8f : -0.8f);
+      }
+      frame->toFrequencyDomain();
+    }
+    group->addComponent(source);
+    creator->addGroup(group);
+    creator->render();
+  }
+
+  int smoothInterpolation() {
+    // A3 is 220 Hz: 2400 samples hold 11 whole cycles, measured after the envelope settles.
+    constexpr int kNote = 57;
+    constexpr int kSettle = kSampleRate / 2;
+    constexpr int kWindow = 2400;
+    const double cycles_per_sample = 220.0 / kSampleRate;
+
+    // The third harmonic against the first, which the square has and the sine lacks.
+    auto playedRatio = [&](float wave_frame, bool smooth, std::vector<float>* played = nullptr) {
+      SynthPlugin plugin;
+      prepareWavetablePlugin(plugin);
+      loadSineSquareTable(plugin);
+      set(plugin, "osc_1_wave_frame", wave_frame);
+      set(plugin, "osc_1_smooth_interpolation", smooth ? 1.0f : 0.0f);
+      const auto left = playNote(plugin, kNote, kSettle + kWindow);
+      if (played) *played = left;
+      const float* window = left.data() + kSettle;
+      return std::abs(harmonicOf(window, kWindow, 3.0 * cycles_per_sample)) /
+             std::max(1e-12, std::abs(harmonicOf(window, kWindow, cycles_per_sample)));
+    };
+
+    std::complex<double> table[2][4];
+    {
+      SynthPlugin plugin;
+      prepareWavetablePlugin(plugin);
+      loadSineSquareTable(plugin);
+      const auto* data = plugin.getWavetable(0)->getAllData();
+      expect(data->num_frames == 2, "the test table has two frames");
+      for (int k = 0; k < 2; ++k)
+        for (int h : { 1, 3 })
+          table[k][h] = harmonicOf(data->wave_data[k], vital::WaveFrame::kWaveformSize,
+                                   double(h) / vital::WaveFrame::kWaveformSize);
+    }
+
+    for (float t : { 0.25f, 0.5f }) {
+      const std::complex<double> first = (1.0 - t) * table[0][1] + double(t) * table[1][1];
+      const std::complex<double> third = (1.0 - t) * table[0][3] + double(t) * table[1][3];
+      const double expected = std::abs(third) / std::abs(first);
+      const double played = playedRatio(t, true);
+      expect(std::abs(played / expected - 1.0) < 0.01,
+             "wave frame " + std::to_string(t) + " plays the two frames crossfaded (third harmonic ratio " +
+             std::to_string(played) + ", expected " + std::to_string(expected) + ")");
+    }
+    expect(playedRatio(0.5f, false) < 0.01, "without Smooth interpolation, wave frame 0.5 plays the first frame");
+
+    std::vector<float> smooth, stepped;
+    playedRatio(1.0f, true, &smooth);
+    playedRatio(1.0f, false, &stepped);
+    expect(smooth == stepped, "a whole frame plays the same with and without Smooth interpolation");
+
+    std::cout << "Smooth interpolation failures: " << failures << '\n';
+    return failures == 0 ? 0 : 1;
+  }
+}
+
 int main(int argc, char** argv) {
   juce::ScopedJuceInitialiser_GUI juce;
+  if (argc > 1 && juce::String(argv[1]) == "--smooth-interpolation")
+    return smoothInterpolation();
   if (argc > 3 && juce::String(argv[1]) == "--probe-switch-state")
     return probeSwitchState(juce::File(argv[2]), juce::File(argv[3]));
   if (argc > 3 && juce::String(argv[1]) == "--probe-switch")
@@ -1816,7 +1935,7 @@ int main(int argc, char** argv) {
   if (argc > 1 && juce::String(argv[1]) == "--behaviour")
     return behaviour();
   if (argc > 1) {
-    std::cerr << "usage: AtlasSourceSlotTests [--behaviour | --cpu | --spectral-cpu | --write-presets <dir> | --capture <dir> | --compare <dir>]\n";
+    std::cerr << "usage: AtlasSourceSlotTests [--behaviour | --cpu | --spectral-cpu | --smooth-interpolation | --write-presets <dir> | --capture <dir> | --compare <dir>]\n";
     return 2;
   }
   return behaviour();

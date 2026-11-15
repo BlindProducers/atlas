@@ -834,6 +834,7 @@ namespace vital {
     resetWavetableBuffers();
 
     fourier_transform_ = std::make_shared<FourierTransform>(kWaveformBits);
+    next_frame_bins_ = std::make_shared<SpectralBins>();
     spectral_chain_ = std::make_shared<SpectralMorphChain>();
     random_amplitudes_ = std::make_shared<RandomValues>();
     secondary_random_amplitudes_ = std::make_shared<RandomValues>();
@@ -1069,7 +1070,8 @@ namespace vital {
                                 FourierTransform*, float, int, const poly_float*)>
   void SynthOscillator::computeSpectralWaveBufferPair(int phase_update, int index, bool formant_shift,
                                                       float phase_adjustment, poly_int wave_index,
-                                                      poly_float voice_increment, poly_float morph_amount) {
+                                                      poly_float frame_blend, poly_float voice_increment,
+                                                      poly_float morph_amount) {
     for (int i = index; i < index + 2; ++i) {
       mono_float adjust_phase_inc = voice_increment[i] * phase_adjustment;
       mono_float formant_adjustment = voice_increment[i] * Wavetable::kWaveformSize;
@@ -1101,23 +1103,42 @@ namespace vital {
           ? random_amplitudes_->buffer(static_cast<int>(input(kSpectralMorphSeed)->at(0)[0])) : nullptr;
       const poly_float* secondary_random = secondary == kRandomAmplitudes
           ? secondary_random_amplitudes_->buffer(static_cast<int>(input(kSecondarySpectralMorphSeed)->at(0)[0])) : nullptr;
-      if (secondary == kNoSpectralMorph) {
-        spectralMorph(wavetable_data, table_index, fourier_buffer,
-                      fourier_transform_.get(), shift, last_harmonic, primary_random);
-      }
-      else if (voice_block_.spectral_morph == kNoSpectralMorph) {
-        runMorph(secondary, secondary_amount, wavetable_data, table_index, fourier_buffer,
-                 fourier_transform_.get(), last_harmonic, secondary_random);
-      }
-      else {
+      const bool chained = secondary != kNoSpectralMorph && voice_block_.spectral_morph != kNoSpectralMorph;
+      if (chained) {
         spectral_chain_->prepare(wavetable_data, voice_block_.spectral_morph, shift, secondary == kShepardTone,
                                  primary_random);
-        runMorph(secondary, secondary_amount, spectral_chain_.get(), table_index, fourier_buffer,
-                 fourier_transform_.get(), last_harmonic, secondary_random);
       }
+      // Without a transform a morph leaves its bins for the caller.
+      auto morph = [&](int frame, poly_float* dest, FourierTransform* transform) {
+        if (secondary == kNoSpectralMorph)
+          spectralMorph(wavetable_data, frame, dest, transform, shift, last_harmonic, primary_random);
+        else if (!chained)
+          runMorph(secondary, secondary_amount, wavetable_data, frame, dest, transform, last_harmonic, secondary_random);
+        else
+          runMorph(secondary, secondary_amount, spectral_chain_.get(), frame, dest, transform, last_harmonic,
+                   secondary_random);
+      };
+
+      // Smooth interpolation plays a position between two frames as both,
+      // crossfaded. The inverse transform is linear, so mixing their bins
+      // first needs only one transform.
+      const int next_index = std::min(table_index + 1, wavetable_data->num_frames - 1);
+      const float blend = next_index > table_index ? frame_blend[i] : 0.0f;
+      if (blend > 0.0f) {
+        morph(table_index, fourier_buffer, nullptr);
+        morph(next_index, next_frame_bins_->values, nullptr);
+        poly_float* bins = fourier_buffer + 1;
+        const poly_float* next_bins = next_frame_bins_->values + 1;
+        for (int b = 0; b < kMaxPolyIndex; ++b)
+          bins[b] = utils::interpolate(bins[b], next_bins[b], blend);
+        transformAndWrapBuffer(fourier_transform_.get(), fourier_buffer);
+      }
+      else
+        morph(table_index, fourier_buffer, fourier_transform_.get());
       wave_buffers_[buffer_index] = ((mono_float*)fourier_buffer) + poly_float::kSize - 1;
 
       if (i == index && morph_amount[i] == morph_amount[i + 1] && wave_index[i] == wave_index[i + 1] &&
+          frame_blend[i] == frame_blend[i + 1] &&
           (secondary == kNoSpectralMorph || (secondary_values[i] == secondary_values[i + 1] &&
            ((secondary != kVocode && !formant_shift) || voice_increment[i] == voice_increment[i + 1])))) {
         last_buffers_[buffer_index + 1] = wave_buffers_[buffer_index + 1];
@@ -1156,6 +1177,13 @@ namespace vital {
 
     const bool secondary_sync = voice_block_.secondary_distortion_type == kSync ||
                                 voice_block_.secondary_distortion_type == kFormant;
+    const bool smooth_frames = input(kSmoothlyInterpolate)->at(0)[0] != 0.0f;
+    // The frame to play and, with Smooth interpolation, how far toward the next.
+    auto frameAt = [smooth_frames](poly_float frame, poly_int& wave_index) {
+      frame = utils::clamp(frame, 0.0f, kNumOscillatorWaveFrames - 1);
+      wave_index = utils::toInt(frame);
+      return smooth_frames ? frame - utils::toFloat(wave_index) : poly_float(0.0f);
+    };
     int num_phase_updates = active_oscillators_ / 2;
     if (spectral_unison) {
       float t_inc = 1.0f / (utils::imax(2, num_phase_updates) - 1.0f);
@@ -1167,11 +1195,11 @@ namespace vital {
         poly_float morph_amount = spectral_morph_values_[v];
         poly_float voice_increment = phase_inc * detunings_[v] * frequency_mult;
         poly_float t = v * t_inc;
-        poly_float frame = wave_frame + t * frame_spread;
-        poly_int wave_index = utils::toInt(utils::clamp(frame, 0.0f, kNumOscillatorWaveFrames - 1));
+        poly_int wave_index;
+        const poly_float frame_blend = frameAt(wave_frame + t * frame_spread, wave_index);
 
         computeSpectralWaveBufferPair<spectralMorph>(v, index, formant_shift, phase_inc_adjustment,
-                                                     wave_index, voice_increment, morph_amount);
+                                                     wave_index, frame_blend, voice_increment, morph_amount);
       }
     }
     else {
@@ -1181,10 +1209,11 @@ namespace vital {
 
       poly_float morph_amount = spectral_morph_values_[0];
       poly_float voice_increment = phase_inc * detunings_[0] * frequency_mult;
-      poly_int wave_index = utils::toInt(utils::clamp(wave_frame, 0.0f, kNumOscillatorWaveFrames - 1));
+      poly_int wave_index;
+      const poly_float frame_blend = frameAt(wave_frame, wave_index);
 
       computeSpectralWaveBufferPair<spectralMorph>(0, index, formant_shift, phase_inc_adjustment,
-                                                   wave_index, voice_increment, morph_amount);
+                                                   wave_index, frame_blend, voice_increment, morph_amount);
 
       for (int v = 1; v < num_phase_updates; ++v) {
         for (int i = index; i < index + 2; ++i) {

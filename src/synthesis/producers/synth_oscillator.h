@@ -441,7 +441,7 @@ namespace vital {
       template<void(*spectralMorph)(const Wavetable::WavetableData*, int, poly_float*,
                                     FourierTransform*, float, int, const poly_float*)>
       void computeSpectralWaveBufferPair(int phase_update, int index, bool formant_shift,
-                                         float phase_adjustment, poly_int wave_index,
+                                         float phase_adjustment, poly_int wave_index, poly_float frame_blend,
                                          poly_float voice_increment, poly_float morph_amount);
       template<void(*spectralMorph)(const Wavetable::WavetableData*, int, poly_float*,
                                     FourierTransform*, float, int, const poly_float*)>
@@ -569,6 +569,12 @@ namespace vital {
         ZeroedBuffer<poly_float> storage;
       };
       FourierFrames fourier_frames_;
+      // Smooth interpolation's second frame, morphed but not yet transformed.
+      // Shared by the voice clones, like the FFT workspace.
+      struct SpectralBins {
+        poly_float values[kSpectralBufferSize];
+      };
+      std::shared_ptr<SpectralBins> next_frame_bins_;
       std::shared_ptr<FourierTransform> fourier_transform_;
       std::shared_ptr<SpectralMorphChain> spectral_chain_;
       std::shared_ptr<RandomValues> random_amplitudes_;
