@@ -4963,12 +4963,15 @@ namespace {
     return String(roundToInt(jlimit(0.0f, 1.0f, value) * 100.0f)) + "%";
   }
 
-  String midiRootKeyText(double value) {
+  // A MIDI note as a root key reads: "C4, MIDI 60", "C sharp 4, MIDI 61".
+  String midiRootKeyText(double midiNote) {
     static const std::array<const char*, 12> names = {{
       "C", "C sharp", "D", "E flat", "E", "F", "F sharp", "G", "A flat", "A", "B flat", "B"
     }};
-    const int midi_note = jlimit(0, 127, roundToInt(value));
-    return String(names[midi_note % vital::kNotesPerOctave]) + ", MIDI " + String(midi_note);
+    const int midi_note = jlimit(0, 127, roundToInt(midiNote));
+    const String name = names[midi_note % vital::kNotesPerOctave];
+    const String octave = String(midi_note / vital::kNotesPerOctave - 1);
+    return name + (name.containsChar(' ') ? " " : "") + octave + ", MIDI " + String(midi_note);
   }
 
   int shiftedDigitIndex(const KeyPress& key) {
@@ -8520,7 +8523,9 @@ std::unique_ptr<AccessibleParameterRow> SynthEditor::buildAccessibleParameterRow
     const String title = legacy_id == "sample_root_key" ? "Sample root key" : "Granular root key";
     return std::make_unique<AccessibleParameterRow>(
         parameter, title,
-        [](double value) { return midiRootKeyText(value); }, 1.0, 0.0,
+        // The row's value is normalized; the readout wants the MIDI note.
+        [bridge](double value) { return midiRootKeyText(bridge->convertToEngineValue(static_cast<float>(value))); },
+        1.0, 0.0,
         String(), String(),
         "Set the MIDI note that plays the loaded sample at its original pitch", true);
   }

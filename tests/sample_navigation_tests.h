@@ -175,8 +175,15 @@ namespace sample_navigation {
     check(slider->sliderValue(1200.4) == 0.25, "sample positions stay whole samples");
     LoadSave::saveSamplePositionUnits(0);
     reads("25%", 25.0);
-
     LoadSave::setConfigFileForTesting(File());
+
+    // The root key reads the note of its MIDI value, not of the row's normalized value.
+    auto* root_key = findSlider(editor, "5 Sample root key");
+    check(root_key != nullptr, "the Sample root key row must be a slider");
+    if (root_key != nullptr) {
+      const String text = root_key->getTextFromValue(61.0 / 127.0);
+      check(text == "C sharp 4, MIDI 61", "root key must read its MIDI note, not " + text.toStdString());
+    }
   }
 
   int run() {
