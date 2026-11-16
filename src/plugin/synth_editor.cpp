@@ -16559,7 +16559,8 @@ String SynthEditor::lfoMsegStatusTextFor(int lfoIndex) const {
 
   const int selected = lfoIndex == active_lfo_index_ ? currentLfoPointIndex() : 0;
   if (isPositiveAndBelow(selected, generator->getNumPoints()))
-    return lfoPointDescriptionFor(lfoIndex, selected) + ", " + String(msegTimeDivisions()[lfo_grid_index_].name);
+    return "Point " + String(selected + 1) + " of " + String(generator->getNumPoints()) + ", " +
+           lfoPointDescriptionFor(lfoIndex, selected) + ", " + String(msegTimeDivisions()[lfo_grid_index_].name);
   return lfoTimeDescriptionFor(lfoIndex, lfo_cursor_phase_) + ", value " +
          percentString(generator->valueAtPhase(lfo_cursor_phase_)) + ", no point, grid " +
          String(msegTimeDivisions()[lfo_grid_index_].name);

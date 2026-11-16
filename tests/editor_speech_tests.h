@@ -54,8 +54,8 @@ namespace {
     if (lfo != nullptr) {
       expectNavigationSpoken(*lfo, spoken, KeyPress(KeyPress::rightKey), "Bar 1", "LFO editor");
       expectNavigationSpoken(*lfo, spoken, KeyPress(KeyPress::leftKey), "Bar 1 beat 1 0%", "LFO editor");
-      expectNavigationSpoken(*lfo, spoken, characterKey('.'), "Bar ", "LFO editor next point");
-      expectNavigationSpoken(*lfo, spoken, characterKey(','), "Bar ", "LFO editor previous point");
+      expectNavigationSpoken(*lfo, spoken, characterKey('.'), "Point 2 of ", "LFO editor next point");
+      expectNavigationSpoken(*lfo, spoken, characterKey(','), "Point 1 of ", "LFO editor previous point");
       expectNavigationSpoken(*lfo, spoken, characterKey('='), "Grid ", "LFO editor finer grid");
       // KeyPress == ignores keys with a modifier held, so Shift's 5% step was never reached.
       expectNavigationSpoken(*lfo, spoken, KeyPress(KeyPress::upKey, ModifierKeys::shiftModifier, 0), "5%",
@@ -66,9 +66,9 @@ namespace {
     Component::SafePointer<Component> gate(slot != nullptr ? titled(*slot, "Trance gate Editor") : nullptr);
     expect(gate != nullptr, "the Trance gate slot has its keyboard editor");
     if (gate != nullptr) {
-      expectNavigationSpoken(*gate, spoken, KeyPress(KeyPress::rightKey), "Step 2,", "Trance gate editor");
-      expectNavigationSpoken(*gate, spoken, KeyPress(KeyPress::rightKey), "Step 3,", "Trance gate editor");
-      expectNavigationSpoken(*gate, spoken, KeyPress(KeyPress::leftKey), "Step 2,", "Trance gate editor");
+      expectNavigationSpoken(*gate, spoken, KeyPress(KeyPress::rightKey), "Whole, step 2 of 32", "Trance gate editor");
+      expectNavigationSpoken(*gate, spoken, KeyPress(KeyPress::rightKey), "Whole, step 3 of 32", "Trance gate editor");
+      expectNavigationSpoken(*gate, spoken, KeyPress(KeyPress::leftKey), "Whole, step 2 of 32", "Trance gate editor");
       expectNavigationSpoken(*gate, spoken, characterKey('h'), "Medium", "Trance gate editor step shape");
       expectNavigationSpoken(*gate, spoken, characterKey('m'), "Muted", "Trance gate editor mute");
     }
