@@ -5205,6 +5205,23 @@ namespace {
     return names[jlimit(0, static_cast<int>(names.size()) - 1, index)];
   }
 
+  // Option Up and Down bend a segment from -100% to 100%: 100% is power 20,
+  // the Hold curve (LineGenerator::kHoldPowerThreshold), which holds the
+  // point's level until the next point; -100% is at the next point's level
+  // almost at once; 0% is linear.
+  constexpr float kCurvePowerPerPercent = 20.0f / 100.0f;
+  int curvePercentForPower(float power) { return jlimit(-100, 100, roundToInt(power / kCurvePowerPerPercent)); }
+  float powerForCurvePercent(int percent) { return percent * kCurvePowerPerPercent; }
+
+  // A named curve's name, or the bend as a percentage.
+  String lfoCurveText(float power, bool smooth) {
+    const int index = curveIndexForPower(power, smooth);
+    if (index == kCurveHold || (std::abs(power - powerForCurveIndex(index)) < 0.005f &&
+                                smooth == smoothForCurveIndex(index)))
+      return curveNameForIndex(index);
+    return "Curve " + String(curvePercentForPower(power)) + "%";
+  }
+
   class OrderedFocusTraverser : public ComponentTraverser {
     public:
       OrderedFocusTraverser(SynthEditor& editor, bool keyboardTraversal) :
@@ -11846,9 +11863,10 @@ namespace {
   // and adds comma and period stepping through effect slots.
   String keyboardHelpForPlatform(const char* text) {
 #if JUCE_MAC
-    const String command = "Cmd", context_menu = "Right bracket ( ] ) or Shift+M", heading_menu = "Shift+M";
+    const String command = "Cmd", option = "Option", context_menu = "Right bracket ( ] ) or Shift+M",
+                 heading_menu = "Shift+M";
 #else
-    const String command = "Ctrl", context_menu = "Shift+M or Shift+F10", heading_menu = context_menu;
+    const String command = "Ctrl", option = "Alt", context_menu = "Shift+M or Shift+F10", heading_menu = context_menu;
 #endif
     const String effect_slot_steps = kSectionKeysStepThroughEffectSlots
         ? (kSectionKeysStepThroughEffectGroups
@@ -11856,7 +11874,8 @@ namespace {
                  "groupings inside them, such as an EQ's bands or Glitch Delay's groups\n"
                : "  On an effects chain, Comma / Period also step through its effects (Slot 1, Slot 2 and so on)\n")
         : "";
-    return String::fromUTF8(text).replace("{Cmd}", command).replace("{ContextMenuKeys}", context_menu)
+    return String::fromUTF8(text).replace("{Cmd}", command).replace("{Opt}", option)
+                       .replace("{ContextMenuKeys}", context_menu)
                        .replace("{HeadingMenuKeys}", heading_menu)
                        .replace("{EffectSlotSteps}", effect_slot_steps);
   }
@@ -11975,6 +11994,7 @@ String SynthEditor::keyboardHelpText() {
       "  E or Delete - Delete the current point, complete performer shape, or step\n"
       "  I / K - Cycle curve type in LFO/Performer; ignored in Step Sequencer\n"
       "  {Cmd} + Up / Down - Cycle curve type up / down\n"
+      "  {Opt} + Up / Down - Bend the following segment's curve by 5%, from -100% to 100%; with Shift by 1%\n"
       "  J / L - Move point in time left / right\n"
       "  G / H - Cycle shape presets backward / forward\n"
       "  Shift+A - Apply selected shape preset\n"
@@ -16500,7 +16520,7 @@ String SynthEditor::lfoPointDescriptionFor(int lfoIndex, int pointIndex) const {
       : generator->getPower(jmax(0, pointIndex - 1));
   return lfoTimeDescriptionFor(lfoIndex, point.first) +
          ", " + percentString(1.0f - point.second) +
-         ", " + curveNameForIndex(curveIndexForPower(power, generator->smooth()));
+         ", " + lfoCurveText(power, generator->smooth());
 }
 
 String SynthEditor::lfoTimeDescription(float phase) const {
@@ -16881,25 +16901,21 @@ void SynthEditor::moveToLfoPerformerBlock(int direction) {
                       ", " + String(msegTimeDivisions()[lfo_grid_index_].name));
 }
 
-void SynthEditor::stepLfoCurve(int direction) {
-  auto* generator = activeLfoGenerator();
-  if (generator == nullptr || generator->getNumPoints() < 2)
-    return;
-
-  const int mode = generator->getShapeMode();
+std::vector<int> SynthEditor::lfoCurvePointIndices(LineGenerator& generator) {
+  const int mode = generator.getShapeMode();
   if (mode == LineGenerator::kModeStepSequencer) {
     postLfoAnnouncement("Curve editing is ignored in Step Sequencer mode; every step uses Hold");
-    return;
+    return {};
   }
 
   std::vector<int> indices;
   if (mode == LineGenerator::kModePerformer) {
     const float start = lfoEditorBlockStart(lfo_cursor_phase_);
-    if (!lfoPerformerBlockHasShape(generator, start)) {
+    if (!lfoPerformerBlockHasShape(&generator, start)) {
       postLfoAnnouncement("No performer shape at " + lfoTimeDescription(start));
-      return;
+      return {};
     }
-    indices = lfoEditorBlockPointIndices(generator, start);
+    indices = lfoEditorBlockPointIndices(&generator, start);
   }
   else if (lfo_multi_selection_mode_)
     indices = selectedLfoPointIndices();
@@ -16907,10 +16923,53 @@ void SynthEditor::stepLfoCurve(int direction) {
   const int cursor_index = lfoPointIndexAtPhase(lfo_cursor_phase_);
   if (indices.empty() && cursor_index >= 0)
     indices.push_back(cursor_index);
-  if (indices.empty()) {
+  if (indices.empty())
     postLfoAnnouncement("No point selected. Press A to add a point at " + lfoTimeDescription(lfo_cursor_phase_));
+  return indices;
+}
+
+void SynthEditor::adjustLfoPointCurve(int deltaPercent) {
+  auto* generator = activeLfoGenerator();
+  if (generator == nullptr || generator->getNumPoints() < 2)
     return;
+  const auto indices = lfoCurvePointIndices(*generator);
+  if (indices.empty())
+    return;
+
+  // The bend of the segment after the first point, or before the last one.
+  const int reference_index = indices.front();
+  const int curve_point = isPositiveAndBelow(reference_index, generator->getNumPoints() - 1)
+      ? reference_index : generator->getNumPoints() - 2;
+  const int percent = jlimit(-100, 100, curvePercentForPower(generator->getPower(curve_point)) + deltaPercent);
+  for (int index : indices) {
+    if (isPositiveAndBelow(index, generator->getNumPoints() - 1))
+      generator->setPower(index, powerForCurvePercent(percent));
   }
+  generator->render();
+  synth_.markStateChanged(lfoUndoBlock(generator));
+
+  // "Curve Linear" as the I and K keys say it; a bend already reads "Curve 35%".
+  String curve = lfoCurveText(generator->getPower(curve_point), generator->smooth());
+  if (!curve.startsWith("Curve "))
+    curve = "Curve " + curve;
+  if (generator->getShapeMode() == LineGenerator::kModePerformer)
+    postLfoAnnouncement("Performer shape " + curve.substring(0, 1).toLowerCase() + curve.substring(1) + ", " +
+                        lfoTimeDescription(lfoEditorBlockStart(lfo_cursor_phase_)));
+  else if (indices.size() == 1)
+    postLfoAnnouncement(curve + ", " + lfoPointDescription(indices.front()));
+  else
+    postLfoAnnouncement(curve + ", " + String(static_cast<int>(indices.size())) + " points");
+}
+
+void SynthEditor::stepLfoCurve(int direction) {
+  auto* generator = activeLfoGenerator();
+  if (generator == nullptr || generator->getNumPoints() < 2)
+    return;
+
+  const int mode = generator->getShapeMode();
+  const auto indices = lfoCurvePointIndices(*generator);
+  if (indices.empty())
+    return;
 
   const int reference_index = indices.front();
   const int reference_curve_point = isPositiveAndBelow(reference_index, generator->getNumPoints() - 1)
@@ -17028,6 +17087,11 @@ bool SynthEditor::handleLfoMsegShortcut(const KeyPress& key) {
     return true;
   }
 
+  if (key.getModifiers().isAltDown() && !command && !key.getModifiers().isCtrlDown() &&
+      (code == KeyPress::upKey || code == KeyPress::downKey)) {
+    adjustLfoPointCurve((code == KeyPress::upKey ? 1 : -1) * (shift ? 1 : 5));
+    return true;
+  }
   if (isCommandChord(key.getModifiers()) && !shift && (code == KeyPress::upKey || code == KeyPress::downKey)) {
     if (auto* generator = activeLfoGenerator()) {
       // Step from the curve after the current point, or before it for the last point.

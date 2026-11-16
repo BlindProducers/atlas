@@ -1276,6 +1276,11 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void pasteLfoShape();
     void duplicateLfoShapeToNextSlot();
     void setLfoPointCurve(int curveIndex);
+    void adjustLfoPointCurve(int deltaPercent);
+    // The points whose following segment a curve command changes: the
+    // performer shape at the cursor, the selection, or the point at the
+    // cursor. Empty, with the reason announced, when there is none.
+    std::vector<int> lfoCurvePointIndices(LineGenerator& generator);
     LineGenerator* lfoGeneratorForIndex(int lfoIndex) const;
     LineGenerator* activeLfoGenerator() const;
     // The part of the state an LFO, wavetable or filter table edit changes,
