@@ -1198,7 +1198,7 @@ namespace {
   }
 
   // Loop shift slides the loop at its full length, stopping at Sample End,
-  // and crossed loop points mark the part between them.
+  // and crossed loop points loop the part between them backwards.
   void testSampleLoopShift() {
     SynthPlugin plugin;
     preparePlugin(plugin);
@@ -1232,9 +1232,14 @@ namespace {
     set(plugin, "osc_1_sample_loop_shift", 0.0f);
     set(plugin, "osc_1_sample_loop_start", 0.4f);
     set(plugin, "osc_1_sample_loop_end", 0.1f);
+    // The file plays forward to the loop start, a tenth in, then the loop
+    // runs from its end down: the click at 2000 comes (0.4 - 0.2) of the file
+    // after that, and once more a loop later.
     const auto crossed = renderNote(plugin, length * 2);
-    expect(peakNear(crossed, 2000 + loop_length, 100) > 0.1f && peakNear(crossed, length * 3 / 4, 100) < 0.01f,
-           "crossed loop points loop the part between them");
+    const int first = length / 10 + (length * 4 / 10 - 2000);
+    expect(peakNear(crossed, first, 100) > 0.1f && peakNear(crossed, first + loop_length, 100) > 0.1f &&
+           peakNear(crossed, 2000, 100) < 0.01f && peakNear(crossed, length * 3 / 4, 100) < 0.01f,
+           "crossed loop points loop the part between them backwards");
   }
 
   // Reverse plays the file from its end, and its loop backwards.

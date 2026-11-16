@@ -477,6 +477,9 @@ namespace vital {
 
     poly_float loop_a = utils::clamp(input(kLoopStart)->at(0), 0.0f, 1.0f) * audio_end;
     poly_float loop_b = utils::clamp(input(kLoopEnd)->at(0), 0.0f, 1.0f) * audio_end;
+    // Loop end before Loop start loops that part backwards: the sample plays
+    // forward to the loop, then reads it mirrored, and Bounce alternates from there.
+    const poly_mask reverse_loop_mask = poly_float::lessThan(loop_b, loop_a);
     poly_float loop_start = utils::clamp(utils::min(loop_a, loop_b), sample_start, sample_end - minimum_region);
     poly_float loop_end = utils::clamp(utils::max(loop_a, loop_b), loop_start + minimum_region, sample_end);
     // Loop shift moves the loop as a whole, as far as the region allows at
@@ -553,7 +556,7 @@ namespace vital {
     poly_float phase_mult = 1.0f;
     for (int i = 0; i < poly_float::kSize; ++i) {
       int index = sample_->getActiveIndex(phase_inc_[i]);
-      if (loop && !bounce) {
+      if (loop && !bounce && reverse_loop_mask[i] == 0) {
         if (i % 2)
           audio_buffers[i] = sample_->getActiveRightLoopBuffer(index);
         else
@@ -581,8 +584,9 @@ namespace vital {
     poly_mask current_bounce = bounce_mask_;
     poly_float active_start = loop ? loop_start : sample_start;
     poly_float active_end = loop ? loop_end : sample_end;
-    const poly_mask crossfade_loop_mask = loop_enabled_mask & ~bounce_enabled_mask &
+    const poly_mask crossfade_loop_mask = loop_enabled_mask & ~bounce_enabled_mask & ~reverse_loop_mask &
                                           poly_float::greaterThan(loop_crossfade, 1.0f);
+    const poly_mask reverse_loop = reverse_loop_mask & loop_enabled_mask;
     const SlotModulation::Block modulation = modulation_.resolve(*this, kDistortionType, kDistortionAmount,
                                                                  kSecondaryDistortionType,
                                                                  kSecondaryDistortionAmount, true);
@@ -604,7 +608,9 @@ namespace vital {
       // directions). Keeping finished one-shot bounces "playing" held the
       // sample-start value as DC until the voice died.
       poly_mask playing_mask = loop_enabled_mask | poly_float::lessThan(current_index, active_end);
-      poly_float adjusted = utils::maskLoad(current_index, active_start + active_end - current_index, current_bounce);
+      const poly_mask mirror_mask = current_bounce ^
+                                    (reverse_loop & poly_float::greaterThanOrEqual(current_index, active_start));
+      poly_float adjusted = utils::maskLoad(current_index, active_start + active_end - current_index, mirror_mask);
       poly_float read_fraction = current_fraction;
       if (reverse) {
         // The sample's position mirrored about the region: a whole index and
@@ -620,7 +626,7 @@ namespace vital {
       poly_float rounded_down_phase = utils::toFloat(start_indices);
       poly_float t = index_phase - rounded_down_phase + fraction_phase;
 
-      t = utils::maskLoad(t, poly_float(1.0f) - t, current_bounce);
+      t = utils::maskLoad(t, poly_float(1.0f) - t, mirror_mask);
 
       VITAL_ASSERT(poly_float::lessThan(utils::toFloat(start_indices), 0.0f).anyMask() == 0);
       VITAL_ASSERT(poly_float::greaterThan(utils::toFloat(start_indices), audio_length).anyMask() == 0);
