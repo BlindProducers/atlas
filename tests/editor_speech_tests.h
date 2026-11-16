@@ -60,9 +60,9 @@ namespace {
       // KeyPress == ignores keys with a modifier held, so Shift's 5% step was never reached.
       expectNavigationSpoken(*lfo, spoken, KeyPress(KeyPress::upKey, ModifierKeys::shiftModifier, 0), "5%",
                              "LFO editor five percent up");
-      expectNavigationSpoken(*lfo, spoken, KeyPress(KeyPress::upKey, ModifierKeys::altModifier, 0), "Curve 5%",
+      expectNavigationSpoken(*lfo, spoken, KeyPress(KeyPress::upKey, ModifierKeys::commandModifier, 0), "Curve 5%",
                              "LFO editor curve bend up");
-      expectNavigationSpoken(*lfo, spoken, KeyPress(KeyPress::downKey, ModifierKeys::altModifier, 0), "Linear",
+      expectNavigationSpoken(*lfo, spoken, KeyPress(KeyPress::downKey, ModifierKeys::commandModifier, 0), "Linear",
                              "LFO editor curve bend back to linear");
     }
 

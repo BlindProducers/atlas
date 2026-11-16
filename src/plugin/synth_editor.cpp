@@ -5214,7 +5214,7 @@ namespace {
     return names[jlimit(0, static_cast<int>(names.size()) - 1, index)];
   }
 
-  // Option Up and Down bend a segment from -100% to 100%: 100% is power 20,
+  // Command Up and Down bend a segment from -100% to 100%: 100% is power 20,
   // the Hold curve (LineGenerator::kHoldPowerThreshold), which holds the
   // point's level until the next point; -100% is at the next point's level
   // almost at once; 0% is linear.
@@ -17210,21 +17210,9 @@ bool SynthEditor::handleLfoMsegShortcut(const KeyPress& key) {
     return true;
   }
 
-  if (key.getModifiers().isAltDown() && !command && !key.getModifiers().isCtrlDown() &&
-      (code == KeyPress::upKey || code == KeyPress::downKey)) {
+  // Command Up and Down bend the segment; I and K choose a named curve.
+  if (isCommandChord(key.getModifiers()) && (code == KeyPress::upKey || code == KeyPress::downKey)) {
     adjustLfoPointCurve((code == KeyPress::upKey ? 1 : -1) * (shift ? 1 : 5));
-    return true;
-  }
-  if (isCommandChord(key.getModifiers()) && !shift && (code == KeyPress::upKey || code == KeyPress::downKey)) {
-    if (auto* generator = activeLfoGenerator()) {
-      // Step from the curve after the current point, or before it for the last point.
-      const int point_index = currentLfoPointIndex();
-      const int curve_point = isPositiveAndBelow(point_index, generator->getNumPoints() - 1)
-          ? point_index : jmax(0, point_index - 1);
-      const int current = curveIndexForPower(generator->getPower(curve_point), generator->smooth());
-      setLfoPointCurve((current + (code == KeyPress::upKey ? 1 : -1) + kNumAccessibleLfoCurves) %
-                       kNumAccessibleLfoCurves);
-    }
     return true;
   }
   if (shift_only && (code == KeyPress::leftKey || code == KeyPress::rightKey)) {
