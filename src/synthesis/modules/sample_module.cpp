@@ -29,6 +29,7 @@ namespace vital {
     Value* random_phase = createBaseControl(prefix_ + "random_phase");
     Value* loop = createBaseControl(prefix_ + "loop");
     Value* bounce = createBaseControl(prefix_ + "bounce");
+    Value* reverse = createBaseControl(prefix_ + "reverse");
     Value* playback_mode = createBaseControl(prefix_ + "playback_mode");
     Value* keytrack = createBaseControl(prefix_ + "keytrack");
     Value* filter_slope = createBaseControl(prefix_ + "filter_slope");
@@ -62,6 +63,7 @@ namespace vital {
     sampler_->plug(root_key, SampleSource::kRootKey);
     sampler_->plug(loop, SampleSource::kLoop);
     sampler_->plug(bounce, SampleSource::kBounce);
+    sampler_->plug(reverse, SampleSource::kReverse);
     sampler_->plug(playback_mode, SampleSource::kPlaybackMode);
     sampler_->plug(start, SampleSource::kStart);
     sampler_->plug(end, SampleSource::kEnd);

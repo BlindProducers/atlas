@@ -482,6 +482,16 @@ namespace vital {
     poly_float loop_crossfade = utils::clamp(input(kLoopCrossfade)->at(0), 0.0f, 1.0f) * loop_length;
     loop_crossfade = utils::min(loop_crossfade, loop_length * 0.5f);
 
+    // Reverse plays the region from its end. The index still counts up, over
+    // the loop mirrored into that direction, and each read mirrors it back.
+    const bool reverse = input(kReverse)->at(0)[0] != 0.0f;
+    const poly_float region_mirror = sample_start + sample_end;
+    if (reverse) {
+      const poly_float reversed_loop_start = region_mirror - loop_end;
+      loop_end = region_mirror - loop_start;
+      loop_start = reversed_loop_start;
+    }
+
     poly_mask reset_mask = getResetMask(kReset);
     poly_mask retrigger_mask = getResetMask(kRetrigger);
     int playback_mode = static_cast<int>(input(kPlaybackMode)->at(0)[0] + 0.5f);
@@ -588,9 +598,16 @@ namespace vital {
       // sample-start value as DC until the voice died.
       poly_mask playing_mask = loop_enabled_mask | poly_float::lessThan(current_index, active_end);
       poly_float adjusted = utils::maskLoad(current_index, active_start + active_end - current_index, current_bounce);
+      poly_float read_fraction = current_fraction;
+      if (reverse) {
+        // The sample's position mirrored about the region: a whole index and
+        // a fraction, so long files keep their precision.
+        adjusted = region_mirror - adjusted - 1.0f;
+        read_fraction = poly_float(1.0f) - current_fraction;
+      }
       adjusted = utils::clamp(adjusted, 0.0f, audio_end);
       poly_float index_phase = utils::max(adjusted, 0.0f) * phase_mult;
-      poly_float fraction_phase = current_fraction * phase_mult;
+      poly_float fraction_phase = read_fraction * phase_mult;
       
       poly_int start_indices = utils::floorToInt(index_phase);
       poly_float rounded_down_phase = utils::toFloat(start_indices);
@@ -611,6 +628,8 @@ namespace vital {
       if (crossfade_mask.anyMask()) {
         poly_float loop_position = current_index - (loop_end - loop_crossfade);
         poly_float alternate_index = loop_start + loop_position;
+        if (reverse)
+          alternate_index = region_mirror - alternate_index - 1.0f;
         poly_float alternate_phase = utils::clamp(alternate_index, 0.0f, audio_end) * phase_mult;
         poly_int alternate_indices = utils::floorToInt(alternate_phase);
         poly_float alternate_t = alternate_phase - utils::toFloat(alternate_indices) + fraction_phase;

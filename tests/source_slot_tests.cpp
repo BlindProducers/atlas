@@ -1190,7 +1190,49 @@ namespace {
            "the secondary spread parameters exist on every slot");
   }
 
+  // Reverse plays the file from its end, and its loop backwards.
+  void testSampleReverse() {
+    SynthPlugin plugin;
+    preparePlugin(plugin);
+    setType(plugin, 0, vital::source_types::kSample);
+    set(plugin, "osc_1_on", 1.0f);
+    set(plugin, "env_1_attack", 0.0f);
+    // Clicks near the start and at three quarters of a quarter-second file.
+    const int length = kSampleRate / 4;
+    std::vector<float> audio(size_t(length), 0.0f);
+    audio[2000] = 1.0f;
+    audio[size_t(length * 3 / 4)] = 1.0f;
+    plugin.getSample(0)->loadSample(audio.data(), int(audio.size()), kSampleRate);
+    set(plugin, "osc_1_sample_random_phase", 0.0f);
+    set(plugin, "osc_1_sample_keytrack", 0.0f);
+    set(plugin, "osc_1_sample_loop", 0.0f);
+    const auto peak_near = [](const std::vector<float>& stereo, int centre, int radius) {
+      float peak = 0.0f;
+      for (int i = std::max(0, centre - radius); i < std::min(int(stereo.size() / 2), centre + radius); ++i)
+        peak = std::max(peak, std::abs(stereo[size_t(i) * 2]));
+      return peak;
+    };
+    const auto forward = renderNote(plugin, length);
+    expect(peak_near(forward, 2000, 100) > 0.1f && peak_near(forward, length - 2000, 100) < 0.01f,
+           "forward playback reaches the early click first");
+    set(plugin, "osc_1_sample_reverse", 1.0f);
+    const auto reversed = renderNote(plugin, length);
+    expect(peak_near(reversed, length - 2000, 100) > 0.1f && peak_near(reversed, 2000, 100) < 0.01f,
+           "reverse playback reaches the early click last");
+    // Looping the second half backwards: the file plays from its end down to
+    // the loop start, so the click at three quarters comes a quarter in and
+    // then once per loop, and the early click never plays.
+    set(plugin, "osc_1_sample_loop", 1.0f);
+    set(plugin, "osc_1_sample_loop_start", 0.5f);
+    set(plugin, "osc_1_sample_loop_end", 1.0f);
+    const auto looped = renderNote(plugin, length * 2);
+    expect(peak_near(looped, length / 4, 100) > 0.1f && peak_near(looped, length * 3 / 4, 100) > 0.1f &&
+           peak_near(looped, length / 4 + length / 2 * 3, 100) > 0.1f && peak_near(looped, 2000, 100) < 0.01f,
+           "a reversed loop repeats its region backwards");
+  }
+
   int behaviour() {
+    testSampleReverse();
     testDetoursLeaveTypesUnchanged();
     testDefaultPatch();
     testTypeSwitchBuildsOnlyTheActiveEngine();

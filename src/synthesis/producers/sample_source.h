@@ -150,6 +150,7 @@ namespace vital {
         kTune,
         kLoop,
         kBounce,
+        kReverse,
         kPlaybackMode,
         kStart,
         kEnd,
