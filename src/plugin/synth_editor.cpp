@@ -24644,6 +24644,70 @@ void SynthEditor::chooseSampleFile(int sample_target) {
   });
 }
 
+namespace {
+  // What a WAV's smpl chunk or an AIFF's INST chunk says about the file: its
+  // first loop (start and end sample, whether it alternates) and its root note.
+  struct SampleFileInfo {
+    int loop_start = -1, loop_end = -1;
+    bool loop_alternates = false;
+    int root_note = -1;
+  };
+
+  SampleFileInfo readSampleFileInfo(const StringPairArray& metadata, int length) {
+    SampleFileInfo info;
+    const auto note = [&](const char* key) {
+      const int value = metadata.containsKey(key) ? metadata.getValue(key, "").getIntValue() : -1;
+      return isPositiveAndBelow(value, 128) ? value : -1;
+    };
+    info.root_note = note("MidiUnityNote");
+    if (info.root_note < 0)
+      info.root_note = note(AiffAudioFormat::appleRootNote);
+
+    if (metadata.getValue("NumSampleLoops", "0").getIntValue() <= 0)
+      return info;
+    const int type = metadata.getValue("Loop0Type", "0").getIntValue();
+    int start = -1, end = -1;
+    if (metadata.containsKey("Loop0Start")) {
+      // WAV: sample positions; type 1 alternates.
+      start = metadata.getValue("Loop0Start", "").getIntValue();
+      end = metadata.getValue("Loop0End", "").getIntValue();
+      info.loop_alternates = type == 1;
+    }
+    else if (metadata.containsKey("Loop0StartIdentifier") && type != 0) {
+      // AIFF: marker ids; type 2 alternates and 0 means no loop.
+      const int start_id = metadata.getValue("Loop0StartIdentifier", "").getIntValue();
+      const int end_id = metadata.getValue("Loop0EndIdentifier", "").getIntValue();
+      const int cues = metadata.getValue("NumCuePoints", "0").getIntValue();
+      for (int i = 0; i < cues; ++i) {
+        const String prefix = "Cue" + String(i);
+        const int id = metadata.getValue(prefix + "Identifier", "").getIntValue();
+        if (id == start_id)
+          start = metadata.getValue(prefix + "Offset", "").getIntValue();
+        if (id == end_id)
+          end = metadata.getValue(prefix + "Offset", "").getIntValue();
+      }
+      info.loop_alternates = type == 2;
+    }
+    if (start >= 0 && end > start && end < length) {
+      info.loop_start = start;
+      info.loop_end = end;
+    }
+    return info;
+  }
+
+  // A note in a file name, such as "Piano C3" or "cello_f#2": the last word
+  // that names one.
+  int rootNoteFromName(const String& name) {
+    int result = -1;
+    for (const String& word : StringArray::fromTokens(name, " _-.()[]", "")) {
+      float midi_note = 0.0f;
+      if (word.length() <= 4 && parseNoteNameToMidi(word, midi_note) && isPositiveAndBelow(roundToInt(midi_note), 128))
+        result = roundToInt(midi_note);
+    }
+    return result;
+  }
+}
+
 void SynthEditor::loadSampleFile(const File& file, int sample_target) {
   static constexpr int kMaxFileSamples = 17640000;
 
@@ -24684,7 +24748,34 @@ void SynthEditor::loadSampleFile(const File& file, int sample_target) {
 
     refreshSampleNameLabel(sample_target);
 
-    postPluginAnnouncement("Loaded sample " + file.getFileNameWithoutExtension(),
+    // The file's own loop and root note set the slot's, as a sampler expects.
+    const SampleFileInfo info = readSampleFileInfo(format_reader->metadataValues, num_samples);
+    const String prefix = vital::source_types::slotPrefix(sample_target) + "sample_";
+    String taken;
+    if (info.loop_start >= 0) {
+      setParameterEngineValue(prefix + "loop_start", static_cast<float>(info.loop_start) / num_samples);
+      setParameterEngineValue(prefix + "loop_end", static_cast<float>(info.loop_end + 1) / num_samples);
+      if (info.loop_alternates)
+        setParameterEngineValue(prefix + "bounce", 1.0f);
+      taken = "loop from the file";
+    }
+    const int root_note = info.root_note >= 0 ? info.root_note : rootNoteFromName(file.getFileNameWithoutExtension());
+    if (root_note >= 0) {
+      setParameterEngineValue(prefix + "root_key", static_cast<float>(root_note));
+      setParameterEngineValue(vital::source_types::slotPrefix(sample_target) + "granular_root_key",
+                              static_cast<float>(root_note));
+      const String root = "root key " + midiRootKeyText(root_note);
+      if (taken.isEmpty())
+        taken = root + (info.root_note >= 0 ? " from the file" : " from its name");
+      else if (info.root_note >= 0)
+        taken = "loop and " + root + " from the file";
+      else
+        taken += ", " + root + " from its name";
+    }
+    if (taken.isNotEmpty())
+      taken = ", " + taken;
+
+    postPluginAnnouncement("Loaded sample " + file.getFileNameWithoutExtension() + taken,
                                            AccessibilityHandler::AnnouncementPriority::high);
   }
   catch (const std::exception& error) {
