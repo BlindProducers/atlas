@@ -421,7 +421,7 @@ namespace {
   bool isSamplePositionParameter(const String& id) {
     const String legacy = legacySourceId(id);
     return legacy == "sample_start" || legacy == "sample_end" ||
-           legacy == "sample_loop_start" || legacy == "sample_loop_end";
+           legacy == "sample_loop_start" || legacy == "sample_loop_end" || legacy == "sample_loop_shift";
   }
 
   enum SamplePositionUnits { kSamplePositionPercent, kSamplePositionMilliseconds, kSamplePositionSamples };
@@ -2568,7 +2568,7 @@ namespace {
     }
     if (id.startsWith("sample_")) {
       const String suffix = id.fromFirstOccurrenceOf("sample_", false, false);
-      static const std::array<const char*, 30> sample_order = {{
+      static const std::array<const char*, 31> sample_order = {{
         "on",
         "solo",
         "destination",
@@ -2591,6 +2591,7 @@ namespace {
         "end",
         "loop_start",
         "loop_end",
+        "loop_shift",
         "loop_crossfade",
         "low_cutoff",
         "high_cutoff",
@@ -3993,6 +3994,7 @@ namespace {
       if (suffix == "end") return "Set where sample playback stops.";
       if (suffix == "loop_start") return "Set the start point of the sample loop.";
       if (suffix == "loop_end") return "Set the end point of the sample loop.";
+      if (suffix == "loop_shift") return "Move the whole sample loop, keeping its length.";
       if (suffix == "loop_crossfade") return "Crossfade the sample loop boundary to reduce clicks.";
     }
 
@@ -8904,14 +8906,17 @@ namespace {
   }
 }
 
+// The rows' engine values are fractions of the file: 0 to 1 for a point,
+// -1 to 1 for Loop shift.
 String SynthEditor::samplePositionText(const ValueBridge& bridge, double value) const {
   const int units = LoadSave::samplePositionUnits();
   const double span = samplePositionFileSpan(samplePositionSample(bridge.getParameterId()), units);
   if (span <= 0.0)
     return accessibleParameterText(bridge, value);
+  const double fraction = bridge.convertToEngineValue(static_cast<float>(value));
   if (units == kSamplePositionSamples)
-    return String(juce::roundToInt(value * span));
-  return compactFloat(static_cast<float>(value * span), 1) + " ms";
+    return String(juce::roundToInt(fraction * span));
+  return compactFloat(static_cast<float>(fraction * span), 1) + " ms";
 }
 
 // Typed text in the unit it names (%, ms, s or samples), otherwise in the
@@ -8931,7 +8936,8 @@ double SynthEditor::samplePositionValue(const ValueBridge& bridge, const String&
     scale = 1000.0;
   }
   const double span = samplePositionFileSpan(samplePositionSample(bridge.getParameterId()), units);
-  return jlimit(0.0, 1.0, trimmed.getDoubleValue() * scale / (span > 0.0 ? span : 100.0));
+  const float fraction = static_cast<float>(trimmed.getDoubleValue() * scale / (span > 0.0 ? span : 100.0));
+  return bridge.convertToPluginValue(jlimit(bridge.getDetails().min, bridge.getDetails().max, fraction));
 }
 
 void SynthEditor::setSamplePositionUnits(int units) {
@@ -8956,18 +8962,19 @@ void SynthEditor::wireSamplePositionUnits(AccessibleParameterRow& row) {
   auto file_span = [this, parameter_id] {
     return samplePositionFileSpan(samplePositionSample(parameter_id), LoadSave::samplePositionUnits());
   };
+  ValueBridge* bridge = parameterBridge(parameter_id);
+  if (bridge == nullptr)
+    return;
   ParameterSlider& slider = row.slider();
-  slider.toAdjustmentValue = [file_span](double value) {
+  slider.toAdjustmentValue = [bridge, file_span](double value) {
     const double span = file_span();
-    return value * (span > 0.0 ? span : 100.0);
+    return bridge->convertToEngineValue(static_cast<float>(value)) * (span > 0.0 ? span : 100.0);
   };
-  slider.fromAdjustmentValue = [file_span](double value) {
+  slider.fromAdjustmentValue = [bridge, file_span](double value) {
     const double span = file_span();
-    if (span <= 0.0)
-      return value / 100.0;
-    if (LoadSave::samplePositionUnits() == kSamplePositionSamples)
+    if (span > 0.0 && LoadSave::samplePositionUnits() == kSamplePositionSamples)
       value = std::round(value);
-    return value / span;
+    return static_cast<double>(bridge->convertToPluginValue(static_cast<float>(value / (span > 0.0 ? span : 100.0))));
   };
   slider.adjustmentStep = [] { return 1.0; };
 }

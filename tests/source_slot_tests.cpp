@@ -1190,6 +1190,53 @@ namespace {
            "the secondary spread parameters exist on every slot");
   }
 
+  float peakNear(const std::vector<float>& stereo, int centre, int radius) {
+    float peak = 0.0f;
+    for (int i = std::max(0, centre - radius); i < std::min(int(stereo.size() / 2), centre + radius); ++i)
+      peak = std::max(peak, std::abs(stereo[size_t(i) * 2]));
+    return peak;
+  }
+
+  // Loop shift slides the loop at its full length, stopping at Sample End,
+  // and crossed loop points mark the part between them.
+  void testSampleLoopShift() {
+    SynthPlugin plugin;
+    preparePlugin(plugin);
+    setType(plugin, 0, vital::source_types::kSample);
+    set(plugin, "osc_1_on", 1.0f);
+    set(plugin, "env_1_attack", 0.0f);
+    const int length = kSampleRate / 4;
+    std::vector<float> audio(size_t(length), 0.0f);
+    audio[2000] = 1.0f;
+    audio[size_t(length * 3 / 4)] = 1.0f;
+    audio[size_t(length * 95 / 100)] = 1.0f;
+    plugin.getSample(0)->loadSample(audio.data(), int(audio.size()), kSampleRate);
+    set(plugin, "osc_1_sample_random_phase", 0.0f);
+    set(plugin, "osc_1_sample_keytrack", 0.0f);
+    set(plugin, "osc_1_sample_loop", 1.0f);
+    set(plugin, "osc_1_sample_loop_start", 0.1f);
+    set(plugin, "osc_1_sample_loop_end", 0.4f);
+    const int loop_length = length * 3 / 10;
+    const auto unshifted = renderNote(plugin, length * 2);
+    expect(peakNear(unshifted, 2000, 100) > 0.1f && peakNear(unshifted, 2000 + loop_length, 100) > 0.1f &&
+           peakNear(unshifted, length * 3 / 4, 100) < 0.01f, "a loop of the early click repeats it");
+    set(plugin, "osc_1_sample_loop_shift", 0.4f);
+    const auto shifted = renderNote(plugin, length * 2);
+    expect(peakNear(shifted, length * 3 / 4, 100) > 0.1f && peakNear(shifted, length * 3 / 4 + loop_length, 100) > 0.1f &&
+           peakNear(shifted, 2000 + loop_length, 100) < 0.01f && peakNear(shifted, length * 95 / 100, 100) < 0.01f,
+           "loop shift moves the loop to the later click");
+    set(plugin, "osc_1_sample_loop_shift", 0.9f);
+    const auto clamped = renderNote(plugin, length * 2);
+    expect(peakNear(clamped, length * 95 / 100, 100) > 0.1f && peakNear(clamped, length * 3 / 4 + loop_length, 100) > 0.1f &&
+           peakNear(clamped, 2000 + loop_length, 100) < 0.01f, "loop shift stops at Sample End at full length");
+    set(plugin, "osc_1_sample_loop_shift", 0.0f);
+    set(plugin, "osc_1_sample_loop_start", 0.4f);
+    set(plugin, "osc_1_sample_loop_end", 0.1f);
+    const auto crossed = renderNote(plugin, length * 2);
+    expect(peakNear(crossed, 2000 + loop_length, 100) > 0.1f && peakNear(crossed, length * 3 / 4, 100) < 0.01f,
+           "crossed loop points loop the part between them");
+  }
+
   // Reverse plays the file from its end, and its loop backwards.
   void testSampleReverse() {
     SynthPlugin plugin;
@@ -1206,18 +1253,12 @@ namespace {
     set(plugin, "osc_1_sample_random_phase", 0.0f);
     set(plugin, "osc_1_sample_keytrack", 0.0f);
     set(plugin, "osc_1_sample_loop", 0.0f);
-    const auto peak_near = [](const std::vector<float>& stereo, int centre, int radius) {
-      float peak = 0.0f;
-      for (int i = std::max(0, centre - radius); i < std::min(int(stereo.size() / 2), centre + radius); ++i)
-        peak = std::max(peak, std::abs(stereo[size_t(i) * 2]));
-      return peak;
-    };
     const auto forward = renderNote(plugin, length);
-    expect(peak_near(forward, 2000, 100) > 0.1f && peak_near(forward, length - 2000, 100) < 0.01f,
+    expect(peakNear(forward, 2000, 100) > 0.1f && peakNear(forward, length - 2000, 100) < 0.01f,
            "forward playback reaches the early click first");
     set(plugin, "osc_1_sample_reverse", 1.0f);
     const auto reversed = renderNote(plugin, length);
-    expect(peak_near(reversed, length - 2000, 100) > 0.1f && peak_near(reversed, 2000, 100) < 0.01f,
+    expect(peakNear(reversed, length - 2000, 100) > 0.1f && peakNear(reversed, 2000, 100) < 0.01f,
            "reverse playback reaches the early click last");
     // Looping the second half backwards: the file plays from its end down to
     // the loop start, so the click at three quarters comes a quarter in and
@@ -1226,12 +1267,13 @@ namespace {
     set(plugin, "osc_1_sample_loop_start", 0.5f);
     set(plugin, "osc_1_sample_loop_end", 1.0f);
     const auto looped = renderNote(plugin, length * 2);
-    expect(peak_near(looped, length / 4, 100) > 0.1f && peak_near(looped, length * 3 / 4, 100) > 0.1f &&
-           peak_near(looped, length / 4 + length / 2 * 3, 100) > 0.1f && peak_near(looped, 2000, 100) < 0.01f,
+    expect(peakNear(looped, length / 4, 100) > 0.1f && peakNear(looped, length * 3 / 4, 100) > 0.1f &&
+           peakNear(looped, length / 4 + length / 2 * 3, 100) > 0.1f && peakNear(looped, 2000, 100) < 0.01f,
            "a reversed loop repeats its region backwards");
   }
 
   int behaviour() {
+    testSampleLoopShift();
     testSampleReverse();
     testDetoursLeaveTypesUnchanged();
     testDefaultPatch();

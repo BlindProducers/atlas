@@ -42,6 +42,7 @@ namespace vital {
     Output* end = createPolyModControl(prefix_ + "end");
     Output* loop_start = createPolyModControl(prefix_ + "loop_start");
     Output* loop_end = createPolyModControl(prefix_ + "loop_end");
+    Output* loop_shift = createPolyModControl(prefix_ + "loop_shift");
     Output* loop_crossfade = createPolyModControl(prefix_ + "loop_crossfade");
     Output* low_cutoff = createPolyModControl(prefix_ + "low_cutoff", true, true);
     Output* high_cutoff = createPolyModControl(prefix_ + "high_cutoff", true, true);
@@ -69,6 +70,7 @@ namespace vital {
     sampler_->plug(end, SampleSource::kEnd);
     sampler_->plug(loop_start, SampleSource::kLoopStart);
     sampler_->plug(loop_end, SampleSource::kLoopEnd);
+    sampler_->plug(loop_shift, SampleSource::kLoopShift);
     sampler_->plug(loop_crossfade, SampleSource::kLoopCrossfade);
     sampler_->plug(low_cutoff, SampleSource::kLowCutoff);
     sampler_->plug(high_cutoff, SampleSource::kHighCutoff);

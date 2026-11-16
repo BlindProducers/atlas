@@ -156,6 +156,7 @@ namespace vital {
         kEnd,
         kLoopStart,
         kLoopEnd,
+        kLoopShift,
         kLoopCrossfade,
         kLowCutoff,
         kHighCutoff,

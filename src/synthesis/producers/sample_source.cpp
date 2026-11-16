@@ -469,15 +469,22 @@ namespace vital {
     int audio_length = sample_->activeLength();
     poly_float audio_end = audio_length;
     poly_float minimum_region = Sample::kMinSize * (1 << Sample::kUpsampleTimes);
-    poly_float sample_start = utils::clamp(input(kStart)->at(0), 0.0f, 1.0f) * audio_end;
-    poly_float sample_end = utils::clamp(input(kEnd)->at(0), 0.0f, 1.0f) * audio_end;
-    sample_start = utils::floor(utils::clamp(sample_start, 0.0f, audio_end - minimum_region));
-    sample_end = utils::floor(utils::clamp(sample_end, sample_start + minimum_region, audio_end));
+    // Either order of two points marks the part between them.
+    poly_float region_a = utils::clamp(input(kStart)->at(0), 0.0f, 1.0f) * audio_end;
+    poly_float region_b = utils::clamp(input(kEnd)->at(0), 0.0f, 1.0f) * audio_end;
+    poly_float sample_start = utils::floor(utils::clamp(utils::min(region_a, region_b), 0.0f, audio_end - minimum_region));
+    poly_float sample_end = utils::floor(utils::clamp(utils::max(region_a, region_b), sample_start + minimum_region, audio_end));
 
-    poly_float loop_start = utils::clamp(input(kLoopStart)->at(0), 0.0f, 1.0f) * audio_end;
-    poly_float loop_end = utils::clamp(input(kLoopEnd)->at(0), 0.0f, 1.0f) * audio_end;
-    loop_start = utils::floor(utils::clamp(loop_start, sample_start, sample_end - minimum_region));
-    loop_end = utils::floor(utils::clamp(loop_end, loop_start + minimum_region, sample_end));
+    poly_float loop_a = utils::clamp(input(kLoopStart)->at(0), 0.0f, 1.0f) * audio_end;
+    poly_float loop_b = utils::clamp(input(kLoopEnd)->at(0), 0.0f, 1.0f) * audio_end;
+    poly_float loop_start = utils::clamp(utils::min(loop_a, loop_b), sample_start, sample_end - minimum_region);
+    poly_float loop_end = utils::clamp(utils::max(loop_a, loop_b), loop_start + minimum_region, sample_end);
+    // Loop shift moves the loop as a whole, as far as the region allows at
+    // its full length.
+    poly_float loop_shift = utils::clamp(input(kLoopShift)->at(0), -1.0f, 1.0f) * audio_end;
+    loop_shift = utils::clamp(loop_shift, sample_start - loop_start, sample_end - loop_end);
+    loop_start = utils::floor(loop_start + loop_shift);
+    loop_end = utils::floor(loop_end + loop_shift);
     poly_float loop_length = utils::max(loop_end - loop_start, 1.0f);
     poly_float loop_crossfade = utils::clamp(input(kLoopCrossfade)->at(0), 0.0f, 1.0f) * loop_length;
     loop_crossfade = utils::min(loop_crossfade, loop_length * 0.5f);
