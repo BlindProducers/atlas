@@ -51,6 +51,10 @@ namespace vital {
       void process(int num_samples) override;
       void noteOn(int note, mono_float velocity, int sample, int channel) override;
       void noteOff(int note, mono_float lift, int sample, int channel) override;
+      void allSoundsOff() override;
+      void allNotesOff(int sample) override;
+      void allNotesOff(int sample, int channel) override;
+      void allNotesOffRange(int sample, int from_channel, int to_channel) override;
       bool shouldAccumulate(Output* output) override;
       void correctToTime(double seconds) override;
       void advanceFreeClocks(int num_samples);
@@ -114,6 +118,14 @@ namespace vital {
       void mixSlotTails(int num_samples, bool voices_rendered);
       // Gives each Piano slot the block's pedals and the model it wants.
       void preparePianos();
+      // Gives each Flute slot the block's controllers, wheel and the voice
+      // whose lane carries it; the keys reach it from noteOn and noteOff.
+      void prepareFlutes(int num_samples);
+      // Whether the keys of `channel` play slot `slot`: an arpeggiator's channel
+      // names its slot, and the keyboard plays every slot without an active arpeggiator.
+      bool slotHearsChannel(int slot, int channel) const;
+      // Every Flute slot lets go of its keys at `sample`.
+      void fluteNotesOff(int sample);
       // Tells each Speech slot which keyboard notes are down in this block.
       void prepareSpeechHolds(int num_samples);
 
@@ -128,6 +140,7 @@ namespace vital {
       TailControls tail_controls_[kNumOscillators];
       bool tails_written_ = false;
       const MultiSampleMidiState* midi_state_ = nullptr;
+      Value* pitch_bend_range_ = nullptr;
 
       ModulationConnectionBank modulation_bank_;
       CircularQueue<ModulationConnectionProcessor*> enabled_modulation_processors_;

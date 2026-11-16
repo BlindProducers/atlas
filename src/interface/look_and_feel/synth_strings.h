@@ -233,6 +233,7 @@ namespace strings {
     "OpenB3",
     "Speech",
     "Piano",
+    "Flute",
   };
 
   // The Speech oscillator's espeak-ng languages and voice variants, in the
@@ -277,6 +278,24 @@ namespace strings {
   const std::string kPianoAmpEnvNames[] = {
     "Piano",
     "Envelope 1",
+  };
+
+  const std::string kFluteAmpEnvNames[] = {
+    "Flute",
+    "Envelope 1",
+  };
+
+  // Where the Flute's loudness comes from, and which controller is its breath.
+  const std::string kFluteDynamicsSourceNames[] = {
+    "Velocity, then controller",
+    "Controller only",
+    "Velocity only",
+  };
+
+  const std::string kFluteDynamicsControllerNames[] = {
+    "Mod wheel, CC 1",
+    "Expression, CC 11",
+    "Breath, CC 2",
   };
 
   const std::string kSpeechModeNames[] = {

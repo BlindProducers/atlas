@@ -315,7 +315,7 @@ namespace vital {
       void allSoundsOff() override;
       void allNotesOff(int sample) override;
       void allNotesOff(int sample, int channel) override;
-      void allNotesOffRange(int sample, int from_channel, int to_channel);
+      virtual void allNotesOffRange(int sample, int from_channel, int to_channel);
 
       virtual void noteOn(int note, mono_float velocity, int sample, int channel) override;
       virtual void noteOff(int note, mono_float velocity, int sample, int channel) override;
