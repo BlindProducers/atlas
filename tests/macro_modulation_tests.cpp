@@ -1287,6 +1287,7 @@ int main(int argc, char** argv) {
     testAnalogueCompressorRows();
     testFrequencyShifterModeRows();
     testMaimRows();
+    testGranularRows();
     testDriveDynamicsRows();
     testAnalogSwitchKeepsItsControl();
     testLfoViewTabs();

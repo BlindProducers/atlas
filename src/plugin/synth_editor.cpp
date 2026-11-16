@@ -2261,7 +2261,9 @@ namespace {
     if (const int slot = sourceSlotForId(id); slot >= 0) {
       const String suffix = id.substring(String("osc_" + String(slot + 1) + "_").length());
       return suffix == "type" || suffix == "analog_waveform" || suffix == "braids_model" ||
-             suffix.endsWith("spectral_morph_type") || suffix == "random_phase_mode";
+             suffix.endsWith("spectral_morph_type") || suffix == "random_phase_mode" ||
+             suffix == "granular_mode" || suffix == "granular_timing_mode" || suffix == "granular_size_mode" ||
+             suffix == "granular_midi_density";
     }
     const String filter_suffix = filterSuffixForParameter(id);
     if (filter_suffix == "model" || filter_suffix == "style")
@@ -2282,9 +2284,9 @@ namespace {
 
   // Switches that change which rows the editor shows, so flipping one
   // rebuilds it: Envelope 1's analog mode swaps its Power rows for Analog Age,
-  // and Glide zones shows Zone crossfade.
+  // Glide zones shows Zone crossfade, and a Granular Keytrack shows Root key.
   bool isRowSwitchingToggle(const String& id) {
-    return id == "env_1_analog" || id == "portamento_glide_zones";
+    return id == "env_1_analog" || id == "portamento_glide_zones" || id.endsWith("_granular_keytrack");
   }
 
   // Convolution Reverb: free predelay in milliseconds, or a synced division.
@@ -8942,8 +8944,13 @@ bool SynthEditor::shouldShowParameterInSection(const String& sectionName, AudioP
     const int type = sourceSlotType(osc - 1);
     // Each type shows only its own parameters; slot-level controls always show.
     const int owner = vital::source_types::typeForParameterSuffix(suffix.toStdString());
-    if (owner >= 0)
-      return vital::source_types::shareModule(owner, type);
+    if (owner >= 0) {
+      if (!vital::source_types::shareModule(owner, type))
+        return false;
+      if (owner == vital::source_types::kGranular && suffix.startsWith("granular_"))
+        return isGranularRowRelevant(osc - 1, suffix.fromFirstOccurrenceOf("granular_", false, false));
+      return true;
+    }
     if (isSlotLevelOscillatorSuffix(suffix))
       return true;
     // Sample, Granular, Spectral and Noise read the slot's distortion mode and
@@ -9953,25 +9960,55 @@ int SynthEditor::oscillatorModeKey(int oscillator) const {
     return type * 64 + multiSampleUiState(oscillator);
   if (type == vital::source_types::kBraids)
     return type * 64 + braidsModel(oscillator);
+  if (type == vital::source_types::kGranular)
+    return type * 64 + granularRowKey(oscillator);
   if (!isAnalogOscillator(oscillator))
     return type * 64 - 1;
   return type * 64 + roundToInt(engineValueFor(parameterBridge("osc_" + String(oscillator + 1) + "_analog_waveform")));
 }
 
+float SynthEditor::sourceSlotValue(int oscillator, const char* suffix) const {
+  const std::string id = vital::source_types::slotPrefix(oscillator) + suffix;
+  if (auto* bridge = parameterBridge(id))
+    return engineValueFor(bridge);
+  const auto& controls = synth_.getControls();
+  const auto found = controls.find(id);
+  return found != controls.end() && found->second != nullptr ? found->second->value() : 0.0f;
+}
+
 int SynthEditor::braidsModel(int oscillator) const {
   if (!isPositiveAndBelow(oscillator, vital::kNumOscillators))
     return 0;
-  const std::string id = vital::source_types::slotPrefix(oscillator) + "braids_model";
-  float value = 0.0f;
-  if (auto* bridge = parameterBridge(id))
-    value = engineValueFor(bridge);
-  else {
-    const auto& controls = synth_.getControls();
-    const auto found = controls.find(id);
-    if (found != controls.end() && found->second != nullptr)
-      value = found->second->value();
-  }
-  return jlimit(0, vital::braids_engine::kNumModels - 1, roundToInt(value));
+  return jlimit(0, vital::braids_engine::kNumModels - 1, roundToInt(sourceSlotValue(oscillator, "braids_model")));
+}
+
+int SynthEditor::granularRowKey(int oscillator) const {
+  if (!isPositiveAndBelow(oscillator, vital::kNumOscillators))
+    return 0;
+  const auto on = [&](const char* suffix) { return roundToInt(sourceSlotValue(oscillator, suffix)) >= 1 ? 1 : 0; };
+  return on("granular_mode") | on("granular_timing_mode") << 1 | on("granular_size_mode") << 2 |
+         on("granular_midi_density") << 3 | on("granular_keytrack") << 4;
+}
+
+bool SynthEditor::isGranularRowRelevant(int oscillator, const String& suffix) const {
+  // What the engine reads (GranularSource::process): Play-through moves the
+  // playhead at Speed and never reads Position, Manual the reverse; grid
+  // timing replaces Density and MIDI density with Grid rate, and MIDI density
+  // replaces Density; Grid Steps reads Grid length and Grid rate instead of
+  // Grain size; Root key counts only with Keytrack on.
+  const auto on = [&](const char* name) { return roundToInt(sourceSlotValue(oscillator, name)) >= 1; };
+  const bool manual = on("granular_mode");
+  const bool grid_timing = on("granular_timing_mode");
+  const bool grid_size = on("granular_size_mode");
+  if (suffix == "speed") return !manual;
+  if (suffix == "position") return manual;
+  if (suffix == "density") return !grid_timing && !on("granular_midi_density");
+  if (suffix == "midi_density") return !grid_timing;
+  if (suffix == "grid_rate") return grid_timing || grid_size;
+  if (suffix == "grain_size") return !grid_size;
+  if (suffix == "grid_length") return grid_size;
+  if (suffix == "root_key") return on("granular_keytrack");
+  return true;
 }
 
 int SynthEditor::sourceSlotType(int oscillator) const {

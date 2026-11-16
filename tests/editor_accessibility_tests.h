@@ -2999,6 +2999,49 @@ namespace {
     editor.removeFromDesktop();
   }
 
+  // The Granular oscillator shows only the rows its Mode, Timing mode, Size
+  // mode, MIDI density and Keytrack read, and a change of any of them rebuilds
+  // the rows.
+  void testGranularRows() {
+    SynthPlugin synth;
+    synth.valueChanged("osc_1_type", static_cast<float>(vital::source_types::kGranular));
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    pumpEditorEvents();
+
+    const String prefix = "osc_1_granular_";
+    const auto shown = [&](const char* suffix) { return editor.controlForParameter(prefix + suffix) != nullptr; };
+    const auto expectRows = [&](const char* when, std::initializer_list<const char*> visible,
+                                std::initializer_list<const char*> hidden) {
+      for (const char* suffix : visible)
+        expect(shown(suffix), std::string("Granular ") + when + ": " + suffix + " has a row");
+      for (const char* suffix : hidden)
+        expect(!shown(suffix), std::string("Granular ") + when + ": " + suffix + " has no row");
+    };
+    const auto set = [&](const char* suffix, float value) {
+      synth.valueChanged((prefix + suffix).toStdString(), value);
+      editor.pollStateNow();
+      pumpEditorEvents();
+    };
+    expectRows("by default", { "speed", "density", "midi_density", "grain_size", "root_key" },
+               { "position", "grid_rate", "grid_length" });
+    set("mode", 1.0f);
+    expectRows("in Manual", { "position" }, { "speed" });
+    set("timing_mode", 1.0f);
+    expectRows("on the tempo grid", { "grid_rate", "grain_size" }, { "density", "midi_density" });
+    set("timing_mode", 0.0f);
+    set("midi_density", 1.0f);
+    expectRows("with MIDI density", { "midi_density" }, { "density", "grid_rate" });
+    set("size_mode", 1.0f);
+    expectRows("in Grid Steps", { "grid_length", "grid_rate" }, { "grain_size" });
+    set("keytrack", 0.0f);
+    expectRows("without Keytrack", { "transpose" }, { "root_key" });
+
+    editor.removeFromDesktop();
+  }
+
   // The EQ gives each band its own group. Mid Side EQ nests the bands of each
   // channel in a Mid group and a Side group.
   void testEqualizerBandGroups() {
@@ -3534,17 +3577,18 @@ namespace {
     slot_ids::useLegacySourceTypes(synth);
     SynthEditor editor(synth);
     pumpEditorEvents();
+    // Size mode decides which rows show, so it is a menu, named after its choices.
     const auto valueText = [&]() {
-      auto* control = dynamic_cast<Slider*>(titled(editor, "6 Granular size mode"));
-      expect(control != nullptr, "Granular size mode must be a named choice, not an on/off toggle");
-      auto handler = control ? control->createAccessibilityHandler() : nullptr;
-      auto* value = handler ? handler->getValueInterface() : nullptr;
-      return value ? value->getCurrentValueAsString() : String();
+      auto* control = dynamic_cast<ComboBox*>(editor.controlForParameter(String(slot_ids::id("granular_size_mode"))));
+      expect(control != nullptr, "Granular size mode must be a menu of named choices, not an on/off toggle");
+      return control ? control->getText() : String();
     };
     expect(valueText() == "Milliseconds", "Granular size mode reads Milliseconds by default");
     synth.parameterChanged(slot_ids::id("granular_size_mode"), 1.0f);
+    editor.pollStateNow();
     pumpEditorEvents();
-    expect(valueText() == "Grid steps", "Granular size mode reads Grid steps when selected");
+    expect(valueText() == "Grid steps",
+           "Granular size mode reads Grid steps when selected (reads " + valueText().toStdString() + ")");
   }
 
   // Levels and amounts read as percentages of their range, 0% to 100% or

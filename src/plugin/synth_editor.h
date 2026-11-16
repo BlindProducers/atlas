@@ -549,6 +549,13 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     int sourceSlotType(int oscillator) const;
     void setAutomationProxyCallbacks(AccessibleParameterRow& row);
     int oscillatorModeKey(int oscillator) const;
+    // A slot parameter's engine value, from its host parameter or the control.
+    float sourceSlotValue(int oscillator, const char* suffix) const;
+    // The Granular settings that decide which of its rows show, as one number.
+    int granularRowKey(int oscillator) const;
+    // Whether a Granular row (its suffix after "granular_") does anything
+    // under the slot's Mode, Timing mode, Size mode, MIDI density and Keytrack.
+    bool isGranularRowRelevant(int oscillator, const String& suffix) const;
     bool refreshOscillatorModeRowsIfNeeded();
     bool refreshZoneCrossfadeRowIfNeeded();
     bool refreshEnvelopeAnalogRowsIfNeeded();
