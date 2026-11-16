@@ -17,6 +17,14 @@ namespace sample_navigation {
     return nullptr;
   }
 
+  ParameterSlider* findSlider(Component& parent, const String& title) {
+    if (auto* slider = dynamic_cast<ParameterSlider*>(&parent); slider != nullptr && parent.getTitle() == title)
+      return slider;
+    for (auto* child : parent.getChildren())
+      if (auto* found = findSlider(*child, title)) return found;
+    return nullptr;
+  }
+
   vital::Sample* source(SynthPlugin& synth, int target) {
     return synth.getSample(target == 2 ? slot_ids::kSpectralSlot : target == 1 ? slot_ids::kGranularSlot : slot_ids::kSampleSlot);
   }
@@ -138,9 +146,43 @@ namespace sample_navigation {
     }
   }
 
+  // Show as switches Start, End, Loop start and Loop end between percent,
+  // milliseconds and samples of the loaded file, for reading, typing and keys.
+  void testPositionUnits(const File& root) {
+    check(root.createDirectory().wasOk(), "config folder must be created");
+    LoadSave::setConfigFileForTesting(root.getChildFile("Atlas.config"));
+    SynthPlugin plugin;
+    slot_ids::useLegacySourceTypes(plugin);
+    std::array<float, 4800> audio {};
+    source(plugin, 0)->loadSample(audio.data(), audio.size(), 48000);
+    plugin.getControls().at("osc_5_sample_loop_start")->set(0.25f);
+    SynthEditor editor(plugin);
+    auto* slider = findSlider(editor, "5 Sample Loop Start");
+    check(slider != nullptr, "the Sample Loop Start row must be a slider");
+    if (slider == nullptr) return;
+    const auto reads = [&](const char* text, double adjustment) {
+      const String shown = slider->getTextFromValue(0.25);
+      check(shown == text, "Sample Loop Start must read " + std::string(text) + ", not " + shown.toStdString());
+      check(std::abs(slider->adjustmentValue(0.25) - adjustment) < 1e-6 &&
+            std::abs(slider->sliderValue(adjustment) - 0.25) < 1e-6,
+            std::string("keys must step Sample Loop Start in the units it reads: ") + text);
+    };
+    reads("25%", 25.0);
+    LoadSave::saveSamplePositionUnits(1);
+    reads("25 ms", 25.0);
+    LoadSave::saveSamplePositionUnits(2);
+    reads("1200", 1200.0);
+    check(slider->sliderValue(1200.4) == 0.25, "sample positions stay whole samples");
+    LoadSave::saveSamplePositionUnits(0);
+    reads("25%", 25.0);
+
+    LoadSave::setConfigFileForTesting(File());
+  }
+
   int run() {
     ScopedJuceInitialiser_GUI gui;
     const File root = File::getSpecialLocation(File::tempDirectory).getNonexistentChildFile("atlas_sample_ui", {}, false);
+    testPositionUnits(root.getChildFile("Config"));
     testRestoredNavigation(root);
     testLegacyAndPortableStates();
     check(root.deleteRecursively(), "sample fixtures must be removed");

@@ -417,10 +417,15 @@ namespace {
     return vital::source_types::typeForParameterSuffix(suffix.toStdString()) >= 0 ? suffix : id;
   }
 
-  bool isSampleLoopPointParameter(const String& id) {
+  // The Sample type's position rows, which read in one unit chosen together.
+  bool isSamplePositionParameter(const String& id) {
     const String legacy = legacySourceId(id);
-    return legacy == "sample_loop_start" || legacy == "sample_loop_end";
+    return legacy == "sample_start" || legacy == "sample_end" ||
+           legacy == "sample_loop_start" || legacy == "sample_loop_end";
   }
+
+  enum SamplePositionUnits { kSamplePositionPercent, kSamplePositionMilliseconds, kSamplePositionSamples };
+  const char* const kSamplePositionUnitNames[] = { "Percent", "Milliseconds", "Samples" };
 
   String accessibleParameterText(const ValueBridge& bridge, double normalized_value) {
     const String distortion_text = oscillatorDistortionValueText(bridge, normalized_value);
@@ -6694,9 +6699,21 @@ class AccessibleParameterRow : public Component {
       updateAccessibleCommand();
     }
 
-    void setFineTuneCallbacks(std::function<bool()> getState, std::function<void()> toggle) {
-      fine_tune_state_ = std::move(getState);
-      fine_tune_toggle_ = std::move(toggle);
+    // A Show as submenu in the context menu: the units the row can read in,
+    // the one it reads in now and the choice of another.
+    void setUnitsCallbacks(StringArray names, std::function<int()> current, std::function<void(int)> choose) {
+      units_names_ = std::move(names);
+      units_current_ = std::move(current);
+      units_choose_ = std::move(choose);
+    }
+
+    ParameterSlider& slider() { return slider_; }
+
+    // The value reads in other units now: show and say it again.
+    void refreshValueText() {
+      if (!use_combo_control_ && !use_toggle_control_)
+        slider_.updateText();
+      notifyDisplayChanged();
     }
 
     void setFxAutomationCallbacks(std::function<String(const String&)> assignmentName,
@@ -6885,9 +6902,9 @@ class AccessibleParameterRow : public Component {
       kContextClearMidi,
       kContextRenameMacro,
       kContextToggleBipolar,
-      kContextFineTune,
       kContextAutomateFx,
       kContextRemoveFxAutomation,
+      kContextUnitsBase = 500,
       kContextAddModulationBase = 1000,
       kContextEditModulationBase = 2000,
       kContextRemoveModulationBase = 3000,
@@ -6921,8 +6938,13 @@ class AccessibleParameterRow : public Component {
       if (!is_toggle && slider_.onTextEntryCommand)
         menu.addItem(kContextTypeValue, "Type a value...");
       menu.addItem(kContextResetDefault, "Reset to default");
-      if (fine_tune_toggle_)
-        menu.addItem(kContextFineTune, "Fine tune", true, fine_tune_state_ && fine_tune_state_());
+      if (!units_names_.isEmpty()) {
+        PopupMenu units_menu;
+        const int current = units_current_ ? units_current_() : -1;
+        for (int i = 0; i < units_names_.size(); ++i)
+          units_menu.addItem(kContextUnitsBase + i, units_names_[i], true, i == current);
+        menu.addSubMenu("Show as", units_menu);
+      }
       if (fx_automation_change_assignment_) {
         if (fx_automation_slot.isEmpty())
           menu.addItem(kContextAutomateFx, "Automate");
@@ -6983,6 +7005,12 @@ class AccessibleParameterRow : public Component {
           return;
         }
 
+        if (result >= kContextUnitsBase && result < kContextUnitsBase + units_names_.size()) {
+          if (units_choose_)
+            units_choose_(result - kContextUnitsBase);
+          return;
+        }
+
         switch (result) {
           case kContextTypeValue:
             if (slider_.onTextEntryCommand)
@@ -7007,10 +7035,6 @@ class AccessibleParameterRow : public Component {
           case kContextToggleBipolar:
             if (extra_command_callback_)
               extra_command_callback_(parameter_id, KeyPress('b', ModifierKeys(), 'b'), *invoked);
-            break;
-          case kContextFineTune:
-            if (fine_tune_toggle_)
-              fine_tune_toggle_();
             break;
           case kContextAutomateFx:
             if (fx_automation_change_assignment_)
@@ -7060,8 +7084,9 @@ class AccessibleParameterRow : public Component {
     std::function<void(const String&, const String&, Component&)> modulation_remove_callback_;
     std::function<void(const String&, Component&, bool)> midi_learn_callback_;
     std::function<bool(const String&, const KeyPress&, Component&)> extra_command_callback_;
-    std::function<bool()> fine_tune_state_;
-    std::function<void()> fine_tune_toggle_;
+    StringArray units_names_;
+    std::function<int()> units_current_;
+    std::function<void(int)> units_choose_;
     std::function<String(const String&)> fx_automation_assignment_name_;
     std::function<void(const String&, bool)> fx_automation_change_assignment_;
     std::function<void(const String&, bool)> fx_automation_gesture_;
@@ -8496,15 +8521,12 @@ std::unique_ptr<AccessibleParameterRow> SynthEditor::buildAccessibleParameterRow
         "Set the MIDI note that plays the loaded sample at its original pitch", true);
   }
 
-  if (isSampleLoopPointParameter(parameter_id)) {
-    return std::make_unique<AccessibleParameterRow>(
+  if (isSamplePositionParameter(parameter_id)) {
+    auto row = std::make_unique<AccessibleParameterRow>(
         parameter, bridge->getName(128),
-        [this, bridge](double value) -> String {
-          const int length = sampleLoopPointLength(bridge->getParameterId());
-          if (fine_tune_sample_loop_ && length > 0)
-            return String(juce::roundToInt(value * length));
-          return accessibleParameterText(*bridge, value);
-        });
+        [this, bridge](double value) { return samplePositionText(*bridge, value); });
+    row->setValueFromText([this, bridge](const String& text) { return samplePositionValue(*bridge, text); });
+    return row;
   }
 
   // An LFO's Frequency reads in seconds or, with Sync on Hertz, in Hz.
@@ -8862,28 +8884,90 @@ std::unique_ptr<AccessibleParameterRow> SynthEditor::buildAccessibleParameterRow
                                                   accessibleParameterTitle(sectionName, parameter.getName(128)));
 }
 
-int SynthEditor::sampleLoopPointLength(const String& parameterId) const {
+vital::Sample* SynthEditor::samplePositionSample(const String& parameterId) const {
   const int slot = sourceSlotForId(parameterId);
-  auto* sample = isPositiveAndBelow(slot, vital::kNumOscillators) ? synth_.getSample(slot) : nullptr;
-  return sample != nullptr ? sample->originalLength() : 0;
+  return isPositiveAndBelow(slot, vital::kNumOscillators) ? synth_.getSample(slot) : nullptr;
 }
 
-void SynthEditor::toggleSampleLoopFineTune() {
-  fine_tune_sample_loop_ = !fine_tune_sample_loop_;
-  for (auto& row : rows_) {
-    if (row != nullptr && isSampleLoopPointParameter(row->parameterId()))
-      row->notifyDisplayChanged();
+namespace {
+  // How many milliseconds or samples the loaded file spans, or 0 while there
+  // is no file or the rows read percent.
+  double samplePositionFileSpan(const vital::Sample* sample, int units) {
+    const int length = sample != nullptr ? sample->originalLength() : 0;
+    if (length <= 0 || units == kSamplePositionPercent)
+      return 0.0;
+    if (units == kSamplePositionSamples)
+      return length;
+    return sample->sampleRate() > 0 ? length * 1000.0 / sample->sampleRate() : 0.0;
   }
-  postPluginAnnouncement(String("Sample loop fine tune ") +
-                             (fine_tune_sample_loop_ ? "on, sample numbers" : "off, percent"),
+}
+
+String SynthEditor::samplePositionText(const ValueBridge& bridge, double value) const {
+  const int units = LoadSave::samplePositionUnits();
+  const double span = samplePositionFileSpan(samplePositionSample(bridge.getParameterId()), units);
+  if (span <= 0.0)
+    return accessibleParameterText(bridge, value);
+  if (units == kSamplePositionSamples)
+    return String(juce::roundToInt(value * span));
+  return compactFloat(static_cast<float>(value * span), 1) + " ms";
+}
+
+// Typed text in the unit it names (%, ms, s or samples), otherwise in the
+// units the rows show.
+double SynthEditor::samplePositionValue(const ValueBridge& bridge, const String& text) const {
+  const String trimmed = text.trim().toLowerCase();
+  int units = LoadSave::samplePositionUnits();
+  double scale = 1.0;
+  if (trimmed.endsWith("%"))
+    units = kSamplePositionPercent;
+  else if (trimmed.endsWith("samples") || trimmed.endsWith("sample"))
+    units = kSamplePositionSamples;
+  else if (trimmed.endsWith("ms"))
+    units = kSamplePositionMilliseconds;
+  else if (trimmed.endsWith("s")) {
+    units = kSamplePositionMilliseconds;
+    scale = 1000.0;
+  }
+  const double span = samplePositionFileSpan(samplePositionSample(bridge.getParameterId()), units);
+  return jlimit(0.0, 1.0, trimmed.getDoubleValue() * scale / (span > 0.0 ? span : 100.0));
+}
+
+void SynthEditor::setSamplePositionUnits(int units) {
+  LoadSave::saveSamplePositionUnits(units);
+  for (auto& row : rows_) {
+    if (row != nullptr && isSamplePositionParameter(row->parameterId()))
+      row->refreshValueText();
+  }
+  postPluginAnnouncement("Sample positions in " + String(kSamplePositionUnitNames[units]).toLowerCase(),
                          AccessibilityHandler::AnnouncementPriority::high);
 }
 
-void SynthEditor::wireSampleLoopFineTune(AccessibleParameterRow& row) {
-  if (!isSampleLoopPointParameter(row.parameterId()))
+void SynthEditor::wireSamplePositionUnits(AccessibleParameterRow& row) {
+  const String parameter_id = row.parameterId();
+  if (!isSamplePositionParameter(parameter_id))
     return;
-  row.setFineTuneCallbacks([this] { return fine_tune_sample_loop_; },
-                           [this] { toggleSampleLoopFineTune(); });
+  row.setUnitsCallbacks(StringArray(kSamplePositionUnitNames, 3),
+                        [] { return LoadSave::samplePositionUnits(); },
+                        [this](int units) { setSamplePositionUnits(units); });
+  // Keys step one percent, one millisecond or one sample, whichever the row
+  // shows; samples stay whole, so Shift arrows step a whole sample too.
+  auto file_span = [this, parameter_id] {
+    return samplePositionFileSpan(samplePositionSample(parameter_id), LoadSave::samplePositionUnits());
+  };
+  ParameterSlider& slider = row.slider();
+  slider.toAdjustmentValue = [file_span](double value) {
+    const double span = file_span();
+    return value * (span > 0.0 ? span : 100.0);
+  };
+  slider.fromAdjustmentValue = [file_span](double value) {
+    const double span = file_span();
+    if (span <= 0.0)
+      return value / 100.0;
+    if (LoadSave::samplePositionUnits() == kSamplePositionSamples)
+      value = std::round(value);
+    return value / span;
+  };
+  slider.adjustmentStep = [] { return 1.0; };
 }
 
 bool SynthEditor::shouldShowParameterInSection(const String& sectionName, AudioProcessorParameter* parameter) const {
@@ -9207,7 +9291,7 @@ std::unique_ptr<AccessibleParameterRow> SynthEditor::createConfiguredSectionRow(
                                                     Component& target) {
     return handleMacroShortcut(parameterId, key, target) || handleEffectShortcut(section_name, key, target);
   });
-  wireSampleLoopFineTune(*row);
+  wireSamplePositionUnits(*row);
   return row;
 }
 
@@ -20549,16 +20633,10 @@ void SynthEditor::applyParameterValue() {
   auto* bridge = parameterBridge(parameter_id);
   if (bridge != nullptr) {
     float value;
-    if (fine_tune_sample_loop_ && isSampleLoopPointParameter(parameter_id)) {
-      const int length = sampleLoopPointLength(parameter_id);
-      const double normalized = length > 0
-          ? modulation_amount_editor_.getText().trim().getDoubleValue() / length
-          : bridge->getValue();
-      value = static_cast<float>(jlimit(0.0, 1.0, normalized));
-    }
-    else {
+    if (isSamplePositionParameter(parameter_id))
+      value = static_cast<float>(samplePositionValue(*bridge, modulation_amount_editor_.getText()));
+    else
       value = static_cast<float>(parameterValueForText(*bridge, modulation_amount_editor_.getText()));
-    }
     const int macro_index = macroIndexForControlId(parameter_id);
     if (macro_index >= 0) {
       if (isMacroBipolar(macro_index)) {

@@ -528,9 +528,13 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
                                                                          const String& sectionName);
     std::unique_ptr<AccessibleParameterRow> buildAccessibleParameterRow(AudioProcessorParameter& parameter,
                                                                         const String& sectionName);
-    int sampleLoopPointLength(const String& parameterId) const;
-    void toggleSampleLoopFineTune();
-    void wireSampleLoopFineTune(AccessibleParameterRow& row);
+    // The Sample type's Start, End, Loop start and Loop end read in percent,
+    // milliseconds or samples of the loaded file (LoadSave::samplePositionUnits).
+    vital::Sample* samplePositionSample(const String& parameterId) const;
+    String samplePositionText(const ValueBridge& bridge, double value) const;
+    double samplePositionValue(const ValueBridge& bridge, const String& text) const;
+    void setSamplePositionUnits(int units);
+    void wireSamplePositionUnits(AccessibleParameterRow& row);
     bool shouldShowParameterInSection(const String& sectionName, AudioProcessorParameter* parameter) const;
     bool refreshFilterRowsIfNeeded();
     bool refreshSeedRowsIfNeeded();
@@ -1474,7 +1478,6 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     // An effect's mode changed: the rebuild it queued keeps the focused row.
     bool keep_switching_row_on_rebuild_ = false;
     std::vector<std::unique_ptr<ValueBridge>> internal_fx_bridges_;
-    bool fine_tune_sample_loop_ = false;
     std::map<String, std::vector<AudioProcessorParameter*>> sections_;
     std::map<String, StringArray> group_sections_;
     std::map<String, ValueBridge*> parameters_by_id_;

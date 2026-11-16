@@ -2347,6 +2347,12 @@ void LoadSave::saveDisplayHzFrequency(bool hz_frequency) {
   saveJsonToConfig(data);
 }
 
+void LoadSave::saveSamplePositionUnits(int units) {
+  json data = getConfigJson();
+  data["sample_position_units"] = units;
+  saveJsonToConfig(data);
+}
+
 void LoadSave::savePresetAutoload(bool autoload) {
   json data = getConfigJson();
   data["preset_autoload"] = autoload;
@@ -2655,6 +2661,14 @@ bool LoadSave::displayHzFrequency() {
   const json& data = currentConfig(cache);
   const auto found = data.is_object() ? data.find("hz_frequency") : data.end();
   return found != data.end() && found->is_boolean() && found->get<bool>();
+}
+
+int LoadSave::samplePositionUnits() {
+  ConfigCache& cache = configCache();
+  std::lock_guard<std::mutex> lock(cache.mutex);
+  const json& data = currentConfig(cache);
+  const auto found = data.is_object() ? data.find("sample_position_units") : data.end();
+  return found != data.end() && found->is_number_integer() ? std::clamp(found->get<int>(), 0, 2) : 0;
 }
 
 bool LoadSave::presetAutoload() {

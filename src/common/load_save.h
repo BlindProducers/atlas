@@ -143,6 +143,9 @@ class LoadSave {
     static bool shouldAnimateWidgets();
     static bool shouldScanDownloads();
     static bool displayHzFrequency();
+    // How the Sample type's Start, End, Loop start and Loop end read, in every
+    // instance: 0 percent, 1 milliseconds, 2 samples.
+    static int samplePositionUnits();
     // The preset browser's Autoload preset when scrolling, shared by every instance.
     static bool presetAutoload();
     static bool authenticated();
@@ -163,6 +166,7 @@ class LoadSave {
     static void saveAnimateWidgets(bool animate_widgets);
     static void saveScanDownloads(bool scan_downloads);
     static void saveDisplayHzFrequency(bool display_hz);
+    static void saveSamplePositionUnits(int units);
     static void savePresetAutoload(bool autoload);
     static void saveAuthenticated(bool authenticated);
     static void saveWindowSize(float window_size);
