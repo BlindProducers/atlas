@@ -41,6 +41,7 @@ namespace vital {
         int length;
         int sample_rate;
         bool stereo;
+        mono_float peak = 0.0f;   // the loudest absolute sample, for Normalize
         std::vector<std::unique_ptr<mono_float[]>> left_buffers;
         std::vector<std::unique_ptr<mono_float[]>> left_loop_buffers;
         std::vector<std::unique_ptr<mono_float[]>> right_buffers;
@@ -69,6 +70,7 @@ namespace vital {
 
       force_inline int activeLength() const { return active_audio_data_.load()->length * (1 << kUpsampleTimes); }
       force_inline int activeSampleRate() const { return active_audio_data_.load()->sample_rate; }
+      force_inline mono_float activePeak() const { return active_audio_data_.load()->peak; }
 
       force_inline const mono_float* buffer() const { return current_data_->left_buffers[kUpsampleTimes].get() + 1; }
       void init();
@@ -151,6 +153,7 @@ namespace vital {
         kLoop,
         kBounce,
         kReverse,
+        kNormalize,
         kPlaybackMode,
         kStart,
         kEnd,
@@ -198,6 +201,7 @@ namespace vital {
       poly_float snapTranspose(poly_float input_midi, poly_float transpose, int quantize);
 
       poly_float pan_amplitude_;
+      poly_float normalize_gain_ = 1.0f;
       int transpose_quantize_;
       poly_float last_quantized_transpose_;
       poly_float sample_index_;

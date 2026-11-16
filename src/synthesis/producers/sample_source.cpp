@@ -293,6 +293,15 @@ namespace vital {
     }
   }
 
+  namespace {
+    mono_float peakOf(const mono_float* buffer, int size) {
+      mono_float peak = 0.0f;
+      for (int i = 0; i < size; ++i)
+        peak = std::max(peak, std::fabs(buffer[i]));
+      return peak;
+    }
+  }
+
   Sample::Sample() : name_(kDefaultName), current_data_(nullptr), active_audio_data_(nullptr) {
     init();
   }
@@ -307,6 +316,7 @@ namespace vital {
     std::unique_ptr<SampleData> old_data = std::move(data_);
     data_ = std::make_unique<SampleData>(size, sample_rate, false);
     createBandLimitedBuffers(data_->left_buffers, data_->left_loop_buffers, buffer, size);
+    data_->peak = peakOf(buffer, size);
 
     current_data_ = data_.get();
     while (active_audio_data_.load())
@@ -326,6 +336,7 @@ namespace vital {
     data_ = std::make_unique<SampleData>(size, sample_rate, true);
     createBandLimitedBuffers(data_->left_buffers, data_->left_loop_buffers, left_buffer, size);
     createBandLimitedBuffers(data_->right_buffers, data_->right_loop_buffers, right_buffer, size);
+    data_->peak = std::max(peakOf(left_buffer, size), peakOf(right_buffer, size));
 
     current_data_ = data_.get();
     while (active_audio_data_.load())
@@ -705,10 +716,20 @@ namespace vital {
     const int slope = static_cast<int>(input(kFilterSlope)->at(0)[0] + 0.5f);
     low_cut_.configure(low_cutoff, slope, getSampleRate());
     high_cut_.configure(high_cutoff, slope, getSampleRate());
+    // Normalize plays the file with its peak at 0 dB, up to 60 dB louder. The
+    // gain ramps over the block, so switching it does not click.
+    static constexpr mono_float kMaxNormalizeGain = 1000.0f;
+    const mono_float peak = sample_->activePeak();
+    const bool normalize = input(kNormalize)->at(0)[0] != 0.0f && peak > 0.0f;
+    const poly_float target_gain = normalize ? std::min(1.0f / peak, kMaxNormalizeGain) : 1.0f;
+    poly_float gain = normalize_gain_;
+    const poly_float delta_gain = (target_gain - gain) * sample_inc;
+    normalize_gain_ = target_gain;
     for (int i = 0; i < num_samples; ++i) {
+      gain += delta_gain;
       poly_float sample_value = raw_output[i];
       sample_value = high_cut_.tick(low_cut_.tick(sample_value));
-      raw_output[i] = sample_value;
+      raw_output[i] = sample_value * gain;
     }
 
     if (soft_sample_reset_mask.anyMask()) {

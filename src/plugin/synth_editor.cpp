@@ -2568,7 +2568,7 @@ namespace {
     }
     if (id.startsWith("sample_")) {
       const String suffix = id.fromFirstOccurrenceOf("sample_", false, false);
-      static const std::array<const char*, 31> sample_order = {{
+      static const std::array<const char*, 32> sample_order = {{
         "on",
         "solo",
         "destination",
@@ -2587,6 +2587,7 @@ namespace {
         "bounce",
         "reverse",
         "random_phase",
+        "normalize",
         "start",
         "end",
         "loop_start",
@@ -3989,6 +3990,7 @@ namespace {
       if (suffix == "loop") return "Loop the selected sample range while notes are held.";
       if (suffix == "bounce") return "Play the sample loop forward then backward.";
       if (suffix == "reverse") return "Play the sample backwards, from its end to its start.";
+      if (suffix == "normalize") return "Play the sample with its loudest peak at 0 dB.";
       if (suffix == "random_phase") return "Randomize the sample start point on each triggered note.";
       if (suffix == "start") return "Set where sample playback begins.";
       if (suffix == "end") return "Set where sample playback stops.";

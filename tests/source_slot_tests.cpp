@@ -1242,6 +1242,30 @@ namespace {
            "crossed loop points loop the part between them backwards");
   }
 
+  // Normalize plays a quiet file with its peak at 0 dB, and off plays it as it is.
+  void testSampleNormalize() {
+    SynthPlugin plugin;
+    preparePlugin(plugin);
+    setType(plugin, 0, vital::source_types::kSample);
+    set(plugin, "osc_1_on", 1.0f);
+    set(plugin, "env_1_attack", 0.0f);
+    const int length = kSampleRate / 4;
+    std::vector<float> audio(size_t(length), 0.0f);
+    audio[2000] = 0.25f;
+    plugin.getSample(0)->loadSample(audio.data(), int(audio.size()), kSampleRate);
+    set(plugin, "osc_1_sample_random_phase", 0.0f);
+    set(plugin, "osc_1_sample_keytrack", 0.0f);
+    set(plugin, "osc_1_sample_loop", 0.0f);
+    const float plain = peakNear(renderNote(plugin, length), 2000, 100);
+    set(plugin, "osc_1_sample_normalize", 1.0f);
+    const float normalized = peakNear(renderNote(plugin, length), 2000, 100);
+    set(plugin, "osc_1_sample_normalize", 0.0f);
+    const float plain_again = peakNear(renderNote(plugin, length), 2000, 100);
+    expect(plain > 0.01f && std::abs(normalized / plain - 4.0f) < 0.1f,
+           "Normalize raises a quarter-scale file to full scale: " + std::to_string(normalized / plain));
+    expect(plain_again == plain, "Normalize off plays the file at its own level again");
+  }
+
   // Reverse plays the file from its end, and its loop backwards.
   void testSampleReverse() {
     SynthPlugin plugin;
@@ -1279,6 +1303,7 @@ namespace {
 
   int behaviour() {
     testSampleLoopShift();
+    testSampleNormalize();
     testSampleReverse();
     testDetoursLeaveTypesUnchanged();
     testDefaultPatch();
