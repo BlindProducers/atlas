@@ -69,7 +69,7 @@ namespace {
       expectNavigationSpoken(*gate, spoken, KeyPress(KeyPress::rightKey), "Whole, step 2 of 32", "Trance gate editor");
       expectNavigationSpoken(*gate, spoken, KeyPress(KeyPress::rightKey), "Whole, step 3 of 32", "Trance gate editor");
       expectNavigationSpoken(*gate, spoken, KeyPress(KeyPress::leftKey), "Whole, step 2 of 32", "Trance gate editor");
-      expectNavigationSpoken(*gate, spoken, characterKey('h'), "Medium", "Trance gate editor step shape");
+      expectNavigationSpoken(*gate, spoken, KeyPress(KeyPress::upKey), "Medium", "Trance gate editor step shape");
       expectNavigationSpoken(*gate, spoken, characterKey('m'), "Muted", "Trance gate editor mute");
     }
 

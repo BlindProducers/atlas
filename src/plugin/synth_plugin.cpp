@@ -15,6 +15,7 @@
  */
 
 #include "synth_plugin.h"
+#include "trance_gate_sequence.h"
 #include "source_types.h"
 #include "legacy_source_aliases.h"
 #include "synth_editor.h"
@@ -904,6 +905,12 @@ void SynthPlugin::setFxBusEnabled(int bus, bool enabled) {
   markStateChanged();
 }
 
+namespace {
+  // Version 2 saves the Trance gate's Ramp up rising from silence (engine
+  // behaviour version 4); version 1 presets' Ramp up steps are migrated.
+  constexpr int kFxBusPresetVersion = 2;
+}
+
 json SynthPlugin::fxBusPreset(int bus) {
   if (!isPositiveAndBelow(bus, vital::kNumBuses + 1))
     return {};
@@ -943,12 +950,12 @@ json SynthPlugin::fxBusPreset(int bus) {
     }
     slots.push_back(std::move(entry));
   }
-  return { { "type", "Atlas FX Bus Preset" }, { "version", 1 }, { "slots", std::move(slots) } };
+  return { { "type", "Atlas FX Bus Preset" }, { "version", kFxBusPresetVersion }, { "slots", std::move(slots) } };
 }
 
 void SynthPlugin::clearFxBus(int bus) {
   String error;
-  loadFxBusPreset(bus, { { "type", "Atlas FX Bus Preset" }, { "version", 1 },
+  loadFxBusPreset(bus, { { "type", "Atlas FX Bus Preset" }, { "version", kFxBusPresetVersion },
                          { "slots", json::array() } }, error);
 }
 
@@ -956,10 +963,12 @@ bool SynthPlugin::loadFxBusPreset(int bus, const json& preset, String& error) {
   error = "The selected file is not a valid Atlas FX bus preset.";
   if (!isPositiveAndBelow(bus, vital::kNumBuses + 1) || !preset.is_object() ||
       !preset.count("type") || preset["type"] != "Atlas FX Bus Preset" ||
-      !preset.count("version") || preset["version"] != 1 ||
+      !preset.count("version") || !preset["version"].is_number_integer() ||
+      preset["version"] < 1 || preset["version"] > kFxBusPresetVersion ||
       !preset.count("slots") || !preset["slots"].is_array() ||
       preset["slots"].size() > vital::constants::kMaxEffectSlots)
     return false;
+  const int version = preset["version"].get<int>();
 
   struct SlotState {
     int type = 0;
@@ -1009,6 +1018,21 @@ bool SynthPlugin::loadFxBusPreset(int bus, const json& preset, String& error) {
             (details.value_scale == vital::ValueDetails::kIndexed && value != std::round(value)))
           return false;
         slot.parameters[id] = static_cast<float>(value);
+      }
+      if (version < 2 && effect == "trance_gate") {
+        for (int step = 1; step <= vital::trance_gate::kSteps; ++step) {
+          const std::string step_prefix = slot_prefix + "trance_gate_step_" + std::to_string(step) + "_";
+          const auto mode_entry = slot.parameters.find(step_prefix + "mode");
+          if (mode_entry == slot.parameters.end())
+            continue;
+          const auto value_entry = slot.parameters.find(step_prefix + "value");
+          int mode = static_cast<int>(std::round(mode_entry->second));
+          double level = value_entry == slot.parameters.end() ? 0.0 : value_entry->second;
+          if (!vital::trance_gate::migrateRampUp(level, mode))
+            continue;
+          mode_entry->second = static_cast<float>(mode);
+          slot.parameters[step_prefix + "value"] = static_cast<float>(level);
+        }
       }
       if (entry.count("impulse_response")) {
         if (effect != "convolution_reverb")

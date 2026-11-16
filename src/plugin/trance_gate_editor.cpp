@@ -20,7 +20,7 @@ TranceGateEditor::TranceGateEditor(State& state) : state_(state) {
 }
 
 String TranceGateEditor::helpText() {
-  return "Left/Right move between steps. G/H change the step's shape: Whole, Medium, Short, Ramp down or Ramp up. "
+  return "Left/Right move between steps. Up/Down change the step's shape: Whole, Medium, Short, Ramp down or Ramp up. "
          "M mutes or unmutes the step. Minus/Equals make the grid coarser/finer. "
          "Semicolon/Apostrophe shorten/lengthen the pattern. Backspace resets the pattern to its default. "
          "Navigation announces the step. Edits announce only what changed.";
@@ -103,7 +103,7 @@ bool TranceGateEditor::handleShortcut(const KeyPress& key) {
   const int code = key.getKeyCode();
   if (!shift && code == KeyPress::leftKey) { move(-1); return true; }
   if (!shift && code == KeyPress::rightKey) { move(1); return true; }
-  if (!shift && (character == 'g' || character == 'h')) { changeMode(character == 'h' ? 1 : -1); return true; }
+  if (!shift && (code == KeyPress::upKey || code == KeyPress::downKey)) { changeMode(code == KeyPress::upKey ? 1 : -1); return true; }
   if (!shift && character == 'm') { toggleMute(); return true; }
   if (!shift && code == KeyPress::backspaceKey) { resetPattern(); return true; }
   if (character == '-' || character == '_' || character == '=' || character == '+') {

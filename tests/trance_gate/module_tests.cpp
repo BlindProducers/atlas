@@ -115,7 +115,7 @@ int main() {
     Fixture wet(sr, os), mixed(sr, os), unmixed(sr, os);
     for (auto* f : { &wet, &mixed, &unmixed }) {
       f->clock.setPlaying(true); f->set("attack", 0); f->set("stop", 1);
-      f->set("step_1_value", -1); f->set("step_1_mode", 4);
+      f->set("step_1_mode", 4);
     }
     expect(wet.controls.count("trance_gate_release") == 0, "Release is removed from the DSP controls");
     mixed.set("mix", 0.37f); unmixed.set("mix", 0);
@@ -142,7 +142,7 @@ int main() {
     Fixture midi(sr, os), continuous(sr, os);
     for (auto* f : { &midi, &continuous }) {
       f->set("trigger", 1); f->set("attack", 0); f->set("grid", 5);
-      f->set("start", 1); f->set("stop", 1); f->set("step_1_value", -1);
+      f->set("start", 1); f->set("stop", 1);
       f->set("step_1_mode", 4);
       f->clock.noteOn(60, 0, 17);
     }
@@ -246,7 +246,12 @@ int main() {
         legacy["settings"].erase(prefix + "mix");
         legacy["settings"][prefix + "step_32_mode"] = 5;
         legacy["settings"][prefix + "release"] = 500;
+        // Ramp up before behaviour version 4: muted, at full level and between.
+        legacy["settings"][prefix + "step_1_value"] = -1; legacy["settings"][prefix + "step_1_mode"] = 4;
+        legacy["settings"].erase(prefix + "step_2_value"); legacy["settings"][prefix + "step_2_mode"] = 4;
+        legacy["settings"][prefix + "step_3_value"] = -0.5; legacy["settings"][prefix + "step_3_mode"] = 4;
       }
+      legacy["engine_behavior_version"] = 3;
       const auto data = legacy.dump();
       synth.setStateInformation(data.data(), static_cast<int>(data.size()));
       for (int chain = 0; chain <= vital::kNumBuses; ++chain) for (int slot = 1; slot <= 2; ++slot) {
@@ -256,6 +261,11 @@ int main() {
                synth.getControls().at(prefix + "step_32_mode")->value() == 4 &&
                synth.getControls().count(prefix + "release") == 0,
                "old patches default to full Mix, map removed shape to Ramp Up, and ignore Release");
+        const auto& controls = synth.getControls();
+        expect(controls.at(prefix + "step_1_value")->value() == 0 && controls.at(prefix + "step_1_mode")->value() == 4 &&
+               controls.at(prefix + "step_2_value")->value() == 0 && controls.at(prefix + "step_2_mode")->value() == 0 &&
+               controls.at(prefix + "step_3_value")->value() == 0 && controls.at(prefix + "step_3_mode")->value() == 4,
+               "old Ramp up steps keep their sound: muted ones ramp at full level, full ones become Whole");
       }
       synth.setStateInformation(saved.getData(), static_cast<int>(saved.getSize()));
     }
@@ -356,8 +366,8 @@ int main() {
       }
       auto handler = gate->createAccessibilityHandler();
       expect(handler && handler->getRole() == AccessibilityRole::group &&
-             handler->getDescription().startsWith("Bar 1 beat 1 0%, Step 1"),
-             "accessible group announces position before step number");
+             handler->getDescription().startsWith("Whole, step 1 of 32"),
+             "accessible group announces the shape and the step number");
       auto announcements = std::make_shared<std::vector<String>>();
       gate->announce = [announcements](const String& message) { announcements->push_back(message); };
       auto press = [&](const KeyPress& shortcut, const String& expected) {
@@ -366,15 +376,16 @@ int main() {
         expect(announcements->size() == 1 && announcements->front() == expected,
                "one concise announcement: " + expected.toStdString());
       };
-      // G and H change the current step's shape straight away, through the five shapes.
-      for (auto* shape : { "Medium", "Short", "Ramp down", "Ramp up", "Whole" }) press(key('h'), shape);
-      for (auto* shape : { "Ramp up", "Ramp down", "Short", "Medium", "Whole" }) press(key('g'), shape);
-      press(key('h'), "Medium");
-      press(key('h'), "Short");
+      // Up and Down change the current step's shape straight away, through the five shapes.
+      const KeyPress up(KeyPress::upKey), down(KeyPress::downKey);
+      for (auto* shape : { "Medium", "Short", "Ramp down", "Ramp up", "Whole" }) press(up, shape);
+      for (auto* shape : { "Ramp up", "Ramp down", "Short", "Medium", "Whole" }) press(down, shape);
+      press(up, "Medium");
+      press(up, "Short");
       expect(gate->read("step_1_mode") == 2 && gate->read("step_2_mode") == 0,
              "shape edits apply only to the current step");
       gate->write({ { "grid", 4 } });
-      press(KeyPress(KeyPress::rightKey), "Bar 1 beat 1 25%, Step 2, Whole");
+      press(KeyPress(KeyPress::rightKey), "Whole, step 2 of 32");
       expect(!gate->statusText().contains("grid") && !gate->statusText().contains("range") &&
              !gate->statusText().contains("gain") && !gate->statusText().contains("curve"),
              "navigation omits global, gain and curve information");
@@ -382,11 +393,11 @@ int main() {
       press(key('m'), "Muted");
       expect(gate->read("step_2_value") == -1 && std::abs(gate->read("step_1_value")) < 1.0e-6,
              "M mutes only the current step");
-      expect(gate->statusText().endsWith("Step 2, Whole, muted"), "a muted step says so: " + gate->statusText().toStdString());
+      expect(gate->statusText().endsWith("Whole, step 2 of 32, muted"), "a muted step says so: " + gate->statusText().toStdString());
       press(key('m'), "Unmuted");
       expect(std::abs(gate->read("step_2_value")) < 1.0e-6, "M again brings it back at full level");
       gate->write({ { "step_2_value", 0.5f } });
-      expect(gate->statusText().endsWith("Step 2, Whole, level 150%"),
+      expect(gate->statusText().endsWith("Whole, step 2 of 32, level 150%"),
              "a level a preset set is read out: " + gate->statusText().toStdString());
       press(key('m'), "Muted");
       press(key('m'), "Unmuted");
@@ -412,10 +423,8 @@ int main() {
       const auto before_status = gate->statusText();
       // Everything else is gone: the level, curve and apply keys, Shift M,
       // Delete, and keys that were never the editor's.
-      std::vector<KeyPress> removed { KeyPress(KeyPress::upKey), KeyPress(KeyPress::downKey),
-                                      KeyPress(KeyPress::deleteKey),
-                                      key('m', true), key('g', true), key('h', true) };
-      for (char c : std::string("[],.<>ikaserjlcvd1234567890")) {
+      std::vector<KeyPress> removed { KeyPress(KeyPress::deleteKey), key('m', true) };
+      for (char c : std::string("[],.<>ikaserjlcvdgh1234567890")) {
         removed.push_back(key(c)); removed.push_back(key(c, true));
       }
       for (char c : std::string("!@#$%^&*()")) removed.push_back(key(c, true));
@@ -439,7 +448,7 @@ int main() {
       expect(steps_default && gate->read("grid") == 2 && gate->read("start") == 1 && gate->read("stop") == 32,
              "every step is Whole at full level, with the default grid and range");
       expect(std::abs(gate->read("mix") - 0.4f) < 1.0e-6, "the Trance gate's other controls stay");
-      expect(gate->statusText().startsWith("Bar 1 beat 1 0%, Step 1, Whole"), "and the editor is back on step 1");
+      expect(gate->statusText().startsWith("Whole, step 1 of 32"), "and the editor is back on step 1");
       expect(std::abs(gates[1]->read("step_32_value") + 0.34f) < 1.0e-6,
              "editing never changes another Trance gate instance");
     }

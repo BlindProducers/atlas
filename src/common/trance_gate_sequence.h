@@ -17,14 +17,16 @@ namespace vital::trance_gate {
   }
   // BP StepGate 1.1's five retained shapes and attack/decay/sustain.
   // Medium/Short silence the shape at the gate boundary, so release was inaudible.
+  // Ramp up differs from the script: it rises from silence to the step's
+  // level, as Ramp down falls from it, where the script rose from the step's
+  // level to full (so a full-level step did not ramp at all).
   inline double targetGain(const Step& step, const Envelope& adsr, double phase, double duration) {
     const double base = step.value + 1.0;
     const double gate = step.mode == 1 ? 0.5 : step.mode == 2 ? 0.25 : 1.001;
     double shape = phase < gate ? base : 0.0;
     if (step.mode >= 3) {
       const double curved = precisionCurve(phase, step.curve);
-      if (step.mode == 3) shape = base * (1.0 - curved);
-      else shape = base + (1.0 - base) * curved;
+      shape = step.mode == 3 ? base * (1.0 - curved) : base * curved;
     }
     const double seconds = phase * duration;
     double env = 0.0;
@@ -35,6 +37,17 @@ namespace vital::trance_gate {
           : adsr.sustain;
     }
     return shape * env;
+  }
+  // Keeps a Ramp up step saved before behaviour version 4 sounding as it did:
+  // a muted one rose from silence to full, which it now does at full level,
+  // and a full-level one held its level, which Whole does. One in between
+  // rose to full, and now does so from silence, the closest the shapes offer.
+  // Returns false for a step that is not Ramp up.
+  inline bool migrateRampUp(double& value, int& mode) {
+    if (mode != 4) return false;
+    mode = std::abs(value) < 0.005 ? 0 : 4;
+    value = 0.0;
+    return true;
   }
   inline int stepIndex(double whole_steps, int start, int stop) {
     const int range = std::abs(stop - start) + 1;

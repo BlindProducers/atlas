@@ -11872,7 +11872,7 @@ String SynthEditor::keyboardHelpText() {
       "ATLAS keyboard shortcuts\n"
       "\nTrance gate editor\n"
       "  Left/Right move between steps.\n"
-      "  G/H change the step's shape: Whole, Medium, Short, Ramp down or Ramp up.\n"
+      "  Up/Down change the step's shape: Whole, Medium, Short, Ramp down or Ramp up.\n"
       "  M mutes or unmutes the step.\n"
       "  Minus/Equals make the grid coarser/finer. Semicolon/Apostrophe shorten/lengthen the pattern.\n"
       "  Backspace resets the pattern to its default: every step Whole at full level, grid and length too.\n"
@@ -25138,13 +25138,40 @@ void SynthEditor::showEffectPresetBrowserMenu(const String& sectionName, int slo
                      });
 }
 
+namespace {
+  // Version 2 saves the Trance gate's Ramp up rising from silence
+  // (engine behaviour version 4).
+  constexpr int kFxPresetVersion = 2;
+
+  // A version 1 Trance gate preset's Ramp up steps, as LoadSave migrates a
+  // patch's (trance_gate::migrateRampUp).
+  void migrateFxPreset(json& data, const String& effect_id) {
+    const int version = data.count("version") && data["version"].is_number() ? data["version"].get<int>() : 1;
+    if (version >= 2 || effect_id != "trance_gate")
+      return;
+    auto& parameters = data["parameters"];
+    for (int step = 1; step <= vital::trance_gate::kSteps; ++step) {
+      const std::string prefix = "trance_gate_step_" + std::to_string(step) + "_";
+      if (!parameters.count(prefix + "mode") || !parameters[prefix + "mode"].is_number())
+        continue;
+      int mode = roundToInt(parameters[prefix + "mode"].get<float>());
+      double value = parameters.count(prefix + "value") && parameters[prefix + "value"].is_number()
+          ? parameters[prefix + "value"].get<double>() : 0.0;
+      if (!vital::trance_gate::migrateRampUp(value, mode))
+        continue;
+      parameters[prefix + "mode"] = static_cast<float>(mode);
+      parameters[prefix + "value"] = static_cast<float>(value);
+    }
+  }
+}
+
 bool SynthEditor::loadEffectPresetIntoSlot(const String& sectionName, int slot, const File& file) {
   const int type = effectSlotType(sectionName, slot);
   if (type <= 0 || !file.existsAsFile())
     return false;
   const String effect_id = strings::kEffectOrder[type - 1];
   const String effect_name = effectName(type - 1);
-  const json data = json::parse(file.loadFileAsString().toStdString(), nullptr, false);
+  json data = json::parse(file.loadFileAsString().toStdString(), nullptr, false);
   if (data.is_discarded() || !data.is_object() || !data.count("parameters") || !data["parameters"].is_object()) {
     showWarningBox("Unable to import FX preset", "The selected file is not a valid Atlas FX preset.");
     postPluginAnnouncement("Unable to import FX preset", AccessibilityHandler::AnnouncementPriority::high);
@@ -25157,6 +25184,7 @@ bool SynthEditor::loadEffectPresetIntoSlot(const String& sectionName, int slot, 
                            AccessibilityHandler::AnnouncementPriority::high);
     return false;
   }
+  migrateFxPreset(data, effect_id);
 
   const String slot_prefix = effectSlotPrefix(sectionName, slot);
   const auto& controls = synth_.getControls();
@@ -25268,7 +25296,7 @@ void SynthEditor::saveEffectPresetFromSlot(const String& sectionName, int slot) 
       return;
     json data;
     data["type"] = "Atlas FX Preset";
-    data["version"] = 1;
+    data["version"] = kFxPresetVersion;
     data["effect"] = effect_id.toStdString();
     data["name"] = file.getFileNameWithoutExtension().toStdString();
     data["parameters"] = parameters;
@@ -25352,7 +25380,7 @@ void SynthEditor::saveEffectPresetFile(const String& sectionName) {
     if (file != File()) {
       json data;
       data["type"] = "Atlas FX Preset";
-      data["version"] = 1;
+      data["version"] = kFxPresetVersion;
       data["effect"] = effect_id.toStdString();
       data["name"] = accessibleSectionTitle(sectionName).toStdString();
       data["parameters"] = parameters;

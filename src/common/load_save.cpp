@@ -30,6 +30,7 @@
 #include "sample_source.h"
 #include "synth_base.h"
 #include "synth_constants.h"
+#include "trance_gate_sequence.h"
 #include "synth_parameters.h"
 #include "synth_oscillator.h"
 #include "synth_strings.h"
@@ -821,6 +822,41 @@ namespace {
           settings[slot_prefix + "destroy_drive"] = 25.0f;
         if (!settings.count(slot_prefix + "destroy_level"))
           settings[slot_prefix + "destroy_level"] = 0.5f;
+      }
+    };
+    migrate_chain("");
+    for (int bus = 1; bus <= vital::kNumBuses; ++bus)
+      migrate_chain("bus_" + std::to_string(bus) + "_");
+  }
+
+  // Before behaviour version 4 a Trance gate's Ramp up rose from the step's
+  // level to full. Each Ramp up step in a slot holding a Trance gate gets the
+  // value and shape that sound the same now (trance_gate::migrateRampUp).
+  // A level left out of the state is the default, full.
+  void migrateTranceGateRampUp(json& settings) {
+    if (!settings.is_object())
+      return;
+    auto migrate_chain = [&settings](const std::string& chain_prefix) {
+      for (int slot = 1; slot <= vital::constants::kMaxEffectSlots; ++slot) {
+        const std::string prefix = chain_prefix + "fx_slot_" + std::to_string(slot) + "_trance_gate_step_";
+        float type = 0.0f;
+        if (!getJsonFloat(settings, chain_prefix + "fx_slot_" + std::to_string(slot) + "_type", type) ||
+            static_cast<int>(type + 0.5f) != vital::constants::kTranceGate + 1)
+          continue;
+        for (int step = 1; step <= vital::trance_gate::kSteps; ++step) {
+          const std::string step_prefix = prefix + std::to_string(step) + "_";
+          float mode_value = 0.0f;
+          float level = 0.0f;
+          if (!getJsonFloat(settings, step_prefix + "mode", mode_value))
+            continue;
+          getJsonFloat(settings, step_prefix + "value", level);
+          int mode = static_cast<int>(mode_value + 0.5f);
+          double value = level;
+          if (!vital::trance_gate::migrateRampUp(value, mode))
+            continue;
+          settings[step_prefix + "mode"] = static_cast<float>(mode);
+          settings[step_prefix + "value"] = static_cast<float>(value);
+        }
       }
     };
     migrate_chain("");
@@ -1764,7 +1800,8 @@ bool LoadSave::jsonToState(SynthBase* synth, std::map<std::string, String>& save
   // presets are intentionally migrated to the corrected clock/event rules;
   // subsequent saves persist this marker instead of silently changing again.
   // Version 3 is Destroy's new Drive and Level defaults
-  // (migrateDestroyDefaults).
+  // (migrateDestroyDefaults). Version 4 is the Trance gate's Ramp up shape
+  // rising from silence (migrateTranceGateRampUp).
   int engine_behavior_version = 1;
   if (data.count("engine_behavior_version") && data["engine_behavior_version"].is_number_integer())
     engine_behavior_version = data["engine_behavior_version"].get<int>();
@@ -1785,6 +1822,8 @@ bool LoadSave::jsonToState(SynthBase* synth, std::map<std::string, String>& save
   migrateSourceDestinations(settings);
   if (engine_behavior_version < 3)
     migrateDestroyDefaults(settings);
+  if (engine_behavior_version < 4)
+    migrateTranceGateRampUp(settings);
   json wavetables = arrayFieldOrEmpty(settings, "wavetables");
   json lfos = arrayFieldOrEmpty(settings, "lfos");
 

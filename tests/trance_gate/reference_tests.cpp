@@ -82,8 +82,17 @@ int main(int argc, char** argv) {
       ref.set("slider7", variant % 3 == 0 ? 0 : variant % 3 == 1 ? 5 : 500);
       for (int i = 0; i < 32; ++i) {
         auto id = "step_" + std::to_string(i + 1) + "_";
-        set(id + "value", (i % 5) * 0.5f - 1.0f, 8 + i * 3);
-        set(id + "mode", (i + mode) % vital::trance_gate::kModes, 9 + i * 3);
+        const int step_mode = (i + mode) % vital::trance_gate::kModes;
+        // Atlas's Ramp up rises from silence to the step's level; the
+        // script's rises from the step's level to full. They agree only for
+        // a full-level step in Atlas and a muted one in the script.
+        if (step_mode == 4) {
+          controls.at("trance_gate_" + id + "value")->set(0.0f);
+          ref.set("slider" + std::to_string(8 + i * 3), -1.0f);
+        }
+        else
+          set(id + "value", (i % 5) * 0.5f - 1.0f, 8 + i * 3);
+        set(id + "mode", step_mode, 9 + i * 3);
         set(id + "curve", (i % 9) * 0.25f - 1.0f, 10 + i * 3);
       }
       ref.set("srate", rate * factor); ref.set("tempo", 135); ref.set("play_state", 1);
