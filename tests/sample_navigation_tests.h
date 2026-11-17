@@ -292,6 +292,33 @@ namespace sample_navigation {
       check(source(plugin, 0)->slices().size() == 17, "a second undo puts the removed slice back");
       history.redo();
       check(source(plugin, 0)->slices() == before, "redo removes it again");
+      // Period and Comma move the slice's pitch, Shift by a tenth, 0 puts it back.
+      // Removing left the cursor on slice 1: back to slice 2.
+      slices->handleShortcut(KeyPress(KeyPress::downKey));
+      slices->handleShortcut(KeyPress('.', ModifierKeys(), '.'));
+      slices->handleShortcut(KeyPress('.', ModifierKeys(), '.'));
+      history.commitPendingEdits();
+      check(source(plugin, 0)->slicePitches()[1] == 2.0f, "Period raises the slice's pitch by a semitone");
+      check(slices->statusText().endsWith("pitch +2 semitones"),
+            "the readout names the pitch: " + slices->statusText().toStdString());
+      slices->handleShortcut(KeyPress(',', ModifierKeys::shiftModifier, '<'));
+      history.commitPendingEdits();
+      check(std::abs(source(plugin, 0)->slicePitches()[1] - 1.9f) < 1e-6f, "Shift Comma lowers it by a tenth");
+      check(history.undoDescription().contains("pitch"), "pitch changes are undo steps");
+      // Page Up and Page Down move the gain, V turns the slice around, 0 puts all three back.
+      slices->handleShortcut(KeyPress(KeyPress::pageUpKey));
+      slices->handleShortcut(KeyPress(KeyPress::pageUpKey, ModifierKeys::shiftModifier, 0));
+      slices->handleShortcut(KeyPress('V', ModifierKeys(), 'v'));
+      history.commitPendingEdits();
+      const auto edited = source(plugin, 0)->sliceList();
+      check(std::abs(edited[1].gain - 1.1f) < 1e-3f && edited[1].reverse,
+            "Page Up raises the gain by 1 dB, Shift by a tenth, and V reverses the slice");
+      check(slices->statusText().endsWith("pitch +1.9 semitones, gain +1.1 dB, reversed"),
+            "the readout names the pitch, gain and direction: " + slices->statusText().toStdString());
+      slices->handleShortcut(KeyPress('0', ModifierKeys(), '0'));
+      history.commitPendingEdits();
+      const auto reset = source(plugin, 0)->sliceList();
+      check(reset[1].pitch == 0.0f && reset[1].gain == 0.0f && !reset[1].reverse, "0 puts the pitch, gain and direction back");
     }
     plugin.getControls().at("osc_5_sample_slice_by")->set(1.0f);
     SynthEditor transient_editor(plugin);

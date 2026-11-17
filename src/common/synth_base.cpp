@@ -452,12 +452,32 @@ std::string SynthBase::sampleSlicesUndoBlock(int slot) {
   return "settings/" + vital::source_types::slotPrefix(slot) + "sample_slices";
 }
 
-void SynthBase::setSampleSlices(int slot, const std::vector<int>& starts) {
+void SynthBase::setSampleSlices(int slot, const std::vector<int>& starts, const std::vector<vital::mono_float>& pitches) {
   vital::Sample* sample = getSample(slot);
   if (sample == nullptr)
     return;
   pauseProcessing(true);
-  sample->setSlices(starts);
+  sample->setSlices(starts, pitches);
+  pauseProcessing(false);
+  markStateChanged(sampleSlicesUndoBlock(slot));
+}
+
+void SynthBase::setSampleSlices(int slot, const std::vector<vital::SampleSlice>& slices) {
+  vital::Sample* sample = getSample(slot);
+  if (sample == nullptr)
+    return;
+  pauseProcessing(true);
+  sample->setSlices(slices);
+  pauseProcessing(false);
+  markStateChanged(sampleSlicesUndoBlock(slot));
+}
+
+void SynthBase::setSampleSlicesFromJson(int slot, const json& slices) {
+  vital::Sample* sample = getSample(slot);
+  if (sample == nullptr)
+    return;
+  pauseProcessing(true);
+  sample->slicesFromJson(slices);
   pauseProcessing(false);
   markStateChanged(sampleSlicesUndoBlock(slot));
 }

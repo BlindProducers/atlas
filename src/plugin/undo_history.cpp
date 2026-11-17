@@ -534,7 +534,7 @@ bool UndoHistory::capturePart(const std::string& scope, Blocks& blocks) {
     const int type_value = type == controls.end() || type->second == nullptr ? 0
                                                                               : static_cast<int>(type->second->value() + 0.5f);
     if (vital::source_types::describe(type_value).uses_sample && synth_.getSample(slot) != nullptr)
-      blocks[scope] = textOf(json(synth_.getSample(slot)->slices()));
+      blocks[scope] = textOf(synth_.getSample(slot)->slicesToJson());
     return true;
   }
   // Beside the patch: the preset file Save writes over, the host automation
@@ -875,17 +875,8 @@ void UndoHistory::applyLightBlock(const std::string& key, const Text& text) {
     synth_.setTags(stringIn(text));
   else if (const int macro = macroIndexForKey(key); macro >= 0)
     synth_.setMacroName(macro, stringIn(text));
-  else if (const int slot = sampleSlicesSlot(key); slot >= 0 && text != nullptr) {
-    const json slices = json::parse(*text, nullptr, false);
-    std::vector<int> starts;
-    if (slices.is_array()) {
-      for (const auto& start : slices) {
-        if (start.is_number_integer())
-          starts.push_back(start.get<int>());
-      }
-    }
-    synth_.setSampleSlices(slot, starts);
-  }
+  else if (const int slot = sampleSlicesSlot(key); slot >= 0 && text != nullptr)
+    synth_.setSampleSlicesFromJson(slot, json::parse(*text, nullptr, false));
   else if (key == "atlas/active_file") {
     const String path = stringIn(text);
     if (path.isEmpty())

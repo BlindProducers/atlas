@@ -387,8 +387,8 @@ json LoadSave::stateToJson(SynthBase* synth, const CriticalSection& critical_sec
     if (sample && vital::source_types::describe(type_value).uses_sample) {
       if (!sample->isDefault())
         settings_data[prefix + "sample"] = sample->stateToJson();
-      // The Slicer mode's slices, where each begins in samples of the file.
-      settings_data[prefix + "sample_slices"] = sample->slices();
+      // The Slicer mode's slices: where each begins in samples of the file, and its pitch.
+      settings_data[prefix + "sample_slices"] = sample->slicesToJson();
     }
 
     // A Multi-sample slot names its instrument (path and content hash);
@@ -587,14 +587,8 @@ void LoadSave::loadSlotSamples(SynthBase* synth, const json& settings) {
     }
     // The slices saved beside it; a preset without any starts from the grid.
     const auto slices = settings.find(key + "_slices");
-    if (slices != settings.end() && slices->is_array()) {
-      std::vector<int> starts;
-      for (const auto& start : *slices) {
-        if (start.is_number_integer())
-          starts.push_back(start.get<int>());
-      }
-      sample->setSlices(starts);
-    }
+    if (slices != settings.end() && (slices->is_array() || slices->is_object()))
+      sample->slicesFromJson(*slices);
     else
       sample->resetSlices();
   }

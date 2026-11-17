@@ -30,6 +30,16 @@ using json = nlohmann::json;
 
 namespace vital {
 
+  // A slice of the Sample type's Slicer mode as it is edited and saved:
+  // where it begins, in samples of the file, and its own pitch offset in
+  // semitones, gain in dB and direction.
+  struct SampleSlice {
+    int start = 0;
+    mono_float pitch = 0.0f;
+    mono_float gain = 0.0f;
+    bool reverse = false;
+  };
+
   class Sample {
     public:
       static constexpr int kDefaultSampleLength = 44100;
@@ -133,14 +143,31 @@ namespace vital {
       static constexpr int kMaxSlices = 128;
       static constexpr int kMinSliceLength = 64;
       static constexpr int kDefaultSliceDivisions = 16;
+      static constexpr mono_float kMaxSlicePitch = 24.0f;   // semitones, either way
+      static constexpr mono_float kMinSliceGain = -24.0f;   // dB
+      static constexpr mono_float kMaxSliceGain = 12.0f;
+      using Slice = SampleSlice;
+      // The slices for the audio thread, with each gain as an amplitude.
       struct Slices {
         int count = 0;
         int starts[kMaxSlices] = {};
+        mono_float pitches[kMaxSlices] = {};
+        mono_float gains[kMaxSlices] = {};
+        mono_float reverses[kMaxSlices] = {};   // 1 for a slice that plays backwards
       };
-      void setSlices(const std::vector<int>& starts);
+      void setSlices(const std::vector<Slice>& slices);
+      // `pitches` runs beside `starts`; a slice without one plays at the file's pitch.
+      void setSlices(const std::vector<int>& starts, const std::vector<mono_float>& pitches = {});
       // The even grid a new file starts with.
       void resetSlices();
+      std::vector<Slice> sliceList() const;
       std::vector<int> slices() const;
+      std::vector<mono_float> slicePitches() const;
+      // The slices as a preset holds them: {"starts": [...], "pitches": [...],
+      // "gains": [...], "reverses": [...]}; reading also takes the earlier
+      // plain list of starts.
+      json slicesToJson() const;
+      void slicesFromJson(const json& data);
       force_inline const Slices* activeSlices() const { return active_slices_.load(std::memory_order_relaxed); }
 
       json stateToJson();
@@ -300,6 +327,9 @@ namespace vital {
       int transpose_quantize_;
       poly_float last_quantized_transpose_;
       poly_float slice_index_;      // the slice each lane's note picked, -1 for none
+      poly_float slice_pitch_;      // that slice's pitch offset, in semitones
+      poly_float slice_gain_;       // that slice's gain, as an amplitude
+      poly_mask slice_reverse_mask_; // the lanes whose slice plays backwards
       poly_float stutter_count_;    // how many times the lane's note plays its slice's first part, 0 for once
       poly_float stutter_remaining_; // repeats still to come, -1 once they are over or without stutter
       poly_mask reverse_mask_;      // which lanes read backwards last block

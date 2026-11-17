@@ -12037,6 +12037,9 @@ String SynthEditor::keyboardHelpText() {
       "\nSlices editor (the Sample type's Slicer mode)\n"
       "  Up/Down move between slices; Home/End go to the first and last.\n"
       "  Left/Right move the slice's start by 10 ms, with Shift by 1 ms.\n"
+      "  Comma/Period lower/raise the slice's pitch by a semitone, with Shift by a tenth.\n"
+      "  Page Down/Page Up lower/raise its gain by 1 dB, with Shift by a tenth. V turns it around.\n"
+      "  0 puts the slice's pitch, gain and direction back.\n"
       "  Return splits the slice in the middle. Backspace or Delete removes it. R moves every start to a random place.\n"
       "  Space plays the slice on its key. {ContextMenuKeys} open its menu, with Show as for the units it reads in.\n"
       "\n"
@@ -23794,12 +23797,14 @@ void SynthEditor::addSampleSliceEditor(int oscillator, AccessibleSectionHeader& 
   auto editor = std::make_unique<SampleSliceEditor>(sample_slice_editor_states_[oscillator]);
   auto* keyboard = editor.get();
   auto sample = [this, oscillator]() -> vital::Sample* { return synth_.getSample(oscillator); };
-  keyboard->readSlices = [sample] { return sample() != nullptr ? sample()->slices() : std::vector<int>(); };
-  keyboard->writeSlices = [this, oscillator](const std::vector<int>& starts, const String& description,
+  keyboard->readSlices = [sample] {
+    return sample() != nullptr ? sample()->sliceList() : std::vector<vital::Sample::Slice>();
+  };
+  keyboard->writeSlices = [this, oscillator](const std::vector<vital::Sample::Slice>& slices, const String& description,
                                               const String& merge_key) {
     synth_.undoHistory().describeNextStep(description, merge_key.isEmpty() ? String()
                                                                             : merge_key + ":" + String(oscillator));
-    synth_.setSampleSlices(oscillator, starts);
+    synth_.setSampleSlices(oscillator, slices);
   };
   keyboard->fileLength = [sample] { return sample() != nullptr ? sample()->originalLength() : 0; };
   keyboard->sampleRate = [sample] { return sample() != nullptr ? sample()->sampleRate() : 0; };

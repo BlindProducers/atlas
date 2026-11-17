@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #pragma once
 #include "sequence_keyboard_component.h"
+#include "sample_source.h"
 #include <vector>
 
 // The Sample type's Slicer mode: the slices of a slot's file, reviewed and
@@ -9,13 +10,14 @@
 // file; the editor that owns it formats them in the Show as units.
 class SampleSliceEditor : public LfoMsegKeyboardComponent {
   public:
+    using Slice = vital::Sample::Slice;
     struct State { int cursor = 0; };
     explicit SampleSliceEditor(State& state);
 
-    std::function<std::vector<int>()> readSlices;                 // where each slice starts
+    std::function<std::vector<Slice>()> readSlices;
     // Replaces the slices; `description` names the step as undo says it and
     // `mergeKey` joins repeats of the same edit into one step.
-    std::function<void(const std::vector<int>&, const String& description, const String& mergeKey)> writeSlices;
+    std::function<void(const std::vector<Slice>&, const String& description, const String& mergeKey)> writeSlices;
     std::function<int()> fileLength;                               // samples
     std::function<int()> sampleRate;
     std::function<String(int)> positionText;                       // a position or length, in the Show as units
@@ -24,15 +26,15 @@ class SampleSliceEditor : public LfoMsegKeyboardComponent {
     std::function<void()> onShowMenu;                              // the context menu (Show as)
 
     bool handleShortcut(const KeyPress& key);
-    std::unique_ptr<AccessibilityHandler> createAccessibilityHandler() override;
     String statusText() const;
     static String helpText();
+    std::unique_ptr<AccessibilityHandler> createAccessibilityHandler() override;
 
   private:
-    std::vector<int> slices() const;
-    int cursor(const std::vector<int>& starts) const;
-    int endOf(const std::vector<int>& starts, int index) const;
-    String sliceText(const std::vector<int>& starts, int index) const;
+    std::vector<Slice> slices() const;
+    int cursor(const std::vector<Slice>& slices) const;
+    int endOf(const std::vector<Slice>& slices, int index) const;
+    String sliceText(const std::vector<Slice>& slices, int index) const;
     void say(const String& message);
     void move(int direction);
     void moveTo(int index);
@@ -40,8 +42,12 @@ class SampleSliceEditor : public LfoMsegKeyboardComponent {
     void split();
     void remove();
     void randomize();
+    void changePitch(float semitones);
+    void changeGain(float decibels);
+    void toggleReverse();
+    void resetSlice();
     void play();
-    void write(const std::vector<int>& starts, const String& description, const String& mergeKey = {});
+    void write(const std::vector<Slice>& slices, const String& description, const String& mergeKey = {});
 
     State& state_;
 };

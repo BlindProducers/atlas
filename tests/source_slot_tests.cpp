@@ -1372,6 +1372,48 @@ namespace {
            "Slice Decay at 100% keeps the early click and fades the late one away: " +
                std::to_string(peakNear(decayed, late, 100)));
     set(plugin, "osc_1_sample_slice_decay", 0.0f);
+    // A slice's own pitch: an octave up plays slice 1 twice as fast with
+    // the stretcher off, so its late click comes at half the time, and it
+    // comes back with the preset.
+    plugin.setSampleSlices(0, plugin.getSample(0)->slices(), { 12.0f, 0.0f, 0.0f, 0.0f });
+    const auto pitched = renderNote(plugin, length, 60);
+    expect(peakNear(pitched, late / 2, 100) > 0.1f && peakNear(pitched, late, 100) < 0.01f,
+           "a slice an octave up plays twice as fast");
+    const auto unpitched = renderNote(plugin, length, 61);
+    expect(peakNear(unpitched, 100, 50) > 0.1f, "the other slices keep the file's pitch");
+    json saved = pluginState(plugin);
+    SynthPlugin restored;
+    preparePlugin(restored);
+    const std::string text = saved.dump();
+    restored.setStateInformation(text.data(), int(text.size()));
+    const auto pitches = restored.getSample(0)->slicePitches();
+    expect(pitches.size() == 4 && pitches[0] == 12.0f && pitches[1] == 0.0f, "slice pitches come back with the preset");
+    // A slice's own gain and direction: slice 1 at -6 dB plays its early
+    // click at half the level, and reversed it plays that click last.
+    std::vector<vital::Sample::Slice> list = plugin.getSample(0)->sliceList();
+    list[0].pitch = 0.0f;
+    plugin.setSampleSlices(0, list);
+    // Against a fresh render: the first note of a plugin plays under the level smoother.
+    const float plain_peak = peakNear(renderNote(plugin, length, 60), 100, 50);
+    list[0].gain = -6.0f;
+    plugin.setSampleSlices(0, list);
+    const auto quieter = renderNote(plugin, length, 60);
+    expect(std::abs(peakNear(quieter, 100, 50) / plain_peak - 0.5f) < 0.05f,
+           "a slice at -6 dB plays at half its level: " + std::to_string(peakNear(quieter, 100, 50) / plain_peak));
+    list[0].gain = 0.0f;
+    list[0].reverse = true;
+    plugin.setSampleSlices(0, list);
+    const auto backwards = renderNote(plugin, length, 60);
+    expect(peakNear(backwards, quarter - 100, 100) > 0.1f && peakNear(backwards, 100, 50) < 0.01f,
+           "a reversed slice plays its early click last");
+    json saved_again = pluginState(plugin);
+    SynthPlugin restored_again;
+    preparePlugin(restored_again);
+    const std::string text_again = saved_again.dump();
+    restored_again.setStateInformation(text_again.data(), int(text_again.size()));
+    const auto back = restored_again.getSample(0)->sliceList();
+    expect(back.size() == 4 && back[0].reverse && !back[1].reverse && std::abs(back[0].gain) < 0.01f,
+           "slice gains and directions come back with the preset");
   }
 
   // Normalize plays a quiet file with its peak at 0 dB, and off plays it as it is.

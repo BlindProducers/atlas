@@ -39,6 +39,7 @@ namespace vital {
   class StatusOutput;
   class StereoMemory;
   class Sample;
+  struct SampleSlice;
   class WaveFrame;
   class Wavetable;
 }
@@ -140,8 +141,11 @@ class SynthBase : public MidiManager::Listener {
     // Cuts a Sample slot's slices as its Slice by, Divisions and Sensitivity
     // say, replacing the slices it had. Message thread.
     void resliceSample(int slot);
-    // Replaces a Sample slot's slices and records the change. Message thread.
-    void setSampleSlices(int slot, const std::vector<int>& starts);
+    // Replaces a Sample slot's slices (and their pitches, in semitones) and
+    // records the change. Message thread.
+    void setSampleSlices(int slot, const std::vector<int>& starts, const std::vector<vital::mono_float>& pitches = {});
+    void setSampleSlices(int slot, const std::vector<vital::SampleSlice>& slices);
+    void setSampleSlicesFromJson(int slot, const json& slices);
     // The undo block a slot's slices are recorded under.
     static std::string sampleSlicesUndoBlock(int slot);
     // An effect slot's type ("fx_slot_3_type", "bus_1_fx_slot_3_type").

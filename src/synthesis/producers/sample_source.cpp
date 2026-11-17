@@ -357,19 +357,35 @@ namespace vital {
     setSlices(sample_slices::grid(data_ ? data_->length : 0, kDefaultSliceDivisions));
   }
 
-  // Keeps the starts that fit: ascending, at least kMinSliceLength apart,
-  // inside the file, and the first at 0, up to kMaxSlices.
-  void Sample::setSlices(const std::vector<int>& starts) {
+  void Sample::setSlices(const std::vector<int>& starts, const std::vector<mono_float>& pitches) {
+    std::vector<Slice> list(starts.size());
+    for (size_t i = 0; i < starts.size(); ++i) {
+      list[i].start = starts[i];
+      list[i].pitch = i < pitches.size() ? pitches[i] : 0.0f;
+    }
+    setSlices(list);
+  }
+
+  // Keeps the slices whose starts fit: ascending, at least kMinSliceLength
+  // apart, inside the file, and the first at 0, up to kMaxSlices.
+  void Sample::setSlices(const std::vector<Slice>& list) {
     auto slices = std::make_unique<Slices>();
     const int length = data_ ? data_->length : 0;
-    slices->starts[0] = 0;
+    const auto place = [&](int at, const Slice& slice) {
+      slices->starts[at] = at == 0 ? 0 : slice.start;
+      slices->pitches[at] = std::max(-kMaxSlicePitch, std::min(kMaxSlicePitch, slice.pitch));
+      slices->gains[at] = utils::dbToMagnitude(std::max(kMinSliceGain, std::min(kMaxSliceGain, slice.gain)));
+      slices->reverses[at] = slice.reverse ? 1.0f : 0.0f;
+    };
+    place(0, list.empty() ? Slice() : list.front());
     slices->count = 1;
-    for (int start : starts) {
+    for (size_t i = 1; i < list.size(); ++i) {
       if (slices->count >= kMaxSlices)
         break;
+      const int start = list[i].start;
       const int previous = slices->starts[slices->count - 1];
       if (start >= previous + kMinSliceLength && start <= length - kMinSliceLength)
-        slices->starts[slices->count++] = start;
+        place(slices->count++, list[i]);
     }
     Slices* old = current_slices_.exchange(slices.get(), std::memory_order_acq_rel);
     while (active_slices_.load(std::memory_order_acquire) == old && old != nullptr)
@@ -377,11 +393,76 @@ namespace vital {
     slices_ = std::move(slices);
   }
 
+  std::vector<Sample::Slice> Sample::sliceList() const {
+    const Slices* slices = current_slices_.load(std::memory_order_acquire);
+    std::vector<Slice> list;
+    if (slices == nullptr)
+      return list;
+    list.resize(static_cast<size_t>(slices->count));
+    for (int i = 0; i < slices->count; ++i) {
+      list[static_cast<size_t>(i)].start = slices->starts[i];
+      list[static_cast<size_t>(i)].pitch = slices->pitches[i];
+      list[static_cast<size_t>(i)].gain = utils::magnitudeToDb(slices->gains[i]);
+      list[static_cast<size_t>(i)].reverse = slices->reverses[i] != 0.0f;
+    }
+    return list;
+  }
+
   std::vector<int> Sample::slices() const {
     const Slices* slices = current_slices_.load(std::memory_order_acquire);
     if (slices == nullptr)
       return {};
     return std::vector<int>(slices->starts, slices->starts + slices->count);
+  }
+
+  std::vector<mono_float> Sample::slicePitches() const {
+    const Slices* slices = current_slices_.load(std::memory_order_acquire);
+    if (slices == nullptr)
+      return {};
+    return std::vector<mono_float>(slices->pitches, slices->pitches + slices->count);
+  }
+
+  json Sample::slicesToJson() const {
+    json starts = json::array(), pitches = json::array(), gains = json::array(), reverses = json::array();
+    for (const Slice& slice : sliceList()) {
+      starts.push_back(slice.start);
+      pitches.push_back(std::round(slice.pitch * 100.0f) / 100.0f);
+      gains.push_back(std::round(slice.gain * 100.0f) / 100.0f);
+      reverses.push_back(slice.reverse ? 1 : 0);
+    }
+    json data;
+    data["starts"] = std::move(starts);
+    data["pitches"] = std::move(pitches);
+    data["gains"] = std::move(gains);
+    data["reverses"] = std::move(reverses);
+    return data;
+  }
+
+  void Sample::slicesFromJson(const json& data) {
+    std::vector<Slice> list;
+    const json* starts = data.is_array() ? &data : data.is_object() && data.count("starts") ? &data["starts"] : nullptr;
+    if (starts != nullptr && starts->is_array()) {
+      for (const auto& start : *starts) {
+        if (start.is_number_integer()) {
+          Slice slice;
+          slice.start = start.get<int>();
+          list.push_back(slice);
+        }
+      }
+    }
+    const auto read = [&](const char* key, const std::function<void(Slice&, const json&)>& apply) {
+      if (!data.is_object() || !data.count(key) || !data[key].is_array())
+        return;
+      const json& values = data[key];
+      for (size_t i = 0; i < list.size() && i < values.size(); ++i) {
+        if (values[i].is_number())
+          apply(list[i], values[i]);
+      }
+    };
+    read("pitches", [](Slice& slice, const json& value) { slice.pitch = value.get<mono_float>(); });
+    read("gains", [](Slice& slice, const json& value) { slice.gain = value.get<mono_float>(); });
+    read("reverses", [](Slice& slice, const json& value) { slice.reverse = value.get<mono_float>() != 0.0f; });
+    setSlices(list);
   }
 
   void Sample::init() {
@@ -497,6 +578,9 @@ namespace vital {
     transpose_quantize_ = 0;
     last_quantized_transpose_ = 0.0f;
     slice_index_ = -1.0f;
+    slice_pitch_ = 0.0f;
+    slice_gain_ = 1.0f;
+    slice_reverse_mask_ = 0;
     stutter_count_ = 0.0f;
     stutter_remaining_ = -1.0f;
     reverse_mask_ = 0;
@@ -518,7 +602,8 @@ namespace vital {
   SampleSource::SampleSource(const SampleSource& other) :
       Processor(other), pan_amplitude_(other.pan_amplitude_), normalize_gain_(other.normalize_gain_),
       transpose_quantize_(other.transpose_quantize_), last_quantized_transpose_(other.last_quantized_transpose_),
-      slice_index_(other.slice_index_), stutter_count_(other.stutter_count_),
+      slice_index_(other.slice_index_), slice_pitch_(other.slice_pitch_), slice_gain_(other.slice_gain_),
+      slice_reverse_mask_(other.slice_reverse_mask_), stutter_count_(other.stutter_count_),
       stutter_remaining_(other.stutter_remaining_), reverse_mask_(other.reverse_mask_),
       sample_index_(other.sample_index_), sample_fraction_(other.sample_fraction_),
       global_sample_index_(other.global_sample_index_), global_sample_fraction_(other.global_sample_fraction_),
@@ -630,7 +715,31 @@ namespace vital {
         transpose_quantize |= 1 << kNotesPerOctave;
     }
 
+    poly_mask reset_mask = getResetMask(kReset);
+    poly_mask retrigger_mask = getResetMask(kRetrigger);
+    const poly_mask latch_mask = retrigger_mask | reset_mask;
+    if (slicer) {
+      // A note picks its slice, and the slice's own pitch, as it starts.
+      const poly_float chosen = utils::round(input(kMidi)->at(0) - input(kRootKey)->at(0));
+      slice_index_ = utils::maskLoad(slice_index_, chosen, latch_mask);
+      const Sample::Slices* slices = sample_->activeSlices();
+      const int count = slices != nullptr ? slices->count : 0;
+      poly_float reversed = utils::toFloat(poly_int(slice_reverse_mask_ & 1u));
+      for (int lane = 0; lane < poly_float::kSize; ++lane) {
+        if (!latch_mask[lane])
+          continue;
+        const int index = static_cast<int>(slice_index_[lane]);
+        const bool valid = index >= 0 && index < count;
+        slice_pitch_.set(lane, valid ? slices->pitches[index] : 0.0f);
+        slice_gain_.set(lane, valid ? slices->gains[index] : 1.0f);
+        reversed.set(lane, valid ? slices->reverses[index] : 0.0f);
+      }
+      slice_reverse_mask_ = poly_float::greaterThan(reversed, 0.5f);
+    }
+
     poly_float transpose = snapTranspose(input_midi, input(kTranspose)->at(0), transpose_quantize);
+    if (slicer)
+      transpose += slice_pitch_;
     transpose = utils::clamp(transpose + input(kTune)->at(0), kMinTranspose, kMaxTranspose);
 
     const int stretch_mode = utils::iclamp(static_cast<int>(input(slicer ? kSliceStretchMode : kStretchMode)->at(0)[0] + 0.5f),
@@ -650,9 +759,6 @@ namespace vital {
     else
       phase_inc_ = utils::centsToRatio(transpose * kCentsPerNote) * sample_rate_ratio * (1 << Sample::kUpsampleTimes);
 
-    poly_mask reset_mask = getResetMask(kReset);
-    poly_mask retrigger_mask = getResetMask(kRetrigger);
-
     int audio_length = sample_->activeLength();
     poly_float audio_end = audio_length;
     poly_float minimum_region = Sample::kMinSize * (1 << Sample::kUpsampleTimes);
@@ -664,9 +770,6 @@ namespace vital {
     poly_mask slice_valid_mask = constants::kFullMask;
     const bool slice_loop = slicer && input(kSliceLoop)->at(0)[0] != 0.0f;
     if (slicer) {
-      const poly_mask latch_mask = retrigger_mask | reset_mask;
-      const poly_float chosen = utils::round(input(kMidi)->at(0) - input(kRootKey)->at(0));
-      slice_index_ = utils::maskLoad(slice_index_, chosen, latch_mask);
       const Sample::Slices* slices = sample_->activeSlices();
       const int count = slices != nullptr ? slices->count : 0;
       // Play through runs on to the end of the file; a looping slice stays a slice.
@@ -728,7 +831,9 @@ namespace vital {
     // the loop mirrored into that direction, and each read mirrors it back.
     // It is modulated, so each lane may read its own way, and may turn
     // around mid-note (the step that makes fades out below).
-    const poly_mask reverse_mask = poly_float::greaterThanOrEqual(input(kReverse)->at(0), 0.5f);
+    // A reversed slice turns the slot's Reverse around.
+    const poly_mask reverse_mask = poly_float::greaterThanOrEqual(input(kReverse)->at(0), 0.5f) ^
+                                   (slicer ? slice_reverse_mask_ : poly_mask(0));
     const poly_float region_mirror = sample_start + sample_end;
     {
       const poly_float reversed_loop_start = region_mirror - loop_end;
@@ -897,7 +1002,7 @@ namespace vital {
         // Fade in from the slice's start and out towards its end (the loop's
         // ends while it loops), measured in the file.
         const poly_float edge = utils::min(current_index - active_start, active_end - current_index);
-        sample_value *= utils::clamp(edge * slice_fade_inverse, 0.0f, 1.0f);
+        sample_value *= utils::clamp(edge * slice_fade_inverse, 0.0f, 1.0f) * slice_gain_;
         if (decay_active) {
           const poly_float position = utils::max(current_index - active_start, 0.0f);
           sample_value *= futils::exp2(utils::max(position * decay_exponent, -30.0f));
