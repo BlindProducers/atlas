@@ -1589,7 +1589,41 @@ namespace {
            "at 80 BPM the two beats last 1.5 seconds: " + std::to_string(soundLength(slower)));
   }
 
+  // A preset written outside the Atlas folder (shared, exported) names no
+  // file on this computer; one saved there keeps the sample's folder.
+  void testSharedPresetHidesPaths() {
+    SynthPlugin plugin;
+    preparePlugin(plugin);
+    setType(plugin, 0, vital::source_types::kSample);
+    std::vector<float> audio(size_t(4800), 0.0f);
+    plugin.getSample(0)->loadSample(audio.data(), int(audio.size()), kSampleRate);
+    plugin.getSample(0)->setLastBrowsedFile("/Users/someone/Samples/Kick.wav");
+    const juce::File folder = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                                  .getNonexistentChildFile("atlas_shared_preset", {}, false);
+    expect(folder.createDirectory().wasOk(), "a folder for the shared preset");
+    const juce::File preset = folder.getChildFile("Shared.atp");
+    expect(plugin.saveCopyToFile(preset), "the preset is written outside the Atlas folder");
+    const json written = json::parse(preset.loadFileAsString().toStdString(), nullptr, false);
+    const bool has_settings = written.is_object() && written.count("settings");
+    expect(has_settings && written["settings"].count("osc_1_sample") &&
+           !written["settings"]["osc_1_sample"].count("last_browsed_file"),
+           "a shared preset carries the sample but not the file it was browsed from");
+    expect(plugin.getSample(0)->getLastBrowsedFile() == "/Users/someone/Samples/Kick.wav",
+           "the plugin itself keeps the sample's folder");
+    json state;
+    state["settings"]["osc_2_multisample"] = { { "path", "/Users/someone/Piano/piano.sfz" }, { "hash", "abc" },
+                                               { "library_instrument", "Piano/piano.sfz" } };
+    state["settings"]["osc_1_sample"] = { { "name", "Kick" }, { "last_browsed_file", "/Users/someone/Kick.wav" } };
+    expect(LoadSave::stripPrivatePaths(state) && !state["settings"]["osc_2_multisample"].count("path") &&
+           state["settings"]["osc_2_multisample"].count("library_instrument") &&
+           !state["settings"]["osc_1_sample"].count("last_browsed_file"),
+           "stripping removes the instrument's path and the sample's file and keeps the rest");
+    expect(!LoadSave::stripPrivatePaths(state), "a stripped patch has nothing more to remove");
+    folder.deleteRecursively();
+  }
+
   int behaviour() {
+    testSharedPresetHidesPaths();
     testSampleStretchFixed();
     testSampleStretchTempo();
     testSampleLoopShift();

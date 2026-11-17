@@ -76,6 +76,11 @@ class LoadSave {
     static void convertBufferToPcm(json& data, const std::string& field);
     static void convertPcmToFloatBuffer(json& data, const std::string& field);
     static json stateToJson(SynthBase* synth, const CriticalSection& critical_section);
+    // Takes the paths on this computer out of a patch that leaves it (a
+    // shared, exported or bank-archived preset): the file a slot's sample was
+    // browsed from and the file an instrument was loaded from. Returns
+    // whether anything was removed. `state` is a whole patch or its settings.
+    static bool stripPrivatePaths(json& state);
     // Text of saved state. The JSON writer refuses a string that is not UTF-8;
     // rather than fail the save (and throw into the host), such a string is
     // read as Windows-1252.

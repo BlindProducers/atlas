@@ -566,6 +566,26 @@ void LoadSave::loadModulations(SynthBase* synth, const json& modulations) {
   }
 }
 
+bool LoadSave::stripPrivatePaths(json& state) {
+  json* settings = &state;
+  if (state.is_object() && state.count("settings") && state["settings"].is_object())
+    settings = &state["settings"];
+  if (!settings->is_object())
+    return false;
+  bool removed = false;
+  for (auto& item : settings->items()) {
+    const std::string& key = item.key();
+    json& value = item.value();
+    if (!value.is_object() || key.rfind("osc_", 0) != 0)
+      continue;
+    if (key.size() > 7 && key.compare(key.size() - 7, 7, "_sample") == 0)
+      removed = value.erase("last_browsed_file") > 0 || removed;
+    else if (key.size() > 12 && key.compare(key.size() - 12, 12, "_multisample") == 0)
+      removed = value.erase("path") > 0 || removed;
+  }
+  return removed;
+}
+
 void LoadSave::loadSlotSamples(SynthBase* synth, const json& settings) {
   for (int slot = 0; slot < vital::kNumOscillators; ++slot) {
     vital::Sample* sample = synth->getSample(slot);

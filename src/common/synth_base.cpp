@@ -1479,6 +1479,10 @@ bool SynthBase::writePresetFile(const File& preset, std::string* error) {
     instruments.push_back({ result->hash, files });
   }
 
+  // A preset that leaves the Atlas folder names no file on this computer.
+  if (!into_bank)
+    LoadSave::stripPrivatePaths(data);
+
   if (instruments.empty())
     return preset.replaceWithText(LoadSave::dumpState(data));
 
