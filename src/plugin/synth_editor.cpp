@@ -2268,7 +2268,8 @@ namespace {
       return suffix == "type" || suffix == "analog_waveform" || suffix == "braids_model" ||
              suffix.endsWith("spectral_morph_type") || suffix == "random_phase_mode" ||
              suffix == "granular_mode" || suffix == "granular_timing_mode" || suffix == "granular_size_mode" ||
-             suffix == "granular_midi_density" || suffix == "sample_stretch_mode";
+             suffix == "granular_midi_density" || suffix == "sample_stretch_mode" || suffix == "sample_mode" ||
+             suffix == "sample_slice_by" || suffix == "sample_slice_stretch_mode";
     }
     const String filter_suffix = filterSuffixForParameter(id);
     if (filter_suffix == "model" || filter_suffix == "style")
@@ -2568,7 +2569,7 @@ namespace {
     }
     if (id.startsWith("sample_")) {
       const String suffix = id.fromFirstOccurrenceOf("sample_", false, false);
-      static const std::array<const char*, 36> sample_order = {{
+      static const std::array<const char*, 43> sample_order = {{
         "on",
         "solo",
         "destination",
@@ -2582,12 +2583,19 @@ namespace {
         "transpose_quantize",
         "level",
         "pan",
+        "mode",
+        "slice_by",
+        "slice_divisions",
+        "slice_sensitivity",
         "playback_mode",
         "stretch_mode",
+        "slice_stretch_mode",
         "bpm",
         "stretch_length",
         "formants",
+        "play_through",
         "loop",
+        "slice_loop",
         "bounce",
         "reverse",
         "random_phase",
@@ -3972,6 +3980,14 @@ namespace {
       if (suffix == "bpm") return "Set the tempo the sample was recorded at.";
       if (suffix == "stretch_length") return "Set the sample's length as a percentage of the original.";
       if (suffix == "formants") return "Keep the sample's formants where they are while its pitch moves.";
+      if (suffix == "mode") return "Classic plays the file from Sample Start to Sample End. Slicer plays the slice a key picks.";
+      if (suffix == "slice_by") return "Cut the slices on an even grid or at the transients. Either replaces the slices; the Slices editor then edits them.";
+      if (suffix == "slice_divisions") return "Set how many equal slices the grid cuts the file into.";
+      if (suffix == "slice_sensitivity") return "Set how small a rise in level counts as a transient. Higher finds more slices.";
+      if (suffix == "play_through") return "Play on from the slice to the end of the file.";
+      if (suffix == "slice_loop") return "Repeat the slice while the note is held.";
+      if (suffix == "slice_stretch_mode")
+        return "Off plays the slice faster for a higher pitch. Tempo stretches it to the host tempo and Fixed keeps its length; both change the pitch without the length.";
       if (suffix == "random_phase") return "Randomize the sample start point on each triggered note.";
       if (suffix == "start") return "Set where sample playback begins.";
       if (suffix == "end") return "Set where sample playback stops.";
@@ -5386,6 +5402,17 @@ namespace {
 
       std::unique_ptr<AccessibilityHandler> createAccessibilityHandler() override {
         return std::make_unique<OffscreenButtonAccessibilityHandler>(*this, AccessibilityRole::button);
+      }
+  };
+
+  // One of a group of buttons that choose between modes: a radio button that
+  // reads as selected while its mode is the one chosen.
+  class ModeChoiceButton : public TextButton {
+    public:
+      using TextButton::TextButton;
+
+      std::unique_ptr<AccessibilityHandler> createAccessibilityHandler() override {
+        return std::make_unique<OffscreenButtonAccessibilityHandler>(*this, AccessibilityRole::radioButton);
       }
   };
 
@@ -9384,8 +9411,24 @@ void SynthEditor::addOscillatorSectionContent(int oscillator, const String& sect
   if (type.uses_sample) {
     addSampleControlsGroup(oscillator, parent, y, x, width, focus_order, section_name,
                            [&](Component& group, int& inner_y, int inner_width) {
-                             add_rows_to(dynamic_cast<AccessibleSectionHeader*>(&group),
-                                         rows_in(OscillatorRowGroup::kSample), inner_y, inner_width);
+                             auto* header = dynamic_cast<AccessibleSectionHeader*>(&group);
+                             const bool sample_type = slot_type == vital::source_types::kSample;
+                             if (sample_type && header != nullptr)
+                               addSampleModeGroup(oscillator, *header, inner_y, inner_width, focus_order, section_name);
+                             // The Slices editor follows the row that cuts the slices.
+                             bool editor_pending = sample_type && header != nullptr &&
+                                                   sampleMode(oscillator) == vital::SampleSource::kSlicer;
+                             for (auto* parameter : rows_in(OscillatorRowGroup::kSample)) {
+                               place_row(*parameter, group, header, inner_y, 10, jmax(580, inner_width - 20));
+                               auto* bridge = dynamic_cast<ValueBridge*>(parameter);
+                               const String id = bridge != nullptr ? bridge->getParameterId() : String();
+                               if (editor_pending && (id.endsWith("_slice_divisions") || id.endsWith("_slice_sensitivity"))) {
+                                 addSampleSliceEditor(oscillator, *header, inner_y, inner_width, focus_order);
+                                 editor_pending = false;
+                               }
+                             }
+                             if (editor_pending)
+                               addSampleSliceEditor(oscillator, *header, inner_y, inner_width, focus_order);
                            });
   }
   add_group(OscillatorRowGroup::kAnalog, "Analog controls", "analog controls",
@@ -9971,8 +10014,12 @@ int SynthEditor::oscillatorModeKey(int oscillator) const {
     return type * 64 + braidsModel(oscillator);
   if (type == vital::source_types::kGranular)
     return type * 64 + granularRowKey(oscillator);
-  if (type == vital::source_types::kSample)
-    return type * 64 + jlimit(0, 2, roundToInt(sourceSlotValue(oscillator, "sample_stretch_mode")));
+  if (type == vital::source_types::kSample) {
+    // Mode, Slice by and the stretch mode of each mode all pick rows.
+    const auto value = [&](const char* suffix, int top) { return jlimit(0, top, roundToInt(sourceSlotValue(oscillator, suffix))); };
+    return type * 64 + value("sample_mode", 1) + (value("sample_slice_by", 1) << 1) +
+           (value("sample_stretch_mode", 2) << 2) + (value("sample_slice_stretch_mode", 2) << 4);
+  }
   if (!isAnalogOscillator(oscillator))
     return type * 64 - 1;
   return type * 64 + roundToInt(engineValueFor(parameterBridge("osc_" + String(oscillator + 1) + "_analog_waveform")));
@@ -10022,13 +10069,40 @@ bool SynthEditor::isGranularRowRelevant(int oscillator, const String& suffix) co
   return true;
 }
 
+int SynthEditor::sampleMode(int oscillator) const {
+  return jlimit(0, vital::SampleSource::kNumModes - 1, roundToInt(sourceSlotValue(oscillator, "sample_mode")));
+}
+
 bool SynthEditor::isSampleRowRelevant(int oscillator, const String& suffix) const {
-  // Tempo mode reads Sample BPM, Fixed mode Stretch length, and both the
-  // formant switch (SampleSource::process).
-  const int mode = jlimit(0, 2, roundToInt(sourceSlotValue(oscillator, "sample_stretch_mode")));
-  if (suffix == "bpm") return mode == vital::SampleSource::kStretchTempo;
-  if (suffix == "stretch_length") return mode == vital::SampleSource::kStretchFixed;
-  if (suffix == "formants") return mode != vital::SampleSource::kStretchOff;
+  // The Mode's row is its Classic and Slicer buttons (addSampleModeGroup).
+  if (suffix == "mode")
+    return false;
+  // Each mode shows its own rows (SampleSource::process): Slicer plays the
+  // slice a key picks in place of the Start, End, loop and playback rows,
+  // and cuts the slices by Divisions on the grid or by Sensitivity at the
+  // transients. Tempo mode reads Sample BPM, Fixed mode Stretch length, and
+  // both the formant switch.
+  const bool slicer = sampleMode(oscillator) == vital::SampleSource::kSlicer;
+  int stretch_mode = 0;
+  if (slicer) {
+    static const StringArray classic_only { "keytrack", "start", "end", "loop_start", "loop_end", "loop_shift",
+                                            "loop_crossfade", "playback_mode", "random_phase", "loop", "bounce",
+                                            "stretch_mode" };
+    if (classic_only.contains(suffix))
+      return false;
+    const bool transients = roundToInt(sourceSlotValue(oscillator, "sample_slice_by")) == 1;
+    if (suffix == "slice_divisions") return !transients;
+    if (suffix == "slice_sensitivity") return transients;
+    stretch_mode = jlimit(0, 2, roundToInt(sourceSlotValue(oscillator, "sample_slice_stretch_mode")));
+  }
+  else {
+    if (suffix.startsWith("slice_") || suffix == "play_through")
+      return false;
+    stretch_mode = jlimit(0, 2, roundToInt(sourceSlotValue(oscillator, "sample_stretch_mode")));
+  }
+  if (suffix == "bpm") return stretch_mode == vital::SampleSource::kStretchTempo;
+  if (suffix == "stretch_length") return stretch_mode == vital::SampleSource::kStretchFixed;
+  if (suffix == "formants") return stretch_mode != vital::SampleSource::kStretchOff;
   return true;
 }
 
@@ -10947,7 +11021,7 @@ class AtlasSettingsContent : public Component, private FocusChangeListener, priv
         { "Use speech feedback",                      &AccessibilitySpeechSettings::speech_feedback  },
         { "Navigation announcements",                 &AccessibilitySpeechSettings::navigation       },
         { "Preset announcements",                     &AccessibilitySpeechSettings::presets          },
-        { "LFO and Trance gate editor announcements", &AccessibilitySpeechSettings::lfo_editor       },
+        { "LFO, Trance gate and slice editor announcements", &AccessibilitySpeechSettings::lfo_editor },
         { "Wavetable editor announcements",           &AccessibilitySpeechSettings::wavetable_editor },
         { "Sample and granular announcements",        &AccessibilitySpeechSettings::sample_browser   },
         { "Modulation announcements",                 &AccessibilitySpeechSettings::modulation       },
@@ -11954,6 +12028,11 @@ String SynthEditor::keyboardHelpText() {
       "  Minus/Equals make the grid coarser/finer. Semicolon/Apostrophe shorten/lengthen the pattern.\n"
       "  Backspace resets the pattern to its default: every step Whole at full level, grid and length too.\n"
       "  Global controls use Atlas slider shortcuts. Navigation announces position first; edits announce only what changed.\n"
+      "\nSlices editor (the Sample type's Slicer mode)\n"
+      "  Up/Down move between slices; Home/End go to the first and last.\n"
+      "  Left/Right move the slice's start by 10 ms, with Shift by 1 ms.\n"
+      "  Return splits the slice in the middle. Backspace or Delete removes it.\n"
+      "  Space plays the slice on its key.\n"
       "\n"
       "Most single-letter shortcuts work when a parameter or the editor has focus, but not while a "
       "text field is focused.\n"
@@ -23653,6 +23732,105 @@ void SynthEditor::addSampleControlsGroup(int sample_target, Component& parent, i
   y += group_y + 10;
 }
 
+void SynthEditor::addSampleModeGroup(int oscillator, AccessibleSectionHeader& parent, int& y, int width,
+                                     int& focus_order, const String& section_name) {
+  auto group = makeSectionHeader("Mode", groupRank("Oscillators"), false, section_name + " sample mode");
+  auto* group_ptr = group.get();
+  group_ptr->setDescription("Classic or Slicer for " + section_name);
+  group_ptr->setExplicitFocusOrder(focus_order++);
+  parent.addAndMakeVisible(group_ptr);
+  parent.addAccessibleChild(group_ptr);
+  row_focus_order_.push_back(group_ptr);
+  section_headers_.push_back(std::move(group));
+
+  const int current = sampleMode(oscillator);
+  const String id = vital::source_types::slotPrefix(oscillator) + "sample_mode";
+  int group_y = group_ptr->headerHeight() + 8;
+  for (int mode = 0; mode < vital::SampleSource::kNumModes; ++mode) {
+    const String title = strings::kSampleModeNames[mode];
+    auto button = std::make_unique<ModeChoiceButton>(title);
+    auto* button_ptr = button.get();
+    button_ptr->setTitle(title);
+    button_ptr->setRadioGroupId(1);
+    button_ptr->setClickingTogglesState(true);
+    button_ptr->setToggleState(mode == current, dontSendNotification);
+    button_ptr->setWantsKeyboardFocus(true);
+    button_ptr->setExplicitFocusOrder(focus_order++);
+    // The timer rebuilds the slot's rows for the new mode and brings the
+    // focus back to this button by its title.
+    button_ptr->onClick = [this, id, mode, title] {
+      setParameterEngineValue(id, static_cast<float>(mode));
+      postLfoAnnouncement(title + " mode");
+    };
+    button_ptr->setBounds(10, group_y, jmax(200, width - 40), 38);
+    group_ptr->addAndMakeVisible(button_ptr);
+    group_ptr->addAccessibleChild(button_ptr);
+    row_focus_order_.push_back(button_ptr);
+    section_headers_.push_back(std::move(button));
+    group_y += 44;
+  }
+  group_ptr->setBounds(10, y, jmax(220, width - 20), group_y + 2);
+  y += group_y + 10;
+}
+
+String SynthEditor::slicePositionText(const vital::Sample& sample, int samples) const {
+  const int units = LoadSave::samplePositionUnits();
+  const int length = sample.originalLength();
+  if (units == kSamplePositionSamples || length <= 0)
+    return String(samples);
+  if (units == kSamplePositionMilliseconds)
+    return compactFloat(samples * 1000.0f / jmax(1, sample.sampleRate()), 1) + " ms";
+  return compactFloat(samples * 100.0f / length, 1) + "%";
+}
+
+void SynthEditor::addSampleSliceEditor(int oscillator, AccessibleSectionHeader& parent, int& y, int width,
+                                       int& focus_order) {
+  auto editor = std::make_unique<SampleSliceEditor>(sample_slice_editor_states_[oscillator]);
+  auto* keyboard = editor.get();
+  auto sample = [this, oscillator]() -> vital::Sample* { return synth_.getSample(oscillator); };
+  keyboard->readSlices = [sample] { return sample() != nullptr ? sample()->slices() : std::vector<int>(); };
+  keyboard->writeSlices = [this, sample](const std::vector<int>& starts) {
+    if (sample() == nullptr)
+      return;
+    synth_.pauseProcessing(true);
+    sample()->setSlices(starts);
+    synth_.pauseProcessing(false);
+    synth_.markStateChanged();
+  };
+  keyboard->fileLength = [sample] { return sample() != nullptr ? sample()->originalLength() : 0; };
+  keyboard->sampleRate = [sample] { return sample() != nullptr ? sample()->sampleRate() : 0; };
+  keyboard->positionText = [this, sample](int samples) {
+    return sample() != nullptr ? slicePositionText(*sample(), samples) : String(samples);
+  };
+  keyboard->announce = [](const String& message) { postLfoAnnouncement(message); };
+  keyboard->audition = [this, oscillator](int slice, int start, int end) { auditionSlice(oscillator, slice, start, end); };
+  keyboard->setExplicitFocusOrder(focus_order++);
+  keyboard->setBounds(10, y, jmax(200, width - 20), 82);
+  parent.addAndMakeVisible(keyboard);
+  parent.addAccessibleChild(keyboard);
+  row_focus_order_.push_back(keyboard);
+  section_headers_.push_back(std::move(editor));
+  y += 90;
+}
+
+void SynthEditor::auditionSlice(int oscillator, int slice, int start, int end) {
+  MidiKeyboardState* state = synth_.getKeyboardState();
+  vital::Sample* sample = synth_.getSample(oscillator);
+  if (state == nullptr || sample == nullptr)
+    return;
+  const int note = jlimit(0, 127, roundToInt(sourceSlotValue(oscillator, "sample_root_key")) + slice);
+  // Held for the slice's length in the file, at least a tenth of a second.
+  const int milliseconds = jlimit(100, 4000, roundToInt((end - start) * 1000.0 / jmax(1, sample->sampleRate())));
+  state->noteOn(1, note, 0.8f);
+  Component::SafePointer<SynthEditor> safe_this(this);
+  Timer::callAfterDelay(milliseconds, [safe_this, note] {
+    if (safe_this == nullptr)
+      return;
+    if (MidiKeyboardState* keyboard = safe_this->synth_.getKeyboardState())
+      keyboard->noteOff(1, note, 0.0f);
+  });
+}
+
 namespace {
   String instrumentPresetLabel(const vital::multisample::PresetName& preset) {
     String name = String::fromUTF8(preset.name.c_str()).trim();
@@ -24705,6 +24883,7 @@ void SynthEditor::loadSampleFile(const File& file, int sample_target) {
     sample->setLastBrowsedFile(file.getFullPathName().toStdString());
     synth_.pauseProcessing(false);
     synth_.markStateChanged();
+    synth_.resliceSample(sample_target);
 
     // Granular and spectral oscillators switch on when given material, as the fixed sources did.
     const int type = sourceSlotType(sample_target);

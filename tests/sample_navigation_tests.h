@@ -210,10 +210,75 @@ namespace sample_navigation {
     plugin.getControls().at("osc_5_sample_stretch_mode")->set(0.0f);
   }
 
+  // Mode is a group of Classic and Slicer buttons, Classic selected by
+  // default with every Classic row; Slicer shows its own rows and the Slices
+  // editor in their place.
+  void testSlicerRows() {
+    SynthPlugin plugin;
+    slot_ids::useLegacySourceTypes(plugin);
+    std::array<float, 48000> audio {};
+    source(plugin, 0)->loadSample(audio.data(), audio.size(), 48000);
+    SynthEditor editor(plugin);
+    auto* mode = find(editor, "Oscillator 5 sample mode", true);
+    check(mode != nullptr && mode->getTitle() == "Mode", "the Sample type has a Mode group");
+    if (mode == nullptr) return;
+    auto* classic = dynamic_cast<Button*>(find(*mode, "Classic"));
+    auto* slicer = dynamic_cast<Button*>(find(*mode, "Slicer"));
+    check(classic != nullptr && slicer != nullptr, "the Mode group holds a Classic and a Slicer button");
+    if (classic == nullptr || slicer == nullptr) return;
+    check(classic->getToggleState() && !slicer->getToggleState(), "Classic is selected by default");
+    check(classic->getRadioGroupId() != 0 && classic->getRadioGroupId() == slicer->getRadioGroupId(),
+          "the mode buttons form one radio group");
+    check(findSlider(editor, "5 Sample Loop Start") != nullptr && findSlider(editor, "5 Sample Playback Mode") != nullptr,
+          "Classic shows its Start, End, loop and playback rows");
+    check(find(editor, "Slices") == nullptr && findSlider(editor, "5 Sample Divisions") == nullptr,
+          "Classic shows no Slicer rows");
+
+    plugin.getControls().at("osc_5_sample_mode")->set(1.0f);
+    SynthEditor slicer_editor(plugin);
+    auto* slicer_mode = find(slicer_editor, "Oscillator 5 sample mode", true);
+    auto* selected = slicer_mode != nullptr ? dynamic_cast<Button*>(find(*slicer_mode, "Slicer")) : nullptr;
+    check(selected != nullptr && selected->getToggleState(), "the Slicer button reads as selected in Slicer mode");
+    check(findSlider(slicer_editor, "5 Sample Loop Start") == nullptr &&
+          findSlider(slicer_editor, "5 Sample Start") == nullptr &&
+          findSlider(slicer_editor, "5 Sample Playback Mode") == nullptr &&
+          findSlider(slicer_editor, "5 Sample Keytrack") == nullptr &&
+          find(slicer_editor, "5 Sample Random Phase") == nullptr,
+          "Slicer hides the Start, End, loop, playback, Keytrack and Random Phase rows");
+    check(findSlider(slicer_editor, "5 Sample Divisions") != nullptr &&
+          findSlider(slicer_editor, "5 Sample Sensitivity") == nullptr,
+          "Slice by Grid shows Divisions and not Sensitivity");
+    check(findSlider(slicer_editor, "5 Sample BPM") != nullptr, "the Slicer's stretch mode defaults to Tempo");
+    auto* slices = dynamic_cast<SampleSliceEditor*>(find(slicer_editor, "Slices"));
+    check(slices != nullptr, "Slicer shows the Slices editor");
+    if (slices != nullptr) {
+      check(slices->statusText().startsWith("Slice 1 of 16, start 0%, end 6."),
+            "the editor reads the slice's start, end and length: " + slices->statusText().toStdString());
+      slices->handleShortcut(KeyPress(KeyPress::downKey));
+      check(slices->statusText().startsWith("Slice 2 of 16"), "Down moves to the next slice");
+      slices->handleShortcut(KeyPress(KeyPress::rightKey));
+      check(source(plugin, 0)->slices()[1] == 3000 + 480, "Right moves the slice's start by 10 ms");
+      slices->handleShortcut(KeyPress(KeyPress::leftKey, ModifierKeys::shiftModifier, 0));
+      check(source(plugin, 0)->slices()[1] == 3000 + 480 - 48, "Shift Left moves it back by 1 ms");
+      slices->handleShortcut(KeyPress(KeyPress::returnKey));
+      check(source(plugin, 0)->slices().size() == 17, "Return splits the slice");
+      slices->handleShortcut(KeyPress(KeyPress::backspaceKey));
+      check(source(plugin, 0)->slices().size() == 16, "Backspace removes it again");
+    }
+    plugin.getControls().at("osc_5_sample_slice_by")->set(1.0f);
+    SynthEditor transient_editor(plugin);
+    check(findSlider(transient_editor, "5 Sample Sensitivity") != nullptr &&
+          findSlider(transient_editor, "5 Sample Divisions") == nullptr,
+          "Slice by Transients shows Sensitivity and not Divisions");
+    plugin.getControls().at("osc_5_sample_slice_by")->set(0.0f);
+    plugin.getControls().at("osc_5_sample_mode")->set(0.0f);
+  }
+
   int run() {
     ScopedJuceInitialiser_GUI gui;
     const File root = File::getSpecialLocation(File::tempDirectory).getNonexistentChildFile("atlas_sample_ui", {}, false);
     testPositionUnits(root.getChildFile("Config"));
+    testSlicerRows();
     testRestoredNavigation(root);
     testLegacyAndPortableStates();
     check(root.deleteRecursively(), "sample fixtures must be removed");

@@ -222,6 +222,7 @@ target_sources(Atlas PRIVATE
   src/synthesis/producers/sample_stretch.cpp
   src/synthesis/effects/spectral_compressor/spectral_compressor_engine.cpp
   src/plugin/trance_gate_editor.cpp
+  src/plugin/sample_slice_editor.cpp
   src/common/tape_noise_library.cpp
   src/synthesis/modules/tape_module.cpp
   src/synthesis/modules/defuse_module.cpp

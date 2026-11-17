@@ -21,6 +21,7 @@
 #include "parameter_slider.h"
 #include "sequence_keyboard_component.h"
 #include "trance_gate_editor.h"
+#include "sample_slice_editor.h"
 #include "synth_gui_interface.h"
 #include "community_library.h"
 #include "library_layout.h"
@@ -561,6 +562,17 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     // under the slot's Mode, Timing mode, Size mode, MIDI density and Keytrack.
     bool isGranularRowRelevant(int oscillator, const String& suffix) const;
     bool isSampleRowRelevant(int oscillator, const String& suffix) const;
+    // A Sample slot's Mode: SampleSource::kClassic or kSlicer.
+    int sampleMode(int oscillator) const;
+    // The Mode's Classic and Slicer buttons, in a group of their own.
+    void addSampleModeGroup(int oscillator, AccessibleSectionHeader& parent, int& y, int width, int& focusOrder,
+                            const String& sectionName);
+    // The Slicer's keyboard editor of a slot's slices.
+    void addSampleSliceEditor(int oscillator, AccessibleSectionHeader& parent, int& y, int width, int& focusOrder);
+    // A position or length in a slot's file, in the Show as units of the Sample rows.
+    String slicePositionText(const vital::Sample& sample, int samples) const;
+    // Plays a slice on its key for its length.
+    void auditionSlice(int oscillator, int slice, int start, int end);
     bool refreshOscillatorModeRowsIfNeeded();
     bool refreshZoneCrossfadeRowIfNeeded();
     bool refreshEnvelopeAnalogRowsIfNeeded();
@@ -1366,6 +1378,7 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void pasteOscillatorClipboard(int targetOscillator, Component& target);
 
     std::map<String, TranceGateEditor::State> trance_gate_editor_states_;
+    std::map<int, SampleSliceEditor::State> sample_slice_editor_states_;
     SynthPlugin& synth_;
     // This instance's section and preset browser state (SynthPlugin::EditorMemory):
     // reopening the window returns to them, other Atlas instances keep their own.
