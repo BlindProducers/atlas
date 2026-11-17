@@ -20,9 +20,16 @@
 
 namespace vital {
 
-  SampleModule::SampleModule(std::string prefix, std::shared_ptr<Sample> sample, std::string slot_prefix) :
-      SynthModule(kNumInputs, kNumOutputs), prefix_(std::move(prefix)), slot_prefix_(std::move(slot_prefix)) {
+  SampleModule::SampleModule(std::string prefix, std::shared_ptr<Sample> sample, std::string slot_prefix,
+                             const Output* beats_per_second) :
+      SynthModule(kNumInputs, kNumOutputs), prefix_(std::move(prefix)), slot_prefix_(std::move(slot_prefix)),
+      beats_per_second_(beats_per_second) {
     sampler_ = new SampleSource(std::move(sample));
+  }
+
+  void SampleModule::updateStretchMemory() {
+    const bool stretching = stretch_mode_ != nullptr && static_cast<int>(stretch_mode_->value() + 0.5f) != 0;
+    sampler_->setStretchMemory(stretching);
   }
 
   void SampleModule::init() {
@@ -31,6 +38,8 @@ namespace vital {
     Value* bounce = createBaseControl(prefix_ + "bounce");
     Value* reverse = createBaseControl(prefix_ + "reverse");
     Value* normalize = createBaseControl(prefix_ + "normalize");
+    stretch_mode_ = createBaseControl(prefix_ + "stretch_mode");
+    Value* formants = createBaseControl(prefix_ + "formants");
     Value* playback_mode = createBaseControl(prefix_ + "playback_mode");
     Value* keytrack = createBaseControl(prefix_ + "keytrack");
     Value* filter_slope = createBaseControl(prefix_ + "filter_slope");
@@ -49,6 +58,8 @@ namespace vital {
     Output* high_cutoff = createPolyModControl(prefix_ + "high_cutoff", true, true);
     Output* transpose = createPolyModControl(prefix_ + "transpose");
     Output* tune = createPolyModControl(prefix_ + "tune");
+    Output* bpm = createPolyModControl(prefix_ + "bpm");
+    Output* stretch_length = createPolyModControl(prefix_ + "stretch_length");
     // Level and pan are slot controls shared by every type (osc_N_level, osc_N_pan).
     const std::string mix_prefix = slot_prefix_.empty() ? prefix_ : slot_prefix_;
     Output* level = createPolyModControl(mix_prefix + "level", true, true);
@@ -60,6 +71,13 @@ namespace vital {
     sampler_->useInput(input(kMidi), SampleSource::kMidi);
     sampler_->useInput(input(kNoteCount), SampleSource::kNoteCount);
     sampler_->useInput(input(kNotePressed), SampleSource::kNotePressed);
+    sampler_->useInput(input(kActiveVoices), SampleSource::kActiveVoices);
+    if (beats_per_second_)
+      sampler_->plug(beats_per_second_, SampleSource::kBeatsPerSecond);
+    sampler_->plug(stretch_mode_, SampleSource::kStretchMode);
+    sampler_->plug(bpm, SampleSource::kBpm);
+    sampler_->plug(stretch_length, SampleSource::kStretchLength);
+    sampler_->plug(formants, SampleSource::kFormants);
     sampler_->plug(random_phase, SampleSource::kRandomPhase);
     sampler_->plug(keytrack, SampleSource::kKeytrack);
     sampler_->plug(root_key, SampleSource::kRootKey);

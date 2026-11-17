@@ -20,7 +20,9 @@
 #include "nlohmann/json.hpp"
 #include "utils.h"
 
+#include <atomic>
 #include <functional>
+#include <mutex>
 #include "cut_filter.h"
 #include "slot_modulation.h"
 
@@ -171,6 +173,12 @@ namespace vital {
         kDistortionAmount,
         kSecondaryDistortionType,
         kSecondaryDistortionAmount,
+        kActiveVoices,
+        kBeatsPerSecond,
+        kStretchMode,
+        kBpm,
+        kStretchLength,
+        kFormants,
         kNumInputs
       };
 
@@ -180,14 +188,37 @@ namespace vital {
         kNumOutputs
       };
 
+      // Stretch mode: Off resamples, so the length follows the pitch; Tempo
+      // stretches the file's beats (Sample BPM) to the host tempo; Fixed keeps
+      // the file's own length, times Stretch length. Both shift the pitch
+      // through the stretcher instead.
+      enum StretchMode {
+        kStretchOff,
+        kStretchTempo,
+        kStretchFixed,
+        kNumStretchModes
+      };
+      static constexpr int kVoicesPerProcessor = poly_float::kSize / 2;
+
       SampleSource();
       explicit SampleSource(std::shared_ptr<Sample> sample);
+      SampleSource(const SampleSource& other);
+      ~SampleSource() override;
 
       virtual void process(int num_samples) override;
       virtual Processor* clone() const override { return new SampleSource(*this); }
       Sample* getSample() { return sample_.get(); }
       force_inline Output* getPhaseOutput() const { return phase_output_.get(); }
       SlotModulation& modulation() { return modulation_; }
+
+      // The stretchers of this source and of every voice copy made from it: a
+      // stereo one per voice, held only while a stretch mode is selected and
+      // configured for the rate they met. Both allocate or free, so they run
+      // on the message thread with processing paused, or offline.
+      void setStretchMemory(bool reserve);
+      // Whether a copy met a stretch mode in realtime without stretchers for
+      // its rate (none yet, or the rate changed) since the last call.
+      bool takeStretchMemoryRequest() { return stretch_shared_->requested.exchange(false, std::memory_order_acq_rel); }
 
     private:
       enum PlaybackMode {
@@ -197,8 +228,22 @@ namespace vital {
         kNumPlaybackModes
       };
 
+      struct StretchState;   // the voices' stretchers and the buffers that feed them
+      // What a source and its voice copies share.
+      struct StretchShared {
+        std::mutex mutex;
+        std::vector<SampleSource*> sources;
+        bool reserved = false;
+        std::atomic<bool> requested { false };
+      };
 
       poly_float snapTranspose(poly_float input_midi, poly_float transpose, int quantize);
+      // Runs with stretch_shared_->mutex held.
+      void reserveStretchVoices();
+      // The stretchers for this block, or null to play plain: the mode is Off,
+      // or they are not there yet (realtime asks the message thread for them).
+      StretchState* stretchStateForBlock(int mode);
+      void fadeFromPrevious(poly_float* raw_output, int num_samples, int lane, int start);
 
       poly_float pan_amplitude_;
       poly_float normalize_gain_ = 1.0f;
@@ -218,6 +263,10 @@ namespace vital {
       SlotModulation modulation_;
 
       std::shared_ptr<Sample> sample_;
+      std::shared_ptr<StretchShared> stretch_shared_;
+      std::unique_ptr<StretchState> stretch_;
+      int stretch_rate_ = 0;        // the rate the stretchers are configured for
+      bool stretching_ = false;     // whether the last block went through them
 
       JUCE_LEAK_DETECTOR(SampleSource)
   };

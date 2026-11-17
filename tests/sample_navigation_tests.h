@@ -184,6 +184,30 @@ namespace sample_navigation {
       const String text = root_key->getTextFromValue(61.0 / 127.0);
       check(text == "C sharp 4, MIDI 61", "root key must read its MIDI note, not " + text.toStdString());
     }
+
+    // Stretch mode decides which stretch rows show: Sample BPM in Tempo mode,
+    // Sample Stretch Length in Fixed mode, neither when it is off.
+    check(findSlider(editor, "5 Sample BPM") == nullptr && findSlider(editor, "5 Sample Stretch Length") == nullptr,
+          "Stretch mode Off hides the BPM and stretch length rows");
+    plugin.getControls().at("osc_5_sample_stretch_mode")->set(1.0f);
+    SynthEditor tempo_editor(plugin);
+    auto* bpm = findSlider(tempo_editor, "5 Sample BPM");
+    check(bpm != nullptr && findSlider(tempo_editor, "5 Sample Stretch Length") == nullptr,
+          "Tempo mode shows Sample BPM and not Sample Stretch Length");
+    if (bpm != nullptr) {
+      const String text = bpm->getTextFromValue((120.0 - 20.0) / (400.0 - 20.0));
+      check(text == "120 BPM", "Sample BPM must read in BPM, not " + text.toStdString());
+    }
+    plugin.getControls().at("osc_5_sample_stretch_mode")->set(2.0f);
+    SynthEditor fixed_editor(plugin);
+    auto* length = findSlider(fixed_editor, "5 Sample Stretch Length");
+    check(length != nullptr && findSlider(fixed_editor, "5 Sample BPM") == nullptr,
+          "Fixed mode shows Sample Stretch Length and not Sample BPM");
+    if (length != nullptr) {
+      const String text = length->getTextFromValue((2.0 - 0.25) / (4.0 - 0.25));
+      check(text == "200%", "Sample Stretch Length must read in percent, not " + text.toStdString());
+    }
+    plugin.getControls().at("osc_5_sample_stretch_mode")->set(0.0f);
   }
 
   int run() {

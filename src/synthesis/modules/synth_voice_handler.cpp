@@ -16,6 +16,8 @@
 
 #include "synth_voice_handler.h"
 
+#include "sample_module.h"
+
 #include "envelope.h"
 #include "envelope_module.h"
 #include "filters_module.h"
@@ -848,6 +850,37 @@ namespace vital {
       if (model != nullptr)
         filter->setReverbMemory(static_cast<int>(roundf(model->value())) == constants::kReverbFilter);
     }
+  }
+
+  namespace {
+    SampleModule* sampleModuleOf(SourceSlotModule* slot) {
+      if (slot == nullptr || !slot->hasActiveModule() || slot->activeType() != source_types::kSample)
+        return nullptr;
+      return static_cast<SampleModule*>(slot->activeModule());
+    }
+  }
+
+  void SynthVoiceHandler::updateSampleStretchMemory() {
+    for (int i = 0; i < kNumOscillators; ++i) {
+      if (SampleModule* sample = sampleModuleOf(producers_ ? producers_->slot(i) : nullptr))
+        sample->updateStretchMemory();
+    }
+  }
+
+  void SynthVoiceHandler::setSampleStretchMemory(int slot, bool reserve) {
+    if (slot < 0 || slot >= kNumOscillators || producers_ == nullptr)
+      return;
+    if (SampleModule* sample = sampleModuleOf(producers_->slot(slot)))
+      sample->setStretchMemory(reserve);
+  }
+
+  bool SynthVoiceHandler::takeSampleStretchRequest() {
+    bool requested = false;
+    for (int i = 0; i < kNumOscillators; ++i) {
+      if (SampleModule* sample = sampleModuleOf(producers_ ? producers_->slot(i) : nullptr))
+        requested = sample->takeStretchMemoryRequest() || requested;
+    }
+    return requested;
   }
 
   void SynthVoiceHandler::setReverbMemory(int index, bool reserve) {

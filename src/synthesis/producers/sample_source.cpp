@@ -16,9 +16,12 @@
 
 #include "sample_source.h"
 #include "futils.h"
+#include "prepared_effect_module.h"
+#include "sample_stretch.h"
 #include "synth_constants.h"
 
 #include <algorithm>
+#include <new>
 #include <thread>
 
 namespace vital {
@@ -427,11 +430,28 @@ namespace vital {
       last_browsed_file_ = data["last_browsed_file"].get<std::string>();
   }
 
+  struct SampleSource::StretchState {
+    struct Voice {
+      atlas::SampleStretcher stretcher;
+      mono_float owed = 0.0f;   // input samples due to the stretcher but not yet read, below one
+      bool running = false;     // started since the voice began or the mode changed
+    };
+    std::array<Voice, kVoicesPerProcessor> voices;
+    // The voices feed their stretchers one after another, through these.
+    std::vector<mono_float> input[atlas::SampleStretcher::kChannels];
+    std::vector<mono_float> start[atlas::SampleStretcher::kChannels];
+  };
+
+  namespace {
+    constexpr int kMaxStretchInput = static_cast<int>(kMaxBufferSize * kMaxOversample * atlas::SampleStretcher::kMaxSpeed) + 2;
+    constexpr mono_float kSampleRetriggerFadeSeconds = 0.003f;
+  }
+
   SampleSource::SampleSource() : SampleSource(nullptr) { }
 
   SampleSource::SampleSource(std::shared_ptr<Sample> sample) :
       Processor(kNumInputs, kNumOutputs), pan_amplitude_(0.0f), phase_inc_(0.0f),
-      random_generator_(0.0f, 1.0f) {
+      random_generator_(0.0f, 1.0f), stretch_shared_(std::make_shared<StretchShared>()) {
     transpose_quantize_ = 0;
     last_quantized_transpose_ = 0.0f;
     sample_index_ = 0;
@@ -444,6 +464,95 @@ namespace vital {
 
     sample_ = sample ? std::move(sample) : std::make_shared<Sample>();
     phase_output_ = std::make_shared<cr::Output>();
+    std::lock_guard<std::mutex> lock(stretch_shared_->mutex);
+    stretch_shared_->sources.push_back(this);
+  }
+
+  // A voice copy: the same state as the default copy made, plus its own stretchers.
+  SampleSource::SampleSource(const SampleSource& other) :
+      Processor(other), pan_amplitude_(other.pan_amplitude_), normalize_gain_(other.normalize_gain_),
+      transpose_quantize_(other.transpose_quantize_), last_quantized_transpose_(other.last_quantized_transpose_),
+      sample_index_(other.sample_index_), sample_fraction_(other.sample_fraction_),
+      global_sample_index_(other.global_sample_index_), global_sample_fraction_(other.global_sample_fraction_),
+      phase_inc_(other.phase_inc_), bounce_mask_(other.bounce_mask_), low_cut_(other.low_cut_),
+      high_cut_(other.high_cut_), last_output_(other.last_output_), phase_output_(other.phase_output_),
+      random_generator_(other.random_generator_), modulation_(other.modulation_), sample_(other.sample_),
+      stretch_shared_(other.stretch_shared_) {
+    std::lock_guard<std::mutex> lock(stretch_shared_->mutex);
+    stretch_shared_->sources.push_back(this);
+    if (stretch_shared_->reserved)
+      reserveStretchVoices();
+  }
+
+  SampleSource::~SampleSource() {
+    std::lock_guard<std::mutex> lock(stretch_shared_->mutex);
+    auto& sources = stretch_shared_->sources;
+    sources.erase(std::remove(sources.begin(), sources.end(), this), sources.end());
+  }
+
+  void SampleSource::setStretchMemory(bool reserve) {
+    std::lock_guard<std::mutex> lock(stretch_shared_->mutex);
+    stretch_shared_->reserved = reserve;
+    for (SampleSource* source : stretch_shared_->sources) {
+      if (reserve)
+        source->reserveStretchVoices();
+      else
+        source->stretch_.reset();
+    }
+  }
+
+  void SampleSource::reserveStretchVoices() {
+    const int rate = getSampleRate();
+    if (stretch_ != nullptr && stretch_rate_ == rate)
+      return;
+    try {
+      auto state = std::make_unique<StretchState>();
+      for (StretchState::Voice& voice : state->voices)
+        voice.stretcher.configure(rate);
+      for (int channel = 0; channel < atlas::SampleStretcher::kChannels; ++channel) {
+        state->input[channel].assign(kMaxStretchInput, 0.0f);
+        state->start[channel].assign(state->voices[0].stretcher.startLength(atlas::SampleStretcher::kMaxSpeed) + 1, 0.0f);
+      }
+      stretch_ = std::move(state);
+      stretch_rate_ = rate;
+    }
+    catch (const std::bad_alloc&) {
+      // Out of memory: the source plays plain.
+      stretch_.reset();
+      stretch_rate_ = 0;
+    }
+  }
+
+  SampleSource::StretchState* SampleSource::stretchStateForBlock(int mode) {
+    if (mode == kStretchOff)
+      return nullptr;
+    if (stretch_ == nullptr || stretch_rate_ != getSampleRate()) {
+      // Offline, allocate now. In realtime, play plain until the message
+      // thread has (a mode switched on by automation, or a new sample rate).
+      if (RealtimeEffectScope::active()) {
+        stretch_shared_->requested.store(true, std::memory_order_release);
+        return nullptr;
+      }
+      setStretchMemory(true);
+      if (stretch_ == nullptr || stretch_rate_ != getSampleRate())
+        return nullptr;
+    }
+    return stretch_.get();
+  }
+
+  // Hides a step in one lane's output at `start`: the difference from the
+  // sample before it dies away over 3 ms.
+  void SampleSource::fadeFromPrevious(poly_float* raw_output, int num_samples, int lane, int start) {
+    const int fade_samples = std::max(1, static_cast<int>(kSampleRetriggerFadeSeconds * getSampleRate()));
+    if (start < 0 || start >= num_samples)
+      return;
+    const int end = std::min(num_samples, start + fade_samples);
+    const mono_float previous_output = start > 0 ? raw_output[start - 1][lane] : last_output_[lane];
+    const mono_float correction = previous_output - raw_output[start][lane];
+    for (int i = start; i < end; ++i) {
+      mono_float fade = 1.0f - (i - start + 1.0f) / fade_samples;
+      raw_output[i].set(lane, raw_output[i][lane] + correction * fade);
+    }
   }
 
   void SampleSource::process(int num_samples) {
@@ -473,9 +582,22 @@ namespace vital {
     poly_float transpose = snapTranspose(input_midi, input(kTranspose)->at(0), transpose_quantize);
     transpose = utils::clamp(transpose + input(kTune)->at(0), kMinTranspose, kMaxTranspose);
 
+    const int stretch_mode = utils::iclamp(static_cast<int>(input(kStretchMode)->at(0)[0] + 0.5f),
+                                           0, kNumStretchModes - 1);
+    StretchState* stretch = stretchStateForBlock(stretch_mode);
+    const bool stretch_transition = (stretch != nullptr) != stretching_;
+    stretching_ = stretch != nullptr;
+
     mono_float sample_rate_ratio = (1.0f * sample_->activeSampleRate()) / getSampleRate();
     poly_float current_phase_inc = phase_inc_;
-    phase_inc_ = utils::centsToRatio(transpose * kCentsPerNote) * sample_rate_ratio * (1 << Sample::kUpsampleTimes);
+    if (stretch) {
+      // The stretcher moves the pitch. The file is read at its own speed, and
+      // the time stretch is in how many samples each block reads.
+      phase_inc_ = sample_rate_ratio * (1 << Sample::kUpsampleTimes);
+      current_phase_inc = phase_inc_;
+    }
+    else
+      phase_inc_ = utils::centsToRatio(transpose * kCentsPerNote) * sample_rate_ratio * (1 << Sample::kUpsampleTimes);
 
     int audio_length = sample_->activeLength();
     poly_float audio_end = audio_length;
@@ -543,10 +665,13 @@ namespace vital {
       sample_fraction_ = global_sample_fraction_;
     }
 
-    sample_index_ = utils::maskLoad(sample_index_, utils::floor(reset_value), hard_sample_reset_mask);
-    sample_fraction_ = utils::maskLoad(sample_fraction_, reset_value - sample_index_, hard_sample_reset_mask);
+    // Plain, a restarting voice counts back from the block start so that it
+    // reaches the start at its trigger. Stretched, it restarts at the trigger.
+    const poly_mask block_hard_reset_mask = stretch ? poly_mask(0) : hard_sample_reset_mask;
+    sample_index_ = utils::maskLoad(sample_index_, utils::floor(reset_value), block_hard_reset_mask);
+    sample_fraction_ = utils::maskLoad(sample_fraction_, reset_value - sample_index_, block_hard_reset_mask);
     sample_index_ = utils::maskLoad(utils::clamp(sample_index_, sample_start, sample_end), sample_index_,
-                                    hard_sample_reset_mask);
+                                    block_hard_reset_mask);
     sample_fraction_ = utils::clamp(sample_fraction_, 0.0f, 1.0f);
     low_cut_.reset(reset_mask);
     high_cut_.reset(reset_mask);
@@ -590,7 +715,7 @@ namespace vital {
     poly_float* raw_output = output(kRaw)->buffer;
     poly_float current_fraction = sample_fraction_;
     poly_float current_index = utils::maskLoad(utils::clamp(sample_index_, sample_start, sample_end), sample_index_,
-                                              hard_sample_reset_mask);
+                                              block_hard_reset_mask);
 
     poly_mask current_bounce = bounce_mask_;
     poly_float active_start = loop ? loop_start : sample_start;
@@ -603,18 +728,10 @@ namespace vital {
                                                                  kSecondaryDistortionAmount, true);
     const bool fm_active = modulation.anyFm();
     const poly_float region_length = active_end - active_start;
-    for (int i = 0; i < num_samples; ++i) {
-      poly_mask soft_trigger_mask = soft_sample_reset_mask & poly_int::equal(i, retrigger_offset);
-      if (soft_trigger_mask.anyMask()) {
-        poly_float reset_index = utils::floor(soft_reset_value);
-        current_index = utils::maskLoad(current_index, reset_index, soft_trigger_mask);
-        current_fraction = utils::maskLoad(current_fraction, soft_reset_value - reset_index, soft_trigger_mask);
-        current_phase_inc = utils::maskLoad(current_phase_inc, phase_inc_, soft_trigger_mask);
-        current_bounce = current_bounce & ~soft_trigger_mask;
-      }
 
-      current_phase_inc += delta_phase_inc;
-
+    // One sample at the current position of every lane, with the loop
+    // crossfade; zero past the end of a one-shot.
+    const auto read_sample = [&]() -> poly_float {
       // A bounce pass also stops at active_end (the index counts up in both
       // directions). Keeping finished one-shot bounces "playing" held the
       // sample-start value as DC until the voice died.
@@ -665,14 +782,17 @@ namespace vital {
         sample_value = utils::maskLoad(sample_value, utils::interpolate(sample_value, alternate_sample, fade),
                                        crossfade_mask);
       }
+      return sample_value & playing_mask;
+    };
 
-      raw_output[i] = sample_value & playing_mask;
-      VITAL_ASSERT(utils::isContained(raw_output[i]));
+    // Moves the lanes in `mask` on by `rate` samples of the file, wrapping
+    // the loop and bouncing; the other lanes stay where they are.
+    const auto advance = [&](poly_float rate, poly_mask mask) {
+      const poly_float held_index = current_index;
+      const poly_float held_fraction = current_fraction;
+      const poly_mask held_bounce = current_bounce;
 
-      if (fm_active)
-        current_fraction += current_phase_inc * modulation.rateScale(i);
-      else
-        current_fraction += current_phase_inc;
+      current_fraction += rate;
       poly_float increment = utils::floor(current_fraction);
       current_fraction -= increment;
 
@@ -703,6 +823,147 @@ namespace vital {
           current_index = utils::max(current_index, active_start);
         }
       }
+      current_index = utils::maskLoad(held_index, current_index, mask);
+      current_fraction = utils::maskLoad(held_fraction, current_fraction, mask);
+      current_bounce = utils::maskLoad(held_bounce, current_bounce, mask);
+    };
+
+    if (stretch == nullptr) {
+      if (stretch_ != nullptr) {
+        for (StretchState::Voice& voice : stretch_->voices)
+          voice.running = false;
+      }
+      for (int i = 0; i < num_samples; ++i) {
+        poly_mask soft_trigger_mask = soft_sample_reset_mask & poly_int::equal(i, retrigger_offset);
+        if (soft_trigger_mask.anyMask()) {
+          poly_float reset_index = utils::floor(soft_reset_value);
+          current_index = utils::maskLoad(current_index, reset_index, soft_trigger_mask);
+          current_fraction = utils::maskLoad(current_fraction, soft_reset_value - reset_index, soft_trigger_mask);
+          current_phase_inc = utils::maskLoad(current_phase_inc, phase_inc_, soft_trigger_mask);
+          current_bounce = current_bounce & ~soft_trigger_mask;
+        }
+
+        current_phase_inc += delta_phase_inc;
+        raw_output[i] = read_sample();
+        VITAL_ASSERT(utils::isContained(raw_output[i]));
+
+        if (fm_active)
+          advance(current_phase_inc * modulation.rateScale(i), constants::kFullMask);
+        else
+          advance(current_phase_inc, constants::kFullMask);
+      }
+    }
+    else {
+      // Each voice feeds its own stereo stretcher the file at its own speed
+      // (input samples per output sample) and takes the block's output back.
+      // FM of the read rate has no meaning here; ring modulation still applies.
+      using Stretcher = atlas::SampleStretcher;
+      static constexpr int kChannels = Stretcher::kChannels;
+      poly_float speed = 1.0f;
+      if (stretch_mode == kStretchTempo) {
+        const mono_float host_bpm = input(kBeatsPerSecond)->at(0)[0] * 60.0f;
+        const mono_float file_bpm = input(kBpm)->at(0)[0];
+        if (host_bpm > 0.0f && file_bpm > 0.0f)
+          speed = host_bpm / file_bpm;
+      }
+      else
+        speed = poly_float(1.0f) / utils::max(input(kStretchLength)->at(0), 0.01f);
+      speed = utils::clamp(speed, Stretcher::kMinSpeed, Stretcher::kMaxSpeed);
+      const bool formants = input(kFormants)->at(0)[0] != 0.0f;
+      const poly_float active_voices = input(kActiveVoices)->at(0);
+      const poly_int reset_offset_samples = input(kReset)->source->trigger_offset;
+      const poly_mask kVoiceMasks[kVoicesPerProcessor] = {
+        poly_int(poly_int::kFullMask, poly_int::kFullMask, 0u, 0u),
+        poly_int(0u, 0u, poly_int::kFullMask, poly_int::kFullMask)
+      };
+
+      struct VoiceRun {
+        bool active = false;
+        bool restart = false;        // begins again at `offset`
+        bool reset_index = false;    // ... from the region start (a retrigger), else from where it is
+        bool silent_before = false;  // nothing before the offset: a voice starting (cleared below anyway)
+        int offset = 0;
+        mono_float speed = 1.0f;
+      };
+      VoiceRun runs[kVoicesPerProcessor];
+      for (int voice = 0; voice < kVoicesPerProcessor; ++voice) {
+        const int lane = 2 * voice;
+        VoiceRun& run = runs[voice];
+        run.speed = speed[lane];
+        run.restart = sample_reset_mask[lane] || reset_mask[lane];
+        run.reset_index = sample_reset_mask[lane] != 0;
+        run.silent_before = reset_mask[lane] != 0;
+        const int offset = sample_reset_mask[lane] ? retrigger_offset[lane] : reset_offset_samples[lane];
+        run.offset = run.restart ? utils::iclamp(offset, 0, num_samples - 1) : num_samples;
+        run.active = active_voices[lane] >= 0.5f || run.restart;
+        StretchState::Voice& state = stretch->voices[voice];
+        state.stretcher.setTranspose(transpose[lane]);
+        state.stretcher.setPreserveFormants(formants);
+      }
+
+      mono_float out[kVoicesPerProcessor][kChannels][kMaxBufferSize * kMaxOversample];
+      // Reads `count` samples into `dest` for the lanes of `voice`; the other
+      // voice's lanes keep their place.
+      const auto read_into = [&](int voice, mono_float* const dest[kChannels], int count) {
+        const int lane = 2 * voice;
+        for (int i = 0; i < count; ++i) {
+          const poly_float value = read_sample();
+          dest[0][i] = value[lane];
+          dest[1][i] = value[lane + 1];
+          advance(current_phase_inc, kVoiceMasks[voice]);
+        }
+      };
+      const auto start_voice = [&](int voice) {
+        StretchState::Voice& state = stretch->voices[voice];
+        mono_float* const buffers[kChannels] = { stretch->start[0].data(), stretch->start[1].data() };
+        read_into(voice, buffers, state.stretcher.startLength(runs[voice].speed));
+        state.stretcher.start(buffers, runs[voice].speed);
+        state.owed = 0.0f;
+        state.running = true;
+      };
+
+      int position = 0;
+      while (position < num_samples) {
+        int end = num_samples;
+        for (const VoiceRun& run : runs) {
+          if (run.restart && run.offset > position && run.offset < end)
+            end = run.offset;
+        }
+        const int length = end - position;
+        for (int voice = 0; voice < kVoicesPerProcessor; ++voice) {
+          VoiceRun& run = runs[voice];
+          StretchState::Voice& state = stretch->voices[voice];
+          mono_float* const block[kChannels] = { out[voice][0] + position, out[voice][1] + position };
+          const bool waiting = run.restart && run.offset > position && run.silent_before;
+          if (!run.active || waiting) {
+            std::fill(block[0], block[0] + length, 0.0f);
+            std::fill(block[1], block[1] + length, 0.0f);
+            continue;
+          }
+          if (run.restart && run.offset == position) {
+            if (run.reset_index) {
+              const poly_float reset_index = utils::floor(soft_reset_value);
+              current_index = utils::maskLoad(current_index, reset_index, kVoiceMasks[voice]);
+              current_fraction = utils::maskLoad(current_fraction, soft_reset_value - reset_index, kVoiceMasks[voice]);
+              current_bounce = current_bounce & ~kVoiceMasks[voice];
+            }
+            start_voice(voice);
+            run.restart = false;
+          }
+          else if (!state.running)
+            start_voice(voice);
+
+          const mono_float due = state.owed + run.speed * length;
+          const int count = std::min(kMaxStretchInput, static_cast<int>(due));
+          state.owed = due - count;
+          mono_float* const in[kChannels] = { stretch->input[0].data(), stretch->input[1].data() };
+          read_into(voice, in, count);
+          state.stretcher.process(in, count, block, length);
+        }
+        position = end;
+      }
+      for (int i = 0; i < num_samples; ++i)
+        raw_output[i] = poly_float(out[0][0][i], out[0][1][i], out[1][0][i], out[1][1][i]);
     }
 
     bounce_mask_ = current_bounce;
@@ -733,24 +994,16 @@ namespace vital {
     }
 
     if (soft_sample_reset_mask.anyMask()) {
-      static constexpr mono_float kSampleRetriggerFadeSeconds = 0.003f;
-      const int fade_samples = std::max(1, static_cast<int>(kSampleRetriggerFadeSeconds * getSampleRate()));
       for (int lane = 0; lane < poly_float::kSize; ++lane) {
-        if (!soft_sample_reset_mask[lane])
-          continue;
-
-        const int start = std::min(num_samples, std::max(0, static_cast<int>(retrigger_offset[lane])));
-        if (start >= num_samples)
-          continue;
-
-        const int end = std::min(num_samples, start + fade_samples);
-        const mono_float previous_output = start > 0 ? raw_output[start - 1][lane] : last_output_[lane];
-        const mono_float correction = previous_output - raw_output[start][lane];
-        for (int i = start; i < end; ++i) {
-          mono_float fade = 1.0f - (i - start + 1.0f) / fade_samples;
-          raw_output[i].set(lane, raw_output[i][lane] + correction * fade);
-        }
+        if (soft_sample_reset_mask[lane])
+          fadeFromPrevious(raw_output, num_samples, lane, std::max(0, static_cast<int>(retrigger_offset[lane])));
       }
+    }
+    // A mode change swaps the plain read for the stretched one mid-note (or
+    // back); the output steps, so the step fades out.
+    if (stretch_transition) {
+      for (int lane = 0; lane < poly_float::kSize; ++lane)
+        fadeFromPrevious(raw_output, num_samples, lane, 0);
     }
 
     modulation.applyRingMod(raw_output, num_samples);

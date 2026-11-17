@@ -101,7 +101,7 @@ namespace vital {
                                      source_types::slotPrefix(slot));
       case source_types::kSample:
         return new SampleModule(source_types::groupPrefix(slot, type), std::move(sample),
-                                source_types::slotPrefix(slot));
+                                source_types::slotPrefix(slot), beats_per_second);
       case source_types::kGranular:
         return new GranularModule(source_types::groupPrefix(slot, type), std::move(sample), beats_per_second,
                                   source_types::slotPrefix(slot));
@@ -214,6 +214,7 @@ namespace vital {
         sample->useInput(input(kMidi), SampleModule::kMidi);
         sample->useInput(input(kNoteCount), SampleModule::kNoteCount);
         sample->useInput(input(kNotePressed), SampleModule::kNotePressed);
+        sample->useInput(input(kActiveVoices), SampleModule::kActiveVoices);
         sample->useOutput(output(kRaw), SampleModule::kRaw);
         sample->useOutput(output(kLevelled), SampleModule::kLevelled);
         state_->module_phase = sample->getPhaseOutput();

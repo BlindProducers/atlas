@@ -417,6 +417,28 @@ void SynthBase::setVoiceReverbMemory(int filter, bool reserve) {
   scheduleEffectControlReservation();
 }
 
+void SynthBase::setSampleStretchMemory(int slot, bool reserve) {
+  // Allocation belongs on the message thread. From another thread (host
+  // automation, MIDI learn) the voices play plain until it has run.
+  if (MessageManager::getInstance()->isThisTheMessageThread()) {
+    changeEngine(*this, [&] { engine_->setSampleStretchMemory(slot, reserve); });
+    return;
+  }
+  scheduleEffectControlReservation();
+}
+
+namespace {
+  // The slot of an osc_N_sample_stretch_mode control, or -1.
+  int sampleStretchModeSlot(const std::string& name) {
+    static const std::string suffix = "_sample_stretch_mode";
+    if (name.rfind("osc_", 0) != 0 || name.size() <= suffix.size() ||
+        name.compare(name.size() - suffix.size(), suffix.size(), suffix) != 0)
+      return -1;
+    const int slot = std::atoi(name.c_str() + 4) - 1;
+    return slot >= 0 && slot < vital::kNumOscillators ? slot : -1;
+  }
+}
+
 void SynthBase::valueChanged(const std::string& name, vital::mono_float value) {
   // A name that is not a control (a MIDI-learn mapping saved by an older
   // Atlas, or a host alias, for one) changes nothing. This can run on the
@@ -435,9 +457,18 @@ void SynthBase::valueChanged(const std::string& name, vital::mono_float value) {
   const bool reverb = static_cast<int>(value + 0.5f) == vital::constants::kReverbFilter;
   if (voice_filter >= 0 && reverb)
     setVoiceReverbMemory(voice_filter, true);
+  // A Sample slot holds its stretchers while a stretch mode is selected:
+  // selecting one reserves them before the audio thread sees the mode, and
+  // Off frees them afterwards.
+  const int stretch_slot = changed ? sampleStretchModeSlot(name) : -1;
+  const bool stretching = static_cast<int>(value + 0.5f) != 0;
+  if (stretch_slot >= 0 && stretching)
+    setSampleStretchMemory(stretch_slot, true);
   control->set(value);
   if (voice_filter >= 0 && !reverb)
     setVoiceReverbMemory(voice_filter, false);
+  if (stretch_slot >= 0 && !stretching)
+    setSampleStretchMemory(stretch_slot, false);
   if (changed && isSourceTypeControl(name))
     scheduleSourcePreparation();
   // A new Speech variant starts from its own formants and breath. Preset
@@ -893,6 +924,9 @@ void SynthBase::prepareSelectedSources() {
   // The per-voice copies of the graph would otherwise clone a slot's new type
   // module in their first process() after the change, on the audio thread.
   engine_->syncVoiceGraphs();
+  // A Sample slot built with a stretch mode selected (a loaded preset) takes
+  // its stretchers now.
+  engine_->updateSampleStretchMemory();
 }
 
 void SynthBase::prepareSourceEngines() {

@@ -38,6 +38,12 @@ namespace strings {
     "Continuous per note"
   };
 
+  const std::string kSampleStretchModeNames[] = {
+    "Off",
+    "Tempo",
+    "Fixed"
+  };
+
   const std::string kGranularModeNames[] = {
     "Play-through",
     "Manual"

@@ -2268,7 +2268,7 @@ namespace {
       return suffix == "type" || suffix == "analog_waveform" || suffix == "braids_model" ||
              suffix.endsWith("spectral_morph_type") || suffix == "random_phase_mode" ||
              suffix == "granular_mode" || suffix == "granular_timing_mode" || suffix == "granular_size_mode" ||
-             suffix == "granular_midi_density";
+             suffix == "granular_midi_density" || suffix == "sample_stretch_mode";
     }
     const String filter_suffix = filterSuffixForParameter(id);
     if (filter_suffix == "model" || filter_suffix == "style")
@@ -2568,7 +2568,7 @@ namespace {
     }
     if (id.startsWith("sample_")) {
       const String suffix = id.fromFirstOccurrenceOf("sample_", false, false);
-      static const std::array<const char*, 32> sample_order = {{
+      static const std::array<const char*, 36> sample_order = {{
         "on",
         "solo",
         "destination",
@@ -2583,6 +2583,10 @@ namespace {
         "level",
         "pan",
         "playback_mode",
+        "stretch_mode",
+        "bpm",
+        "stretch_length",
+        "formants",
         "loop",
         "bounce",
         "reverse",
@@ -3991,6 +3995,11 @@ namespace {
       if (suffix == "bounce") return "Play the sample loop forward then backward.";
       if (suffix == "reverse") return "Play the sample backwards, from its end to its start.";
       if (suffix == "normalize") return "Play the sample with its loudest peak at 0 dB.";
+      if (suffix == "stretch_mode")
+        return "Off plays the sample faster for higher notes. Tempo stretches it to the host tempo and Fixed keeps its length; both change the pitch without the length.";
+      if (suffix == "bpm") return "Set the tempo the sample was recorded at.";
+      if (suffix == "stretch_length") return "Set the sample's length as a percentage of the original.";
+      if (suffix == "formants") return "Keep the sample's formants where they are while its pitch moves.";
       if (suffix == "random_phase") return "Randomize the sample start point on each triggered note.";
       if (suffix == "start") return "Set where sample playback begins.";
       if (suffix == "end") return "Set where sample playback stops.";
@@ -9049,6 +9058,8 @@ bool SynthEditor::shouldShowParameterInSection(const String& sectionName, AudioP
         return false;
       if (owner == vital::source_types::kGranular && suffix.startsWith("granular_"))
         return isGranularRowRelevant(osc - 1, suffix.fromFirstOccurrenceOf("granular_", false, false));
+      if (owner == vital::source_types::kSample && suffix.startsWith("sample_"))
+        return isSampleRowRelevant(osc - 1, suffix.fromFirstOccurrenceOf("sample_", false, false));
       return true;
     }
     if (isSlotLevelOscillatorSuffix(suffix))
@@ -10062,6 +10073,8 @@ int SynthEditor::oscillatorModeKey(int oscillator) const {
     return type * 64 + braidsModel(oscillator);
   if (type == vital::source_types::kGranular)
     return type * 64 + granularRowKey(oscillator);
+  if (type == vital::source_types::kSample)
+    return type * 64 + jlimit(0, 2, roundToInt(sourceSlotValue(oscillator, "sample_stretch_mode")));
   if (!isAnalogOscillator(oscillator))
     return type * 64 - 1;
   return type * 64 + roundToInt(engineValueFor(parameterBridge("osc_" + String(oscillator + 1) + "_analog_waveform")));
@@ -10108,6 +10121,16 @@ bool SynthEditor::isGranularRowRelevant(int oscillator, const String& suffix) co
   if (suffix == "grain_size") return !grid_size;
   if (suffix == "grid_length") return grid_size;
   if (suffix == "root_key") return on("granular_keytrack");
+  return true;
+}
+
+bool SynthEditor::isSampleRowRelevant(int oscillator, const String& suffix) const {
+  // Tempo mode reads Sample BPM, Fixed mode Stretch length, and both the
+  // formant switch (SampleSource::process).
+  const int mode = jlimit(0, 2, roundToInt(sourceSlotValue(oscillator, "sample_stretch_mode")));
+  if (suffix == "bpm") return mode == vital::SampleSource::kStretchTempo;
+  if (suffix == "stretch_length") return mode == vital::SampleSource::kStretchFixed;
+  if (suffix == "formants") return mode != vital::SampleSource::kStretchOff;
   return true;
 }
 
@@ -24655,9 +24678,12 @@ namespace {
     int loop_start = -1, loop_end = -1;
     bool loop_alternates = false;
     int root_note = -1;
+    float tempo = 0.0f;   // from a WAV's acid chunk: its tempo, or its beats over its length
   };
 
-  SampleFileInfo readSampleFileInfo(const StringPairArray& metadata, int length) {
+  constexpr float kMinSampleTempo = 20.0f, kMaxSampleTempo = 400.0f;
+
+  SampleFileInfo readSampleFileInfo(const StringPairArray& metadata, int length, int sample_rate) {
     SampleFileInfo info;
     const auto note = [&](const char* key) {
       const int value = metadata.containsKey(key) ? metadata.getValue(key, "").getIntValue() : -1;
@@ -24666,6 +24692,18 @@ namespace {
     info.root_note = note("MidiUnityNote");
     if (info.root_note < 0)
       info.root_note = note(AiffAudioFormat::appleRootNote);
+
+    if (metadata.getValue(WavAudioFormat::acidOneShot, "0").getIntValue() == 0) {
+      const float tempo = metadata.getValue(WavAudioFormat::acidTempo, "0").getFloatValue();
+      const int beats = metadata.getValue(WavAudioFormat::acidBeats, "0").getIntValue();
+      const double seconds = sample_rate > 0 ? length / double(sample_rate) : 0.0;
+      if (tempo > 0.0f)
+        info.tempo = tempo;
+      else if (beats > 0 && seconds > 0.0)
+        info.tempo = static_cast<float>(beats * 60.0 / seconds);
+      if (info.tempo < kMinSampleTempo || info.tempo > kMaxSampleTempo)
+        info.tempo = 0.0f;
+    }
 
     if (metadata.getValue("NumSampleLoops", "0").getIntValue() <= 0)
       return info;
@@ -24697,6 +24735,31 @@ namespace {
       info.loop_end = end;
     }
     return info;
+  }
+
+  // A tempo in a file name: "120bpm", "120 bpm" or "Loop_120_" (a bare whole
+  // number from 50 to 300, the first one).
+  float tempoFromName(const String& name) {
+    const StringArray words = StringArray::fromTokens(name.toLowerCase(), " _-.()[]", "");
+    float bare = 0.0f;
+    for (int i = 0; i < words.size(); ++i) {
+      String word = words[i];
+      bool marked = false;
+      if (word.endsWith("bpm")) {
+        word = word.dropLastCharacters(3);
+        marked = true;
+      }
+      else if (i + 1 < words.size() && words[i + 1] == "bpm")
+        marked = true;
+      if (word.isEmpty() || !word.containsOnly("0123456789."))
+        continue;
+      const float tempo = word.getFloatValue();
+      if (marked && tempo >= kMinSampleTempo && tempo <= kMaxSampleTempo)
+        return tempo;
+      if (!marked && bare == 0.0f && word.containsOnly("0123456789") && tempo >= 50.0f && tempo <= 300.0f)
+        bare = tempo;
+    }
+    return bare;
   }
 
   // A note in a file name, such as "Piano C3" or "cello_f#2": the last word
@@ -24753,31 +24816,35 @@ void SynthEditor::loadSampleFile(const File& file, int sample_target) {
     refreshSampleNameLabel(sample_target);
 
     // The file's own loop and root note set the slot's, as a sampler expects.
-    const SampleFileInfo info = readSampleFileInfo(format_reader->metadataValues, num_samples);
+    const SampleFileInfo info = readSampleFileInfo(format_reader->metadataValues, num_samples,
+                                                   static_cast<int>(format_reader->sampleRate));
     const String prefix = vital::source_types::slotPrefix(sample_target) + "sample_";
-    String taken;
+    // What was taken, and from where, for the announcement.
+    StringArray from_file, from_name;
     if (info.loop_start >= 0) {
       setParameterEngineValue(prefix + "loop_start", static_cast<float>(info.loop_start) / num_samples);
       setParameterEngineValue(prefix + "loop_end", static_cast<float>(info.loop_end + 1) / num_samples);
       if (info.loop_alternates)
         setParameterEngineValue(prefix + "bounce", 1.0f);
-      taken = "loop from the file";
+      from_file.add("loop");
     }
     const int root_note = info.root_note >= 0 ? info.root_note : rootNoteFromName(file.getFileNameWithoutExtension());
     if (root_note >= 0) {
       setParameterEngineValue(prefix + "root_key", static_cast<float>(root_note));
       setParameterEngineValue(vital::source_types::slotPrefix(sample_target) + "granular_root_key",
                               static_cast<float>(root_note));
-      const String root = "root key " + midiRootKeyText(root_note);
-      if (taken.isEmpty())
-        taken = root + (info.root_note >= 0 ? " from the file" : " from its name");
-      else if (info.root_note >= 0)
-        taken = "loop and " + root + " from the file";
-      else
-        taken += ", " + root + " from its name";
+      (info.root_note >= 0 ? from_file : from_name).add("root key " + midiRootKeyText(root_note));
     }
-    if (taken.isNotEmpty())
-      taken = ", " + taken;
+    const float tempo = info.tempo > 0.0f ? info.tempo : tempoFromName(file.getFileNameWithoutExtension());
+    if (tempo > 0.0f) {
+      setParameterEngineValue(prefix + "bpm", tempo);
+      (info.tempo > 0.0f ? from_file : from_name).add(String(tempo, tempo == std::floor(tempo) ? 0 : 1) + " BPM");
+    }
+    String taken;
+    if (!from_file.isEmpty())
+      taken += ", " + from_file.joinIntoString(" and ") + " from the file";
+    if (!from_name.isEmpty())
+      taken += ", " + from_name.joinIntoString(" and ") + " from its name";
 
     postPluginAnnouncement("Loaded sample " + file.getFileNameWithoutExtension() + taken,
                                            AccessibilityHandler::AnnouncementPriority::high);

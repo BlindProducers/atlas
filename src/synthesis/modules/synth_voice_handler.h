@@ -70,6 +70,13 @@ namespace vital {
       // exists only while that filter selects the Reverb model. Update and set
       // run on the message thread with processing locked, or offline.
       void updateReverbMemory();
+      // The Sample type's stretchers, per slot: held while its Stretch mode is
+      // not Off (updateSampleStretchMemory follows the controls;
+      // setSampleStretchMemory runs ahead of a change the control does not
+      // show yet). Message thread with processing paused, or offline.
+      void updateSampleStretchMemory();
+      void setSampleStretchMemory(int slot, bool reserve);
+      bool takeSampleStretchRequest();
       void setReverbMemory(int index, bool reserve);
       bool takeReverbMemoryRequest();
       Sample* getSample(int index) { return producers_->getSample(index); }

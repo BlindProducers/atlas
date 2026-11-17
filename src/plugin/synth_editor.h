@@ -560,6 +560,7 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     // Whether a Granular row (its suffix after "granular_") does anything
     // under the slot's Mode, Timing mode, Size mode, MIDI density and Keytrack.
     bool isGranularRowRelevant(int oscillator, const String& suffix) const;
+    bool isSampleRowRelevant(int oscillator, const String& suffix) const;
     bool refreshOscillatorModeRowsIfNeeded();
     bool refreshZoneCrossfadeRowIfNeeded();
     bool refreshEnvelopeAnalogRowsIfNeeded();

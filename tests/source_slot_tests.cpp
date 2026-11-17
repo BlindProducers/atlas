@@ -10,6 +10,10 @@
 #include "synth_plugin.h"
 #include "sound_engine.h"
 #include "sample_source.h"
+#include "sample_stretch.h"
+#if JUCE_MAC
+#include <malloc/malloc.h>
+#endif
 #include "noise_source.h"
 #include "analog_waveforms.h"
 #include "wavetable_creator.h"
@@ -424,7 +428,7 @@ namespace {
 
   // ---- Behaviour tests -------------------------------------------------------
 
-  std::vector<float> renderNote(SynthPlugin& plugin, int samples) {
+  std::vector<float> renderNote(SynthPlugin& plugin, int samples, int note = 60) {
     std::vector<float> result(size_t(samples) * 2);
     for (int offset = 0, block = 0; offset < samples; ++block) {
       const int count = std::min(128, samples - offset);
@@ -432,7 +436,7 @@ namespace {
       juce::MidiBuffer midi;
       audio.clear();
       if (offset == 0)
-        midi.addEvent(juce::MidiMessage::noteOn(1, 60, 0.7f), 0);
+        midi.addEvent(juce::MidiMessage::noteOn(1, note, 0.7f), 0);
       plugin.processBlock(audio, midi);
       for (int i = 0; i < count; ++i)
         for (int channel = 0; channel < 2; ++channel)
@@ -441,7 +445,7 @@ namespace {
     }
     juce::AudioBuffer<float> audio(2, 128);
     juce::MidiBuffer midi;
-    midi.addEvent(juce::MidiMessage::noteOff(1, 60), 0);
+    midi.addEvent(juce::MidiMessage::noteOff(1, note), 0);
     plugin.processBlock(audio, midi);
     // Let the release tail finish so the next note starts from silence.
     for (int block = 0; block < 2000; ++block) {
@@ -1301,7 +1305,123 @@ namespace {
            "a reversed loop repeats its region backwards");
   }
 
+  // A sine of `seconds` with 5 ms fades at both ends.
+  std::vector<float> sineFile(float seconds, float frequency) {
+    const int length = int(seconds * kSampleRate);
+    const int fade = kSampleRate / 200;
+    std::vector<float> audio(static_cast<size_t>(length), 0.0f);
+    for (int i = 0; i < length; ++i) {
+      const float window = std::min({ 1.0f, i / float(fade), (length - 1 - i) / float(fade) });
+      audio[size_t(i)] = 0.5f * window * std::sin(2.0f * float(M_PI) * frequency * i / kSampleRate);
+    }
+    return audio;
+  }
+
+  // Where the left channel last rises above a tenth of its peak, in samples.
+  int soundLength(const std::vector<float>& stereo) {
+    float peak = 0.0f;
+    for (size_t i = 0; i < stereo.size(); i += 2)
+      peak = std::max(peak, std::abs(stereo[i]));
+    for (size_t i = stereo.size() / 2; i-- > 0;) {
+      if (std::abs(stereo[i * 2]) > 0.1f * peak)
+        return int(i);
+    }
+    return 0;
+  }
+
+  // The left channel's frequency from its zero crossings between a fifth and
+  // three fifths of `length`.
+  float soundFrequency(const std::vector<float>& stereo, int length) {
+    int crossings = 0;
+    const int start = length / 5, end = length * 3 / 5;
+    for (int i = start + 1; i < end; ++i) {
+      if ((stereo[size_t(i) * 2] >= 0.0f) != (stereo[size_t(i - 1) * 2] >= 0.0f))
+        ++crossings;
+    }
+    return crossings * 0.5f * kSampleRate / float(end - start);
+  }
+
+  void prepareStretchSample(SynthPlugin& plugin, const std::vector<float>& audio) {
+    preparePlugin(plugin);
+    setType(plugin, 0, vital::source_types::kSample);
+    set(plugin, "osc_1_on", 1.0f);
+    set(plugin, "env_1_attack", 0.0f);
+    set(plugin, "env_1_release", 0.0f);
+    plugin.getSample(0)->loadSample(audio.data(), int(audio.size()), kSampleRate);
+    set(plugin, "osc_1_sample_random_phase", 0.0f);
+    set(plugin, "osc_1_sample_loop", 0.0f);
+  }
+
+  // Fixed stretch mode keeps a file's length on every key, and the key still
+  // moves its pitch; Off plays a fifth up in two thirds of the time.
+  void testSampleStretchFixed() {
+    SynthPlugin plugin;
+    const int length = kSampleRate / 4;
+    prepareStretchSample(plugin, sineFile(0.25f, 440.0f));
+    set(plugin, "osc_1_sample_keytrack", 1.0f);
+    set(plugin, "osc_1_sample_root_key", 60.0f);
+    const int render = length * 2;
+    const auto plain = renderNote(plugin, render, 67);
+    const int plain_length = soundLength(plain);
+    const float plain_frequency = soundFrequency(plain, plain_length);
+    expect(std::abs(plain_length - length * 2 / 3) < kSampleRate / 100 && std::abs(plain_frequency - 659.0f) < 20.0f,
+           "Off plays a fifth up in two thirds of the time: " + std::to_string(plain_length) + " samples at " +
+           std::to_string(plain_frequency) + " Hz");
+    set(plugin, "osc_1_sample_stretch_mode", float(vital::SampleSource::kStretchFixed));
+    const auto fixed = renderNote(plugin, render, 67);
+    const int fixed_length = soundLength(fixed);
+    const float fixed_frequency = soundFrequency(fixed, fixed_length);
+    expect(std::abs(fixed_length - length) < kSampleRate / 100,
+           "Fixed keeps the file's length a fifth up, within 10 ms: " + std::to_string(fixed_length) + " of " +
+           std::to_string(length) + " samples");
+    expect(std::abs(fixed_frequency - 659.0f) < 20.0f,
+           "Fixed raises the pitch by the fifth: " + std::to_string(fixed_frequency) + " Hz");
+    std::cout << "stretch: Off " << plain_length << " samples at " << plain_frequency << " Hz, Fixed " << fixed_length
+              << " samples at " << fixed_frequency << " Hz (file " << length << " samples at 440 Hz)\n";
+    const auto root = renderNote(plugin, render, 60);
+    expect(std::abs(soundFrequency(root, soundLength(root)) - 440.0f) < 15.0f &&
+           std::abs(soundLength(root) - length) < kSampleRate / 100,
+           "Fixed plays the root key at the file's pitch and length");
+    set(plugin, "osc_1_sample_stretch_length", 2.0f);
+    const auto doubled = renderNote(plugin, render, 60);
+    expect(std::abs(soundLength(doubled) - 2 * length) < kSampleRate / 50,
+           "Stretch length 200% doubles the length: " + std::to_string(soundLength(doubled)));
+    set(plugin, "osc_1_sample_stretch_length", 1.0f);
+    set(plugin, "osc_1_sample_stretch_mode", float(vital::SampleSource::kStretchOff));
+    const auto plain_again = renderNote(plugin, render, 67);
+    expect(std::abs(soundLength(plain_again) - plain_length) < 10, "Off plays the file at the key's speed again");
+  }
+
+  // Tempo stretch mode fits a two-beat file at its own BPM into two beats of
+  // the plugin's tempo.
+  void testSampleStretchTempo() {
+    SynthPlugin plugin;
+    // Two beats at 100 BPM: 1.2 seconds.
+    prepareStretchSample(plugin, sineFile(1.2f, 220.0f));
+    set(plugin, "osc_1_sample_keytrack", 0.0f);
+    set(plugin, "osc_1_sample_bpm", 100.0f);
+    plugin.getControls().at("beats_per_minute")->set(2.0f);  // 120 BPM, in beats per second
+    const int render = kSampleRate * 3 / 2;
+    const auto plain = renderNote(plugin, render);
+    expect(std::abs(soundLength(plain) - kSampleRate * 12 / 10) < kSampleRate / 100,
+           "Off plays the two beats in 1.2 seconds: " + std::to_string(soundLength(plain)));
+    set(plugin, "osc_1_sample_stretch_mode", float(vital::SampleSource::kStretchTempo));
+    const auto tempo = renderNote(plugin, render);
+    std::cout << "stretch: two beats at 100 BPM play " << soundLength(plain) << " samples plain and "
+              << soundLength(tempo) << " at 120 BPM\n";
+    expect(std::abs(soundLength(tempo) - kSampleRate) < kSampleRate / 100,
+           "Tempo plays the two beats in one second at 120 BPM, within 10 ms: " + std::to_string(soundLength(tempo)));
+    expect(std::abs(soundFrequency(tempo, soundLength(tempo)) - 220.0f) < 10.0f,
+           "Tempo keeps the pitch: " + std::to_string(soundFrequency(tempo, soundLength(tempo))) + " Hz");
+    plugin.getControls().at("beats_per_minute")->set(80.0f / 60.0f);
+    const auto slower = renderNote(plugin, render);
+    expect(std::abs(soundLength(slower) - kSampleRate * 3 / 2) < kSampleRate / 50,
+           "at 80 BPM the two beats last 1.5 seconds: " + std::to_string(soundLength(slower)));
+  }
+
   int behaviour() {
+    testSampleStretchFixed();
+    testSampleStretchTempo();
     testSampleLoopShift();
     testSampleNormalize();
     testSampleReverse();
@@ -1826,6 +1946,50 @@ namespace {
     return best;
   }
 
+  // What the Sample type's stretcher costs: two seconds of looped playback
+  // with each stretch mode against Off, for one voice and eight. Prints only.
+  int stretchCpu() {
+    const double seconds = 2.0;
+    const auto configure = [](int mode, bool formants) {
+      return [=](SynthPlugin& plugin) {
+        setType(plugin, 0, vital::source_types::kSample);
+        loadTestSample(plugin.getSample(0));
+        set(plugin, "osc_1_sample_loop", 1.0f);
+        set(plugin, "osc_1_sample_keytrack", 1.0f);
+        set(plugin, "osc_1_sample_stretch_mode", float(mode));
+        set(plugin, "osc_1_sample_formants", formants ? 1.0f : 0.0f);
+        set(plugin, "osc_1_on", 1.0f);
+        set(plugin, "polyphony", 16.0f);
+      };
+    };
+    std::cout << std::fixed << std::setprecision(1);
+#if JUCE_MAC
+    const size_t heap_before = mstats().bytes_used;
+#endif
+    atlas::SampleStretcher stretcher;
+    stretcher.configure(kSampleRate);
+#if JUCE_MAC
+    std::cout << "one stretcher: " << (mstats().bytes_used - heap_before) / 1024 << " KB\n";
+#endif
+    std::cout << "stretcher latency: " << stretcher.latency() << " samples at "
+              << kSampleRate << " Hz (" << stretcher.latency() * 1000.0 / kSampleRate << " ms)\n";
+    for (int notes : { 1, 8 }) {
+      const double off = renderMs(configure(vital::SampleSource::kStretchOff, false), seconds, notes);
+      std::cout << notes << (notes == 1 ? " voice" : " voices") << " Off: " << off << " ms per " << seconds << " s\n";
+      struct Case { const char* name; int mode; bool formants; };
+      for (const Case& test : { Case { "Tempo", vital::SampleSource::kStretchTempo, false },
+                                Case { "Fixed", vital::SampleSource::kStretchFixed, false },
+                                Case { "Fixed with formants", vital::SampleSource::kStretchFixed, true } }) {
+        const double ms = renderMs(configure(test.mode, test.formants), seconds, notes);
+        // Milliseconds per second of audio is a tenth of a percent of one core.
+        const double per_voice = (ms - off) / notes / seconds;
+        std::cout << notes << (notes == 1 ? " voice " : " voices ") << test.name << ": " << ms << " ms, "
+                  << per_voice << " ms per voice per second of audio (" << per_voice / 10.0 << "% of a core)\n";
+      }
+    }
+    return 0;
+  }
+
   // Time for two seconds of a 16-note chord on the Spectral settings of a bell
   // keys patch at 2x oversampling. Prints only; a guide for optimising.
   int spectralCpu() {
@@ -2046,10 +2210,12 @@ int main(int argc, char** argv) {
     return cpu();
   if (argc > 1 && juce::String(argv[1]) == "--spectral-cpu")
     return spectralCpu();
+  if (argc > 1 && juce::String(argv[1]) == "--stretch-cpu")
+    return stretchCpu();
   if (argc > 1 && juce::String(argv[1]) == "--behaviour")
     return behaviour();
   if (argc > 1) {
-    std::cerr << "usage: AtlasSourceSlotTests [--behaviour | --cpu | --spectral-cpu | --smooth-interpolation | --write-presets <dir> | --capture <dir> | --compare <dir>]\n";
+    std::cerr << "usage: AtlasSourceSlotTests [--behaviour | --cpu | --spectral-cpu | --stretch-cpu | --smooth-interpolation | --write-presets <dir> | --capture <dir> | --compare <dir>]\n";
     return 2;
   }
   return behaviour();

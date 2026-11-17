@@ -350,6 +350,8 @@ class SynthBase : public MidiManager::Listener {
     // Reserves or frees voice filter 0 or 1's Reverb memory: at once on the
     // message thread, otherwise through scheduleEffectControlReservation.
     void setVoiceReverbMemory(int filter, bool reserve);
+    // The Sample type's stretchers for a slot, ahead of a Stretch mode switching on.
+    void setSampleStretchMemory(int slot, bool reserve);
 
     File active_file_;
     vital::poly_float oscilloscope_memory_[2 * vital::kOscilloscopeMemoryResolution];

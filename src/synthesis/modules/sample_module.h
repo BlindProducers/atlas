@@ -29,6 +29,7 @@ namespace vital {
         kMidi,
         kNoteCount,
         kNotePressed,
+        kActiveVoices,
         kNumInputs
       };
 
@@ -40,8 +41,9 @@ namespace vital {
 
       // `prefix` names this module's controls, e.g. "osc_5_sample_"; the sample is owned by the slot.
       // `slot_prefix` ("osc_5_") enables slot-level FM/RM from the slot's distortion controls.
+      // `beats_per_second` is the host tempo the Tempo stretch mode follows.
       explicit SampleModule(std::string prefix = "sample_", std::shared_ptr<Sample> sample = nullptr,
-                            std::string slot_prefix = "");
+                            std::string slot_prefix = "", const Output* beats_per_second = nullptr);
       virtual ~SampleModule() { }
 
       void init() override;
@@ -53,9 +55,19 @@ namespace vital {
       Sample* getSample() { return sampler_->getSample(); }
       force_inline Output* getPhaseOutput() const { return sampler_->getPhaseOutput(); }
 
+      // The stretchers of every voice: held while Stretch mode is not Off.
+      // setStretchMemory reserves ahead of a mode the control does not show
+      // yet; updateStretchMemory follows the control. Message thread with
+      // processing paused, or offline.
+      void setStretchMemory(bool reserve) { sampler_->setStretchMemory(reserve); }
+      void updateStretchMemory();
+      bool takeStretchMemoryRequest() { return sampler_->takeStretchMemoryRequest(); }
+
     protected:
       std::string prefix_;
       std::string slot_prefix_;
+      const Output* beats_per_second_;
+      Value* stretch_mode_ = nullptr;
       SampleSource* sampler_;
 
       JUCE_LEAK_DETECTOR(SampleModule)
