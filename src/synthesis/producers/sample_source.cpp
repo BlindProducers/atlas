@@ -16,6 +16,7 @@
 
 #include "sample_source.h"
 #include "futils.h"
+#include "sample_slices.h"
 #include "prepared_effect_module.h"
 #include "sample_stretch.h"
 #include "synth_constants.h"
@@ -324,6 +325,7 @@ namespace vital {
     current_data_ = data_.get();
     while (active_audio_data_.load())
       std::this_thread::yield(); // Wait for audio thread to finish using old_data.
+    resetSlices(size);
 
     last_browsed_file_.clear();
     if (load_callback_)
@@ -344,10 +346,42 @@ namespace vital {
     current_data_ = data_.get();
     while (active_audio_data_.load())
       std::this_thread::yield(); // Wait for audio thread to finish using old_data.
+    resetSlices(size);
 
     last_browsed_file_.clear();
     if (load_callback_)
       load_callback_(left_buffer, right_buffer, size, sample_rate);
+  }
+
+  void Sample::resetSlices(int size) {
+    setSlices(sample_slices::grid(size, kDefaultSliceDivisions));
+  }
+
+  // Keeps the starts that fit: ascending, at least kMinSliceLength apart,
+  // inside the file, and the first at 0, up to kMaxSlices.
+  void Sample::setSlices(const std::vector<int>& starts) {
+    auto slices = std::make_unique<Slices>();
+    const int length = data_ ? data_->length : 0;
+    slices->starts[0] = 0;
+    slices->count = 1;
+    for (int start : starts) {
+      if (slices->count >= kMaxSlices)
+        break;
+      const int previous = slices->starts[slices->count - 1];
+      if (start >= previous + kMinSliceLength && start <= length - kMinSliceLength)
+        slices->starts[slices->count++] = start;
+    }
+    Slices* old = current_slices_.exchange(slices.get(), std::memory_order_acq_rel);
+    while (active_slices_.load(std::memory_order_acquire) == old && old != nullptr)
+      std::this_thread::yield(); // Wait for the audio thread to let go of the old set.
+    slices_ = std::move(slices);
+  }
+
+  std::vector<int> Sample::slices() const {
+    const Slices* slices = current_slices_.load(std::memory_order_acquire);
+    if (slices == nullptr)
+      return {};
+    return std::vector<int>(slices->starts, slices->starts + slices->count);
   }
 
   void Sample::init() {
@@ -380,6 +414,7 @@ namespace vital {
       String encoded_stereo = Base64::toBase64(pcm_data.get(), sizeof(int16_t) * data_->length);
       data["samples_stereo"] = encoded_stereo.toStdString();
     }
+    data["slices"] = slices();
     return data;
   }
 
@@ -428,6 +463,14 @@ namespace vital {
       loadSample(buffer.get(), length, sample_rate);
     if (data.count("last_browsed_file") && data["last_browsed_file"].is_string())
       last_browsed_file_ = data["last_browsed_file"].get<std::string>();
+    if (data.count("slices") && data["slices"].is_array()) {
+      std::vector<int> starts;
+      for (const auto& start : data["slices"]) {
+        if (start.is_number_integer())
+          starts.push_back(start.get<int>());
+      }
+      setSlices(starts);
+    }
   }
 
   struct SampleSource::StretchState {
@@ -445,6 +488,9 @@ namespace vital {
   namespace {
     constexpr int kMaxStretchInput = static_cast<int>(kMaxBufferSize * kMaxOversample * atlas::SampleStretcher::kMaxSpeed) + 2;
     constexpr mono_float kSampleRetriggerFadeSeconds = 0.003f;
+    // A slice fades in over its first 2 ms and out over its last, so the cuts
+    // the slicer makes in the file never click.
+    constexpr mono_float kSliceFadeSeconds = 0.002f;
   }
 
   SampleSource::SampleSource() : SampleSource(nullptr) { }
@@ -454,6 +500,7 @@ namespace vital {
       random_generator_(0.0f, 1.0f), stretch_shared_(std::make_shared<StretchShared>()) {
     transpose_quantize_ = 0;
     last_quantized_transpose_ = 0.0f;
+    slice_index_ = -1.0f;
     sample_index_ = 0;
     sample_fraction_ = 0.0f;
     global_sample_index_ = 0;
@@ -472,7 +519,7 @@ namespace vital {
   SampleSource::SampleSource(const SampleSource& other) :
       Processor(other), pan_amplitude_(other.pan_amplitude_), normalize_gain_(other.normalize_gain_),
       transpose_quantize_(other.transpose_quantize_), last_quantized_transpose_(other.last_quantized_transpose_),
-      sample_index_(other.sample_index_), sample_fraction_(other.sample_fraction_),
+      slice_index_(other.slice_index_), sample_index_(other.sample_index_), sample_fraction_(other.sample_fraction_),
       global_sample_index_(other.global_sample_index_), global_sample_fraction_(other.global_sample_fraction_),
       phase_inc_(other.phase_inc_), bounce_mask_(other.bounce_mask_), low_cut_(other.low_cut_),
       high_cut_(other.high_cut_), last_output_(other.last_output_), phase_output_(other.phase_output_),
@@ -564,8 +611,11 @@ namespace vital {
     poly_float input_pan = utils::clamp(input(kPan)->at(0), -1.0f, 1.0f);
     pan_amplitude_ = futils::panAmplitude(input_pan);
 
+    // In Slicer mode a key picks a slice, not a pitch: slice 1 on the root
+    // key and one more per semitone up, each at the file's own pitch.
+    const bool slicer = utils::iclamp(static_cast<int>(input(kMode)->at(0)[0] + 0.5f), 0, kNumModes - 1) == kSlicer;
     poly_float input_midi = 0.0f;
-    if (input(kKeytrack)->at(0)[0])
+    if (!slicer && input(kKeytrack)->at(0)[0])
       input_midi = input(kMidi)->at(0) - input(kRootKey)->at(0);
 
     int transpose_quantize = static_cast<int>(input(kTransposeQuantize)->at(0)[0]);
@@ -582,7 +632,7 @@ namespace vital {
     poly_float transpose = snapTranspose(input_midi, input(kTranspose)->at(0), transpose_quantize);
     transpose = utils::clamp(transpose + input(kTune)->at(0), kMinTranspose, kMaxTranspose);
 
-    const int stretch_mode = utils::iclamp(static_cast<int>(input(kStretchMode)->at(0)[0] + 0.5f),
+    const int stretch_mode = utils::iclamp(static_cast<int>(input(slicer ? kSliceStretchMode : kStretchMode)->at(0)[0] + 0.5f),
                                            0, kNumStretchModes - 1);
     StretchState* stretch = stretchStateForBlock(stretch_mode);
     const bool stretch_transition = (stretch != nullptr) != stretching_;
@@ -599,17 +649,49 @@ namespace vital {
     else
       phase_inc_ = utils::centsToRatio(transpose * kCentsPerNote) * sample_rate_ratio * (1 << Sample::kUpsampleTimes);
 
+    poly_mask reset_mask = getResetMask(kReset);
+    poly_mask retrigger_mask = getResetMask(kRetrigger);
+
     int audio_length = sample_->activeLength();
     poly_float audio_end = audio_length;
     poly_float minimum_region = Sample::kMinSize * (1 << Sample::kUpsampleTimes);
     // Either order of two points marks the part between them.
     poly_float region_a = utils::clamp(input(kStart)->at(0), 0.0f, 1.0f) * audio_end;
     poly_float region_b = utils::clamp(input(kEnd)->at(0), 0.0f, 1.0f) * audio_end;
+    // Slicer: each lane's region is the slice its note picked when it began.
+    // A key outside the slices plays nothing.
+    poly_mask slice_valid_mask = constants::kFullMask;
+    const bool slice_loop = slicer && input(kSliceLoop)->at(0)[0] != 0.0f;
+    if (slicer) {
+      const poly_float chosen = utils::round(input(kMidi)->at(0) - input(kRootKey)->at(0));
+      slice_index_ = utils::maskLoad(slice_index_, chosen, retrigger_mask | reset_mask);
+      const Sample::Slices* slices = sample_->activeSlices();
+      const int count = slices != nullptr ? slices->count : 0;
+      // Play through runs on to the end of the file; a looping slice stays a slice.
+      const bool play_through = input(kPlayThrough)->at(0)[0] != 0.0f && !slice_loop;
+      poly_float valid = 0.0f;
+      for (int lane = 0; lane < poly_float::kSize; ++lane) {
+        const int index = static_cast<int>(slice_index_[lane]);
+        if (index < 0 || index >= count) {
+          region_a.set(lane, 0.0f);
+          region_b.set(lane, 0.0f);
+          continue;
+        }
+        const int start = std::min(audio_length, slices->starts[index] << Sample::kUpsampleTimes);
+        const int end = index + 1 < count && !play_through
+            ? std::min(audio_length, slices->starts[index + 1] << Sample::kUpsampleTimes) : audio_length;
+        region_a.set(lane, static_cast<mono_float>(start));
+        region_b.set(lane, static_cast<mono_float>(end));
+        valid.set(lane, 1.0f);
+      }
+      slice_valid_mask = poly_float::greaterThan(valid, 0.5f);
+    }
     poly_float sample_start = utils::floor(utils::clamp(utils::min(region_a, region_b), 0.0f, audio_end - minimum_region));
     poly_float sample_end = utils::floor(utils::clamp(utils::max(region_a, region_b), sample_start + minimum_region, audio_end));
 
-    poly_float loop_a = utils::clamp(input(kLoopStart)->at(0), 0.0f, 1.0f) * audio_end;
-    poly_float loop_b = utils::clamp(input(kLoopEnd)->at(0), 0.0f, 1.0f) * audio_end;
+    // A looping slice loops the whole slice, as it is.
+    poly_float loop_a = slicer ? sample_start : utils::clamp(input(kLoopStart)->at(0), 0.0f, 1.0f) * audio_end;
+    poly_float loop_b = slicer ? sample_end : utils::clamp(input(kLoopEnd)->at(0), 0.0f, 1.0f) * audio_end;
     // Loop end before Loop start loops that part backwards: the sample plays
     // forward to the loop, then reads it mirrored, and Bounce alternates from there.
     const poly_mask reverse_loop_mask = poly_float::lessThan(loop_b, loop_a);
@@ -617,12 +699,13 @@ namespace vital {
     poly_float loop_end = utils::clamp(utils::max(loop_a, loop_b), loop_start + minimum_region, sample_end);
     // Loop shift moves the loop as a whole, as far as the region allows at
     // its full length.
-    poly_float loop_shift = utils::clamp(input(kLoopShift)->at(0), -1.0f, 1.0f) * audio_end;
+    poly_float loop_shift = slicer ? poly_float(0.0f) : utils::clamp(input(kLoopShift)->at(0), -1.0f, 1.0f) * audio_end;
     loop_shift = utils::clamp(loop_shift, sample_start - loop_start, sample_end - loop_end);
     loop_start = utils::floor(loop_start + loop_shift);
     loop_end = utils::floor(loop_end + loop_shift);
     poly_float loop_length = utils::max(loop_end - loop_start, 1.0f);
-    poly_float loop_crossfade = utils::clamp(input(kLoopCrossfade)->at(0), 0.0f, 1.0f) * loop_length;
+    poly_float loop_crossfade = slicer ? poly_float(0.0f)
+                                       : utils::clamp(input(kLoopCrossfade)->at(0), 0.0f, 1.0f) * loop_length;
     loop_crossfade = utils::min(loop_crossfade, loop_length * 0.5f);
 
     // Reverse plays the region from its end. The index still counts up, over
@@ -635,9 +718,7 @@ namespace vital {
       loop_start = reversed_loop_start;
     }
 
-    poly_mask reset_mask = getResetMask(kReset);
-    poly_mask retrigger_mask = getResetMask(kRetrigger);
-    int playback_mode = static_cast<int>(input(kPlaybackMode)->at(0)[0] + 0.5f);
+    int playback_mode = slicer ? kRetriggerPerNote : static_cast<int>(input(kPlaybackMode)->at(0)[0] + 0.5f);
     playback_mode = utils::iclamp(playback_mode, 0, kNumPlaybackModes - 1);
     poly_mask sample_reset_mask = playback_mode == kRetriggerPerNote ? retrigger_mask : poly_mask(0);
     poly_mask hard_sample_reset_mask = sample_reset_mask & reset_mask;
@@ -651,7 +732,7 @@ namespace vital {
     
     poly_float reset_value = sample_start - reset_offset;
     poly_float soft_reset_value = sample_start;
-    if (input(kRandomPhase)->at(0)[0]) {
+    if (!slicer && input(kRandomPhase)->at(0)[0]) {
       reset_value = sample_start + (sample_end - sample_start) * random_generator_.next();
       reset_value = utils::maskLoad(reset_value,
                                     sample_start + (sample_end - sample_start) * random_generator_.next(),
@@ -676,12 +757,12 @@ namespace vital {
     low_cut_.reset(reset_mask);
     high_cut_.reset(reset_mask);
 
-    bool loop = input(kLoop)->at(0)[0] != 0.0f;
+    bool loop = slicer ? slice_loop : input(kLoop)->at(0)[0] != 0.0f;
     poly_mask loop_enabled_mask = 0;
     if (loop)
       loop_enabled_mask = constants::kFullMask;
 
-    bool bounce = input(kBounce)->at(0)[0] != 0.0f;
+    bool bounce = !slicer && input(kBounce)->at(0)[0] != 0.0f;
     poly_mask bounce_enabled_mask = 0;
     if (bounce)
       bounce_enabled_mask = constants::kFullMask;
@@ -728,6 +809,8 @@ namespace vital {
                                                                  kSecondaryDistortionAmount, true);
     const bool fm_active = modulation.anyFm();
     const poly_float region_length = active_end - active_start;
+    const mono_float slice_fade_inverse =
+        1.0f / std::max(1.0f, kSliceFadeSeconds * sample_->activeSampleRate() * (1 << Sample::kUpsampleTimes));
 
     // One sample at the current position of every lane, with the loop
     // crossfade; zero past the end of a one-shot.
@@ -781,6 +864,13 @@ namespace vital {
         poly_float fade = utils::clamp(loop_position / utils::max(loop_crossfade, 1.0f), 0.0f, 1.0f);
         sample_value = utils::maskLoad(sample_value, utils::interpolate(sample_value, alternate_sample, fade),
                                        crossfade_mask);
+      }
+      if (slicer) {
+        // Fade in from the slice's start and out towards its end (the loop's
+        // ends while it loops), measured in the file.
+        const poly_float edge = utils::min(current_index - active_start, active_end - current_index);
+        sample_value *= utils::clamp(edge * slice_fade_inverse, 0.0f, 1.0f);
+        playing_mask = playing_mask & slice_valid_mask;
       }
       return sample_value & playing_mask;
     };

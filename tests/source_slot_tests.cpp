@@ -1246,6 +1246,85 @@ namespace {
            "crossed loop points loop the part between them backwards");
   }
 
+  // Slicer mode: a key plays its slice and nothing else, slice 1 on the root
+  // key and one per semitone up; the slices follow Divisions, hand edits and
+  // the preset, and a new file resets them.
+  void testSampleSlicer() {
+    SynthPlugin plugin;
+    preparePlugin(plugin);
+    setType(plugin, 0, vital::source_types::kSample);
+    set(plugin, "osc_1_on", 1.0f);
+    set(plugin, "env_1_attack", 0.0f);
+    set(plugin, "env_1_release", 0.0f);
+    // A click in the middle of each quarter of a half-second file.
+    const int length = kSampleRate / 2;
+    const int quarter = length / 4;
+    std::vector<float> audio(size_t(length), 0.0f);
+    for (int i = 0; i < 4; ++i)
+      audio[size_t(i * quarter + quarter / 2)] = 1.0f;
+    plugin.getSample(0)->loadSample(audio.data(), int(audio.size()), kSampleRate);
+    set(plugin, "osc_1_sample_mode", float(vital::SampleSource::kSlicer));
+    set(plugin, "osc_1_sample_slice_stretch_mode", float(vital::SampleSource::kStretchOff));
+    set(plugin, "osc_1_sample_slice_divisions", 4.0f);
+    set(plugin, "osc_1_sample_root_key", 60.0f);
+    plugin.resliceSample(0);
+    const auto slices = plugin.getSample(0)->slices();
+    expect(slices == std::vector<int>({ 0, quarter, 2 * quarter, 3 * quarter }),
+           "four divisions cut the file into quarters");
+    for (int slice = 0; slice < 4; ++slice) {
+      const auto note = renderNote(plugin, length, 60 + slice);
+      bool own_click = peakNear(note, quarter / 2, 100) > 0.1f;
+      bool other_click = false;
+      for (int other = 1; other < 4; ++other)
+        other_click = other_click || peakNear(note, other * quarter + quarter / 2, 100) > 0.01f;
+      expect(own_click && !other_click,
+             "key " + std::to_string(60 + slice) + " plays slice " + std::to_string(slice + 1) + "'s click and no other");
+    }
+    expect(energy(renderNote(plugin, length, 64)) < 1.0e-9, "a key past the last slice plays nothing");
+    expect(energy(renderNote(plugin, length, 59)) < 1.0e-9, "a key below the root plays nothing");
+    // Play through runs on from the slice to the end of the file.
+    set(plugin, "osc_1_sample_play_through", 1.0f);
+    const auto through = renderNote(plugin, length, 62);
+    expect(peakNear(through, quarter / 2, 100) > 0.1f && peakNear(through, quarter / 2 + quarter, 100) > 0.1f &&
+           peakNear(through, quarter / 2 + 2 * quarter, 100) < 0.01f,
+           "Play through plays slice 3 and then slice 4");
+    set(plugin, "osc_1_sample_play_through", 0.0f);
+    // A looping slice repeats; a slice played plain stops.
+    set(plugin, "osc_1_sample_slice_loop", 1.0f);
+    const auto looped = renderNote(plugin, length, 61);
+    expect(peakNear(looped, quarter / 2, 100) > 0.1f && peakNear(looped, quarter / 2 + quarter, 100) > 0.1f,
+           "a looping slice plays its click once per loop");
+    set(plugin, "osc_1_sample_slice_loop", 0.0f);
+    // Hand edits move slice 2's start past its click, so slice 1 plays two clicks.
+    plugin.getSample(0)->setSlices({ 0, quarter + quarter / 2 + 1000, 2 * quarter, 3 * quarter });
+    const auto edited = renderNote(plugin, length, 60);
+    expect(peakNear(edited, quarter / 2, 100) > 0.1f && peakNear(edited, quarter / 2 + quarter, 100) > 0.1f &&
+           peakNear(edited, quarter / 2 + 2 * quarter, 100) < 0.01f, "an edited slice 1 plays both clicks");
+    // The slices are saved with the sample and come back with the preset.
+    json saved = pluginState(plugin);
+    SynthPlugin restored;
+    preparePlugin(restored);
+    const std::string text = saved.dump();
+    restored.setStateInformation(text.data(), int(text.size()));
+    expect(restored.getSample(0)->slices() == std::vector<int>({ 0, quarter + quarter / 2 + 1000, 2 * quarter, 3 * quarter }),
+           "the slices come back with the preset");
+    // Transients find the four clicks, and a new file resets the slices.
+    set(plugin, "osc_1_sample_slice_by", 1.0f);
+    plugin.resliceSample(0);
+    const auto found = plugin.getSample(0)->slices();
+    // Slice 1 is the silence before the first click, then one slice per click.
+    expect(found.size() == 5, "transient detection finds the four clicks: " + std::to_string(found.size()));
+    for (size_t i = 1; i < found.size() && i < 5; ++i) {
+      expect(std::abs(found[i] - int((i - 1) * quarter + quarter / 2)) < 600,
+             "transient " + std::to_string(i) + " lands at its click: " + std::to_string(found[i]));
+    }
+    expect(found.size() > 0 && found[0] == 0, "slice 1 starts at the beginning");
+    std::vector<float> other(size_t(length / 2), 0.0f);
+    plugin.getSample(0)->loadSample(other.data(), int(other.size()), kSampleRate);
+    expect(plugin.getSample(0)->slices().size() == size_t(vital::Sample::kDefaultSliceDivisions),
+           "a new file starts from the default grid");
+  }
+
   // Normalize plays a quiet file with its peak at 0 dB, and off plays it as it is.
   void testSampleNormalize() {
     SynthPlugin plugin;
@@ -1423,6 +1502,7 @@ namespace {
     testSampleStretchFixed();
     testSampleStretchTempo();
     testSampleLoopShift();
+    testSampleSlicer();
     testSampleNormalize();
     testSampleReverse();
     testDetoursLeaveTypesUnchanged();

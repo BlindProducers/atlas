@@ -137,6 +137,9 @@ class SynthBase : public MidiManager::Listener {
     static bool isSourceTypeControl(const std::string& name);
     // Sets a Speech slot's control back to 0 and tells the host and editor.
     void resetSpeechControl(const std::string& name);
+    // Cuts a Sample slot's slices as its Slice by, Divisions and Sensitivity
+    // say, replacing the slices it had. Message thread.
+    void resliceSample(int slot);
     // An effect slot's type ("fx_slot_3_type", "bus_1_fx_slot_3_type").
     static bool isEffectSlotTypeControl(const std::string& name);
     LineGenerator* getLfoSource(int index);
@@ -352,6 +355,9 @@ class SynthBase : public MidiManager::Listener {
     void setVoiceReverbMemory(int filter, bool reserve);
     // The Sample type's stretchers for a slot, ahead of a Stretch mode switching on.
     void setSampleStretchMemory(int slot, bool reserve);
+    // Cuts a Sample slot's slices again as its Slice by, Divisions and
+    // Sensitivity say: at once on the message thread, otherwise there soon.
+    void scheduleReslice(int slot);
 
     File active_file_;
     vital::poly_float oscilloscope_memory_[2 * vital::kOscilloscopeMemoryResolution];

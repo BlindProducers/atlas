@@ -55,7 +55,7 @@ namespace vital {
       Sample* getSample() { return sampler_->getSample(); }
       force_inline Output* getPhaseOutput() const { return sampler_->getPhaseOutput(); }
 
-      // The stretchers of every voice: held while Stretch mode is not Off.
+      // The stretchers of every voice: held while the mode's Stretch mode is not Off.
       // setStretchMemory reserves ahead of a mode the control does not show
       // yet; updateStretchMemory follows the control. Message thread with
       // processing paused, or offline.
@@ -67,7 +67,9 @@ namespace vital {
       std::string prefix_;
       std::string slot_prefix_;
       const Output* beats_per_second_;
+      Value* mode_ = nullptr;
       Value* stretch_mode_ = nullptr;
+      Value* slice_stretch_mode_ = nullptr;
       SampleSource* sampler_;
 
       JUCE_LEAK_DETECTOR(SampleModule)

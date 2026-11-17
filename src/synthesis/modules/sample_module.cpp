@@ -28,8 +28,11 @@ namespace vital {
   }
 
   void SampleModule::updateStretchMemory() {
-    const bool stretching = stretch_mode_ != nullptr && static_cast<int>(stretch_mode_->value() + 0.5f) != 0;
-    sampler_->setStretchMemory(stretching);
+    if (mode_ == nullptr || stretch_mode_ == nullptr || slice_stretch_mode_ == nullptr)
+      return;
+    const bool slicer = static_cast<int>(mode_->value() + 0.5f) == SampleSource::kSlicer;
+    const Value* stretch_mode = slicer ? slice_stretch_mode_ : stretch_mode_;
+    sampler_->setStretchMemory(static_cast<int>(stretch_mode->value() + 0.5f) != 0);
   }
 
   void SampleModule::init() {
@@ -40,6 +43,15 @@ namespace vital {
     Value* normalize = createBaseControl(prefix_ + "normalize");
     stretch_mode_ = createBaseControl(prefix_ + "stretch_mode");
     Value* formants = createBaseControl(prefix_ + "formants");
+    mode_ = createBaseControl(prefix_ + "mode");
+    Value* slice_loop = createBaseControl(prefix_ + "slice_loop");
+    Value* play_through = createBaseControl(prefix_ + "play_through");
+    slice_stretch_mode_ = createBaseControl(prefix_ + "slice_stretch_mode");
+    // How the slices are made (SynthBase::resliceSample reads these); the
+    // engine plays whatever slices the sample holds.
+    createBaseControl(prefix_ + "slice_by");
+    createBaseControl(prefix_ + "slice_divisions");
+    createBaseControl(prefix_ + "slice_sensitivity");
     Value* playback_mode = createBaseControl(prefix_ + "playback_mode");
     Value* keytrack = createBaseControl(prefix_ + "keytrack");
     Value* filter_slope = createBaseControl(prefix_ + "filter_slope");
@@ -78,6 +90,10 @@ namespace vital {
     sampler_->plug(bpm, SampleSource::kBpm);
     sampler_->plug(stretch_length, SampleSource::kStretchLength);
     sampler_->plug(formants, SampleSource::kFormants);
+    sampler_->plug(mode_, SampleSource::kMode);
+    sampler_->plug(slice_loop, SampleSource::kSliceLoop);
+    sampler_->plug(play_through, SampleSource::kPlayThrough);
+    sampler_->plug(slice_stretch_mode_, SampleSource::kSliceStretchMode);
     sampler_->plug(random_phase, SampleSource::kRandomPhase);
     sampler_->plug(keytrack, SampleSource::kKeytrack);
     sampler_->plug(root_key, SampleSource::kRootKey);

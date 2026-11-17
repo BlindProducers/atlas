@@ -44,6 +44,16 @@ namespace strings {
     "Fixed"
   };
 
+  const std::string kSampleModeNames[] = {
+    "Classic",
+    "Slicer"
+  };
+
+  const std::string kSampleSliceByNames[] = {
+    "Grid",
+    "Transients"
+  };
+
   const std::string kGranularModeNames[] = {
     "Play-through",
     "Manual"

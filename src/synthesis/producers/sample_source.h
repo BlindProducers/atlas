@@ -75,6 +75,12 @@ namespace vital {
       force_inline mono_float activePeak() const { return active_audio_data_.load()->peak; }
 
       force_inline const mono_float* buffer() const { return current_data_->left_buffers[kUpsampleTimes].get() + 1; }
+      // The file's channels at its own rate, originalLength() samples each;
+      // the right one is null for a mono file. Message thread.
+      const mono_float* leftChannel() const { return current_data_->left_buffers[kUpsampleTimes].get() + kBufferSamples; }
+      const mono_float* rightChannel() const {
+        return current_data_->stereo ? current_data_->right_buffers[kUpsampleTimes].get() + kBufferSamples : nullptr;
+      }
       void init();
 
       int getActiveIndex(mono_float delta) {
@@ -110,18 +116,45 @@ namespace vital {
         return getActiveLeftLoopBuffer(index);
       }
 
-      force_inline void markUsed() { active_audio_data_ = current_data_; }
-      force_inline void markUnused() { active_audio_data_ = nullptr; }
+      force_inline void markUsed() {
+        active_audio_data_ = current_data_;
+        active_slices_ = current_slices_.load(std::memory_order_acquire);
+      }
+      force_inline void markUnused() {
+        active_audio_data_ = nullptr;
+        active_slices_ = nullptr;
+      }
+
+      // The Slicer mode's slices: where each begins, in samples of the file,
+      // ascending from 0; a slice ends where the next begins, the last at the
+      // end of the file. Loading a file resets them to an even grid of
+      // kDefaultSliceDivisions. setSlices runs on the message thread with
+      // processing paused, since the audio thread reads the set it finds.
+      static constexpr int kMaxSlices = 128;
+      static constexpr int kMinSliceLength = 64;
+      static constexpr int kDefaultSliceDivisions = 16;
+      struct Slices {
+        int count = 0;
+        int starts[kMaxSlices] = {};
+      };
+      void setSlices(const std::vector<int>& starts);
+      std::vector<int> slices() const;
+      force_inline const Slices* activeSlices() const { return active_slices_.load(std::memory_order_relaxed); }
 
       json stateToJson();
       void jsonToState(json data);
 
     protected:
+      void resetSlices(int size);
+
       std::string name_;
       std::string last_browsed_file_;
       SampleData* current_data_;
       std::atomic<SampleData*> active_audio_data_;
       std::unique_ptr<SampleData> data_;
+      std::unique_ptr<Slices> slices_;
+      std::atomic<Slices*> current_slices_ { nullptr };
+      std::atomic<Slices*> active_slices_ { nullptr };
       bool is_default_ = false;
       LoadCallback load_callback_;
 
@@ -179,6 +212,10 @@ namespace vital {
         kBpm,
         kStretchLength,
         kFormants,
+        kMode,
+        kSliceLoop,
+        kPlayThrough,
+        kSliceStretchMode,
         kNumInputs
       };
 
@@ -197,6 +234,13 @@ namespace vital {
         kStretchTempo,
         kStretchFixed,
         kNumStretchModes
+      };
+      // Mode: Classic plays the file between Start and End; Slicer plays the
+      // slice a key picks, slice 1 on the root key and one per semitone up.
+      enum Mode {
+        kClassic,
+        kSlicer,
+        kNumModes
       };
       static constexpr int kVoicesPerProcessor = poly_float::kSize / 2;
 
@@ -249,6 +293,7 @@ namespace vital {
       poly_float normalize_gain_ = 1.0f;
       int transpose_quantize_;
       poly_float last_quantized_transpose_;
+      poly_float slice_index_;      // the slice each lane's note picked, -1 for none
       poly_float sample_index_;
       poly_float sample_fraction_;
       poly_float global_sample_index_;
