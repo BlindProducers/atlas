@@ -134,14 +134,6 @@ set(ATLAS_PIANO_SOURCES
   src/synthesis/effects/piano/piano_instrument.cpp
   src/synthesis/effects/piano/piano_model_service.cpp)
 
-# The Flute oscillator type: Modeled Flute's engine, built as the original
-# is (IEEE arithmetic, no fast-math) so it sounds the same.
-set(ATLAS_FLUTE_SOURCES
-  src/synthesis/effects/flute/FluteEngine.cpp
-  src/synthesis/effects/flute/FluteVoice.cpp
-  src/synthesis/effects/flute/BreathPerformer.cpp
-  src/synthesis/effects/flute/flute_instrument.cpp)
-
 # The OpenB3 port (setBfree's tonegen, vibrato and whirl) keeps the C code's
 # separate multiplies and adds, so the whirl and scanner match it sample for
 # sample: no FMA contraction and no fast-math.
@@ -313,10 +305,6 @@ target_sources(Atlas PRIVATE
   ${ATLAS_PIANO_SOURCES}
   src/synthesis/producers/piano_source.cpp
   src/synthesis/modules/piano_module.cpp
-  # Modeled Flute (AGPL-3.0): the concert flute.
-  ${ATLAS_FLUTE_SOURCES}
-  src/synthesis/producers/flute_source.cpp
-  src/synthesis/modules/flute_module.cpp
   # Saturator, Overdrive, Dynamic Tube and Multiband Dynamics (Alessio Scala's JSFX).
   ${ATLAS_DRIVE_DYNAMICS_SOURCES}
   src/synthesis/modules/drive_dynamics_modules.cpp
@@ -362,9 +350,6 @@ set_source_files_properties(${ATLAS_OPENB3_SOURCES} src/synthesis/producers/open
   COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:precise>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-ffp-contract=off;-fno-fast-math>")
 set_source_files_properties(${ATLAS_PIANO_SOURCES} src/synthesis/producers/piano_source.cpp
   src/synthesis/modules/piano_module.cpp PROPERTIES
-  COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:precise>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-fno-fast-math>")
-set_source_files_properties(${ATLAS_FLUTE_SOURCES} src/synthesis/producers/flute_source.cpp
-  src/synthesis/modules/flute_module.cpp PROPERTIES
   COMPILE_OPTIONS "$<$<CXX_COMPILER_ID:MSVC>:/fp:precise>;$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-fno-fast-math>")
 set_source_files_properties(${ATLAS_ZL_COMPRESSOR_SOURCES} ${ATLAS_MAIM_SOURCES}
   ${ATLAS_DRIVE_DYNAMICS_SOURCES} src/synthesis/modules/drive_dynamics_modules.cpp ${ATLAS_BODE_SOURCES}
@@ -535,7 +520,6 @@ target_include_directories(Atlas PRIVATE
   src/synthesis/effects/braids
   src/synthesis/effects/openwurli
   src/synthesis/effects/piano
-  src/synthesis/effects/flute
   src/synthesis/effects/stmlib
   src/synthesis/filters
   src/synthesis/framework
@@ -1136,27 +1120,6 @@ if(ATLAS_BUILD_TIMING_TESTS)
     Atlas juce::juce_audio_utils juce::juce_dsp juce::juce_gui_extra juce::juce_recommended_config_flags)
   foreach(piano_test oscillator envelope pedals parameters editor)
     add_test(NAME atlas_piano_${piano_test} COMMAND AtlasPianoTests --${piano_test})
-  endforeach()
-
-  # The Flute type through the plugin, and the port against the original
-  # plugin's processing of the same MIDI (--reference).
-  juce_add_console_app(AtlasFluteTests PRODUCT_NAME "Atlas Flute Tests")
-  juce_generate_juce_header(AtlasFluteTests)
-  target_sources(AtlasFluteTests PRIVATE tests/flute_tests.cpp)
-  target_include_directories(AtlasFluteTests PRIVATE
-    src/common src/common/multisample src/common/wavetable src/plugin src/interface/look_and_feel
-    src/synthesis/framework src/synthesis/modules src/synthesis/effects src/synthesis/effects/flute
-    src/synthesis/filters src/synthesis/producers src/synthesis/synth_engine
-    src/synthesis/lookups src/synthesis/modulators src/synthesis/utilities third_party)
-  target_compile_definitions(AtlasFluteTests PRIVATE
-    VITAL_ACCESSIBLE_UI=1 HEADLESS=0 JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_DSP_USE_SHARED_FFTW=0
-    JUCE_MODAL_LOOPS_PERMITTED=1)
-  target_compile_options(AtlasFluteTests PRIVATE
-    "$<$<CXX_COMPILER_ID:MSVC>:/fp:precise>" "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-fno-fast-math>")
-  target_link_libraries(AtlasFluteTests PRIVATE
-    Atlas juce::juce_audio_utils juce::juce_dsp juce::juce_gui_extra juce::juce_recommended_config_flags)
-  foreach(flute_test reference articulation oscillator envelope parameters editor)
-    add_test(NAME atlas_flute_${flute_test} COMMAND AtlasFluteTests --${flute_test})
   endforeach()
 
   juce_add_console_app(AtlasOpenB3Tests PRODUCT_NAME "Atlas OpenB3 Tests")

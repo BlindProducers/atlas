@@ -24,7 +24,6 @@
 #include "openb3_module.h"
 #include "openwurli_module.h"
 #include "piano_module.h"
-#include "flute_module.h"
 #include "oscillator_module.h"
 #include "sample_module.h"
 #include "sample_source.h"
@@ -114,8 +113,6 @@ namespace vital {
         return new OpenWurliModule(source_types::groupPrefix(slot, type), source_types::slotPrefix(slot));
       case source_types::kPiano:
         return new PianoModule(source_types::groupPrefix(slot, type), source_types::slotPrefix(slot));
-      case source_types::kFlute:
-        return new FluteModule(source_types::groupPrefix(slot, type), source_types::slotPrefix(slot));
       case source_types::kOpenB3:
         return new OpenB3Module(source_types::groupPrefix(slot, type), source_types::slotPrefix(slot));
       case source_types::kNoise:
@@ -147,7 +144,6 @@ namespace vital {
     b3_amp_env_ = find_control("b3_amp_env");
     speech_amp_env_ = find_control("speech_amp_env");
     piano_amp_env_ = find_control("piano_amp_env");
-    flute_amp_env_ = find_control("flute_amp_env");
     SynthModule::init();
   }
 
@@ -308,18 +304,6 @@ namespace vital {
         state_->modulation_target = piano;
         break;
       }
-      case source_types::kFlute: {
-        auto* flute = static_cast<FluteModule*>(module);
-        flute->useInput(input(kReset), FluteModule::kReset);
-        flute->useInput(input(kVoiceEvent), FluteModule::kVoiceEvent);
-        flute->useInput(input(kNoteCount), FluteModule::kNoteCount);
-        flute->useInput(input(kActiveVoices), FluteModule::kActiveVoices);
-        flute->useOutput(output(kRaw), FluteModule::kRaw);
-        flute->useOutput(output(kLevelled), FluteModule::kLevelled);
-        flute->useOutput(output(kHold), FluteModule::kHold);
-        state_->modulation_target = flute;
-        break;
-      }
       case source_types::kOpenB3: {
         auto* organ = static_cast<OpenB3Module*>(module);
         organ->useInput(input(kReset), OpenB3Module::kReset);
@@ -439,15 +423,7 @@ namespace vital {
       return speech_amp_env_ != nullptr && speech_amp_env_->value() < 0.5f;
     if (state_->active_type == source_types::kPiano)
       return piano_amp_env_ != nullptr && piano_amp_env_->value() < 0.5f;
-    if (state_->active_type == source_types::kFlute)
-      return flute_amp_env_ != nullptr && flute_amp_env_->value() < 0.5f;
     return false;
-  }
-
-  FluteModule* SourceSlotModule::fluteModule() const {
-    if (state_->module == nullptr || state_->active_type != source_types::kFlute)
-      return nullptr;
-    return static_cast<FluteModule*>(state_->module);
   }
 
   PianoModule* SourceSlotModule::pianoModule() const {
@@ -501,10 +477,10 @@ namespace vital {
       output(kHold)->clearBuffer();
       playhead_->output()->buffer[0] = 0.0f;
     }
-    // Only a sounding Multi-sample, OpenWurli, OpenB3, Speech, Piano or Flute type holds the voice open.
+    // Only a sounding Multi-sample, OpenWurli, OpenB3, Speech or Piano type holds the voice open.
     if (!on || (state.active_type != source_types::kMultiSample && state.active_type != source_types::kOpenWurli &&
                 state.active_type != source_types::kOpenB3 && state.active_type != source_types::kSpeech &&
-                state.active_type != source_types::kPiano && state.active_type != source_types::kFlute)) {
+                state.active_type != source_types::kPiano)) {
       Output* hold = output(kHold);
       if (poly_float::notEqual(hold->buffer[0], 0.0f).anyMask())
         hold->clearBuffer();

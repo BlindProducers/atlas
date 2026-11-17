@@ -2814,20 +2814,6 @@ namespace {
       }
     }
 
-    // Flute: the tone, the vibrato, the dynamics, the pitch, the slur
-    // overlap, then the envelope mode; Transpose sits with the pitch rows.
-    if (id.startsWith("flute_")) {
-      const String suffix = id.fromFirstOccurrenceOf("flute_", false, false);
-      static const std::array<const char*, 15> flute_order = {{
-        "air", "brightness", "attack", "vibrato_depth", "vibrato_rate", "vibrato_delay", "dynamics_source",
-        "dynamics_cc", "dynamic_range", "release", "humanize", "tuning", "overlap", "amp_env", "transpose"
-      }};
-      for (int i = 0; i < static_cast<int>(flute_order.size()); ++i) {
-        if (suffix == flute_order[i])
-          return 5810 + i;
-      }
-    }
-
     for (int random = 1; random <= vital::kNumRandomLfos; ++random) {
       const String prefix = "random_" + String(random) + "_";
       if (!id.startsWith(prefix))
@@ -4137,46 +4123,6 @@ namespace {
       if (suffix == "transpose")
         return "Transpose the note in semitones. The piano plays A0 to C8; pitch bend and glide do not move a "
                "note once it is struck.";
-    }
-
-    if (legacy_id.startsWith("flute_")) {
-      const String suffix = legacy_id.fromFirstOccurrenceOf("flute_", false, false);
-      if (suffix == "amp_env")
-        return "Choose what shapes each note. Flute lets the breath shape it, as on the instrument, and keeps the "
-               "voice open while it sounds. Envelope 1 shapes the note with Envelope 1 instead.";
-      if (suffix == "air")
-        return "Set the breath noise. 0% is a clean classical tone, 100% is breathy.";
-      if (suffix == "brightness")
-        return "Set the tone from dark to bright, mostly in the low and middle registers. The loudness stays the "
-               "same.";
-      if (suffix == "attack")
-        return "Set how tongued notes start. 0% is a soft \"hoo\", 100% a hard \"too\" with chiff.";
-      if (suffix == "vibrato_depth")
-        return "Set the breath vibrato on held notes. 0% is none. The mod wheel adds to it.";
-      if (suffix == "vibrato_rate") return "Set the vibrato speed in hertz.";
-      if (suffix == "vibrato_delay")
-        return "Set how long after a tongued note the vibrato starts to fade in.";
-      if (suffix == "dynamics_source")
-        return "Choose where the loudness comes from. Velocity, then controller uses each note's velocity until "
-               "the dynamics controller first moves, then the controller. Controller only ignores velocity. "
-               "Velocity only ignores the controller.";
-      if (suffix == "dynamics_cc")
-        return "Choose the controller that plays the breath: the mod wheel, expression or a breath controller. "
-               "Expression also scales the loudness like a volume pedal, and the mod wheel adds vibrato, when "
-               "they are not the dynamics controller.";
-      if (suffix == "dynamic_range") return "Set the loudness difference between pianissimo and fortissimo.";
-      if (suffix == "release")
-        return "Set how long the breath takes to stop after the last key is let go.";
-      if (suffix == "humanize")
-        return "Set the note-to-note variation of level, attack and vibrato.";
-      if (suffix == "tuning") return "Set the pitch of A4 in hertz.";
-      if (suffix == "overlap")
-        return "Keep the old note sounding through a slur that changes register until the new note has built "
-               "up. Off is the model's plainer slur.";
-      if (suffix == "transpose")
-        return "Transpose the keys in semitones. The flute is monophonic: a key pressed while another is held "
-               "slurs, a key pressed after a gap tongues, and letting go of the sounding key slurs back to a "
-               "key still held. Atlas's voice count and Legato do not change this.";
     }
 
     if (legacy_id.startsWith("speech_")) {
@@ -8719,7 +8665,7 @@ std::unique_ptr<AccessibleParameterRow> SynthEditor::buildAccessibleParameterRow
         return std::make_unique<AccessibleParameterRow>(
             parameter, String(), std::function<String(double)>(), 1.0, 0.0, String(), String(),
             "Choose this oscillator's type: Wavetable, Analog, Sample, Granular, Spectral, Noise, Multi-sample, Macro, "
-            "OpenWurli, OpenB3, Speech, Piano or Flute. "
+            "OpenWurli, OpenB3, Speech or Piano. "
             "Each type keeps its own settings, wavetable and sample for when you switch back.", true);
       }
       if (suffix == "analog_waveform")

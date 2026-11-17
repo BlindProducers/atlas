@@ -34,7 +34,6 @@
 #include "futils.h"
 #include "multisample_slot.h"
 #include "piano_module.h"
-#include "flute_module.h"
 #include "piano_instrument.h"
 #include "piano_source.h"
 #include "speech_slot.h"
@@ -186,7 +185,6 @@ namespace vital {
       tail_controls_[i] = { control(prefix + "on"), control(prefix + "type"), control(prefix + "solo"),
                             control(prefix + "level"), control(prefix + "pan"), control(prefix + "destination") };
     }
-    pitch_bend_range_ = control("pitch_bend_range");
 
     std::string modulation_source_prefix = "modulation_source_";
     std::string modulation_amount_prefix = "modulation_amount_";
@@ -488,7 +486,6 @@ namespace vital {
     const bool voices_rendered = getNumActiveVoices() > 0;
     prepareSpeechHolds(num_samples);
     preparePianos();
-    prepareFlutes(num_samples);
     VoiceHandler::process(num_samples);
     mixSlotTails(num_samples, voices_rendered);
     // Speech slots time note-ons to group a chord on one syllable.
@@ -544,42 +541,6 @@ namespace vital {
         if (voice->hasNewEvent() && voice->state().event == kVoiceOn)
           piano->instrument()->announceStrike(piano->noteFor(voice->state().tuned_note), voice->event_sample() * oversample);
       }
-    }
-  }
-
-  bool SynthVoiceHandler::slotHearsChannel(int slot, int channel) const {
-    constexpr int kFirstArpChannel = 16;
-    if (channel >= kFirstArpChannel)
-      return channel == kFirstArpChannel + slot;
-    return !producers_->sourceHasActiveArp(slot);
-  }
-
-  void SynthVoiceHandler::prepareFlutes(int num_samples) {
-    const int oversample = getOversampleAmount();
-    const float bend_range = pitch_bend_range_ != nullptr ? pitch_bend_range_->value() : 2.0f;
-    for (int i = 0; i < kNumOscillators; ++i) {
-      const FluteModule* flute = producers_->slot(i)->fluteModule();
-      if (flute == nullptr)
-        continue;
-      atlas::flute::Instrument& instrument = *flute->instrument();
-      const Value* on = tail_controls_[i].on;
-      instrument.beginBlock(midi_state_, oversample, getSampleRate(), pitch_wheel()->trigger_value[0], bend_range,
-                            on != nullptr && on->value() >= 0.5f);
-      // The voice started last carries the flute from its start.
-      for (Voice* voice : activeVoices()) {
-        if (!voice->hasNewEvent() || voice->state().event != kVoiceOn || !slotHearsChannel(i, voice->state().channel))
-          continue;
-        const int offset = voice->event_sample() * oversample;
-        if (offset < num_samples)
-          instrument.claim(voice->state().note_count, offset);
-      }
-    }
-  }
-
-  void SynthVoiceHandler::fluteNotesOff(int sample) {
-    for (int i = 0; i < kNumOscillators; ++i) {
-      if (const FluteModule* flute = producers_->slot(i)->fluteModule())
-        flute->instrument()->allNotesOff(sample * getOversampleAmount());
     }
   }
 
@@ -680,12 +641,6 @@ namespace vital {
     const bool internal_arp_channel = channel >= 16 && channel < 24;
     if (!internal_arp_channel && (getNumPressedNotes() < polyphony() || !legato()))
       note_retriggered_.trigger(constants::kFullMask, note, sample);
-    // The Flute plays the keys themselves, whatever the voices make of them.
-    for (int i = 0; i < kNumOscillators; ++i) {
-      const FluteModule* flute = producers_->slot(i)->fluteModule();
-      if (flute != nullptr && slotHearsChannel(i, channel))
-        flute->instrument()->noteOn(note, velocity, sample * getOversampleAmount());
-    }
     VoiceHandler::noteOn(note, velocity, sample, channel);
   }
 
@@ -693,42 +648,8 @@ namespace vital {
     const bool internal_arp_channel = channel >= 16 && channel < 24;
     if (!internal_arp_channel && getNumPressedNotes() > polyphony() && isNotePlaying(note) && !legato())
       note_retriggered_.trigger(constants::kFullMask, note, sample);
-    for (int i = 0; i < kNumOscillators; ++i) {
-      const FluteModule* flute = producers_->slot(i)->fluteModule();
-      if (flute != nullptr && slotHearsChannel(i, channel))
-        flute->instrument()->noteOff(note, sample * getOversampleAmount());
-    }
 
     VoiceHandler::noteOff(note, lift, sample, channel);
-  }
-
-  void SynthVoiceHandler::allSoundsOff() {
-    fluteNotesOff(0);
-    VoiceHandler::allSoundsOff();
-  }
-
-  void SynthVoiceHandler::allNotesOff(int sample) {
-    fluteNotesOff(sample);
-    VoiceHandler::allNotesOff(sample);
-  }
-
-  void SynthVoiceHandler::allNotesOff(int sample, int channel) {
-    allNotesOffRange(sample, channel, channel);
-  }
-
-  void SynthVoiceHandler::allNotesOffRange(int sample, int from_channel, int to_channel) {
-    for (int i = 0; i < kNumOscillators; ++i) {
-      const FluteModule* flute = producers_->slot(i)->fluteModule();
-      if (flute == nullptr)
-        continue;
-      for (int channel = from_channel; channel <= to_channel; ++channel) {
-        if (slotHearsChannel(i, channel)) {
-          flute->instrument()->allNotesOff(sample * getOversampleAmount());
-          break;
-        }
-      }
-    }
-    VoiceHandler::allNotesOffRange(sample, from_channel, to_channel);
   }
 
   bool SynthVoiceHandler::shouldAccumulate(Output* output) {

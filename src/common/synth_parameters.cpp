@@ -2089,52 +2089,6 @@ namespace vital {
       ValueDetails::kIndexed, false, "", "Piano Transpose", nullptr },
   };
 
-  // Flute oscillator type (Modeled Flute's concert flute in
-  // src/synthesis/effects/flute): registered once per slot as osc_N_flute_*.
-  // Every default is the original plugin's; its Output is the slot's level,
-  // its bend range Atlas's and its reverb is left to Atlas's effects.
-  const ValueDetails ValueDetailsLookup::flute_slot_parameter_list[] = {
-    // Flute: the breath shapes each note and holds the voice open while it
-    // sounds. Envelope 1: the slot follows Env 1.
-    { "flute_amp_env", 0x000000, 0.0, 1.0, 0.0, 0.0, 1.0,
-      ValueDetails::kIndexed, false, "", "Flute Amplitude Envelope", strings::kFluteAmpEnvNames },
-    // Breath noise: 0 a clean classical tone, 100% breathy.
-    { "flute_air", 0x000000, 0.0, 1.0, 0.5, 0.0, 100.0,
-      ValueDetails::kLinear, false, "%", "Flute Air", nullptr },
-    { "flute_brightness", 0x000000, 0.0, 1.0, 0.5, 0.0, 100.0,
-      ValueDetails::kLinear, false, "%", "Flute Brightness", nullptr },
-    // Tongued starts: 0 a soft "hoo", 100% a hard "too" with chiff.
-    { "flute_attack", 0x000000, 0.0, 1.0, 0.5, 0.0, 100.0,
-      ValueDetails::kLinear, false, "%", "Flute Attack", nullptr },
-    { "flute_vibrato_depth", 0x000000, 0.0, 1.0, 0.35, 0.0, 100.0,
-      ValueDetails::kLinear, false, "%", "Flute Vibrato Depth", nullptr },
-    { "flute_vibrato_rate", 0x000000, 2.0, 9.0, 5.0, 0.0, 1.0,
-      ValueDetails::kLinear, false, " Hz", "Flute Vibrato Rate", nullptr },
-    // How long after a tongued note the vibrato starts to fade in.
-    { "flute_vibrato_delay", 0x000000, 0.0, 1.5, 0.2, 0.0, 1.0,
-      ValueDetails::kLinear, false, " s", "Flute Vibrato Delay", nullptr },
-    // Note-to-note variation of level, attack and vibrato.
-    { "flute_humanize", 0x000000, 0.0, 1.0, 0.5, 0.0, 100.0,
-      ValueDetails::kLinear, false, "%", "Flute Humanize", nullptr },
-    { "flute_dynamics_source", 0x000000, 0.0, 2.0, 0.0, 0.0, 1.0,
-      ValueDetails::kIndexed, false, "", "Flute Dynamics Source", strings::kFluteDynamicsSourceNames },
-    { "flute_dynamics_cc", 0x000000, 0.0, 2.0, 0.0, 0.0, 1.0,
-      ValueDetails::kIndexed, false, "", "Flute Dynamics Controller", strings::kFluteDynamicsControllerNames },
-    // Loudness from pianissimo to fortissimo.
-    { "flute_dynamic_range", 0x000000, 6.0, 30.0, 18.0, 0.0, 1.0,
-      ValueDetails::kLinear, false, " dB", "Flute Dynamic Range", nullptr },
-    // How long the breath takes to stop after the last key is let go: 0.03 to 2 s, 0.15 s by default.
-    { "flute_release", 0x000000, -5.0588937, 1.0, -2.7369656, 0.0, 1.0,
-      ValueDetails::kExponential, false, " s", "Flute Release", nullptr },
-    { "flute_tuning", 0x000000, 415.0, 466.0, 440.0, 0.0, 1.0,
-      ValueDetails::kLinear, false, " Hz", "Flute Tuning", nullptr },
-    // Keeps the old note sounding through a slur that changes register until the new one has built up.
-    { "flute_overlap", 0x000000, 0.0, 1.0, 1.0, 0.0, 1.0,
-      ValueDetails::kIndexed, false, "", "Flute Register Slur Overlap", strings::kOffOnNames },
-    { "flute_transpose", 0x000000, -48.0, 48.0, 0.0, 0.0, 1.0,
-      ValueDetails::kIndexed, false, "", "Flute Transpose", nullptr },
-  };
-
   const ValueDetails ValueDetailsLookup::mod_parameter_list[] = {
     { "amount", 0x000000, -1.0, 1.0, 0.0, 0.0, 1.0,
       ValueDetails::kLinear, false, "", "Amount", nullptr },
@@ -2386,12 +2340,6 @@ namespace vital {
     for (int osc = 0; osc < kNumOscillators; ++osc) {
       addParameterGroup(piano_slot_parameter_list, num_piano_parameters, osc, kOscIdPrefix,
                         kOscNamePrefix, kPianoVersion);
-    }
-    static constexpr int kFluteVersion = 0x020133;
-    const int num_flute_parameters = sizeof(flute_slot_parameter_list) / sizeof(ValueDetails);
-    for (int osc = 0; osc < kNumOscillators; ++osc) {
-      addParameterGroup(flute_slot_parameter_list, num_flute_parameters, osc, kOscIdPrefix,
-                        kOscNamePrefix, kFluteVersion);
     }
 
     int num_filter_parameters = sizeof(filter_parameter_list) / sizeof(ValueDetails);
