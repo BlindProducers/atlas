@@ -138,6 +138,8 @@ namespace vital {
         int starts[kMaxSlices] = {};
       };
       void setSlices(const std::vector<int>& starts);
+      // The even grid a new file starts with.
+      void resetSlices();
       std::vector<int> slices() const;
       force_inline const Slices* activeSlices() const { return active_slices_.load(std::memory_order_relaxed); }
 
@@ -145,8 +147,6 @@ namespace vital {
       void jsonToState(json data);
 
     protected:
-      void resetSlices(int size);
-
       std::string name_;
       std::string last_browsed_file_;
       SampleData* current_data_;
@@ -216,6 +216,9 @@ namespace vital {
         kSliceLoop,
         kPlayThrough,
         kSliceStretchMode,
+        kStutter,
+        kStutterChance,
+        kSliceDecay,
         kNumInputs
       };
 
@@ -242,6 +245,9 @@ namespace vital {
         kSlicer,
         kNumModes
       };
+      // Stutter: how many times a slice's first part plays over, inside the
+      // slice's length (Off, 2, 3, 4, 6, 8, 12, 16).
+      static constexpr int kNumStutterChoices = 8;
       static constexpr int kVoicesPerProcessor = poly_float::kSize / 2;
 
       SampleSource();
@@ -294,6 +300,9 @@ namespace vital {
       int transpose_quantize_;
       poly_float last_quantized_transpose_;
       poly_float slice_index_;      // the slice each lane's note picked, -1 for none
+      poly_float stutter_count_;    // how many times the lane's note plays its slice's first part, 0 for once
+      poly_float stutter_remaining_; // repeats still to come, -1 once they are over or without stutter
+      poly_mask reverse_mask_;      // which lanes read backwards last block
       poly_float sample_index_;
       poly_float sample_fraction_;
       poly_float global_sample_index_;

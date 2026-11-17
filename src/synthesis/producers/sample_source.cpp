@@ -325,7 +325,7 @@ namespace vital {
     current_data_ = data_.get();
     while (active_audio_data_.load())
       std::this_thread::yield(); // Wait for audio thread to finish using old_data.
-    resetSlices(size);
+    resetSlices();
 
     last_browsed_file_.clear();
     if (load_callback_)
@@ -346,15 +346,15 @@ namespace vital {
     current_data_ = data_.get();
     while (active_audio_data_.load())
       std::this_thread::yield(); // Wait for audio thread to finish using old_data.
-    resetSlices(size);
+    resetSlices();
 
     last_browsed_file_.clear();
     if (load_callback_)
       load_callback_(left_buffer, right_buffer, size, sample_rate);
   }
 
-  void Sample::resetSlices(int size) {
-    setSlices(sample_slices::grid(size, kDefaultSliceDivisions));
+  void Sample::resetSlices() {
+    setSlices(sample_slices::grid(data_ ? data_->length : 0, kDefaultSliceDivisions));
   }
 
   // Keeps the starts that fit: ascending, at least kMinSliceLength apart,
@@ -414,7 +414,6 @@ namespace vital {
       String encoded_stereo = Base64::toBase64(pcm_data.get(), sizeof(int16_t) * data_->length);
       data["samples_stereo"] = encoded_stereo.toStdString();
     }
-    data["slices"] = slices();
     return data;
   }
 
@@ -463,14 +462,6 @@ namespace vital {
       loadSample(buffer.get(), length, sample_rate);
     if (data.count("last_browsed_file") && data["last_browsed_file"].is_string())
       last_browsed_file_ = data["last_browsed_file"].get<std::string>();
-    if (data.count("slices") && data["slices"].is_array()) {
-      std::vector<int> starts;
-      for (const auto& start : data["slices"]) {
-        if (start.is_number_integer())
-          starts.push_back(start.get<int>());
-      }
-      setSlices(starts);
-    }
   }
 
   struct SampleSource::StretchState {
@@ -491,6 +482,11 @@ namespace vital {
     // A slice fades in over its first 2 ms and out over its last, so the cuts
     // the slicer makes in the file never click.
     constexpr mono_float kSliceFadeSeconds = 0.002f;
+    constexpr int kStutterRepeats[SampleSource::kNumStutterChoices] = { 0, 2, 3, 4, 6, 8, 12, 16 };
+    // Slice Decay at 100% takes a slice 40 dB down in 50 ms; lower settings
+    // take longer, as the square of the setting.
+    constexpr mono_float kSliceDecayShortSeconds = 0.05f;
+    constexpr mono_float kSliceDecayRangeLog2 = 6.643856f;   // log2(100), 40 dB
   }
 
   SampleSource::SampleSource() : SampleSource(nullptr) { }
@@ -501,6 +497,9 @@ namespace vital {
     transpose_quantize_ = 0;
     last_quantized_transpose_ = 0.0f;
     slice_index_ = -1.0f;
+    stutter_count_ = 0.0f;
+    stutter_remaining_ = -1.0f;
+    reverse_mask_ = 0;
     sample_index_ = 0;
     sample_fraction_ = 0.0f;
     global_sample_index_ = 0;
@@ -519,7 +518,9 @@ namespace vital {
   SampleSource::SampleSource(const SampleSource& other) :
       Processor(other), pan_amplitude_(other.pan_amplitude_), normalize_gain_(other.normalize_gain_),
       transpose_quantize_(other.transpose_quantize_), last_quantized_transpose_(other.last_quantized_transpose_),
-      slice_index_(other.slice_index_), sample_index_(other.sample_index_), sample_fraction_(other.sample_fraction_),
+      slice_index_(other.slice_index_), stutter_count_(other.stutter_count_),
+      stutter_remaining_(other.stutter_remaining_), reverse_mask_(other.reverse_mask_),
+      sample_index_(other.sample_index_), sample_fraction_(other.sample_fraction_),
       global_sample_index_(other.global_sample_index_), global_sample_fraction_(other.global_sample_fraction_),
       phase_inc_(other.phase_inc_), bounce_mask_(other.bounce_mask_), low_cut_(other.low_cut_),
       high_cut_(other.high_cut_), last_output_(other.last_output_), phase_output_(other.phase_output_),
@@ -663,23 +664,38 @@ namespace vital {
     poly_mask slice_valid_mask = constants::kFullMask;
     const bool slice_loop = slicer && input(kSliceLoop)->at(0)[0] != 0.0f;
     if (slicer) {
+      const poly_mask latch_mask = retrigger_mask | reset_mask;
       const poly_float chosen = utils::round(input(kMidi)->at(0) - input(kRootKey)->at(0));
-      slice_index_ = utils::maskLoad(slice_index_, chosen, retrigger_mask | reset_mask);
+      slice_index_ = utils::maskLoad(slice_index_, chosen, latch_mask);
       const Sample::Slices* slices = sample_->activeSlices();
       const int count = slices != nullptr ? slices->count : 0;
       // Play through runs on to the end of the file; a looping slice stays a slice.
       const bool play_through = input(kPlayThrough)->at(0)[0] != 0.0f && !slice_loop;
+      // A note that rolls under Stutter Chance plays the first part of its
+      // slice Stutter times over, filling the slice's length.
+      const poly_float stutter_choice = input(kStutter)->at(0);
+      const poly_float stutter_chance = input(kStutterChance)->at(0);
       poly_float valid = 0.0f;
       for (int lane = 0; lane < poly_float::kSize; ++lane) {
+        if (latch_mask[lane]) {
+          const int choice = utils::iclamp(static_cast<int>(stutter_choice[lane] + 0.5f), 0, kNumStutterChoices - 1);
+          const int repeats = kStutterRepeats[choice];
+          const bool stutters = repeats > 0 && random_generator_.next() < stutter_chance[lane];
+          stutter_count_.set(lane, stutters ? static_cast<mono_float>(repeats) : 0.0f);
+          stutter_remaining_.set(lane, stutters ? static_cast<mono_float>(repeats - 1) : -1.0f);
+        }
         const int index = static_cast<int>(slice_index_[lane]);
         if (index < 0 || index >= count) {
           region_a.set(lane, 0.0f);
           region_b.set(lane, 0.0f);
           continue;
         }
+        const int repeats = static_cast<int>(stutter_count_[lane]);
         const int start = std::min(audio_length, slices->starts[index] << Sample::kUpsampleTimes);
-        const int end = index + 1 < count && !play_through
+        int end = index + 1 < count && (!play_through || repeats > 0)
             ? std::min(audio_length, slices->starts[index + 1] << Sample::kUpsampleTimes) : audio_length;
+        if (repeats > 0)
+          end = start + std::max(Sample::kMinSize << Sample::kUpsampleTimes, (end - start) / repeats);
         region_a.set(lane, static_cast<mono_float>(start));
         region_b.set(lane, static_cast<mono_float>(end));
         valid.set(lane, 1.0f);
@@ -710,12 +726,15 @@ namespace vital {
 
     // Reverse plays the region from its end. The index still counts up, over
     // the loop mirrored into that direction, and each read mirrors it back.
-    const bool reverse = input(kReverse)->at(0)[0] != 0.0f;
+    // It is modulated, so each lane may read its own way, and may turn
+    // around mid-note (the step that makes fades out below).
+    const poly_mask reverse_mask = poly_float::greaterThanOrEqual(input(kReverse)->at(0), 0.5f);
     const poly_float region_mirror = sample_start + sample_end;
-    if (reverse) {
+    {
       const poly_float reversed_loop_start = region_mirror - loop_end;
-      loop_end = region_mirror - loop_start;
-      loop_start = reversed_loop_start;
+      const poly_float reversed_loop_end = region_mirror - loop_start;
+      loop_start = utils::maskLoad(loop_start, reversed_loop_start, reverse_mask);
+      loop_end = utils::maskLoad(loop_end, reversed_loop_end, reverse_mask);
     }
 
     int playback_mode = slicer ? kRetriggerPerNote : static_cast<int>(input(kPlaybackMode)->at(0)[0] + 0.5f);
@@ -758,9 +777,12 @@ namespace vital {
     high_cut_.reset(reset_mask);
 
     bool loop = slicer ? slice_loop : input(kLoop)->at(0)[0] != 0.0f;
-    poly_mask loop_enabled_mask = 0;
-    if (loop)
-      loop_enabled_mask = constants::kFullMask;
+    // A stuttering lane loops its slice's first part while repeats remain,
+    // whatever Slice Loop says, then stops.
+    const poly_mask stuttered_mask = slicer ? poly_float::greaterThan(stutter_count_, 0.5f) : poly_mask(0);
+    const poly_mask stutter_mask = slicer ? poly_float::greaterThanOrEqual(stutter_remaining_, 0.0f) : poly_mask(0);
+    poly_mask loop_enabled_mask = loop ? poly_mask(constants::kFullMask) : poly_mask(0);
+    loop_enabled_mask = (loop_enabled_mask & ~stuttered_mask) | stutter_mask;
 
     bool bounce = !slicer && input(kBounce)->at(0)[0] != 0.0f;
     poly_mask bounce_enabled_mask = 0;
@@ -811,6 +833,16 @@ namespace vital {
     const poly_float region_length = active_end - active_start;
     const mono_float slice_fade_inverse =
         1.0f / std::max(1.0f, kSliceFadeSeconds * sample_->activeSampleRate() * (1 << Sample::kUpsampleTimes));
+    // Slice Decay: each lane's gain falls by 2^(position * decay_exponent)
+    // from the start of what it plays (the slice, or each stutter).
+    poly_float decay_exponent = 0.0f;
+    bool decay_active = false;
+    if (slicer) {
+      const poly_float decay = utils::clamp(input(kSliceDecay)->at(0), 0.0f, 1.0f);
+      decay_active = poly_float::greaterThan(decay, 0.0f).anyMask() != 0;
+      const mono_float file_rate = sample_->activeSampleRate() * (1 << Sample::kUpsampleTimes);
+      decay_exponent = decay * decay * (-kSliceDecayRangeLog2 / std::max(1.0f, kSliceDecayShortSeconds * file_rate));
+    }
 
     // One sample at the current position of every lane, with the loop
     // crossfade; zero past the end of a one-shot.
@@ -822,13 +854,10 @@ namespace vital {
       const poly_mask mirror_mask = current_bounce ^
                                     (reverse_loop & poly_float::greaterThanOrEqual(current_index, active_start));
       poly_float adjusted = utils::maskLoad(current_index, active_start + active_end - current_index, mirror_mask);
-      poly_float read_fraction = current_fraction;
-      if (reverse) {
-        // The sample's position mirrored about the region: a whole index and
-        // a fraction, so long files keep their precision.
-        adjusted = region_mirror - adjusted - 1.0f;
-        read_fraction = poly_float(1.0f) - current_fraction;
-      }
+      // Reversed lanes read the position mirrored about the region: a whole
+      // index and a fraction, so long files keep their precision.
+      adjusted = utils::maskLoad(adjusted, region_mirror - adjusted - 1.0f, reverse_mask);
+      const poly_float read_fraction = utils::maskLoad(current_fraction, poly_float(1.0f) - current_fraction, reverse_mask);
       adjusted = utils::clamp(adjusted, 0.0f, audio_end);
       poly_float index_phase = utils::max(adjusted, 0.0f) * phase_mult;
       poly_float fraction_phase = read_fraction * phase_mult;
@@ -852,8 +881,7 @@ namespace vital {
       if (crossfade_mask.anyMask()) {
         poly_float loop_position = current_index - (loop_end - loop_crossfade);
         poly_float alternate_index = loop_start + loop_position;
-        if (reverse)
-          alternate_index = region_mirror - alternate_index - 1.0f;
+        alternate_index = utils::maskLoad(alternate_index, region_mirror - alternate_index - 1.0f, reverse_mask);
         poly_float alternate_phase = utils::clamp(alternate_index, 0.0f, audio_end) * phase_mult;
         poly_int alternate_indices = utils::floorToInt(alternate_phase);
         poly_float alternate_t = alternate_phase - utils::toFloat(alternate_indices) + fraction_phase;
@@ -870,6 +898,10 @@ namespace vital {
         // ends while it loops), measured in the file.
         const poly_float edge = utils::min(current_index - active_start, active_end - current_index);
         sample_value *= utils::clamp(edge * slice_fade_inverse, 0.0f, 1.0f);
+        if (decay_active) {
+          const poly_float position = utils::max(current_index - active_start, 0.0f);
+          sample_value *= futils::exp2(utils::max(position * decay_exponent, -30.0f));
+        }
         playing_mask = playing_mask & slice_valid_mask;
       }
       return sample_value & playing_mask;
@@ -901,6 +933,15 @@ namespace vital {
       current_index = utils::maskLoad(current_index, wrapped_index, bounced_mask | loop_over_mask);
       current_index = utils::min(active_end, current_index);
       current_fraction = current_fraction & ~(done_mask & ~loop_enabled_mask);
+      if (slicer) {
+        // A stutter's last repeat ends the note's playing.
+        const poly_mask stutter_wrap = loop_over_mask & stutter_mask & mask;
+        stutter_remaining_ = utils::maskLoad(stutter_remaining_, stutter_remaining_ - 1.0f, stutter_wrap);
+        const poly_mask exhausted = stutter_wrap & poly_float::lessThan(stutter_remaining_, 0.0f);
+        loop_enabled_mask = loop_enabled_mask & ~exhausted;
+        current_index = utils::maskLoad(current_index, active_end, exhausted);
+        current_fraction = current_fraction & ~exhausted;
+      }
       if (fm_active) {
         // A finished one-shot stays finished instead of backing into its tail.
         poly_mask finished_mask = ~loop_enabled_mask & poly_float::greaterThanOrEqual(previous_index, active_end);
@@ -1090,9 +1131,12 @@ namespace vital {
       }
     }
     // A mode change swaps the plain read for the stretched one mid-note (or
-    // back); the output steps, so the step fades out.
-    if (stretch_transition) {
-      for (int lane = 0; lane < poly_float::kSize; ++lane)
+    // back), and a lane turning around reads from the mirrored position; the
+    // output steps, so the step fades out.
+    const poly_mask reverse_changed = (reverse_mask ^ reverse_mask_) & ~reset_mask;
+    reverse_mask_ = reverse_mask;
+    for (int lane = 0; lane < poly_float::kSize; ++lane) {
+      if (stretch_transition || reverse_changed[lane])
         fadeFromPrevious(raw_output, num_samples, lane, 0);
     }
 

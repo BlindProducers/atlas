@@ -54,6 +54,17 @@ namespace strings {
     "Transients"
   };
 
+  const std::string kSampleStutterNames[] = {
+    "Off",
+    "2",
+    "3",
+    "4",
+    "6",
+    "8",
+    "12",
+    "16"
+  };
+
   const std::string kGranularModeNames[] = {
     "Play-through",
     "Manual"

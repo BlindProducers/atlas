@@ -1323,6 +1323,55 @@ namespace {
     plugin.getSample(0)->loadSample(other.data(), int(other.size()), kSampleRate);
     expect(plugin.getSample(0)->slices().size() == size_t(vital::Sample::kDefaultSliceDivisions),
            "a new file starts from the default grid");
+    expect(plugin.getEngine()->getMonoModulationDestination("osc_1_sample_reverse") != nullptr,
+           "Reverse is a modulation destination");
+  }
+
+  // Stutter plays a slice's first part over and over inside its length, and
+  // Slice Decay fades a slice out as it plays.
+  void testSampleStutterAndDecay() {
+    SynthPlugin plugin;
+    preparePlugin(plugin);
+    setType(plugin, 0, vital::source_types::kSample);
+    set(plugin, "osc_1_on", 1.0f);
+    set(plugin, "env_1_attack", 0.0f);
+    set(plugin, "env_1_release", 0.0f);
+    // Four slices of a quarter each; slice 1 holds a click near its start
+    // and one late, slice 2 one near its start.
+    const int length = kSampleRate / 2;
+    const int quarter = length / 4;
+    const int late = quarter * 3 / 4 - 500;
+    std::vector<float> audio(size_t(length), 0.0f);
+    audio[100] = 1.0f;
+    audio[size_t(late)] = 1.0f;
+    audio[size_t(quarter + 100)] = 1.0f;
+    plugin.getSample(0)->loadSample(audio.data(), int(audio.size()), kSampleRate);
+    set(plugin, "osc_1_sample_mode", float(vital::SampleSource::kSlicer));
+    set(plugin, "osc_1_sample_slice_stretch_mode", float(vital::SampleSource::kStretchOff));
+    set(plugin, "osc_1_sample_slice_divisions", 4.0f);
+    plugin.resliceSample(0);
+    const auto plain = renderNote(plugin, length, 60);
+    expect(peakNear(plain, 100, 50) > 0.1f && peakNear(plain, late, 100) > 0.1f &&
+           peakNear(plain, quarter + 100, 50) < 0.01f, "without stutter slice 1 plays its two clicks");
+    set(plugin, "osc_1_sample_stutter", 3.0f);   // 4 repeats
+    set(plugin, "osc_1_sample_stutter_chance", 1.0f);
+    const auto stuttered = renderNote(plugin, length, 60);
+    bool repeats = true;
+    for (int i = 0; i < 4; ++i)
+      repeats = repeats && peakNear(stuttered, 100 + i * (quarter / 4), 50) > 0.1f;
+    expect(repeats && peakNear(stuttered, late, 100) < 0.01f && peakNear(stuttered, quarter + 100, 50) < 0.01f,
+           "Stutter 4 plays the first quarter of the slice four times and nothing after");
+    set(plugin, "osc_1_sample_stutter_chance", 0.0f);
+    const auto never = renderNote(plugin, length, 60);
+    expect(peakNear(never, late, 100) > 0.1f && peakNear(never, 100 + quarter / 4, 50) < 0.01f,
+           "at 0% chance the slice plays as it is");
+    set(plugin, "osc_1_sample_stutter", 0.0f);
+    set(plugin, "osc_1_sample_slice_decay", 1.0f);
+    const auto decayed = renderNote(plugin, length, 60);
+    expect(peakNear(decayed, 100, 50) > 0.1f && peakNear(decayed, late, 100) < 0.01f,
+           "Slice Decay at 100% keeps the early click and fades the late one away: " +
+               std::to_string(peakNear(decayed, late, 100)));
+    set(plugin, "osc_1_sample_slice_decay", 0.0f);
   }
 
   // Normalize plays a quiet file with its peak at 0 dB, and off plays it as it is.
@@ -1503,6 +1552,7 @@ namespace {
     testSampleStretchTempo();
     testSampleLoopShift();
     testSampleSlicer();
+    testSampleStutterAndDecay();
     testSampleNormalize();
     testSampleReverse();
     testDetoursLeaveTypesUnchanged();

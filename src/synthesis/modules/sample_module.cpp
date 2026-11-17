@@ -39,7 +39,8 @@ namespace vital {
     Value* random_phase = createBaseControl(prefix_ + "random_phase");
     Value* loop = createBaseControl(prefix_ + "loop");
     Value* bounce = createBaseControl(prefix_ + "bounce");
-    Value* reverse = createBaseControl(prefix_ + "reverse");
+    // Reverse is modulated: an LFO can turn a slice or the file around.
+    Output* reverse = createPolyModControl(prefix_ + "reverse");
     Value* normalize = createBaseControl(prefix_ + "normalize");
     stretch_mode_ = createBaseControl(prefix_ + "stretch_mode");
     Value* formants = createBaseControl(prefix_ + "formants");
@@ -47,6 +48,9 @@ namespace vital {
     Value* slice_loop = createBaseControl(prefix_ + "slice_loop");
     Value* play_through = createBaseControl(prefix_ + "play_through");
     slice_stretch_mode_ = createBaseControl(prefix_ + "slice_stretch_mode");
+    Output* stutter = createPolyModControl(prefix_ + "stutter");
+    Output* stutter_chance = createPolyModControl(prefix_ + "stutter_chance");
+    Output* slice_decay = createPolyModControl(prefix_ + "slice_decay");
     // How the slices are made (SynthBase::resliceSample reads these); the
     // engine plays whatever slices the sample holds.
     createBaseControl(prefix_ + "slice_by");
@@ -94,6 +98,9 @@ namespace vital {
     sampler_->plug(slice_loop, SampleSource::kSliceLoop);
     sampler_->plug(play_through, SampleSource::kPlayThrough);
     sampler_->plug(slice_stretch_mode_, SampleSource::kSliceStretchMode);
+    sampler_->plug(stutter, SampleSource::kStutter);
+    sampler_->plug(stutter_chance, SampleSource::kStutterChance);
+    sampler_->plug(slice_decay, SampleSource::kSliceDecay);
     sampler_->plug(random_phase, SampleSource::kRandomPhase);
     sampler_->plug(keytrack, SampleSource::kKeytrack);
     sampler_->plug(root_key, SampleSource::kRootKey);
