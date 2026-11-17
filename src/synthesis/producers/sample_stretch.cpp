@@ -12,11 +12,12 @@
 namespace atlas {
 
 namespace {
-  // A 50 ms block analysed every 12.5 ms: short enough to keep drum
-  // transients, long enough to resolve bass notes. The work is spread over
-  // the interval's samples (split computation), so no host block carries a
-  // whole frame. Latency is one block plus one interval.
-  constexpr double kBlockSeconds = 0.05;
+  // A 120 ms block analysed every 30 ms, the library's own default. A 50 ms
+  // block smeared bass notes, whose harmonics sit a few bins apart, into a
+  // grainy warble when played away from the root key. The work is spread
+  // over the interval's samples (split computation), so no host block carries
+  // a whole frame. Latency is one block plus one interval.
+  constexpr double kBlockSeconds = 0.12;
   constexpr int kIntervalsPerBlock = 4;
 }
 
