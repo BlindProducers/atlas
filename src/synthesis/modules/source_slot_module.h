@@ -28,7 +28,6 @@
 
 namespace vital {
   class MultiSampleSlot;
-  class PianoModule;
   class SpeechSlot;
   class OscillatorModule;
   class Sample;
@@ -54,7 +53,6 @@ namespace vital {
         kNote,
         kMidiKey,
         kSoundingVoices,
-        kKeyLifted,
         kNumInputs
       };
 
@@ -62,8 +60,7 @@ namespace vital {
         kRaw,
         kLevelled,
         // 1 per voice while a Multi-sample instrument, an OpenWurli reed, an
-        // OpenB3 key, a Speech syllable or a Piano note still sounds (holds
-        // the voice open).
+        // OpenB3 key or a Speech syllable still sounds (holds the voice open).
         kHold,
         kNumOutputs
       };
@@ -84,8 +81,8 @@ namespace vital {
       int requestedType() const;
       int activeType() const { return state_->active_type; }
       // A Multi-sample type in Instrument envelope mode, OpenWurli in Reed
-      // mode, OpenB3 in Organ mode, Speech in Voice mode or Piano in Piano
-      // mode: its own envelopes shape it, not Env 1.
+      // mode, OpenB3 in Organ mode or Speech in Voice mode: its own
+      // envelopes shape it, not Env 1.
       bool holdsVoiceOpen() const;
       bool hasActiveModule() const { return state_->module != nullptr; }
       int slot() const { return slot_; }
@@ -99,8 +96,6 @@ namespace vital {
       // The slot's audio as an audio-rate modulation source (osc_N_output).
       Output* getModulationOutput() const { return modulation_output_->output(); }
       SynthModule* activeModule() const { return state_->module; }
-      // The active Piano type's module, or null.
-      PianoModule* pianoModule() const;
       OscillatorModule* oscillatorModule() const { return state_->oscillator; }
 
       // Position k is the k-th other slot in ascending order; see SynthOscillator.
@@ -177,7 +172,6 @@ namespace vital {
       Value* wurli_amp_env_ = nullptr;
       Value* b3_amp_env_ = nullptr;
       Value* speech_amp_env_ = nullptr;
-      Value* piano_amp_env_ = nullptr;
       Value* secondary_distortion_type_ = nullptr;
       // The output buffers are shared by every voice copy, so the "clear once
       // after switching off" flag must be shared too: the copy that last wrote

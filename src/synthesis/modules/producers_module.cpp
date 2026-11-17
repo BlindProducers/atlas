@@ -117,7 +117,6 @@ namespace vital {
       slots_[i]->useInput(input(kZoneMidi), SourceSlotModule::kNote);
       slots_[i]->useInput(input(kMidiKey), SourceSlotModule::kMidiKey);
       slots_[i]->useInput(input(kSoundingVoices), SourceSlotModule::kSoundingVoices);
-      slots_[i]->useInput(input(kKeyLifted), SourceSlotModule::kKeyLifted);
     }
 
     SynthModule::init();

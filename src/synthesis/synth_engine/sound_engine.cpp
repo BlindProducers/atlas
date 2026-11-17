@@ -318,7 +318,6 @@ namespace vital {
     voice_handler_->prepareSelectedSources();
     for (int i = 0; i < kNumOscillators; ++i)
       getMultiSample(i)->setMidiState(multisample_midi_state_.get());
-    voice_handler_->setMidiState(multisample_midi_state_.get());
     // Resonator's MIDI pitch follows the voices' bend range, transpose and tune.
     static_assert(NoteMonitor::kLocalBendRange == VoiceHandler::kLocalPitchBendRange);
     const control_map voice_controls = voice_handler_->getControls();
@@ -664,10 +663,6 @@ namespace vital {
     trance_gate_clock_.noteOff(note, channel);
     note_monitor_.noteOff(note, channel);
     voice_handler_->noteOff(note, lift, sample, channel);
-  }
-
-  int SoundEngine::getVoiceSampleRate() const {
-    return voice_handler_->getSampleRate();
   }
 
   void SoundEngine::setModWheel(mono_float value, int channel) {

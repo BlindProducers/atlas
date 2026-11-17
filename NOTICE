@@ -51,9 +51,6 @@ their sources.
   type, the Scanner Vibrato effect and Analogue Rotary's OpenB3 Whirl model
   (src/synthesis/effects/openb3, ported from C to C++). OpenB3 and setBfree
   are not affiliated with Hammond or Leslie.
-- Piano by Alessio Scala (GPL v3 or later): the Piano oscillator type, the
-  engine of his physically modelled concert grand (src/synthesis/effects/piano,
-  split for Atlas's voices as its README.atlas.md describes).
 - ZL Compressor by zsliu98 (AGPL v3, https://github.com/ZL-Audio/ZLCompressor):
   the Analogue Compressor effect's engine (src/synthesis/effects/zl_compressor,
   licence in LICENSE.zlcompressor.md). Those files are AGPL v3; the AGPL permits

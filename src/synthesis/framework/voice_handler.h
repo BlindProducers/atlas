@@ -390,9 +390,6 @@ namespace vital {
       // The MIDI key that started the voice, before tuning.
       force_inline Output* midi_key() { return &midi_key_; }
       force_inline Output* lift() { return &lift_; }
-      // 0 while the voice's key is down; 1 plus its release velocity once it
-      // is up, including while the sustain pedal keeps the voice on.
-      force_inline Output* key_lifted() { return &key_lifted_; }
       force_inline Output* aftertouch() { return &aftertouch_; }
       force_inline Output* slide() { return &slide_; }
       force_inline Output* active_mask() { return &active_mask_; }
@@ -509,7 +506,6 @@ namespace vital {
       cr::Output velocity_;
       cr::Output midi_key_;
       cr::Output lift_;
-      cr::Output key_lifted_;
       cr::Output aftertouch_;
       cr::Output slide_;
       cr::Output active_mask_;

@@ -2048,47 +2048,6 @@ namespace vital {
       ValueDetails::kExponential, false, " Hz", "Speech Vibrato Rate", nullptr },
   };
 
-  // Piano oscillator type (the modelled concert grand in
-  // src/synthesis/effects/piano): registered once per slot as osc_N_piano_*.
-  // Every default is the original plugin's; its Volume is the slot's level
-  // (the plugin's -6 dB default is the level's default) and its reverb is
-  // left to Atlas's effects.
-  const ValueDetails ValueDetailsLookup::piano_slot_parameter_list[] = {
-    // Piano: the strings ring and decay as on the instrument, the damper
-    // stops them on release, and the note holds the voice open while it
-    // sounds. Envelope 1: the slot follows Env 1.
-    { "piano_amp_env", 0x000000, 0.0, 1.0, 0.0, 0.0, 1.0,
-      ValueDetails::kIndexed, false, "", "Piano Amplitude Envelope", strings::kPianoAmpEnvNames },
-    // How much key velocity changes the blow; at 0 every note is struck mezzo forte.
-    { "piano_dynamics", 0x000000, 0.0, 1.0, 1.0, 0.0, 100.0,
-      ValueDetails::kLinear, false, "%", "Piano Dynamics", nullptr },
-    // Felt stiffness, a quarter to four times the model's.
-    { "piano_hardness", 0x000000, 0.0, 2.0, 1.0, 0.0, 100.0,
-      ValueDetails::kLinear, false, "%", "Piano Hammer Hardness", nullptr },
-    // The knock of key and hammer on the body, at the attack and at key release.
-    { "piano_action_noise", 0x000000, 0.0, 2.0, 1.0, 0.0, 100.0,
-      ValueDetails::kLinear, false, "%", "Piano Action Noise", nullptr },
-    // How much the undamped strings ring with the notes played.
-    { "piano_sympathetic", 0x000000, 0.0, 2.0, 1.0, 0.0, 100.0,
-      ValueDetails::kLinear, false, "%", "Piano Sympathetic Resonance", nullptr },
-    { "piano_width", 0x000000, 0.0, 2.0, 1.0, 0.0, 100.0,
-      ValueDetails::kLinear, false, "%", "Piano Stereo Width", nullptr },
-    // The next four rebuild the model (about 0.2 s in the background).
-    { "piano_tuning", 0x000000, 415.0, 466.0, 440.0, 0.0, 1.0,
-      ValueDetails::kLinear, false, " Hz", "Piano Tuning", nullptr },
-    // How far octaves are widened to match the strings' inharmonic partials.
-    { "piano_stretch", 0x000000, 0.0, 2.0, 1.0, 0.0, 100.0,
-      ValueDetails::kLinear, false, "%", "Piano Octave Stretch", nullptr },
-    // Spread between the two or three strings of a note.
-    { "piano_unison", 0x000000, 0.0, 3.0, 1.0, 0.0, 100.0,
-      ValueDetails::kLinear, false, "%", "Piano Unison Width", nullptr },
-    // How fast the strings give their energy to the soundboard.
-    { "piano_sustain", 0x000000, 0.5, 2.0, 1.0, 0.0, 100.0,
-      ValueDetails::kLinear, false, "%", "Piano Sustain Length", nullptr },
-    { "piano_transpose", 0x000000, -48.0, 48.0, 0.0, 0.0, 1.0,
-      ValueDetails::kIndexed, false, "", "Piano Transpose", nullptr },
-  };
-
   const ValueDetails ValueDetailsLookup::mod_parameter_list[] = {
     { "amount", 0x000000, -1.0, 1.0, 0.0, 0.0, 1.0,
       ValueDetails::kLinear, false, "", "Amount", nullptr },
@@ -2334,12 +2293,6 @@ namespace vital {
     for (int osc = 0; osc < kNumOscillators; ++osc) {
       addParameterGroup(speech_slot_parameter_list, num_speech_parameters, osc, kOscIdPrefix,
                         kOscNamePrefix, kSpeechVersion);
-    }
-    static constexpr int kPianoVersion = 0x020132;
-    const int num_piano_parameters = sizeof(piano_slot_parameter_list) / sizeof(ValueDetails);
-    for (int osc = 0; osc < kNumOscillators; ++osc) {
-      addParameterGroup(piano_slot_parameter_list, num_piano_parameters, osc, kOscIdPrefix,
-                        kOscNamePrefix, kPianoVersion);
     }
 
     int num_filter_parameters = sizeof(filter_parameter_list) / sizeof(ValueDetails);
