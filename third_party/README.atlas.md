@@ -88,6 +88,16 @@ Fetched by default, needed to build Atlas:
   at 5854a9f, the commit Maim pins), unchanged, built as a static library by
   its own CMake with no programs, tests, DRED or OSCE. The Maim effect's Opus
   encoder.
+- `signalsmith-stretch/`: Signalsmith Stretch 1.3.2 by Geraint Luff /
+  Signalsmith Audio (MIT), https://github.com/Signalsmith-Audio/signalsmith-stretch
+  at 88061fd (October 2026), unchanged: the Sample oscillator type's time and
+  pitch stretcher (`src/synthesis/producers/sample_stretch.cpp`, the only file
+  that includes it). Header-only; its own CMake is not used.
+- `signalsmith-linear/`: Signalsmith Linear 0.6.6 by Signalsmith Audio (MIT),
+  https://github.com/Signalsmith-Audio/linear at tag 0.6.6, unchanged: the
+  STFT and FFT that Signalsmith Stretch builds on (the version its CMake
+  fetches). Header-only; Atlas sets `SIGNALSMITH_USE_PFFFT`, so its FFTs run
+  on `pffft/` like every other FFT in Atlas.
 
 Opt-in, only for reference tests. `git submodule update --init` skips these;
 fetch one with `git submodule update --init --checkout <path>`, and CMake uses
