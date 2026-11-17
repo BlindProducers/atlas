@@ -140,6 +140,10 @@ class SynthBase : public MidiManager::Listener {
     // Cuts a Sample slot's slices as its Slice by, Divisions and Sensitivity
     // say, replacing the slices it had. Message thread.
     void resliceSample(int slot);
+    // Replaces a Sample slot's slices and records the change. Message thread.
+    void setSampleSlices(int slot, const std::vector<int>& starts);
+    // The undo block a slot's slices are recorded under.
+    static std::string sampleSlicesUndoBlock(int slot);
     // An effect slot's type ("fx_slot_3_type", "bus_1_fx_slot_3_type").
     static bool isEffectSlotTypeControl(const std::string& name);
     LineGenerator* getLfoSource(int index);
@@ -225,6 +229,9 @@ class SynthBase : public MidiManager::Listener {
     virtual bool isProcessingPaused() const { return false; }
     // The state changed in a way no host parameter reports (see SynthPlugin).
     virtual void markStateChanged() { }
+    // The same for a change in one part of the state, named as the undo
+    // history names it ("settings/osc_5_sample_slices").
+    virtual void markStateChanged(const std::string& undo_block) { markStateChanged(); }
     Tuning* getTuning() { return &tuning_; }
     uint64_t getScheduledMidiOverflowCount() const { return scheduled_midi_overflow_count_; }
 

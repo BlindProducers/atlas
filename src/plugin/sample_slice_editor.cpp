@@ -8,7 +8,7 @@ namespace {
 }
 
 SampleSliceEditor::SampleSliceEditor(State& state) : state_(state) {
-  setTitle("Slices");
+  setTitle("Slices editor");
   setDescription("Keyboard slice editor: moves between the slices, moves their starts, splits and removes them, and plays them.");
   setHelpText(helpText());
   getStatusText = [this] { return statusText(); };
@@ -18,7 +18,35 @@ SampleSliceEditor::SampleSliceEditor(State& state) : state_(state) {
 String SampleSliceEditor::helpText() {
   return "Up and Down move between slices, Home and End to the first and last. Left and Right move the slice's start "
          "by 10 ms, with Shift by 1 ms. Return splits the slice in the middle. Backspace or Delete removes it. "
-         "Space plays it.";
+         "R moves every start to a random place. Space plays it.";
+}
+
+std::unique_ptr<AccessibilityHandler> SampleSliceEditor::createAccessibilityHandler() {
+  class Handler final : public AccessibilityHandler {
+    public:
+      explicit Handler(SampleSliceEditor& component) :
+          AccessibilityHandler(component, AccessibilityRole::group,
+                               AccessibilityActions().addAction(AccessibilityActionType::showMenu, [&component] {
+                                 if (component.onShowMenu)
+                                   component.onShowMenu();
+                               })),
+          component_(component) { }
+
+      AccessibleState getCurrentState() const override {
+        return AccessibilityHandler::getCurrentState().withAccessibleOffscreen();
+      }
+
+      String getDescription() const override { return component_.statusText(); }
+
+    private:
+      SampleSliceEditor& component_;
+  };
+  return std::make_unique<Handler>(*this);
+}
+
+void SampleSliceEditor::write(const std::vector<int>& starts, const String& description, const String& mergeKey) {
+  if (writeSlices)
+    writeSlices(starts, description, mergeKey);
 }
 
 std::vector<int> SampleSliceEditor::slices() const {
@@ -70,6 +98,8 @@ bool SampleSliceEditor::handleShortcut(const KeyPress& key) {
   if (code == KeyPress::returnKey) { split(); return true; }
   if (code == KeyPress::backspaceKey || code == KeyPress::deleteKey) { remove(); return true; }
   if (code == KeyPress::spaceKey) { play(); return true; }
+  const juce_wchar character = key.getTextCharacter();
+  if (!shift && (code == 'R' || code == 'r' || character == 'r' || character == 'R')) { randomize(); return true; }
   return false;
 }
 
@@ -110,8 +140,7 @@ void SampleSliceEditor::nudge(float seconds) {
     return;
   }
   start = moved;
-  if (writeSlices)
-    writeSlices(starts);
+  write(starts, "move slice " + String(index + 1), "slice-start:" + String(index));
   say("Start " + (positionText ? positionText(start) : String(start)));
 }
 
@@ -130,8 +159,7 @@ void SampleSliceEditor::split() {
   }
   starts.insert(starts.begin() + index + 1, start + (end - start) / 2);
   state_.cursor = index;
-  if (writeSlices)
-    writeSlices(starts);
+  write(starts, "split slice " + String(index + 1));
   say("Split, " + String(static_cast<int>(starts.size())) + " slices");
 }
 
@@ -146,9 +174,29 @@ void SampleSliceEditor::remove() {
   const int index = cursor(starts);
   starts.erase(starts.begin() + jmax(1, index));
   state_.cursor = jlimit(0, static_cast<int>(starts.size()) - 1, index == 0 ? 0 : index - 1);
-  if (writeSlices)
-    writeSlices(starts);
+  write(starts, "remove slice " + String(index + 1));
   say("Removed, " + String(static_cast<int>(starts.size())) + (starts.size() == 1 ? " slice" : " slices"));
+}
+
+// Moves every start but the first to a random place between the slice before
+// it (as moved) and the one after it (as it was), so the slices keep their
+// order and their number.
+void SampleSliceEditor::randomize() {
+  std::vector<int> starts = slices();
+  if (starts.size() < 2) {
+    say("Nothing to randomize");
+    return;
+  }
+  const int length = fileLength ? fileLength() : 0;
+  Random& random = Random::getSystemRandom();
+  for (size_t i = 1; i < starts.size(); ++i) {
+    const int lowest = starts[i - 1] + vital::Sample::kMinSliceLength;
+    const int highest = (i + 1 < starts.size() ? starts[i + 1] : length) - vital::Sample::kMinSliceLength;
+    if (highest > lowest)
+      starts[i] = lowest + random.nextInt(highest - lowest + 1);
+  }
+  write(starts, "randomize slices");
+  say("Randomized, " + String(static_cast<int>(starts.size())) + " slices");
 }
 
 void SampleSliceEditor::play() {

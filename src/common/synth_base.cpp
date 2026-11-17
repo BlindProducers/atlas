@@ -445,10 +445,21 @@ void SynthBase::resliceSample(int slot) {
     starts = vital::sample_slices::transients(sample->leftChannel(), sample->rightChannel(), length,
                                               sample->sampleRate(), value("slice_sensitivity", 0.5f));
   }
+  setSampleSlices(slot, starts);
+}
+
+std::string SynthBase::sampleSlicesUndoBlock(int slot) {
+  return "settings/" + vital::source_types::slotPrefix(slot) + "sample_slices";
+}
+
+void SynthBase::setSampleSlices(int slot, const std::vector<int>& starts) {
+  vital::Sample* sample = getSample(slot);
+  if (sample == nullptr)
+    return;
   pauseProcessing(true);
   sample->setSlices(starts);
   pauseProcessing(false);
-  markStateChanged();
+  markStateChanged(sampleSlicesUndoBlock(slot));
 }
 
 void SynthBase::scheduleReslice(int slot) {

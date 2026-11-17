@@ -231,11 +231,15 @@ namespace sample_navigation {
           "the mode buttons form one radio group");
     check(findSlider(editor, "5 Sample Loop Start") != nullptr && findSlider(editor, "5 Sample Playback Mode") != nullptr,
           "Classic shows its Start, End, loop and playback rows");
-    check(find(editor, "Slices") == nullptr && findSlider(editor, "5 Sample Divisions") == nullptr,
+    check(find(editor, "Slices editor") == nullptr && findSlider(editor, "5 Sample Number of Slices") == nullptr &&
+          findSlider(editor, "5 Sample Stutter") == nullptr,
           "Classic shows no Slicer rows");
 
-    plugin.getControls().at("osc_5_sample_mode")->set(1.0f);
+    plugin.parameterChanged("osc_5_sample_mode", 1.0f);
     SynthEditor slicer_editor(plugin);
+    // The message loop is not running here: each edit is committed by hand, as it would be between keys.
+    auto& history = plugin.undoHistory();
+    history.ensureBaseline();
     auto* slicer_mode = find(slicer_editor, "Oscillator 5 sample mode", true);
     auto* selected = slicer_mode != nullptr ? dynamic_cast<Button*>(find(*slicer_mode, "Slicer")) : nullptr;
     check(selected != nullptr && selected->getToggleState(), "the Slicer button reads as selected in Slicer mode");
@@ -245,11 +249,15 @@ namespace sample_navigation {
           findSlider(slicer_editor, "5 Sample Keytrack") == nullptr &&
           find(slicer_editor, "5 Sample Random Phase") == nullptr,
           "Slicer hides the Start, End, loop, playback, Keytrack and Random Phase rows");
-    check(findSlider(slicer_editor, "5 Sample Divisions") != nullptr &&
+    check(findSlider(slicer_editor, "5 Sample Number of Slices") != nullptr &&
           findSlider(slicer_editor, "5 Sample Sensitivity") == nullptr,
-          "Slice by Grid shows Divisions and not Sensitivity");
+          "Slice by Grid shows Number of Slices and not Sensitivity");
     check(findSlider(slicer_editor, "5 Sample BPM") != nullptr, "the Slicer's stretch mode defaults to Tempo");
-    auto* slices = dynamic_cast<SampleSliceEditor*>(find(slicer_editor, "Slices"));
+    check(findSlider(slicer_editor, "5 Sample Stutter") != nullptr &&
+          findSlider(slicer_editor, "5 Sample Stutter Chance") != nullptr &&
+          findSlider(slicer_editor, "5 Sample Slice Decay") != nullptr,
+          "Slicer shows Stutter, Stutter Chance and Slice Decay");
+    auto* slices = dynamic_cast<SampleSliceEditor*>(find(slicer_editor, "Slices editor"));
     check(slices != nullptr, "Slicer shows the Slices editor");
     if (slices != nullptr) {
       check(slices->statusText().startsWith("Slice 1 of 16, start 0%, end 6."),
@@ -257,13 +265,33 @@ namespace sample_navigation {
       slices->handleShortcut(KeyPress(KeyPress::downKey));
       check(slices->statusText().startsWith("Slice 2 of 16"), "Down moves to the next slice");
       slices->handleShortcut(KeyPress(KeyPress::rightKey));
+      history.commitPendingEdits();
       check(source(plugin, 0)->slices()[1] == 3000 + 480, "Right moves the slice's start by 10 ms");
       slices->handleShortcut(KeyPress(KeyPress::leftKey, ModifierKeys::shiftModifier, 0));
+      history.commitPendingEdits();
       check(source(plugin, 0)->slices()[1] == 3000 + 480 - 48, "Shift Left moves it back by 1 ms");
       slices->handleShortcut(KeyPress(KeyPress::returnKey));
+      history.commitPendingEdits();
       check(source(plugin, 0)->slices().size() == 17, "Return splits the slice");
       slices->handleShortcut(KeyPress(KeyPress::backspaceKey));
+      history.commitPendingEdits();
       check(source(plugin, 0)->slices().size() == 16, "Backspace removes it again");
+      const auto before = source(plugin, 0)->slices();
+      slices->handleShortcut(KeyPress('R', ModifierKeys(), 'r'));
+      history.commitPendingEdits();
+      const auto randomized = source(plugin, 0)->slices();
+      check(randomized.size() == 16 && randomized != before && randomized[0] == 0 &&
+            std::is_sorted(randomized.begin(), randomized.end()),
+            "R moves the starts to random places, in order");
+      // Each edit is a step undo takes back.
+      check(history.canUndo() && history.undoDescription().contains("randomize"),
+            "randomizing is an undo step: " + history.undoDescription().toStdString());
+      history.undo();
+      check(source(plugin, 0)->slices() == before, "undo puts the slices back");
+      history.undo();
+      check(source(plugin, 0)->slices().size() == 17, "a second undo puts the removed slice back");
+      history.redo();
+      check(source(plugin, 0)->slices() == before, "redo removes it again");
     }
     plugin.getControls().at("osc_5_sample_slice_by")->set(1.0f);
     SynthEditor transient_editor(plugin);

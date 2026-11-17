@@ -573,6 +573,8 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     String slicePositionText(const vital::Sample& sample, int samples) const;
     // Plays a slice on its key for its length.
     void auditionSlice(int oscillator, int slice, int start, int end);
+    // The Slices editor's context menu: Randomize, and Show as.
+    void showSliceEditorMenu(SampleSliceEditor& editor);
     bool refreshOscillatorModeRowsIfNeeded();
     bool refreshZoneCrossfadeRowIfNeeded();
     bool refreshEnvelopeAnalogRowsIfNeeded();

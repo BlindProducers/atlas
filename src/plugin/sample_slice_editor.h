@@ -13,14 +13,18 @@ class SampleSliceEditor : public LfoMsegKeyboardComponent {
     explicit SampleSliceEditor(State& state);
 
     std::function<std::vector<int>()> readSlices;                 // where each slice starts
-    std::function<void(const std::vector<int>&)> writeSlices;
+    // Replaces the slices; `description` names the step as undo says it and
+    // `mergeKey` joins repeats of the same edit into one step.
+    std::function<void(const std::vector<int>&, const String& description, const String& mergeKey)> writeSlices;
     std::function<int()> fileLength;                               // samples
     std::function<int()> sampleRate;
     std::function<String(int)> positionText;                       // a position or length, in the Show as units
     std::function<void(const String&)> announce;
     std::function<void(int, int, int)> audition;                   // plays slice `index`, from `start` to `end`
+    std::function<void()> onShowMenu;                              // the context menu (Show as)
 
     bool handleShortcut(const KeyPress& key);
+    std::unique_ptr<AccessibilityHandler> createAccessibilityHandler() override;
     String statusText() const;
     static String helpText();
 
@@ -35,7 +39,9 @@ class SampleSliceEditor : public LfoMsegKeyboardComponent {
     void nudge(float seconds);
     void split();
     void remove();
+    void randomize();
     void play();
+    void write(const std::vector<int>& starts, const String& description, const String& mergeKey = {});
 
     State& state_;
 };

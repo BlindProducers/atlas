@@ -2569,7 +2569,7 @@ namespace {
     }
     if (id.startsWith("sample_")) {
       const String suffix = id.fromFirstOccurrenceOf("sample_", false, false);
-      static const std::array<const char*, 43> sample_order = {{
+      static const std::array<const char*, 46> sample_order = {{
         "on",
         "solo",
         "destination",
@@ -2596,6 +2596,9 @@ namespace {
         "play_through",
         "loop",
         "slice_loop",
+        "stutter",
+        "stutter_chance",
+        "slice_decay",
         "bounce",
         "reverse",
         "random_phase",
@@ -3973,7 +3976,7 @@ namespace {
       if (suffix == "playback_mode") return "Choose whether notes retrigger the sample or only open the amp envelope.";
       if (suffix == "loop") return "Loop the selected sample range while notes are held.";
       if (suffix == "bounce") return "Play the sample loop forward then backward.";
-      if (suffix == "reverse") return "Play the sample backwards, from its end to its start.";
+      if (suffix == "reverse") return "Play the sample backwards, from its end to its start. Modulate it to turn the sound around as it plays.";
       if (suffix == "normalize") return "Play the sample with its loudest peak at 0 dB.";
       if (suffix == "stretch_mode")
         return "Off plays the sample faster for higher notes. Tempo stretches it to the host tempo and Fixed keeps its length; both change the pitch without the length.";
@@ -3983,6 +3986,9 @@ namespace {
       if (suffix == "mode") return "Classic plays the file from Sample Start to Sample End. Slicer plays the slice a key picks.";
       if (suffix == "slice_by") return "Cut the slices on an even grid or at the transients. Either replaces the slices; the Slices editor then edits them.";
       if (suffix == "slice_divisions") return "Set how many equal slices the grid cuts the file into.";
+      if (suffix == "stutter") return "Play the first part of the slice this many times over, inside the slice's length.";
+      if (suffix == "stutter_chance") return "Set how likely a note is to stutter.";
+      if (suffix == "slice_decay") return "Fade each slice out as it plays. Higher is shorter; 100% leaves a short hit.";
       if (suffix == "slice_sensitivity") return "Set how small a rise in level counts as a transient. Higher finds more slices.";
       if (suffix == "play_through") return "Play on from the slice to the end of the file.";
       if (suffix == "slice_loop") return "Repeat the slice while the note is held.";
@@ -10096,7 +10102,7 @@ bool SynthEditor::isSampleRowRelevant(int oscillator, const String& suffix) cons
     stretch_mode = jlimit(0, 2, roundToInt(sourceSlotValue(oscillator, "sample_slice_stretch_mode")));
   }
   else {
-    if (suffix.startsWith("slice_") || suffix == "play_through")
+    if (suffix.startsWith("slice_") || suffix.startsWith("stutter") || suffix == "play_through")
       return false;
     stretch_mode = jlimit(0, 2, roundToInt(sourceSlotValue(oscillator, "sample_stretch_mode")));
   }
@@ -12031,8 +12037,8 @@ String SynthEditor::keyboardHelpText() {
       "\nSlices editor (the Sample type's Slicer mode)\n"
       "  Up/Down move between slices; Home/End go to the first and last.\n"
       "  Left/Right move the slice's start by 10 ms, with Shift by 1 ms.\n"
-      "  Return splits the slice in the middle. Backspace or Delete removes it.\n"
-      "  Space plays the slice on its key.\n"
+      "  Return splits the slice in the middle. Backspace or Delete removes it. R moves every start to a random place.\n"
+      "  Space plays the slice on its key. {ContextMenuKeys} open its menu, with Show as for the units it reads in.\n"
       "\n"
       "Most single-letter shortcuts work when a parameter or the editor has focus, but not while a "
       "text field is focused.\n"
@@ -23789,13 +23795,11 @@ void SynthEditor::addSampleSliceEditor(int oscillator, AccessibleSectionHeader& 
   auto* keyboard = editor.get();
   auto sample = [this, oscillator]() -> vital::Sample* { return synth_.getSample(oscillator); };
   keyboard->readSlices = [sample] { return sample() != nullptr ? sample()->slices() : std::vector<int>(); };
-  keyboard->writeSlices = [this, sample](const std::vector<int>& starts) {
-    if (sample() == nullptr)
-      return;
-    synth_.pauseProcessing(true);
-    sample()->setSlices(starts);
-    synth_.pauseProcessing(false);
-    synth_.markStateChanged();
+  keyboard->writeSlices = [this, oscillator](const std::vector<int>& starts, const String& description,
+                                              const String& merge_key) {
+    synth_.undoHistory().describeNextStep(description, merge_key.isEmpty() ? String()
+                                                                            : merge_key + ":" + String(oscillator));
+    synth_.setSampleSlices(oscillator, starts);
   };
   keyboard->fileLength = [sample] { return sample() != nullptr ? sample()->originalLength() : 0; };
   keyboard->sampleRate = [sample] { return sample() != nullptr ? sample()->sampleRate() : 0; };
@@ -23804,6 +23808,14 @@ void SynthEditor::addSampleSliceEditor(int oscillator, AccessibleSectionHeader& 
   };
   keyboard->announce = [](const String& message) { postLfoAnnouncement(message); };
   keyboard->audition = [this, oscillator](int slice, int start, int end) { auditionSlice(oscillator, slice, start, end); };
+  keyboard->onShowMenu = [this, keyboard] { showSliceEditorMenu(*keyboard); };
+  keyboard->onKeyPressed = [this, keyboard](const KeyPress& key) {
+    if (isContextMenuKey(key)) {
+      showSliceEditorMenu(*keyboard);
+      return true;
+    }
+    return keyboard->handleShortcut(key);
+  };
   keyboard->setExplicitFocusOrder(focus_order++);
   keyboard->setBounds(10, y, jmax(200, width - 20), 82);
   parent.addAndMakeVisible(keyboard);
@@ -23811,6 +23823,29 @@ void SynthEditor::addSampleSliceEditor(int oscillator, AccessibleSectionHeader& 
   row_focus_order_.push_back(keyboard);
   section_headers_.push_back(std::move(editor));
   y += 90;
+}
+
+void SynthEditor::showSliceEditorMenu(SampleSliceEditor& editor) {
+  enum { kRandomize = 1, kUnitsBase = 10 };
+  PopupMenu menu;
+  menu.addSectionHeader("Slices editor");
+  menu.addItem(kRandomize, "Randomize slice starts");
+  PopupMenu units_menu;
+  const int current = LoadSave::samplePositionUnits();
+  for (int i = 0; i < 3; ++i)
+    units_menu.addItem(kUnitsBase + i, kSamplePositionUnitNames[i], true, i == current);
+  menu.addSubMenu("Show as", units_menu);
+  Component::SafePointer<SampleSliceEditor> safe_editor(&editor);
+  showAccessibleMenuAsync(menu, PopupMenu::Options().withTargetComponent(&editor), [this, safe_editor](int result) {
+    if (safe_editor == nullptr || result == 0)
+      return;
+    if (result == kRandomize)
+      safe_editor->handleShortcut(KeyPress('R', ModifierKeys(), 'r'));
+    else if (result >= kUnitsBase && result < kUnitsBase + 3) {
+      setSamplePositionUnits(result - kUnitsBase);
+      safe_editor->repaint();
+    }
+  });
 }
 
 void SynthEditor::auditionSlice(int oscillator, int slice, int start, int end) {

@@ -100,10 +100,20 @@ namespace {
            key == "preset_tags" || macroIndexForKey(key) >= 0;
   }
 
+  // "settings/osc_5_sample_slices" -> 4, or -1.
+  int sampleSlicesSlot(const std::string& key) {
+    static const std::string prefix = "settings/osc_";
+    if (!startsWith(key, prefix) || !endsWith(key, "_sample_slices"))
+      return -1;
+    const int slot = std::atoi(key.c_str() + prefix.size()) - 1;
+    return slot >= 0 && slot < vital::kNumOscillators ? slot : -1;
+  }
+
   // Parts the patch takes back without loading again: its name and details,
-  // the macros' names, and what the plugin keeps beside the patch.
+  // the macros' names, a Sample slot's slices, and what the plugin keeps
+  // beside the patch.
   bool isLightBlock(const std::string& key) {
-    return isMetadataKey(key) || startsWith(key, "atlas/");
+    return isMetadataKey(key) || startsWith(key, "atlas/") || sampleSlicesSlot(key) >= 0;
   }
 
   String stringIn(const PartText& text) {
@@ -517,6 +527,16 @@ bool UndoHistory::capturePart(const std::string& scope, Blocks& blocks) {
     blocks[scope] = textOf(synth_.getMacroName(macro).toStdString());
     return true;
   }
+  if (const int slot = sampleSlicesSlot(scope); slot >= 0) {
+    // As LoadSave writes it: while the slot's type plays a sample.
+    const auto& controls = synth_.getControls();
+    const auto type = controls.find(vital::source_types::slotPrefix(slot) + "type");
+    const int type_value = type == controls.end() || type->second == nullptr ? 0
+                                                                              : static_cast<int>(type->second->value() + 0.5f);
+    if (vital::source_types::describe(type_value).uses_sample && synth_.getSample(slot) != nullptr)
+      blocks[scope] = textOf(json(synth_.getSample(slot)->slices()));
+    return true;
+  }
   // Beside the patch: the preset file Save writes over, the host automation
   // slots and the tuning.
   if (scope == "atlas/active_file") {
@@ -731,6 +751,8 @@ String UndoHistory::describe(const Step& step) const {
         return "Oscillator " + slot + " instrument";
       if (endsWith(key, "_speech_text"))
         return "Oscillator " + slot + " speech text";
+      if (endsWith(key, "_sample_slices"))
+        return "Oscillator " + slot + " slices";
       if (endsWith(key, "_sample"))
         return "Oscillator " + slot + " sample";
     }
@@ -853,6 +875,17 @@ void UndoHistory::applyLightBlock(const std::string& key, const Text& text) {
     synth_.setTags(stringIn(text));
   else if (const int macro = macroIndexForKey(key); macro >= 0)
     synth_.setMacroName(macro, stringIn(text));
+  else if (const int slot = sampleSlicesSlot(key); slot >= 0 && text != nullptr) {
+    const json slices = json::parse(*text, nullptr, false);
+    std::vector<int> starts;
+    if (slices.is_array()) {
+      for (const auto& start : slices) {
+        if (start.is_number_integer())
+          starts.push_back(start.get<int>());
+      }
+    }
+    synth_.setSampleSlices(slot, starts);
+  }
   else if (key == "atlas/active_file") {
     const String path = stringIn(text);
     if (path.isEmpty())
