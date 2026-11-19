@@ -1365,6 +1365,33 @@ namespace {
     const auto never = renderNote(plugin, length, 60);
     expect(peakNear(never, late, 100) > 0.1f && peakNear(never, 100 + quarter / 4, 50) < 0.01f,
            "at 0% chance the slice plays as it is");
+    // A looping slice rolls again on every pass: at 100% its second pass
+    // stutters too, and at 50% some passes stutter and others play the slice
+    // as it is, both channels alike.
+    set(plugin, "osc_1_sample_slice_loop", 1.0f);
+    set(plugin, "osc_1_sample_stutter_chance", 1.0f);
+    const auto looped = renderNote(plugin, length, 60);
+    bool again = true;
+    for (int i = 4; i < 8; ++i)
+      again = again && peakNear(looped, 100 + i * (quarter / 4), 50) > 0.1f;
+    expect(again && peakNear(looped, quarter + late, 100) < 0.01f, "a looping slice stutters on its second pass too");
+    set(plugin, "osc_1_sample_stutter_chance", 0.5f);
+    const int passes = 16;
+    const auto mixed = renderNote(plugin, passes * quarter, 60);
+    int stuttered_passes = 0;
+    int plain_passes = 0;
+    for (int pass = 0; pass < passes; ++pass) {
+      stuttered_passes += peakNear(mixed, pass * quarter + 100 + quarter / 4, 50) > 0.1f ? 1 : 0;
+      plain_passes += peakNear(mixed, pass * quarter + late, 100) > 0.1f ? 1 : 0;
+    }
+    expect(stuttered_passes > 0 && plain_passes > 0 && stuttered_passes + plain_passes == passes,
+           "at 50% a looping slice stutters on some passes only: " + std::to_string(stuttered_passes) +
+               " stuttered, " + std::to_string(plain_passes) + " plain");
+    float channel_difference = 0.0f;
+    for (size_t i = 0; i < mixed.size(); i += 2)
+      channel_difference = std::max(channel_difference, std::abs(mixed[i] - mixed[i + 1]));
+    expect(channel_difference < 1.0e-6f, "both channels stutter alike: " + std::to_string(channel_difference));
+    set(plugin, "osc_1_sample_slice_loop", 0.0f);
     set(plugin, "osc_1_sample_stutter", 0.0f);
     set(plugin, "osc_1_sample_slice_decay", 1.0f);
     const auto decayed = renderNote(plugin, length, 60);

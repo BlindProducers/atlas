@@ -20,7 +20,9 @@
 #include "nlohmann/json.hpp"
 #include "utils.h"
 
+#include <array>
 #include <atomic>
+#include <cstdint>
 #include <functional>
 #include <mutex>
 #include "cut_filter.h"
@@ -330,8 +332,12 @@ namespace vital {
       poly_float slice_pitch_;      // that slice's pitch offset, in semitones
       poly_float slice_gain_;       // that slice's gain, as an amplitude
       poly_mask slice_reverse_mask_; // the lanes whose slice plays backwards
-      poly_float stutter_count_;    // how many times the lane's note plays its slice's first part, 0 for once
+      poly_float stutter_count_;    // how many times the lane's pass plays its slice's first part, 0 for once
       poly_float stutter_remaining_; // repeats still to come, -1 once they are over or without stutter
+      // Each lane's copy of its voice's Stutter Chance sequence. Both lanes of
+      // a voice start from one seed and step it at their own pass ends, so the
+      // two channels always roll alike.
+      std::array<uint32_t, poly_float::kSize> stutter_seed_ {};
       poly_mask reverse_mask_;      // which lanes read backwards last block
       poly_float sample_index_;
       poly_float sample_fraction_;
