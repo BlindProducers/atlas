@@ -24814,7 +24814,8 @@ void SynthEditor::chooseSampleFile(int sample_target) {
 
 namespace {
   // What a WAV's smpl chunk or an AIFF's INST chunk says about the file: its
-  // first loop (start and end sample, whether it alternates) and its root note.
+  // first loop (start and end sample, whether it alternates) if it lies in
+  // the part kept, and its root note.
   struct SampleFileInfo {
     int loop_start = -1, loop_end = -1;
     bool loop_alternates = false;
@@ -24824,7 +24825,7 @@ namespace {
 
   constexpr float kMinSampleTempo = 20.0f, kMaxSampleTempo = 400.0f;
 
-  SampleFileInfo readSampleFileInfo(const StringPairArray& metadata, int length, int sample_rate) {
+  SampleFileInfo readSampleFileInfo(const StringPairArray& metadata, int64 length, int kept_length, int sample_rate) {
     SampleFileInfo info;
     const auto note = [&](const char* key) {
       const int value = metadata.containsKey(key) ? metadata.getValue(key, "").getIntValue() : -1;
@@ -24871,7 +24872,7 @@ namespace {
       }
       info.loop_alternates = type == 2;
     }
-    if (start >= 0 && end > start && end < length) {
+    if (start >= 0 && end > start && end < kept_length) {
       info.loop_start = start;
       info.loop_end = end;
     }
@@ -24917,8 +24918,7 @@ namespace {
 }
 
 void SynthEditor::loadSampleFile(const File& file, int sample_target) {
-  static constexpr int kMaxFileSamples = 17640000;
-
+  bool paused = false;
   try {
     AudioFormatManager format_manager;
     format_manager.registerBasicFormats();
@@ -24926,7 +24926,7 @@ void SynthEditor::loadSampleFile(const File& file, int sample_target) {
     if (format_reader == nullptr)
       throw std::runtime_error("Unable to decode audio file");
 
-    const int num_samples = static_cast<int>(std::min<long long>(format_reader->lengthInSamples, kMaxFileSamples));
+    const int num_samples = static_cast<int>(std::min<int64>(format_reader->lengthInSamples, vital::Sample::kMaxLength));
     if (num_samples <= 0)
       throw std::runtime_error("Audio file is empty");
 
@@ -24938,15 +24938,17 @@ void SynthEditor::loadSampleFile(const File& file, int sample_target) {
     if (sample == nullptr)
       throw std::runtime_error("Sample engine is unavailable");
 
+    // Built before pausing, so a long file does not hold up the host's audio.
+    auto data = vital::Sample::createData(sample_buffer.getReadPointer(0),
+                                          sample_buffer.getNumChannels() > 1 ? sample_buffer.getReadPointer(1) : nullptr,
+                                          num_samples, static_cast<int>(format_reader->sampleRate));
     synth_.pauseProcessing(true);
-    if (sample_buffer.getNumChannels() > 1)
-      sample->loadSample(sample_buffer.getReadPointer(0), sample_buffer.getReadPointer(1),
-                         num_samples, static_cast<int>(format_reader->sampleRate));
-    else
-      sample->loadSample(sample_buffer.getReadPointer(0), num_samples, static_cast<int>(format_reader->sampleRate));
+    paused = true;
+    sample->loadData(std::move(data));
     sample->setName(file.getFileNameWithoutExtension().toStdString());
     sample->setLastBrowsedFile(file.getFullPathName().toStdString());
     synth_.pauseProcessing(false);
+    paused = false;
     synth_.markStateChanged();
     synth_.resliceSample(sample_target);
 
@@ -24958,8 +24960,8 @@ void SynthEditor::loadSampleFile(const File& file, int sample_target) {
     refreshSampleNameLabel(sample_target);
 
     // The file's own loop and root note set the slot's, as a sampler expects.
-    const SampleFileInfo info = readSampleFileInfo(format_reader->metadataValues, num_samples,
-                                                   static_cast<int>(format_reader->sampleRate));
+    const SampleFileInfo info = readSampleFileInfo(format_reader->metadataValues, format_reader->lengthInSamples,
+                                                   num_samples, static_cast<int>(format_reader->sampleRate));
     const String prefix = vital::source_types::slotPrefix(sample_target) + "sample_";
     // What was taken, and from where, for the announcement.
     StringArray from_file, from_name;
@@ -24983,6 +24985,8 @@ void SynthEditor::loadSampleFile(const File& file, int sample_target) {
       (info.tempo > 0.0f ? from_file : from_name).add(String(tempo, tempo == std::floor(tempo) ? 0 : 1) + " BPM");
     }
     String taken;
+    if (format_reader->lengthInSamples > num_samples)
+      taken += ", cut to the first " + atlas::community::durationText(num_samples / format_reader->sampleRate);
     if (!from_file.isEmpty())
       taken += ", " + from_file.joinIntoString(" and ") + " from the file";
     if (!from_name.isEmpty())
@@ -24992,7 +24996,8 @@ void SynthEditor::loadSampleFile(const File& file, int sample_target) {
                                            AccessibilityHandler::AnnouncementPriority::high);
   }
   catch (const std::exception& error) {
-    synth_.pauseProcessing(false);
+    if (paused)
+      synth_.pauseProcessing(false);
     showWarningBox("Unable to load sample", error.what());
     postPluginAnnouncement("Unable to load sample",
                                            AccessibilityHandler::AnnouncementPriority::high);

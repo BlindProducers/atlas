@@ -48,6 +48,9 @@ namespace vital {
       static constexpr int kUpsampleTimes = 1;
       static constexpr int kBufferSamples = 4;
       static constexpr int kMinSize = 4;
+      // The most samples a file keeps per channel, two minutes at 48 kHz; a
+      // longer file keeps its start.
+      static constexpr int kMaxLength = 5760000;
 
       struct SampleData {
         SampleData(int l, int sr, bool s) : length(l), sample_rate(sr), stereo(s) { }
@@ -70,6 +73,13 @@ namespace vital {
 
       void loadSample(const mono_float* buffer, int size, int sample_rate);
       void loadSample(const mono_float* left_buffer, const mono_float* right_buffer, int size, int sample_rate);
+      // loadSample in two steps: building a long file's buffers takes a while
+      // and touches nothing the audio thread reads, so it can run before
+      // processing pauses for loadData to swap them in. A mono file has no
+      // right buffer.
+      static std::unique_ptr<SampleData> createData(const mono_float* left_buffer, const mono_float* right_buffer,
+                                                    int size, int sample_rate);
+      void loadData(std::unique_ptr<SampleData> data);
       // True while the sample is the built-in default from init(); presets skip it.
       bool isDefault() const { return is_default_; }
       void setLoadCallback(LoadCallback callback) { load_callback_ = std::move(callback); }

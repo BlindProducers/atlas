@@ -362,17 +362,24 @@ namespace vital {
     init();
   }
 
-  void Sample::loadSample(const mono_float* buffer, int size, int sample_rate) {
-    is_default_ = false;
-    static constexpr int kMaxSize = 1764000;
+  std::unique_ptr<Sample::SampleData> Sample::createData(const mono_float* left_buffer, const mono_float* right_buffer,
+                                                         int size, int sample_rate) {
+    size = std::min(size, kMaxLength);
+    auto data = std::make_unique<SampleData>(size, sample_rate, right_buffer != nullptr);
+    createBandLimitedBuffers(data->left_buffers, data->left_loop_buffers, left_buffer, size);
+    data->peak = peakOf(left_buffer, size);
+    if (right_buffer != nullptr) {
+      createBandLimitedBuffers(data->right_buffers, data->right_loop_buffers, right_buffer, size);
+      data->peak = std::max(data->peak, peakOf(right_buffer, size));
+    }
+    return data;
+  }
 
+  void Sample::loadData(std::unique_ptr<SampleData> data) {
     VITAL_ASSERT(active_audio_data_.is_lock_free());
-
-    size = std::min(size, kMaxSize);
+    is_default_ = false;
     std::unique_ptr<SampleData> old_data = std::move(data_);
-    data_ = std::make_unique<SampleData>(size, sample_rate, false);
-    createBandLimitedBuffers(data_->left_buffers, data_->left_loop_buffers, buffer, size);
-    data_->peak = peakOf(buffer, size);
+    data_ = std::move(data);
 
     current_data_ = data_.get();
     while (active_audio_data_.load())
@@ -380,29 +387,18 @@ namespace vital {
     resetSlices();
 
     last_browsed_file_.clear();
-    if (load_callback_)
-      load_callback_(buffer, buffer, size, sample_rate);
+    if (load_callback_) {
+      const mono_float* right = rightChannel();
+      load_callback_(leftChannel(), right != nullptr ? right : leftChannel(), data_->length, data_->sample_rate);
+    }
+  }
+
+  void Sample::loadSample(const mono_float* buffer, int size, int sample_rate) {
+    loadData(createData(buffer, nullptr, size, sample_rate));
   }
 
   void Sample::loadSample(const mono_float* left_buffer, const mono_float* right_buffer, int size, int sample_rate) {
-    is_default_ = false;
-    static constexpr int kMaxSize = 1764000;
-
-    size = std::min(size, kMaxSize);
-    std::unique_ptr<SampleData> old_data = std::move(data_);
-    data_ = std::make_unique<SampleData>(size, sample_rate, true);
-    createBandLimitedBuffers(data_->left_buffers, data_->left_loop_buffers, left_buffer, size);
-    createBandLimitedBuffers(data_->right_buffers, data_->right_loop_buffers, right_buffer, size);
-    data_->peak = std::max(peakOf(left_buffer, size), peakOf(right_buffer, size));
-
-    current_data_ = data_.get();
-    while (active_audio_data_.load())
-      std::this_thread::yield(); // Wait for audio thread to finish using old_data.
-    resetSlices();
-
-    last_browsed_file_.clear();
-    if (load_callback_)
-      load_callback_(left_buffer, right_buffer, size, sample_rate);
+    loadData(createData(left_buffer, right_buffer, size, sample_rate));
   }
 
   void Sample::resetSlices() {
