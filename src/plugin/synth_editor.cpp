@@ -2223,6 +2223,22 @@ namespace {
     return {};
   }
 
+  // The parameter prefix of an envelope or random modulator section, which
+  // its heading's menu copies and pastes ("Envelope 3" is "env_3_"), or empty.
+  String copyableModulatorPrefix(const String& section) {
+    struct Kind { const char* section; const char* prefix; int count; };
+    for (const Kind kind : { Kind { "Envelope ", "env_", vital::kNumEnvelopes },
+                             Kind { "Random ", "random_", vital::kNumRandomLfos } }) {
+      if (!section.startsWith(kind.section))
+        continue;
+      const String number = section.substring(String(kind.section).length());
+      const int index = number.getIntValue();
+      if (number.containsOnly("0123456789") && index >= 1 && index <= kind.count)
+        return kind.prefix + number + "_";
+    }
+    return {};
+  }
+
   // The rate rows of an LFO or a random generator. Its Sync picks the ones it
   // shows: Frequency for seconds, Tempo for the three tempo options, and
   // Transpose and Tune for Keytrack.
@@ -10352,12 +10368,8 @@ void SynthEditor::showAllSections(bool announce) {
             return handleEffectShortcut(section_name, key, target);
           };
         }
-        if (const int oscillator = oscillatorIndexForSectionName(section_name);
-            isPositiveAndBelow(oscillator, vital::kNumOscillators)) {
-          section_ptr->onContextMenuCommand = [this, oscillator](Component& target) {
-            showOscillatorContextMenu(oscillator, target);
-          };
-        }
+        if (auto menu = sectionContextMenu(section_name))
+          section_ptr->onContextMenuCommand = std::move(menu);
         section_ptr->setExplicitFocusOrder(focus_order++);
         group_ptr->addAndMakeVisible(section_ptr);
         group_ptr->addAccessibleChild(section_ptr);
@@ -10365,12 +10377,8 @@ void SynthEditor::showAllSections(bool announce) {
         section_headers_.push_back(std::move(section_component));
         section_y = section_ptr->headerHeight();
       }
-      else if (const int oscillator = oscillatorIndexForSectionName(section_name);
-               isPositiveAndBelow(oscillator, vital::kNumOscillators)) {
-        section_ptr->onContextMenuCommand = [this, oscillator](Component& target) {
-          showOscillatorContextMenu(oscillator, target);
-        };
-      }
+      else if (auto menu = sectionContextMenu(section_name))
+        section_ptr->onContextMenuCommand = std::move(menu);
 
       if (section_name == "Modulation routing") {
         const int slot_width = jmax(620, width - (flatten_section ? 32 : 34));
@@ -12074,7 +12082,7 @@ String SynthEditor::keyboardHelpText() {
       "{EffectSlotSteps}"
       "\n"
       "Headings with a menu\n"
-      "  {HeadingMenuKeys} on an oscillator heading - Copy an oscillator or paste one into this one\n"
+      "  {HeadingMenuKeys} on an oscillator, envelope or random modulator heading - Copy it, or paste a copied one into it\n"
       "  {HeadingMenuKeys} on an effect slot heading - Copy the effect, paste it to another bus, replace or remove it\n"
       "\n"
       "Adjusting a parameter (when a slider has focus)\n"
@@ -18151,38 +18159,119 @@ void SynthEditor::showOscillatorContextMenu(int targetOscillator, Component& tar
   if (!isPositiveAndBelow(targetOscillator, vital::kNumOscillators))
     return;
 
-  enum {
-    kPasteItem = 1,
-    kCopyBase = 100,
-    kCopyWithModulationsBase = 200,
-  };
-
+  enum { kPasteItem = 1, kCopyItem, kCopyWithModulationsItem };
+  const String name = "Oscillator " + String(targetOscillator + 1);
   PopupMenu menu;
-  menu.addItem(kPasteItem, "Paste to Oscillator " + String(targetOscillator + 1),
-               !copied_oscillator_.parameters.empty());
+  menu.addItem(kPasteItem, "Paste to " + name, !copied_oscillator_.parameters.empty());
   menu.addSeparator();
-  for (int oscillator = 0; oscillator < vital::kNumOscillators; ++oscillator) {
-    const String name = "Oscillator " + String(oscillator + 1);
-    menu.addItem(kCopyBase + oscillator, "Copy from " + name);
-    menu.addItem(kCopyWithModulationsBase + oscillator, "Copy from " + name + " with modulations");
-  }
+  menu.addItem(kCopyItem, "Copy from " + name);
+  menu.addItem(kCopyWithModulationsItem, "Copy from " + name + " with modulations");
 
   Component::SafePointer<Component> target_pointer(&target);
   showAccessibleMenuAsync(menu, PopupMenu::Options().withTargetComponent(&target),
-                     [this, targetOscillator, target_pointer](int result) {
-    if (result == kPasteItem) {
-      if (target_pointer != nullptr)
-        pasteOscillatorClipboard(targetOscillator, *target_pointer);
-      return;
-    }
-    if (result >= kCopyWithModulationsBase &&
-        result < kCopyWithModulationsBase + vital::kNumOscillators) {
-      copyOscillatorToClipboard(result - kCopyWithModulationsBase, true);
-      return;
-    }
-    if (result >= kCopyBase && result < kCopyBase + vital::kNumOscillators)
-      copyOscillatorToClipboard(result - kCopyBase, false);
+                          [this, targetOscillator, target_pointer](int result) {
+    if (result == kPasteItem && target_pointer != nullptr)
+      pasteOscillatorClipboard(targetOscillator, *target_pointer);
+    else if (result == kCopyItem || result == kCopyWithModulationsItem)
+      copyOscillatorToClipboard(targetOscillator, result == kCopyWithModulationsItem);
   });
+}
+
+std::function<void(Component&)> SynthEditor::sectionContextMenu(const String& sectionName) {
+  if (const int oscillator = oscillatorIndexForSectionName(sectionName); oscillator >= 0)
+    return [this, oscillator](Component& target) { showOscillatorContextMenu(oscillator, target); };
+  if (copyableModulatorPrefix(sectionName).isNotEmpty())
+    return [this, sectionName](Component& target) { showModulatorContextMenu(sectionName, target); };
+  return {};
+}
+
+void SynthEditor::showModulatorContextMenu(const String& sectionName, Component& target) {
+  const String prefix = copyableModulatorPrefix(sectionName);
+  if (prefix.isEmpty())
+    return;
+
+  // Envelopes paste into envelopes and random modulators into random modulators.
+  CopiedModulator& clipboard = prefix.startsWith("env_") ? copied_envelope_ : copied_random_;
+  enum { kPasteItem = 1, kCopyItem, kCopyWithModulationsItem };
+  PopupMenu menu;
+  menu.addItem(kPasteItem, "Paste to " + sectionName, !clipboard.parameters.empty());
+  menu.addSeparator();
+  menu.addItem(kCopyItem, "Copy from " + sectionName);
+  menu.addItem(kCopyWithModulationsItem, "Copy from " + sectionName + " with modulations");
+
+  showAccessibleMenuAsync(menu, PopupMenu::Options().withTargetComponent(&target),
+                          [this, sectionName, prefix, &clipboard](int result) {
+    if (result == kCopyItem || result == kCopyWithModulationsItem) {
+      const bool with_modulations = result == kCopyWithModulationsItem;
+      clipboard.parameters = copyParameters(prefix);
+      clipboard.modulations = with_modulations ? copyModulations(prefix) : std::vector<CopiedModulation>();
+      postPluginAnnouncement("Copied " + sectionName + (with_modulations ? " with modulations" : ""),
+                             AccessibilityHandler::AnnouncementPriority::high);
+    }
+    else if (result == kPasteItem && !clipboard.parameters.empty()) {
+      synth_.undoHistory().describeNextStep("paste to " + sectionName);
+      for (const auto& parameter : clipboard.parameters)
+        setParameterEngineValue(prefix + parameter.suffix, parameter.engine_value);
+      pasteModulations(clipboard.modulations, prefix);
+      refreshVisibleModulationLabels();
+      postPluginAnnouncement("Pasted to " + sectionName, AccessibilityHandler::AnnouncementPriority::high);
+    }
+  });
+}
+
+std::vector<SynthEditor::CopiedParameter> SynthEditor::copyParameters(const String& prefix) const {
+  std::vector<CopiedParameter> parameters;
+  for (const auto& [id, bridge] : parameters_by_id_) {
+    if (bridge != nullptr && id.startsWith(prefix))
+      parameters.push_back({ id.substring(prefix.length()), bridge->convertToEngineValue(bridge->getValue()) });
+  }
+  return parameters;
+}
+
+std::vector<SynthEditor::CopiedModulation> SynthEditor::copyModulations(const String& prefix) const {
+  std::vector<CopiedModulation> modulations;
+  for (auto* route : synth_.getModulationConnections()) {
+    if (route == nullptr || route->source_name.empty() || route->destination_name.empty())
+      continue;
+
+    const String destination(route->destination_name);
+    if (!destination.startsWith(prefix))
+      continue;
+
+    const int connection = synth_.getConnectionIndex(route->source_name, route->destination_name);
+    if (connection < 0)
+      continue;
+
+    const String modulation_prefix = "modulation_" + String(connection + 1) + "_";
+    const auto read = [this, &modulation_prefix](const char* suffix) {
+      const auto* bridge = parameterBridge(modulation_prefix + suffix);
+      return bridge != nullptr ? bridge->convertToEngineValue(bridge->getValue()) : 0.0f;
+    };
+    modulations.push_back({ String(route->source_name), destination.substring(prefix.length()), read("amount"),
+                            read("power"), read("bipolar"), read("stereo"), read("bypass"), read("random_mode") });
+  }
+  return modulations;
+}
+
+void SynthEditor::pasteModulations(const std::vector<CopiedModulation>& modulations, const String& prefix) {
+  for (const auto& modulation : modulations) {
+    const String destination = prefix + modulation.destination_suffix;
+    if (isInvalidModulationPair(modulation.source_id, destination))
+      continue;
+
+    synth_.connectModulation(modulation.source_id.toStdString(), destination.toStdString());
+    const int connection = synth_.getConnectionIndex(modulation.source_id.toStdString(), destination.toStdString());
+    if (connection < 0)
+      continue;
+
+    const String modulation_prefix = "modulation_" + String(connection + 1) + "_";
+    setParameterEngineValue(modulation_prefix + "amount", modulation.amount);
+    setParameterEngineValue(modulation_prefix + "power", modulation.power);
+    setParameterEngineValue(modulation_prefix + "bipolar", modulation.bipolar);
+    setParameterEngineValue(modulation_prefix + "stereo", modulation.stereo);
+    setParameterEngineValue(modulation_prefix + "bypass", modulation.bypass);
+    setParameterEngineValue(modulation_prefix + "random_mode", modulation.random_mode);
+  }
 }
 
 void SynthEditor::copyOscillatorToClipboard(int sourceOscillator, bool includeModulations) {
@@ -18209,49 +18298,9 @@ void SynthEditor::copyOscillatorToClipboard(int sourceOscillator, bool includeMo
   }
 
   const String prefix = "osc_" + String(sourceOscillator + 1) + "_";
-  for (const auto& entry : parameters_by_id_) {
-    const String id = entry.first;
-    auto* bridge = entry.second;
-    if (bridge == nullptr || !id.startsWith(prefix))
-      continue;
-
-    CopiedOscillatorParameter parameter;
-    parameter.suffix = id.substring(prefix.length());
-    parameter.engine_value = bridge->convertToEngineValue(bridge->getValue());
-    copied_oscillator_.parameters.push_back(parameter);
-  }
-
-  if (includeModulations) {
-    for (auto* route : synth_.getModulationConnections()) {
-      if (route == nullptr || route->source_name.empty() || route->destination_name.empty())
-        continue;
-
-      const String destination(route->destination_name);
-      if (!destination.startsWith(prefix))
-        continue;
-
-      const int connection = synth_.getConnectionIndex(route->source_name, route->destination_name);
-      if (connection < 0)
-        continue;
-
-      auto readModulationParameter = [this, connection](const String& suffix) {
-        if (auto* bridge = parameterBridge("modulation_" + String(connection + 1) + "_" + suffix))
-          return bridge->convertToEngineValue(bridge->getValue());
-        return 0.0f;
-      };
-
-      CopiedModulation modulation;
-      modulation.source_id = String(route->source_name);
-      modulation.destination_suffix = destination.substring(prefix.length());
-      modulation.amount = readModulationParameter("amount");
-      modulation.power = readModulationParameter("power");
-      modulation.bipolar = readModulationParameter("bipolar");
-      modulation.stereo = readModulationParameter("stereo");
-      modulation.bypass = readModulationParameter("bypass");
-      modulation.random_mode = readModulationParameter("random_mode");
-      copied_oscillator_.modulations.push_back(modulation);
-    }
-  }
+  copied_oscillator_.parameters = copyParameters(prefix);
+  if (includeModulations)
+    copied_oscillator_.modulations = copyModulations(prefix);
 
   String message = "Copied Oscillator " + String(sourceOscillator + 1);
   if (includeModulations)
@@ -18285,27 +18334,8 @@ void SynthEditor::pasteOscillatorClipboard(int targetOscillator, Component& targ
   }
   synth_.pauseProcessing(false);
 
-  if (copied_oscillator_.include_modulations) {
-    for (const auto& modulation : copied_oscillator_.modulations) {
-      const String destination = target_prefix + modulation.destination_suffix;
-      if (isInvalidModulationPair(modulation.source_id, destination))
-        continue;
-
-      synth_.connectModulation(modulation.source_id.toStdString(), destination.toStdString());
-      const int connection = synth_.getConnectionIndex(modulation.source_id.toStdString(),
-                                                       destination.toStdString());
-      if (connection < 0)
-        continue;
-
-      const String modulation_prefix = "modulation_" + String(connection + 1) + "_";
-      setParameterEngineValue(modulation_prefix + "amount", modulation.amount);
-      setParameterEngineValue(modulation_prefix + "power", modulation.power);
-      setParameterEngineValue(modulation_prefix + "bipolar", modulation.bipolar);
-      setParameterEngineValue(modulation_prefix + "stereo", modulation.stereo);
-      setParameterEngineValue(modulation_prefix + "bypass", modulation.bypass);
-      setParameterEngineValue(modulation_prefix + "random_mode", modulation.random_mode);
-    }
-  }
+  if (copied_oscillator_.include_modulations)
+    pasteModulations(copied_oscillator_.modulations, target_prefix);
 
   refreshVisibleModulationLabels();
   if (!copied_oscillator_.wavetable.is_null()) {

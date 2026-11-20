@@ -1525,7 +1525,7 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     std::unique_ptr<PresetFacetTableModel> preset_tag_model_;
     std::unique_ptr<PresetResultsTableModel> preset_table_model_;
     StringArray modulation_source_ids_;
-    struct CopiedOscillatorParameter {
+    struct CopiedParameter {
       String suffix;
       float engine_value = 0.0f;
     };
@@ -1546,10 +1546,27 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
       json sample;
       // A Multi-sample slot's instrument (shared, not reloaded, when pasted).
       json instrument;
-      std::vector<CopiedOscillatorParameter> parameters;
+      std::vector<CopiedParameter> parameters;
       std::vector<CopiedModulation> modulations;
     };
     CopiedOscillatorState copied_oscillator_;
+    // An envelope or random modulator copied from its heading's menu, with the
+    // modulations routed into it if they were asked for.
+    struct CopiedModulator {
+      std::vector<CopiedParameter> parameters;
+      std::vector<CopiedModulation> modulations;
+    };
+    CopiedModulator copied_envelope_;
+    CopiedModulator copied_random_;
+    // The Shift M menu of a section's heading: copy and paste for oscillators,
+    // envelopes and random modulators, none for other sections.
+    std::function<void(Component&)> sectionContextMenu(const String& sectionName);
+    void showModulatorContextMenu(const String& sectionName, Component& target);
+    // The parameters under `prefix` and the modulations routed into them, each
+    // named by the rest of its id, so a paste can put them under another prefix.
+    std::vector<CopiedParameter> copyParameters(const String& prefix) const;
+    std::vector<CopiedModulation> copyModulations(const String& prefix) const;
+    void pasteModulations(const std::vector<CopiedModulation>& modulations, const String& prefix);
     struct CopiedEffectSlot {
       int source_bus = -1;
       int type = 0;
