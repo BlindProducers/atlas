@@ -1298,9 +1298,6 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void clearLfoPointSelection();
     void copyLfoPoints();
     void pasteLfoPoints();
-    void copyLfoShape();
-    void pasteLfoShape();
-    void duplicateLfoShapeToNextSlot();
     void setLfoPointCurve(int curveIndex);
     void adjustLfoPointCurve(int deltaPercent);
     // The points whose following segment a curve command changes: the
@@ -1550,16 +1547,17 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
       std::vector<CopiedModulation> modulations;
     };
     CopiedOscillatorState copied_oscillator_;
-    // An envelope or random modulator copied from its heading's menu, with the
-    // modulations routed into it if they were asked for.
+    // An envelope, LFO or random modulator copied from its heading's menu: its
+    // controls, and an LFO's shape (LineGenerator::stateToJson).
     struct CopiedModulator {
       std::vector<CopiedParameter> parameters;
-      std::vector<CopiedModulation> modulations;
+      json shape;
     };
     CopiedModulator copied_envelope_;
+    CopiedModulator copied_lfo_;
     CopiedModulator copied_random_;
     // The Shift M menu of a section's heading: copy and paste for oscillators,
-    // envelopes and random modulators, none for other sections.
+    // envelopes, LFOs and random modulators, none for other sections.
     std::function<void(Component&)> sectionContextMenu(const String& sectionName);
     void showModulatorContextMenu(const String& sectionName, Component& target);
     // The parameters under `prefix` and the modulations routed into them, each
@@ -1581,9 +1579,6 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     CopiedEffectSlot copied_effect_slot_;
     std::vector<std::pair<String, Component::SafePointer<Button>>> fx_bus_toggles_;
     std::vector<CopiedLfoPoint> copied_lfo_points_;
-    std::vector<CopiedLfoPoint> copied_lfo_shape_;
-    bool copied_lfo_shape_smooth_ = false;
-    int copied_lfo_shape_mode_ = 0;
     std::vector<float> selected_lfo_point_phases_;
     // The keyboard editor's items (points, performer shapes or steps) and the chosen one.
     std::vector<float> lfo_editor_item_phases_;

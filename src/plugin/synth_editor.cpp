@@ -2223,11 +2223,12 @@ namespace {
     return {};
   }
 
-  // The parameter prefix of an envelope or random modulator section, which
+  // The parameter prefix of an envelope, LFO or random modulator section, which
   // its heading's menu copies and pastes ("Envelope 3" is "env_3_"), or empty.
   String copyableModulatorPrefix(const String& section) {
     struct Kind { const char* section; const char* prefix; int count; };
     for (const Kind kind : { Kind { "Envelope ", "env_", vital::kNumEnvelopes },
+                             Kind { "LFO ", "lfo_", vital::kNumLfos },
                              Kind { "Random ", "random_", vital::kNumRandomLfos } }) {
       if (!section.startsWith(kind.section))
         continue;
@@ -12082,7 +12083,7 @@ String SynthEditor::keyboardHelpText() {
       "{EffectSlotSteps}"
       "\n"
       "Headings with a menu\n"
-      "  {HeadingMenuKeys} on an oscillator, envelope or random modulator heading - Copy it, or paste a copied one into it\n"
+      "  {HeadingMenuKeys} on an oscillator, envelope, LFO or random modulator heading - Copy it, or paste a copied one into it\n"
       "  {HeadingMenuKeys} on an effect slot heading - Copy the effect, paste it to another bus, replace or remove it\n"
       "\n"
       "Adjusting a parameter (when a slider has focus)\n"
@@ -12155,8 +12156,6 @@ String SynthEditor::keyboardHelpText() {
       "  Semicolon ( ; ) / Apostrophe ( ' ) - Cycle LFO cycle length\n"
       "  Minus ( - ) / Equals ( = ) - Make grid coarser / finer\n"
       "  C / V - Copy / paste selected points\n"
-      "  Shift+C / Shift+V - Copy / paste the whole shape\n"
-      "  Shift+D - Duplicate shape to the next LFO\n"
       "  Backspace - Clear the LFO shape\n"
       "\n"
       "Modulation remap editor (when its keyboard editor has focus)\n"
@@ -17263,18 +17262,6 @@ bool SynthEditor::handleLfoMsegShortcut(const KeyPress& key) {
     clearLfoShape();
     return true;
   }
-  if (shift && character == 'c') {
-    copyLfoShape();
-    return true;
-  }
-  if (shift && character == 'v') {
-    pasteLfoShape();
-    return true;
-  }
-  if (shift && character == 'd') {
-    duplicateLfoShapeToNextSlot();
-    return true;
-  }
   if (shift && character == 'a') {
     applyLfoShapePreset();
     return true;
@@ -17496,76 +17483,6 @@ void SynthEditor::pasteLfoPoints() {
   syncLfoEditorState();
   postLfoAnnouncement("Pasted " + String(static_cast<int>(source.size())) + " point" +
                       (source.size() == 1 ? "" : "s") + " at " + lfoTimeDescription(paste_start));
-}
-
-void SynthEditor::copyLfoShape() {
-  auto* generator = activeLfoGenerator();
-  if (generator == nullptr)
-    return;
-
-  copied_lfo_shape_.clear();
-  for (int i = 0; i < generator->getNumPoints(); ++i)
-    copied_lfo_shape_.push_back({ generator->getPoint(i), generator->getPower(i) });
-  // Smooth and S Curve segments live in the smooth flag, not in the points.
-  copied_lfo_shape_smooth_ = generator->smooth();
-  copied_lfo_shape_mode_ = generator->getShapeMode();
-  postLfoAnnouncement("Copied LFO " + String(active_lfo_index_ + 1));
-}
-
-void SynthEditor::pasteLfoShape() {
-  auto* generator = activeLfoGenerator();
-  if (generator == nullptr)
-    return;
-  if (copied_lfo_shape_.empty()) {
-    postLfoAnnouncement("No pattern copied");
-    return;
-  }
-
-  const int count = jmin(static_cast<int>(copied_lfo_shape_.size()), LineGenerator::kMaxPoints);
-  generator->setNumPoints(count);
-  for (int i = 0; i < count; ++i) {
-    generator->setPoint(i, copied_lfo_shape_[static_cast<size_t>(i)].point);
-    generator->setPower(i, copied_lfo_shape_[static_cast<size_t>(i)].power);
-  }
-  generator->setShapeMode(copied_lfo_shape_mode_);
-  generator->setSmooth(copied_lfo_shape_smooth_);
-  generator->render();
-  synth_.markStateChanged(lfoUndoBlock(generator));
-
-  lfo_cursor_phase_ = 0.0f;
-  selected_lfo_point_phases_.clear();
-  syncLfoEditorState();
-  postLfoAnnouncement("Pasted to LFO " + String(active_lfo_index_ + 1));
-}
-
-void SynthEditor::duplicateLfoShapeToNextSlot() {
-  auto* source = activeLfoGenerator();
-  if (source == nullptr)
-    return;
-
-  std::vector<CopiedLfoPoint> duplicate;
-  for (int i = 0; i < source->getNumPoints(); ++i)
-    duplicate.push_back({ source->getPoint(i), source->getPower(i) });
-  const bool smooth = source->smooth();
-  const int mode = source->getShapeMode();
-
-  const int destination = (active_lfo_index_ + 1) % vital::kNumLfos;
-  active_lfo_index_ = destination;
-  if (auto* target = activeLfoGenerator()) {
-    const int count = jmin(static_cast<int>(duplicate.size()), LineGenerator::kMaxPoints);
-    target->setNumPoints(count);
-    for (int i = 0; i < count; ++i) {
-      target->setPoint(i, duplicate[static_cast<size_t>(i)].point);
-      target->setPower(i, duplicate[static_cast<size_t>(i)].power);
-    }
-    target->setShapeMode(mode);
-    target->setSmooth(smooth);
-    target->render();
-  }
-  lfo_cursor_phase_ = 0.0f;
-  selected_lfo_point_phases_.clear();
-  syncLfoEditorState();
-  postLfoAnnouncement("Duplicated to LFO " + String(destination + 1));
 }
 
 void SynthEditor::applyLfoShapePreset() {
@@ -18190,30 +18107,40 @@ void SynthEditor::showModulatorContextMenu(const String& sectionName, Component&
   if (prefix.isEmpty())
     return;
 
-  // Envelopes paste into envelopes and random modulators into random modulators.
-  CopiedModulator& clipboard = prefix.startsWith("env_") ? copied_envelope_ : copied_random_;
-  enum { kPasteItem = 1, kCopyItem, kCopyWithModulationsItem };
+  // Each kind pastes only into its own kind.
+  CopiedModulator& clipboard = prefix.startsWith("env_") ? copied_envelope_
+                             : prefix.startsWith("lfo_") ? copied_lfo_ : copied_random_;
+  enum { kPasteItem = 1, kCopyItem };
   PopupMenu menu;
   menu.addItem(kPasteItem, "Paste to " + sectionName, !clipboard.parameters.empty());
   menu.addSeparator();
   menu.addItem(kCopyItem, "Copy from " + sectionName);
-  menu.addItem(kCopyWithModulationsItem, "Copy from " + sectionName + " with modulations");
 
   showAccessibleMenuAsync(menu, PopupMenu::Options().withTargetComponent(&target),
                           [this, sectionName, prefix, &clipboard](int result) {
-    if (result == kCopyItem || result == kCopyWithModulationsItem) {
-      const bool with_modulations = result == kCopyWithModulationsItem;
+    // An LFO's shape is kept beside its controls; envelopes and random modulators have none.
+    const int lfo = lfoIndexForParameterId(prefix);
+    auto* generator = lfoGeneratorForIndex(lfo);
+    if (result == kCopyItem) {
       clipboard.parameters = copyParameters(prefix);
-      clipboard.modulations = with_modulations ? copyModulations(prefix) : std::vector<CopiedModulation>();
-      postPluginAnnouncement("Copied " + sectionName + (with_modulations ? " with modulations" : ""),
-                             AccessibilityHandler::AnnouncementPriority::high);
+      clipboard.shape = generator != nullptr ? generator->stateToJson() : json();
+      postPluginAnnouncement("Copied " + sectionName, AccessibilityHandler::AnnouncementPriority::high);
     }
     else if (result == kPasteItem && !clipboard.parameters.empty()) {
       synth_.undoHistory().describeNextStep("paste to " + sectionName);
+      const bool paste_shape = generator != nullptr && !clipboard.shape.is_null();
+      if (paste_shape) {
+        generator->jsonToState(clipboard.shape);
+        synth_.markStateChanged(lfoUndoBlock(generator));
+      }
       for (const auto& parameter : clipboard.parameters)
         setParameterEngineValue(prefix + parameter.suffix, parameter.engine_value);
-      pasteModulations(clipboard.modulations, prefix);
-      refreshVisibleModulationLabels();
+      // The LFO keyboard editor starts again from the pasted shape's beginning.
+      if (paste_shape && active_lfo_index_ == lfo) {
+        lfo_cursor_phase_ = 0.0f;
+        selected_lfo_point_phases_.clear();
+        syncLfoEditorState();
+      }
       postPluginAnnouncement("Pasted to " + sectionName, AccessibilityHandler::AnnouncementPriority::high);
     }
   });
