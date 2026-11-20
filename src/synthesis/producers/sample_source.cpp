@@ -183,15 +183,14 @@ namespace vital {
       return total;
     }
 
-    force_inline mono_float getFilteredLoopSample(const mono_float* buffer, int index, int size) {
+    // The same, reading the buffer as one cycle of a loop whose samples lie
+    // `stride` apart.
+    force_inline mono_float getFilteredLoopSample(const mono_float* buffer, int index, int size, int stride = 1) {
       int radius = SampleSource::kNumDownsampleTaps / 2;
-      int start = index - radius;
-      int end = index + radius;
       mono_float total = 0.0f;
-      for (int i = start; i <= end; ++i) {
-        int buffer_index = (i + size * radius) % size;
-        mono_float coefficient = kDownsampleCoefficients[i - index + radius];
-        total += coefficient * buffer[buffer_index];
+      for (int i = 0; i < SampleSource::kNumDownsampleTaps; ++i) {
+        int buffer_index = (index + (i - radius) * stride) % size;
+        total += kDownsampleCoefficients[i] * buffer[buffer_index < 0 ? buffer_index + size : buffer_index];
       }
       return total;
     }
@@ -211,12 +210,38 @@ namespace vital {
       return total;
     }
 
+    // The same, reading the buffer as one cycle of a loop.
+    force_inline mono_float getInterpolatedLoopSample(const mono_float* buffer, int index, int size) {
+      int radius = SampleSource::kNumUpsampleTaps / 2;
+      mono_float total = 0.0f;
+      for (int i = index - radius + 1; i <= index + radius; ++i)
+        total += kUpsampleCoefficients[i - index + radius - 1] * buffer[(i % size + size) % size];
+      return total;
+    }
+
     void upsample(const mono_float* original, mono_float* dest, int original_size, int dest_size) {
       for (int i = 0; i < original_size; ++i) {
         float value1 = original[i];
         float value2 = getInterpolatedSample(original, i, original_size);
         dest[2 * i] = value1;
         dest[2 * i + 1] = value2;
+      }
+    }
+
+    void upsampleLoop(const mono_float* original, mono_float* dest, int original_size) {
+      for (int i = 0; i < original_size; ++i) {
+        dest[2 * i] = original[i];
+        dest[2 * i + 1] = getInterpolatedLoopSample(original, i, original_size);
+      }
+    }
+
+    // Pads a loop buffer's `size` samples on both sides with the other end of
+    // the loop, so the reads across its wrap see one cycle run into the next.
+    void wrapLoopPadding(mono_float* buffer, int size) {
+      mono_float* data = buffer + Sample::kBufferSamples;
+      for (int i = 1; i <= Sample::kBufferSamples; ++i) {
+        data[-i] = data[(size - i % size) % size];
+        data[size + i - 1] = data[(i - 1) % size];
       }
     }
 
@@ -244,11 +269,11 @@ namespace vital {
       for (int i = 0; i < Sample::kBufferSamples; ++i) {
         play_buffer[i] = 0.0f;
         play_buffer[size + Sample::kBufferSamples + i] = 0.0f;
-
-        loop_buffer[i] = loop_buffer[size + i];
-        loop_buffer[size + Sample::kBufferSamples + i] = loop_buffer[Sample::kBufferSamples + i];
       }
+      wrapLoopPadding(loop_buffer, size);
 
+      // The loop buffers hold the file as one cycle of a loop at every
+      // resolution, so a loop of the whole file (a single cycle) wraps cleanly.
       int current_size = size;
       for (int i = 0; i < Sample::kUpsampleTimes; ++i) {
         int upsampled_size = current_size * 2;
@@ -261,13 +286,30 @@ namespace vital {
 
         upsample(play_buffer + Sample::kBufferSamples, next_buffer + Sample::kBufferSamples,
                  current_size, upsampled_size);
-        memcpy(next_loop_buffer, next_buffer, num_samples * sizeof(mono_float));
+        upsampleLoop(loop_buffer + Sample::kBufferSamples, next_loop_buffer + Sample::kBufferSamples, current_size);
+        wrapLoopPadding(next_loop_buffer, upsampled_size);
+        play_buffer = next_buffer;
+        loop_buffer = next_loop_buffer;
         current_size = upsampled_size;
       }
 
       play_buffer = destination.back().get();
       loop_buffer = loop_destination.back().get();
       current_size = size;
+
+      // Halving a cycle of odd length leaves it a fraction of a sample long,
+      // which a loop buffer cannot wrap at. A short file's loop is filtered
+      // at its own rate instead, where every resolution's samples (every
+      // stride-th sample of the cycle) wrap exactly. A longer file's wrap is
+      // too rare to hear, and halves like its play buffer.
+      constexpr int kMaxExactLoopSize = 1 << 14;
+      const bool exact_loop = size <= kMaxExactLoopSize;
+      std::vector<mono_float> cycle, filtered;
+      if (exact_loop) {
+        cycle.assign(buffer, buffer + size);
+        filtered.resize(static_cast<size_t>(size));
+      }
+      int stride = 1;
 
       while (current_size >= Sample::kMinSize) {
         int next_size = (current_size + 1) / 2;
@@ -279,15 +321,25 @@ namespace vital {
 
         downsample(play_buffer + Sample::kBufferSamples, next_buffer + Sample::kBufferSamples,
                    current_size, next_size);
-        downsampleLoop(loop_buffer + Sample::kBufferSamples, next_loop_buffer + Sample::kBufferSamples,
-                       current_size, next_size);
+        if (exact_loop) {
+          for (int i = 0; i < size; ++i)
+            filtered[static_cast<size_t>(i)] = getFilteredLoopSample(cycle.data(), i, size, stride);
+          std::swap(cycle, filtered);
+          stride *= 2;
+          for (int i = -Sample::kBufferSamples; i < next_size + Sample::kBufferSamples; ++i) {
+            const int index = static_cast<int>((static_cast<long long>(i) * stride) % size);
+            next_loop_buffer[Sample::kBufferSamples + i] = cycle[static_cast<size_t>(index < 0 ? index + size : index)];
+          }
+        }
+        else {
+          downsampleLoop(loop_buffer + Sample::kBufferSamples, next_loop_buffer + Sample::kBufferSamples,
+                         current_size, next_size);
+          wrapLoopPadding(next_loop_buffer, next_size);
+        }
 
         for (int i = 0; i < Sample::kBufferSamples; ++i) {
           next_buffer[i] = 0.0f;
           next_buffer[next_size + Sample::kBufferSamples + i] = 0.0f;
-
-          next_loop_buffer[i] = loop_buffer[next_size + i];
-          next_loop_buffer[next_size + Sample::kBufferSamples + i] = next_loop_buffer[Sample::kBufferSamples + i];
         }
 
         play_buffer = next_buffer;

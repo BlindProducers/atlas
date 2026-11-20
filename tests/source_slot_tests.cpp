@@ -1246,6 +1246,51 @@ namespace {
            "crossed loop points loop the part between them backwards");
   }
 
+  // The amplitude of `frequency` in the left channel of `count` samples from `from`.
+  double harmonicLevel(const std::vector<float>& stereo, int from, int count, double frequency) {
+    double re = 0.0, im = 0.0;
+    for (int i = 0; i < count; ++i) {
+      const double window = 0.5 - 0.5 * std::cos(2.0 * M_PI * i / count);
+      const double phase = 2.0 * M_PI * frequency * i / kSampleRate;
+      re += window * stereo[size_t(from + i) * 2] * std::cos(phase);
+      im += window * stereo[size_t(from + i) * 2] * std::sin(phase);
+    }
+    return std::sqrt(re * re + im * im);
+  }
+
+  // A looped single cycle keeps its shape at every pitch, also a cycle whose
+  // length does not halve evenly: a triangle gains no even harmonics.
+  void testSampleSingleCycleLoop() {
+    for (int length : { 32, 101 }) {
+      SynthPlugin plugin;
+      preparePlugin(plugin);
+      setType(plugin, 0, vital::source_types::kSample);
+      set(plugin, "osc_1_on", 1.0f);
+      set(plugin, "env_1_attack", 0.0f);
+      // A triangle starting at its trough, where a wrong wrap shows most.
+      std::vector<float> triangle;
+      for (int i = 0; i < length; ++i) {
+        const double phase = double(i) / length;
+        triangle.push_back(float(phase < 0.5 ? 4.0 * phase - 1.0 : 3.0 - 4.0 * phase) * 0.5f);
+      }
+      plugin.getSample(0)->loadSample(triangle.data(), length, kSampleRate);
+      set(plugin, "osc_1_sample_random_phase", 0.0f);
+      set(plugin, "osc_1_sample_keytrack", 1.0f);
+      set(plugin, "osc_1_sample_loop", 1.0f);
+      for (int offset : { -12, 12, 24, 36 }) {
+        const double frequency = double(kSampleRate) / length * std::pow(2.0, offset / 12.0);
+        if (frequency * 2.0 > kSampleRate / 2)
+          continue;
+        const auto audio = renderNote(plugin, kSampleRate / 2, 60 + offset);
+        const double fundamental = harmonicLevel(audio, kSampleRate / 8, kSampleRate / 4, frequency);
+        const double second = harmonicLevel(audio, kSampleRate / 8, kSampleRate / 4, frequency * 2.0);
+        expect(fundamental > 0.0 && second < 0.01 * fundamental,
+               "a looped " + std::to_string(length) + "-sample triangle " + std::to_string(offset) +
+               " semitones from its root has no second harmonic (" + std::to_string(second / fundamental) + ")");
+      }
+    }
+  }
+
   // Slicer mode: a key plays its slice and nothing else, slice 1 on the root
   // key and one per semitone up; the slices follow Divisions, hand edits and
   // the preset, and a new file resets them.
@@ -1654,6 +1699,7 @@ namespace {
     testSampleStretchFixed();
     testSampleStretchTempo();
     testSampleLoopShift();
+    testSampleSingleCycleLoop();
     testSampleSlicer();
     testSampleStutterAndDecay();
     testSampleNormalize();
