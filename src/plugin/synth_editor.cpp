@@ -12156,6 +12156,7 @@ String SynthEditor::keyboardHelpText() {
       "  Semicolon ( ; ) / Apostrophe ( ' ) - Cycle LFO cycle length\n"
       "  Minus ( - ) / Equals ( = ) - Make grid coarser / finer\n"
       "  C / V - Copy / paste selected points\n"
+      "  F / Shift+F - Flip the shape vertically / horizontally\n"
       "  Backspace - Clear the LFO shape\n"
       "\n"
       "Modulation remap editor (when its keyboard editor has focus)\n"
@@ -17225,6 +17226,69 @@ void SynthEditor::clearLfoShape() {
   postLfoAnnouncement("Cleared LFO " + String(active_lfo_index_ + 1));
 }
 
+void SynthEditor::flipLfoShape(bool horizontal) {
+  auto* generator = activeLfoGenerator();
+  if (generator == nullptr)
+    return;
+
+  if (!horizontal) {
+    generator->flipVertical();
+    synth_.markStateChanged(lfoUndoBlock(generator));
+    syncLfoEditorState();
+    postLfoAnnouncement("Flipped vertically");
+    return;
+  }
+
+  // Played backwards a curve bends the other way (its power negated), but a
+  // held segment still holds: it jumps to its level where it now starts rather
+  // than where it ends. So steps stay steps and empty Performer blocks empty.
+  const int count = generator->getNumPoints();
+  std::vector<CopiedLfoPoint> points;
+  points.reserve(static_cast<size_t>(2 * count));
+  bool previous_held = true;
+  for (int i = count - 2; i >= 0; --i) {
+    const auto from = generator->getPoint(i);
+    const auto to = generator->getPoint(i + 1);
+    const float power = generator->getPower(i);
+    const float start = 1.0f - to.first;
+    const bool held = LineGenerator::isHoldPower(power);
+    if (!held)
+      points.push_back({ { start, to.second }, -power });
+    else {
+      // A curve before the hold ends at its own level, then jumps. The jump's
+      // point holds too, as a Performer shape's last point before an empty
+      // block does, so that block still reads as empty.
+      if (!previous_held && to.second != from.second)
+        points.push_back({ { start, to.second }, power });
+      points.push_back({ { start, from.second }, power });
+    }
+    previous_held = held;
+  }
+  points.push_back({ { 1.0f, generator->getPoint(0).second }, generator->getPower(count - 1) });
+
+  if (points.size() <= static_cast<size_t>(LineGenerator::kMaxPoints))
+    writeLfoPoints(generator, std::move(points), generator->smooth());
+  else {
+    // No room for the jumps: the holds bend the other way, as the curves do.
+    generator->flipHorizontal();
+    synth_.markStateChanged(lfoUndoBlock(generator));
+  }
+
+  // The cursor and the selection stay on what they were on, now at the
+  // mirrored time: a point's own, or in Performer and Step Sequencer the
+  // mirrored grid block.
+  const bool blocks = generator->getShapeMode() != LineGenerator::kModeLfo;
+  const auto mirrored = [this, blocks](float phase) {
+    return blocks ? lfoEditorBlockStart(1.0f - lfoEditorBlockSamplePhase(lfoEditorBlockStart(phase)))
+                  : jlimit(0.0f, 1.0f, 1.0f - phase);
+  };
+  lfo_cursor_phase_ = mirrored(lfo_cursor_phase_);
+  for (float& phase : selected_lfo_point_phases_)
+    phase = mirrored(phase);
+  syncLfoEditorState();
+  postLfoAnnouncement("Flipped horizontally");
+}
+
 bool SynthEditor::handleLfoMsegShortcut(const KeyPress& key) {
   const juce_wchar character = CharacterFunctions::toLowerCase(key.getTextCharacter());
   const bool shift = key.getModifiers().isShiftDown();
@@ -17260,6 +17324,10 @@ bool SynthEditor::handleLfoMsegShortcut(const KeyPress& key) {
   }
   if (key.getKeyCode() == KeyPress::backspaceKey) {
     clearLfoShape();
+    return true;
+  }
+  if (character == 'f' && !command && !key.getModifiers().isCtrlDown() && !key.getModifiers().isAltDown()) {
+    flipLfoShape(shift);
     return true;
   }
   if (shift && character == 'a') {

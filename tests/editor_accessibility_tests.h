@@ -1255,6 +1255,86 @@ namespace {
     atlas::speech::setObserverForTesting(nullptr);
   }
 
+  // Shift F in LFO 1's keyboard editor plays the shape backwards, with its held
+  // segments still holding, and F turns it upside down.
+  void testLfoFlip() {
+    atlas::speech::setObserverForTesting([](const String&) {});
+    SynthPlugin synth;
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    pumpEditorEvents();
+    auto* section = editorSection(editor, "LFO 1");
+    Component::SafePointer<Component> keys(section != nullptr ? titled(*section, "LFO 1 accessible editor") : nullptr);
+    LineGenerator* lfo = synth.getLfoSource(0);
+    expect(keys != nullptr && lfo != nullptr, "LFO 1 has its keyboard editor");
+    if (keys == nullptr || lfo == nullptr) {
+      editor.removeFromDesktop();
+      atlas::speech::setObserverForTesting(nullptr);
+      return;
+    }
+
+    const float hold = LineGenerator::kHoldPowerThreshold;
+    const auto setShape = [lfo](int mode, const std::vector<std::array<float, 3>>& points) {
+      lfo->setShapeMode(mode);
+      lfo->setNumPoints(static_cast<int>(points.size()));
+      for (int i = 0; i < static_cast<int>(points.size()); ++i) {
+        lfo->setPoint(i, { points[static_cast<size_t>(i)][0], points[static_cast<size_t>(i)][1] });
+        lfo->setPower(i, points[static_cast<size_t>(i)][2]);
+      }
+      lfo->setSmooth(false);
+    };
+    const KeyPress flip_horizontally('F', ModifierKeys::shiftModifier, 'F');
+    const KeyPress flip_vertically('F', ModifierKeys(), 'f');
+
+    // Held, curved, held: reversed, the curve comes before a jump to a hold.
+    setShape(LineGenerator::kModeLfo, { { 0.0f, 0.5f, hold }, { 0.4f, 0.0f, 4.0f },
+                                        { 0.7f, 1.0f, hold }, { 1.0f, 0.2f, 0.0f } });
+    std::vector<float> before;
+    for (float phase = 0.05f; phase < 1.0f; phase += 0.1f)
+      before.push_back(lfo->valueAtPhase(phase));
+    keys->keyPressed(flip_horizontally);
+    pumpEditorEvents();
+    float worst = 0.0f;
+    size_t sample = 0;
+    for (float phase = 0.05f; phase < 1.0f; phase += 0.1f)
+      worst = jmax(worst, std::abs(lfo->valueAtPhase(phase) - before[before.size() - 1 - sample++]));
+    expect(worst < 0.01f, "Shift F plays an LFO shape backwards: off by " + String(worst).toStdString());
+
+    before.clear();
+    for (float phase = 0.05f; phase < 1.0f; phase += 0.1f)
+      before.push_back(lfo->valueAtPhase(phase));
+    keys->keyPressed(flip_vertically);
+    pumpEditorEvents();
+    worst = 0.0f;
+    sample = 0;
+    for (float phase = 0.05f; phase < 1.0f; phase += 0.1f)
+      worst = jmax(worst, std::abs(lfo->valueAtPhase(phase) - (1.0f - before[sample++])));
+    expect(worst < 0.01f, "F turns it upside down: off by " + String(worst).toStdString());
+
+    // Four steps, reversed, stay four hard steps.
+    setShape(LineGenerator::kModeStepSequencer, { { 0.0f, 0.0f, hold }, { 0.25f, 0.25f, hold },
+                                                  { 0.5f, 0.5f, hold }, { 0.75f, 0.9f, hold },
+                                                  { 1.0f, 0.9f, hold } });
+    std::array<float, 4> steps {};
+    for (int step = 0; step < 4; ++step)
+      steps[static_cast<size_t>(step)] = lfo->valueAtPhase(0.25f * step + 0.125f);
+    keys->keyPressed(flip_horizontally);
+    pumpEditorEvents();
+    bool reversed = lfo->getNumPoints() == 5;
+    for (int step = 0; step < 4; ++step) {
+      const float expected = steps[static_cast<size_t>(3 - step)];
+      reversed &= std::abs(lfo->valueAtPhase(0.25f * step + 0.03f) - expected) < 0.005f &&
+                  std::abs(lfo->valueAtPhase(0.25f * step + 0.22f) - expected) < 0.005f &&
+                  LineGenerator::isHoldPower(lfo->getPower(step));
+    }
+    expect(reversed, "Shift F reverses Step Sequencer steps and keeps them held");
+
+    editor.removeFromDesktop();
+    atlas::speech::setObserverForTesting(nullptr);
+  }
+
   void testLfoViewTabs() {
     atlas::speech::setObserverForTesting([](const String&) {});
     SynthPlugin synth;

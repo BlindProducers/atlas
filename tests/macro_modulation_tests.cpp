@@ -1292,6 +1292,7 @@ int main(int argc, char** argv) {
     testAnalogSwitchKeepsItsControl();
     testLfoViewTabs();
     testLfoShapePresets();
+    testLfoFlip();
     testEffectMoveKeepsFocusAcrossTimerTick();
     testSectionKeysStepThroughEffectSlots();
     testGroupShortcutsReachTheEditorsGroups();

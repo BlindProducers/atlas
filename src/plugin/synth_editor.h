@@ -1287,6 +1287,8 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void stepLfoGrid(int direction);
     void switchLfoFromShortcut(int lfoIndex);
     void clearLfoShape();
+    // Reverses the active LFO's shape in time (horizontal) or turns it upside down.
+    void flipLfoShape(bool horizontal);
     void applyLfoShapePreset();
     void addLfoPoint();
     void deleteLfoPoint();
