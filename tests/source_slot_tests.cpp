@@ -1121,7 +1121,9 @@ namespace {
     SynthPlugin plugin;
     preparePlugin(plugin);
     for (int slot = 0; slot < 8; ++slot) {
-      expect(plugin.getWavetable(slot)->numFrames() == 1, "an initialised slot holds a one-frame default table");
+      // Basic Shapes, the default table, holds its last shape at frame 224.
+      expect(plugin.getWavetable(slot)->numFrames() == (slot >= 4 ? 1 : 225),
+             "slots 1-4 hold Basic Shapes rendered, slots 5-8 a one-frame table");
       expect(plugin.isWavetableRenderPending(slot) == (slot >= 4),
              "slots 5-8 (not wavetable types) hold their render back, slots 1-4 are rendered");
     }
@@ -1162,6 +1164,8 @@ namespace {
       SynthPlugin plugin;
       preparePlugin(plugin);
       set(plugin, "osc_1_on", 1.0f);
+      // Basic Shapes' saw: its first frame, a sine, has no harmonics for a morph to move.
+      set(plugin, "osc_1_wave_frame", 96.0f);
       set(plugin, "osc_1_unison_voices", voices);
       set(plugin, "osc_1_unison_detune", 0.0f);
       set(plugin, "osc_1_spectral_unison", 1.0f);  // Morph spreads apply per unison voice only with spectral unison.
