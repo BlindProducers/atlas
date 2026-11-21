@@ -142,18 +142,21 @@ namespace vital {
 
   void SoundEngine::prepareSelectedEffects() {
     voice_handler_->updateReverbMemory();
+    voice_handler_->updateSampleStretchMemory();
     for (auto* chain : bus_effect_chains_) chain->prepareSelectedEffects();
     effect_chain_->prepareSelectedEffects();
   }
 
   bool SoundEngine::takeEffectControlReservationRequest() {
     const bool reverb = voice_handler_->takeReverbMemoryRequest();
+    const bool stretch = voice_handler_->takeSampleStretchRequest();
     const bool latency = latency_history_requested_.exchange(false, std::memory_order_acq_rel);
-    return preparation_worker_->takeControlReservationRequest() || reverb || latency;
+    return preparation_worker_->takeControlReservationRequest() || reverb || stretch || latency;
   }
 
   void SoundEngine::reserveSelectedEffectControls() {
     voice_handler_->updateReverbMemory();
+    voice_handler_->updateSampleStretchMemory();
     for (auto* chain : bus_effect_chains_) chain->reserveSelectedControls();
     effect_chain_->reserveSelectedControls();
     reserveLatencyHistory();
@@ -161,6 +164,14 @@ namespace vital {
 
   void SoundEngine::setVoiceReverbMemory(int filter, bool reserve) {
     voice_handler_->setReverbMemory(filter, reserve);
+  }
+
+  void SoundEngine::updateSampleStretchMemory() {
+    voice_handler_->updateSampleStretchMemory();
+  }
+
+  void SoundEngine::setSampleStretchMemory(int slot, bool reserve) {
+    voice_handler_->setSampleStretchMemory(slot, reserve);
   }
 
   void SoundEngine::parkUnselectedEffects() {

@@ -60,7 +60,7 @@ class LoadSave {
     };
 
     static const int kMaxCommentLength = 500;
-    static constexpr int kEngineBehaviorVersion = 3;
+    static constexpr int kEngineBehaviorVersion = 4;
     static const std::string kUserDirectoryName;
     static const std::string kPresetFolderName;
     static const std::string kWavetableFolderName;
@@ -76,6 +76,11 @@ class LoadSave {
     static void convertBufferToPcm(json& data, const std::string& field);
     static void convertPcmToFloatBuffer(json& data, const std::string& field);
     static json stateToJson(SynthBase* synth, const CriticalSection& critical_section);
+    // Takes the paths on this computer out of a patch that leaves it (a
+    // shared, exported or bank-archived preset): the file a slot's sample was
+    // browsed from and the file an instrument was loaded from. Returns
+    // whether anything was removed. `state` is a whole patch or its settings.
+    static bool stripPrivatePaths(json& state);
     // Text of saved state. The JSON writer refuses a string that is not UTF-8;
     // rather than fail the save (and throw into the host), such a string is
     // read as Windows-1252.
@@ -143,6 +148,9 @@ class LoadSave {
     static bool shouldAnimateWidgets();
     static bool shouldScanDownloads();
     static bool displayHzFrequency();
+    // How the Sample type's Start, End, Loop start and Loop end read, in every
+    // instance: 0 percent, 1 milliseconds, 2 samples.
+    static int samplePositionUnits();
     // The preset browser's Autoload preset when scrolling, shared by every instance.
     static bool presetAutoload();
     static bool authenticated();
@@ -163,6 +171,7 @@ class LoadSave {
     static void saveAnimateWidgets(bool animate_widgets);
     static void saveScanDownloads(bool scan_downloads);
     static void saveDisplayHzFrequency(bool display_hz);
+    static void saveSamplePositionUnits(int units);
     static void savePresetAutoload(bool autoload);
     static void saveAuthenticated(bool authenticated);
     static void saveWindowSize(float window_size);

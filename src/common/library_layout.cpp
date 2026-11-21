@@ -931,6 +931,21 @@ ArchiveResult writeBankArchive(const juce::File& source, const juce::File& desti
   juce::ZipFile::Builder zip;
   juce::int64 total_bytes = 0;
   auto add = [&](const juce::File& file, const juce::String& stored_path) {
+    // A preset goes without the paths on this computer it may name; one
+    // that is not plain JSON (a container, or damaged) goes as it is.
+    if (file.hasFileExtension(juce::String(".") + vital::kPresetExtension) &&
+        stored_path.startsWith(archiveFolderName(Kind::kPresets) + "/") &&
+        !vital::multisample::container::isContainer(file)) {
+      json data = json::parse(file.loadFileAsString().toStdString(), nullptr, false);
+      if (data.is_object() && LoadSave::stripPrivatePaths(data)) {
+        const std::string text = LoadSave::dumpState(data);
+        zip.addEntry(new juce::MemoryInputStream(text.data(), text.size(), true), 6, bank_name + "/" + stored_path,
+                     file.getLastModificationTime());
+        total_bytes += static_cast<juce::int64>(text.size());
+        ++result.added;
+        return;
+      }
+    }
     zip.addFile(file, compressionFor(file), bank_name + "/" + stored_path);
     total_bytes += file.getSize();
     ++result.added;

@@ -21,6 +21,9 @@ if(MSVC)
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
   # MSVC only declares M_PI and the other <cmath> constants with this macro.
   add_compile_definitions(_USE_MATH_DEFINES)
+  # JUCE's software renderer draws every window, and nothing makes a Direct3D
+  # device (third_party/patches/juce8-windows-software-rendering.patch).
+  add_compile_definitions(ATLAS_JUCE_SOFTWARE_RENDERING=1)
   # JUCE turns on /MP, which starts one compiler per core inside each project.
   # The unity files need several GB each, so cap it like --parallel caps make.
   set(ATLAS_MSVC_COMPILE_JOBS 4 CACHE STRING "Compiler processes per Visual Studio project (/MP)")
@@ -41,6 +44,8 @@ foreach(dependency "${ATLAS_JUCE_SOURCE}/CMakeLists.txt"
                    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/nlohmann_json/include/nlohmann/json.hpp"
                    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/concurrentqueue/concurrentqueue.h"
                    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/kissfft/kissfft.hh"
+                   "${CMAKE_CURRENT_SOURCE_DIR}/third_party/signalsmith-stretch/signalsmith-stretch.h"
+                   "${CMAKE_CURRENT_SOURCE_DIR}/third_party/signalsmith-linear/stft.h"
                    "${CMAKE_CURRENT_SOURCE_DIR}/third_party/espeak-ng/CMakeLists.txt")
   if(NOT EXISTS "${dependency}")
     message(FATAL_ERROR "Missing ${dependency}. Fetch the submodules with: git submodule update --init")
@@ -215,8 +220,12 @@ endif()
 target_sources(Atlas PRIVATE
   # Spectral effects keep IEEE semantics outside the fast-math synthesis unity build.
   src/synthesis/effects/suppressor/suppressor_engine.cpp
+  # The Sample type's time and pitch stretcher (Signalsmith Stretch, header-only):
+  # its FFTs keep IEEE semantics, and its headers stay out of the unity file.
+  src/synthesis/producers/sample_stretch.cpp
   src/synthesis/effects/spectral_compressor/spectral_compressor_engine.cpp
   src/plugin/trance_gate_editor.cpp
+  src/plugin/sample_slice_editor.cpp
   src/common/tape_noise_library.cpp
   src/synthesis/modules/tape_module.cpp
   src/synthesis/modules/defuse_module.cpp
@@ -508,7 +517,11 @@ target_include_directories(Atlas PRIVATE
   src/synthesis/utilities
   third_party
   third_party/concurrentqueue
-  third_party/maim/include)
+  third_party/maim/include
+  # Signalsmith Stretch and the Signalsmith Linear it builds on, both
+  # header-only; only src/synthesis/producers/sample_stretch.cpp includes them.
+  third_party/signalsmith-stretch/include
+  third_party/signalsmith-linear/include)
 
 # The beta the release workflow publishes this version as (ATLAS_PRERELEASE in
 # .github/workflows/release.yml, "rc.1"), which Settings shows after the

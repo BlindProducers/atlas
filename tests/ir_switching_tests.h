@@ -145,4 +145,59 @@ void irTrimAtEndIsSafe() {
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
 }
+
+// A predelay change crossfades to the new delay. Sliding the read position
+// there instead replays the line many times faster: a burst of noise.
+void predelayChangeIsSmooth() {
+  using namespace vital;
+  auto ir_worker = std::make_shared<ConvolutionIrWorker>();
+  auto preparation = std::make_shared<EffectPreparationWorker>();
+  PreparedEffectModule module(constants::kConvolutionReverb, "", [&] {
+    return std::make_unique<ConvolutionReverbModule>("", ir_worker);
+  }, preparation, ir_worker);
+  module.init(); module.setSampleRate(48000); module.setOversampleAmount(1);
+  auto controls = module.getControls();
+  controls.at("convolution_reverb_dry_wet")->set(1);
+  controls.at("convolution_reverb_predelay")->set(0.03f);
+  ConvolutionReverbModule::IrData ir;
+  ir.name = "Impulse"; ir.sample_rate = 48000; ir.left.resize(4096); ir.left[0] = 1;
+  expect(module.convolutionState()->irStateFromJson(ConvolutionReverbModule::irToJson(ir)), "predelay test IR loads");
+  module.prepareForPlayback();
+  RealtimeEffectScope realtime(true);
+  std::array<poly_float, 128> input {};
+  double phase = 0.0;
+  float previous = 0.0f;
+  // The largest step between samples, and the peak, over `blocks` of a 220 Hz sine.
+  auto process = [&](int blocks, float& peak) {
+    float step = 0.0f;
+    peak = 0.0f;
+    for (int block = 0; block < blocks; ++block) {
+      for (auto& sample : input) {
+        sample = static_cast<float>(std::sin(phase));
+        phase += 2.0 * kPi * 220.0 / 48000.0;
+      }
+      module.processWithInput(input.data(), static_cast<int>(input.size()));
+      for (int i = 0; i < static_cast<int>(input.size()); ++i) {
+        const float out = module.output()->buffer[i][0];
+        step = std::max(step, std::abs(out - previous));
+        peak = std::max(peak, std::abs(out));
+        previous = out;
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return step;
+  };
+  // Normalised, the impulse plays the input at 1/8: wait for that level.
+  float peak = 1.0f;
+  for (int attempt = 0; attempt < 100 && !(peak > 0.1f && peak < 0.15f); ++attempt)
+    process(20, peak);
+  expect(peak > 0.1f && peak < 0.15f, "predelay test hears the wet path");
+  // Half a second more, so the line holds audio at the new delay.
+  process(190, peak);
+  const float steady = process(40, peak);
+  controls.at("convolution_reverb_predelay")->set(0.4f);
+  const float change = process(80, peak);
+  std::cout << "predelay change steady_step=" << steady << " change_step=" << change << '\n';
+  expect(change < 1.5f * steady, "a predelay change does not replay the line faster");
+}
 }

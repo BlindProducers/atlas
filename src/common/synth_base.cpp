@@ -23,6 +23,7 @@
 #include "source_types.h"
 #include "source_slot_module.h"
 
+#include "sample_slices.h"
 #include "sample_source.h"
 #include "sound_engine.h"
 #include "value_switch.h"
@@ -196,8 +197,9 @@ SynthBase::SynthBase() : expired_(false) {
   for (int i = 0; i < vital::kNumOscillators; ++i) {
     vital::Wavetable* wavetable = engine_->getWavetable(i);
     if (wavetable) {
+      // Rendered below, once the controls say which slots play a wavetable.
       wavetable_creators_[i] = std::make_unique<WavetableCreator>(wavetable);
-      wavetable_creators_[i]->initBasicShapes();
+      wavetable_creators_[i]->initBasicShapes(false);
     }
   }
 
@@ -214,10 +216,15 @@ SynthBase::SynthBase() : expired_(false) {
   memory_index_ = 0;
 
   controls_ = engine_->getControls();
-  // The engine built its default slot types in its own init; the default
-  // (one-frame) tables are already rendered, so only the flags need setting.
-  for (int i = 0; i < vital::kNumOscillators; ++i)
+  // The engine built its default slot types in its own init. A slot that
+  // plays a wavetable renders Basic Shapes now; the others keep the one-frame
+  // table they were made with and render when they turn to one
+  // (prepareSelectedSources), instead of rendering it here to drop it there.
+  for (int i = 0; i < vital::kNumOscillators; ++i) {
     wavetable_render_pending_[i] = !slotUsesWavetable(i);
+    if (!wavetable_render_pending_[i] && wavetable_creators_[i] != nullptr)
+      wavetable_creators_[i]->render();
+  }
   for (int arp = 0; arp < vital::kNumArpeggiators; ++arp) {
     const std::string prefix = "arp_" + std::to_string(arp + 1) + "_";
     for (size_t i = 0; i < kArpeggiatorControlNames.size(); ++i) {
@@ -417,6 +424,130 @@ void SynthBase::setVoiceReverbMemory(int filter, bool reserve) {
   scheduleEffectControlReservation();
 }
 
+void SynthBase::setSampleStretchMemory(int slot, bool reserve) {
+  // Allocation belongs on the message thread. From another thread (host
+  // automation, MIDI learn) the voices play plain until it has run.
+  if (MessageManager::getInstance()->isThisTheMessageThread()) {
+    changeEngine(*this, [&] { engine_->setSampleStretchMemory(slot, reserve); });
+    return;
+  }
+  scheduleEffectControlReservation();
+}
+
+void SynthBase::resliceSample(int slot) {
+  vital::Sample* sample = getSample(slot);
+  if (sample == nullptr)
+    return;
+  const std::string prefix = vital::source_types::slotPrefix(slot) + "sample_";
+  const auto value = [&](const char* suffix, float fallback) {
+    const auto found = controls_.find(prefix + suffix);
+    return found == controls_.end() || found->second == nullptr ? fallback : found->second->value();
+  };
+  const int length = sample->originalLength();
+  std::vector<int> starts;
+  if (static_cast<int>(value("slice_by", 0.0f) + 0.5f) == 0)
+    starts = vital::sample_slices::grid(length, static_cast<int>(value("slice_divisions", 16.0f) + 0.5f));
+  else {
+    starts = vital::sample_slices::transients(sample->leftChannel(), sample->rightChannel(), length,
+                                              sample->sampleRate(), value("slice_sensitivity", 0.5f));
+  }
+  setSampleSlices(slot, starts);
+}
+
+std::string SynthBase::sampleSlicesUndoBlock(int slot) {
+  return "settings/" + vital::source_types::slotPrefix(slot) + "sample_slices";
+}
+
+void SynthBase::setSampleSlices(int slot, const std::vector<int>& starts, const std::vector<vital::mono_float>& pitches) {
+  vital::Sample* sample = getSample(slot);
+  if (sample == nullptr)
+    return;
+  pauseProcessing(true);
+  sample->setSlices(starts, pitches);
+  pauseProcessing(false);
+  markStateChanged(sampleSlicesUndoBlock(slot));
+}
+
+void SynthBase::setSampleSlices(int slot, const std::vector<vital::SampleSlice>& slices) {
+  vital::Sample* sample = getSample(slot);
+  if (sample == nullptr)
+    return;
+  pauseProcessing(true);
+  sample->setSlices(slices);
+  pauseProcessing(false);
+  markStateChanged(sampleSlicesUndoBlock(slot));
+}
+
+void SynthBase::setSampleSlicesFromJson(int slot, const json& slices) {
+  vital::Sample* sample = getSample(slot);
+  if (sample == nullptr)
+    return;
+  pauseProcessing(true);
+  sample->slicesFromJson(slices);
+  pauseProcessing(false);
+  markStateChanged(sampleSlicesUndoBlock(slot));
+}
+
+void SynthBase::scheduleReslice(int slot) {
+  if (MessageManager::getInstance()->isThisTheMessageThread()) {
+    resliceSample(slot);
+    return;
+  }
+  // One cut waits at a time, however fast the control moves: an automated
+  // Sensitivity sent a message a block, each analysing the whole file with
+  // processing paused, and Windows drops every message past ten thousand.
+  if (!isPositiveAndBelow(slot, vital::kNumOscillators) || reslice_queued_[slot].exchange(true))
+    return;
+  std::shared_ptr<std::atomic<bool>> alive = alive_;
+  MessageManager::callAsync([this, alive, slot] {
+    if (!alive->load())
+      return;
+    reslice_queued_[slot] = false;
+    resliceSample(slot);
+  });
+}
+
+namespace {
+  // The slot of an osc_N_sample_<suffix> control, or -1. Every changed
+  // control comes through here, on the audio thread when a host automates it,
+  // so the name is compared in place: no string is built.
+  int sampleControlSlot(const std::string& name, const char* control) {
+    static constexpr char kMiddle[] = "_sample_";
+    constexpr size_t kMiddleLength = sizeof(kMiddle) - 1;
+    if (name.compare(0, 4, "osc_") != 0)
+      return -1;
+    const size_t control_length = std::strlen(control);
+    const size_t suffix_length = kMiddleLength + control_length;
+    if (name.size() <= suffix_length)
+      return -1;
+    const size_t middle = name.size() - suffix_length;
+    if (name.compare(middle, kMiddleLength, kMiddle) != 0 ||
+        name.compare(middle + kMiddleLength, control_length, control) != 0)
+      return -1;
+    const int slot = std::atoi(name.c_str() + 4) - 1;
+    return slot >= 0 && slot < vital::kNumOscillators ? slot : -1;
+  }
+
+  // The slot whose Sample stretchers a control decides, or -1: the Mode, or
+  // the stretch mode of either mode.
+  int sampleStretchControlSlot(const std::string& name) {
+    for (const char* control : { "mode", "stretch_mode", "slice_stretch_mode" }) {
+      if (const int slot = sampleControlSlot(name, control); slot >= 0)
+        return slot;
+    }
+    return -1;
+  }
+
+  // The slot whose slices a control cuts, or -1.
+  int sampleSliceControlSlot(const std::string& name) {
+    for (const char* control : { "slice_by", "slice_divisions", "slice_sensitivity" }) {
+      if (const int slot = sampleControlSlot(name, control); slot >= 0)
+        return slot;
+    }
+    return -1;
+  }
+}
+
 void SynthBase::valueChanged(const std::string& name, vital::mono_float value) {
   // A name that is not a control (a MIDI-learn mapping saved by an older
   // Atlas, or a host alias, for one) changes nothing. This can run on the
@@ -435,9 +566,32 @@ void SynthBase::valueChanged(const std::string& name, vital::mono_float value) {
   const bool reverb = static_cast<int>(value + 0.5f) == vital::constants::kReverbFilter;
   if (voice_filter >= 0 && reverb)
     setVoiceReverbMemory(voice_filter, true);
+  // A Sample slot holds its stretchers while the stretch mode of its mode
+  // (Classic or Slicer) is selected: selecting one reserves them before the
+  // audio thread sees the change, and Off frees them afterwards.
+  const int stretch_slot = changed ? sampleStretchControlSlot(name) : -1;
+  bool stretching = false;
+  if (stretch_slot >= 0) {
+    const std::string prefix = vital::source_types::slotPrefix(stretch_slot) + "sample_";
+    const auto read = [&](const char* suffix) {
+      if (name == prefix + suffix)
+        return value;
+      const auto found = controls_.find(prefix + suffix);
+      return found == controls_.end() || found->second == nullptr ? 0.0f : found->second->value();
+    };
+    const bool slicer = static_cast<int>(read("mode") + 0.5f) == vital::SampleSource::kSlicer;
+    stretching = static_cast<int>(read(slicer ? "slice_stretch_mode" : "stretch_mode") + 0.5f) != 0;
+  }
+  if (stretch_slot >= 0 && stretching)
+    setSampleStretchMemory(stretch_slot, true);
   control->set(value);
   if (voice_filter >= 0 && !reverb)
     setVoiceReverbMemory(voice_filter, false);
+  if (stretch_slot >= 0 && !stretching)
+    setSampleStretchMemory(stretch_slot, false);
+  // Slice by, Divisions and Sensitivity cut the slot's slices again.
+  if (const int slice_slot = changed ? sampleSliceControlSlot(name) : -1; slice_slot >= 0)
+    scheduleReslice(slice_slot);
   if (changed && isSourceTypeControl(name))
     scheduleSourcePreparation();
   // A new Speech variant starts from its own formants and breath. Preset
@@ -893,6 +1047,9 @@ void SynthBase::prepareSelectedSources() {
   // The per-voice copies of the graph would otherwise clone a slot's new type
   // module in their first process() after the change, on the audio thread.
   engine_->syncVoiceGraphs();
+  // A Sample slot built with a stretch mode selected (a loaded preset) takes
+  // its stretchers now.
+  engine_->updateSampleStretchMemory();
 }
 
 void SynthBase::prepareSourceEngines() {
@@ -1344,6 +1501,10 @@ bool SynthBase::writePresetFile(const File& preset, std::string* error) {
     settings[key] = spec.toJson(true);
     instruments.push_back({ result->hash, files });
   }
+
+  // A preset that leaves the Atlas folder names no file on this computer.
+  if (!into_bank)
+    LoadSave::stripPrivatePaths(data);
 
   if (instruments.empty())
     return preset.replaceWithText(LoadSave::dumpState(data));

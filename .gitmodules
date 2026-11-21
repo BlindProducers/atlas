@@ -53,3 +53,11 @@
 	path = third_party/opus
 	url = https://github.com/xiph/opus.git
 	shallow = true
+[submodule "third_party/signalsmith-stretch"]
+	path = third_party/signalsmith-stretch
+	url = https://github.com/Signalsmith-Audio/signalsmith-stretch.git
+	shallow = true
+[submodule "third_party/signalsmith-linear"]
+	path = third_party/signalsmith-linear
+	url = https://github.com/Signalsmith-Audio/linear.git
+	shallow = true

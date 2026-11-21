@@ -160,6 +160,9 @@ namespace vital {
       bool takeEffectControlReservationRequest();
       // Voice filter 0 or 1's Reverb memory; message thread, callback lock held.
       void setVoiceReverbMemory(int filter, bool reserve);
+      // The Sample type's stretchers (see SynthVoiceHandler::updateSampleStretchMemory).
+      void updateSampleStretchMemory();
+      void setSampleStretchMemory(int slot, bool reserve);
       // Aligns parallel paths for the current effect latencies. Off the audio
       // thread it also gives compensation lines the history their delays need.
       void updateEffectLatency();

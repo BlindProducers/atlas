@@ -38,6 +38,7 @@
 #include "ladder_filter.cpp"
 #include "synth_oscillator.cpp"
 #include "sample_source.cpp"
+#include "sample_slices.cpp"
 #include "multisample_player.cpp"
 #include "multisample_slot.cpp"
 #include "multisample_source.cpp"

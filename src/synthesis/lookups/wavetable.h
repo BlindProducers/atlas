@@ -125,6 +125,10 @@ namespace vital {
 
       void loadWaveFrame(const WaveFrame* wave_frame);
       void loadWaveFrame(const WaveFrame* wave_frame, int to_index);
+      // Makes the frame at to_index the same as the one at from_index, as
+      // loading the wave frame that one was loaded from would, without the
+      // arithmetic. Before postProcess, like loadWaveFrame.
+      void copyWaveFrame(int from_index, int to_index);
       void postProcess(float max_span);
 
       force_inline int numFrames() const { return current_data_->num_frames; }

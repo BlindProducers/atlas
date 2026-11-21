@@ -30,6 +30,7 @@
 #include "sample_source.h"
 #include "synth_base.h"
 #include "synth_constants.h"
+#include "trance_gate_sequence.h"
 #include "synth_parameters.h"
 #include "synth_oscillator.h"
 #include "synth_strings.h"
@@ -383,8 +384,12 @@ json LoadSave::stateToJson(SynthBase* synth, const CriticalSection& critical_sec
     const auto type = controls.find(prefix + "type");
     const int type_value = type == controls.end() ? 0 : static_cast<int>(type->second->value() + 0.5f);
     vital::Sample* sample = synth->getSample(slot);
-    if (sample && vital::source_types::describe(type_value).uses_sample && !sample->isDefault())
-      settings_data[prefix + "sample"] = sample->stateToJson();
+    if (sample && vital::source_types::describe(type_value).uses_sample) {
+      if (!sample->isDefault())
+        settings_data[prefix + "sample"] = sample->stateToJson();
+      // The Slicer mode's slices: where each begins in samples of the file, and its pitch.
+      settings_data[prefix + "sample_slices"] = sample->slicesToJson();
+    }
 
     // A Multi-sample slot names its instrument (path and content hash);
     // container presets add the file list when they are written.
@@ -561,6 +566,26 @@ void LoadSave::loadModulations(SynthBase* synth, const json& modulations) {
   }
 }
 
+bool LoadSave::stripPrivatePaths(json& state) {
+  json* settings = &state;
+  if (state.is_object() && state.count("settings") && state["settings"].is_object())
+    settings = &state["settings"];
+  if (!settings->is_object())
+    return false;
+  bool removed = false;
+  for (auto& item : settings->items()) {
+    const std::string& key = item.key();
+    json& value = item.value();
+    if (!value.is_object() || key.rfind("osc_", 0) != 0)
+      continue;
+    if (key.size() > 7 && key.compare(key.size() - 7, 7, "_sample") == 0)
+      removed = value.erase("last_browsed_file") > 0 || removed;
+    else if (key.size() > 12 && key.compare(key.size() - 12, 12, "_multisample") == 0)
+      removed = value.erase("path") > 0 || removed;
+  }
+  return removed;
+}
+
 void LoadSave::loadSlotSamples(SynthBase* synth, const json& settings) {
   for (int slot = 0; slot < vital::kNumOscillators; ++slot) {
     vital::Sample* sample = synth->getSample(slot);
@@ -573,12 +598,19 @@ void LoadSave::loadSlotSamples(SynthBase* synth, const json& settings) {
       // and changes nothing when the slot already holds it.
       if (!sample->isDefault())
         sample->init();
-      continue;
     }
-    try {
-      sample->jsonToState(std::move(json_sample));
+    else {
+      try {
+        sample->jsonToState(std::move(json_sample));
+      }
+      catch (const json::exception&) { }
     }
-    catch (const json::exception&) { }
+    // The slices saved beside it; a preset without any starts from the grid.
+    const auto slices = settings.find(key + "_slices");
+    if (slices != settings.end() && (slices->is_array() || slices->is_object()))
+      sample->slicesFromJson(*slices);
+    else
+      sample->resetSlices();
   }
 }
 
@@ -827,6 +859,41 @@ namespace {
     for (int bus = 1; bus <= vital::kNumBuses; ++bus)
       migrate_chain("bus_" + std::to_string(bus) + "_");
   }
+
+  // Before behaviour version 4 a Trance gate's Ramp up rose from the step's
+  // level to full. Each Ramp up step in a slot holding a Trance gate gets the
+  // value and shape that sound the same now (trance_gate::migrateRampUp).
+  // A level left out of the state is the default, full.
+  void migrateTranceGateRampUp(json& settings) {
+    if (!settings.is_object())
+      return;
+    auto migrate_chain = [&settings](const std::string& chain_prefix) {
+      for (int slot = 1; slot <= vital::constants::kMaxEffectSlots; ++slot) {
+        const std::string prefix = chain_prefix + "fx_slot_" + std::to_string(slot) + "_trance_gate_step_";
+        float type = 0.0f;
+        if (!getJsonFloat(settings, chain_prefix + "fx_slot_" + std::to_string(slot) + "_type", type) ||
+            static_cast<int>(type + 0.5f) != vital::constants::kTranceGate + 1)
+          continue;
+        for (int step = 1; step <= vital::trance_gate::kSteps; ++step) {
+          const std::string step_prefix = prefix + std::to_string(step) + "_";
+          float mode_value = 0.0f;
+          float level = 0.0f;
+          if (!getJsonFloat(settings, step_prefix + "mode", mode_value))
+            continue;
+          getJsonFloat(settings, step_prefix + "value", level);
+          int mode = static_cast<int>(mode_value + 0.5f);
+          double value = level;
+          if (!vital::trance_gate::migrateRampUp(value, mode))
+            continue;
+          settings[step_prefix + "mode"] = static_cast<float>(mode);
+          settings[step_prefix + "value"] = static_cast<float>(value);
+        }
+      }
+    };
+    migrate_chain("");
+    for (int bus = 1; bus <= vital::kNumBuses; ++bus)
+      migrate_chain("bus_" + std::to_string(bus) + "_");
+  }
 }
 
 void LoadSave::loadConvolutionIrs(SynthBase* synth, const json& convolution_irs) {
@@ -863,9 +930,18 @@ void LoadSave::loadWavetables(SynthBase* synth, const json& wavetables) {
 
     WavetableCreator* wavetable_creator = synth->getWavetableCreator(i);
     try {
-      wavetable_creator->jsonToState(wavetable);
+      // A slot that plays this very table and has it rendered keeps it: a
+      // project's state arriving at a new instance, a preset's oscillators
+      // left on the default table. Rendering it again changes nothing.
+      if (synth->slotUsesWavetable(i) && !synth->isWavetableRenderPending(i) &&
+          wavetable_creator->holdsState(wavetable)) {
+        i++;
+        continue;
+      }
       // Controls are loaded already, so the slot's type decides whether the
-      // table renders now or waits for the slot to play a wavetable.
+      // table renders now or waits for the slot to play a wavetable. Taking
+      // the state does not render it as well: that was every table twice.
+      wavetable_creator->jsonToState(wavetable, false);
       synth->renderWavetable(i);
     }
     catch (const json::exception&) { }
@@ -1764,7 +1840,8 @@ bool LoadSave::jsonToState(SynthBase* synth, std::map<std::string, String>& save
   // presets are intentionally migrated to the corrected clock/event rules;
   // subsequent saves persist this marker instead of silently changing again.
   // Version 3 is Destroy's new Drive and Level defaults
-  // (migrateDestroyDefaults).
+  // (migrateDestroyDefaults). Version 4 is the Trance gate's Ramp up shape
+  // rising from silence (migrateTranceGateRampUp).
   int engine_behavior_version = 1;
   if (data.count("engine_behavior_version") && data["engine_behavior_version"].is_number_integer())
     engine_behavior_version = data["engine_behavior_version"].get<int>();
@@ -1785,6 +1862,8 @@ bool LoadSave::jsonToState(SynthBase* synth, std::map<std::string, String>& save
   migrateSourceDestinations(settings);
   if (engine_behavior_version < 3)
     migrateDestroyDefaults(settings);
+  if (engine_behavior_version < 4)
+    migrateTranceGateRampUp(settings);
   json wavetables = arrayFieldOrEmpty(settings, "wavetables");
   json lfos = arrayFieldOrEmpty(settings, "lfos");
 
@@ -2308,6 +2387,12 @@ void LoadSave::saveDisplayHzFrequency(bool hz_frequency) {
   saveJsonToConfig(data);
 }
 
+void LoadSave::saveSamplePositionUnits(int units) {
+  json data = getConfigJson();
+  data["sample_position_units"] = units;
+  saveJsonToConfig(data);
+}
+
 void LoadSave::savePresetAutoload(bool autoload) {
   json data = getConfigJson();
   data["preset_autoload"] = autoload;
@@ -2616,6 +2701,14 @@ bool LoadSave::displayHzFrequency() {
   const json& data = currentConfig(cache);
   const auto found = data.is_object() ? data.find("hz_frequency") : data.end();
   return found != data.end() && found->is_boolean() && found->get<bool>();
+}
+
+int LoadSave::samplePositionUnits() {
+  ConfigCache& cache = configCache();
+  std::lock_guard<std::mutex> lock(cache.mutex);
+  const json& data = currentConfig(cache);
+  const auto found = data.is_object() ? data.find("sample_position_units") : data.end();
+  return found != data.end() && found->is_number_integer() ? std::clamp(found->get<int>(), 0, 2) : 0;
 }
 
 bool LoadSave::presetAutoload() {

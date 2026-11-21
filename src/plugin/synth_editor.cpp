@@ -417,10 +417,15 @@ namespace {
     return vital::source_types::typeForParameterSuffix(suffix.toStdString()) >= 0 ? suffix : id;
   }
 
-  bool isSampleLoopPointParameter(const String& id) {
+  // The Sample type's position rows, which read in one unit chosen together.
+  bool isSamplePositionParameter(const String& id) {
     const String legacy = legacySourceId(id);
-    return legacy == "sample_loop_start" || legacy == "sample_loop_end";
+    return legacy == "sample_start" || legacy == "sample_end" ||
+           legacy == "sample_loop_start" || legacy == "sample_loop_end" || legacy == "sample_loop_shift";
   }
+
+  enum SamplePositionUnits { kSamplePositionPercent, kSamplePositionMilliseconds, kSamplePositionSamples };
+  const char* const kSamplePositionUnitNames[] = { "Percent", "Milliseconds", "Samples" };
 
   String accessibleParameterText(const ValueBridge& bridge, double normalized_value) {
     const String distortion_text = oscillatorDistortionValueText(bridge, normalized_value);
@@ -583,6 +588,14 @@ namespace {
   // mapping removed). The user pressed the button and waits to hear it, so
   // no optional category silences it.
   void postSettingsAnnouncement(const String& message) {
+    if (accessibilitySpeechSettings().speech_feedback)
+      postAnnouncement(message, AccessibilityHandler::AnnouncementPriority::high);
+  }
+
+  // What Copy or Paste on a modulator's heading did. The user chose it from
+  // the menu and waits to hear it; filed by its wording instead, "Copied
+  // Envelope 2" was Navigation's to silence and "Copied Random 2" Other's.
+  void postClipboardAnnouncement(const String& message) {
     if (accessibilitySpeechSettings().speech_feedback)
       postAnnouncement(message, AccessibilityHandler::AnnouncementPriority::high);
   }
@@ -2218,6 +2231,23 @@ namespace {
     return {};
   }
 
+  // The parameter prefix of an envelope, LFO or random modulator section, which
+  // its heading's menu copies and pastes ("Envelope 3" is "env_3_"), or empty.
+  String copyableModulatorPrefix(const String& section) {
+    struct Kind { const char* section; const char* prefix; int count; };
+    for (const Kind kind : { Kind { "Envelope ", "env_", vital::kNumEnvelopes },
+                             Kind { "LFO ", "lfo_", vital::kNumLfos },
+                             Kind { "Random ", "random_", vital::kNumRandomLfos } }) {
+      if (!section.startsWith(kind.section))
+        continue;
+      const String number = section.substring(String(kind.section).length());
+      const int index = number.getIntValue();
+      if (number.containsOnly("0123456789") && index >= 1 && index <= kind.count)
+        return kind.prefix + number + "_";
+    }
+    return {};
+  }
+
   // The rate rows of an LFO or a random generator. Its Sync picks the ones it
   // shows: Frequency for seconds, Tempo for the three tempo options, and
   // Transpose and Tune for Keytrack.
@@ -2261,7 +2291,10 @@ namespace {
     if (const int slot = sourceSlotForId(id); slot >= 0) {
       const String suffix = id.substring(String("osc_" + String(slot + 1) + "_").length());
       return suffix == "type" || suffix == "analog_waveform" || suffix == "braids_model" ||
-             suffix.endsWith("spectral_morph_type") || suffix == "random_phase_mode";
+             suffix.endsWith("spectral_morph_type") || suffix == "random_phase_mode" ||
+             suffix == "granular_mode" || suffix == "granular_timing_mode" || suffix == "granular_size_mode" ||
+             suffix == "granular_midi_density" || suffix == "sample_stretch_mode" || suffix == "sample_mode" ||
+             suffix == "sample_slice_by" || suffix == "sample_slice_stretch_mode";
     }
     const String filter_suffix = filterSuffixForParameter(id);
     if (filter_suffix == "model" || filter_suffix == "style")
@@ -2282,9 +2315,9 @@ namespace {
 
   // Switches that change which rows the editor shows, so flipping one
   // rebuilds it: Envelope 1's analog mode swaps its Power rows for Analog Age,
-  // and Glide zones shows Zone crossfade.
+  // Glide zones shows Zone crossfade, and a Granular Keytrack shows Root key.
   bool isRowSwitchingToggle(const String& id) {
-    return id == "env_1_analog" || id == "portamento_glide_zones";
+    return id == "env_1_analog" || id == "portamento_glide_zones" || id.endsWith("_granular_keytrack");
   }
 
   // Convolution Reverb: free predelay in milliseconds, or a synced division.
@@ -2561,7 +2594,7 @@ namespace {
     }
     if (id.startsWith("sample_")) {
       const String suffix = id.fromFirstOccurrenceOf("sample_", false, false);
-      static const std::array<const char*, 29> sample_order = {{
+      static const std::array<const char*, 46> sample_order = {{
         "on",
         "solo",
         "destination",
@@ -2575,14 +2608,31 @@ namespace {
         "transpose_quantize",
         "level",
         "pan",
+        "mode",
+        "slice_by",
+        "slice_divisions",
+        "slice_sensitivity",
         "playback_mode",
+        "stretch_mode",
+        "slice_stretch_mode",
+        "bpm",
+        "stretch_length",
+        "formants",
+        "play_through",
         "loop",
+        "slice_loop",
+        "stutter",
+        "stutter_chance",
+        "slice_decay",
         "bounce",
+        "reverse",
         "random_phase",
+        "normalize",
         "start",
         "end",
         "loop_start",
         "loop_end",
+        "loop_shift",
         "loop_crossfade",
         "low_cutoff",
         "high_cutoff",
@@ -3951,11 +4001,30 @@ namespace {
       if (suffix == "playback_mode") return "Choose whether notes retrigger the sample or only open the amp envelope.";
       if (suffix == "loop") return "Loop the selected sample range while notes are held.";
       if (suffix == "bounce") return "Play the sample loop forward then backward.";
+      if (suffix == "reverse") return "Play the sample backwards, from its end to its start. Modulate it to turn the sound around as it plays.";
+      if (suffix == "normalize") return "Play the sample with its loudest peak at 0 dB.";
+      if (suffix == "stretch_mode")
+        return "Off plays the sample faster for higher notes. Tempo stretches it to the host tempo and Fixed keeps its length; both change the pitch without the length.";
+      if (suffix == "bpm") return "Set the tempo the sample was recorded at.";
+      if (suffix == "stretch_length") return "Set the sample's length as a percentage of the original.";
+      if (suffix == "formants") return "Keep the sample's formants where they are while its pitch moves.";
+      if (suffix == "mode") return "Classic plays the file from Sample Start to Sample End. Slicer plays the slice a key picks.";
+      if (suffix == "slice_by") return "Cut the slices on an even grid or at the transients. Either replaces the slices; the Slices editor then edits them.";
+      if (suffix == "slice_divisions") return "Set how many equal slices the grid cuts the file into.";
+      if (suffix == "stutter") return "Play the first part of the slice this many times over, inside the slice's length.";
+      if (suffix == "stutter_chance") return "Set how likely a note is to stutter.";
+      if (suffix == "slice_decay") return "Fade each slice out as it plays. Higher is shorter; 100% leaves a short hit.";
+      if (suffix == "slice_sensitivity") return "Set how small a rise in level counts as a transient. Higher finds more slices.";
+      if (suffix == "play_through") return "Play on from the slice to the end of the file.";
+      if (suffix == "slice_loop") return "Repeat the slice while the note is held.";
+      if (suffix == "slice_stretch_mode")
+        return "Off plays the slice faster for a higher pitch. Tempo stretches it to the host tempo and Fixed keeps its length; both change the pitch without the length.";
       if (suffix == "random_phase") return "Randomize the sample start point on each triggered note.";
       if (suffix == "start") return "Set where sample playback begins.";
       if (suffix == "end") return "Set where sample playback stops.";
       if (suffix == "loop_start") return "Set the start point of the sample loop.";
       if (suffix == "loop_end") return "Set the end point of the sample loop.";
+      if (suffix == "loop_shift") return "Move the whole sample loop, keeping its length.";
       if (suffix == "loop_crossfade") return "Crossfade the sample loop boundary to reduce clicks.";
     }
 
@@ -4850,12 +4919,15 @@ namespace {
     return String(roundToInt(jlimit(0.0f, 1.0f, value) * 100.0f)) + "%";
   }
 
-  String midiRootKeyText(double value) {
+  // A MIDI note as a root key reads: "C4, MIDI 60", "C sharp 4, MIDI 61".
+  String midiRootKeyText(double midiNote) {
     static const std::array<const char*, 12> names = {{
       "C", "C sharp", "D", "E flat", "E", "F", "F sharp", "G", "A flat", "A", "B flat", "B"
     }};
-    const int midi_note = jlimit(0, 127, roundToInt(value));
-    return String(names[midi_note % vital::kNotesPerOctave]) + ", MIDI " + String(midi_note);
+    const int midi_note = jlimit(0, 127, roundToInt(midiNote));
+    const String name = names[midi_note % vital::kNotesPerOctave];
+    const String octave = String(midi_note / vital::kNotesPerOctave - 1);
+    return name + (name.containsChar(' ') ? " " : "") + octave + ", MIDI " + String(midi_note);
   }
 
   int shiftedDigitIndex(const KeyPress& key) {
@@ -5103,6 +5175,23 @@ namespace {
     return names[jlimit(0, static_cast<int>(names.size()) - 1, index)];
   }
 
+  // Command Up and Down bend a segment from -100% to 100%: 100% is power 20,
+  // the Hold curve (LineGenerator::kHoldPowerThreshold), which holds the
+  // point's level until the next point; -100% is at the next point's level
+  // almost at once; 0% is linear.
+  constexpr float kCurvePowerPerPercent = 20.0f / 100.0f;
+  int curvePercentForPower(float power) { return jlimit(-100, 100, roundToInt(power / kCurvePowerPerPercent)); }
+  float powerForCurvePercent(int percent) { return percent * kCurvePowerPerPercent; }
+
+  // A named curve's name, or the bend as a percentage.
+  String lfoCurveText(float power, bool smooth) {
+    const int index = curveIndexForPower(power, smooth);
+    if (index == kCurveHold || (std::abs(power - powerForCurveIndex(index)) < 0.005f &&
+                                smooth == smoothForCurveIndex(index)))
+      return curveNameForIndex(index);
+    return "Curve " + String(curvePercentForPower(power)) + "%";
+  }
+
   class OrderedFocusTraverser : public ComponentTraverser {
     public:
       OrderedFocusTraverser(SynthEditor& editor, bool keyboardTraversal) :
@@ -5344,6 +5433,17 @@ namespace {
 
       std::unique_ptr<AccessibilityHandler> createAccessibilityHandler() override {
         return std::make_unique<OffscreenButtonAccessibilityHandler>(*this, AccessibilityRole::button);
+      }
+  };
+
+  // One of a group of buttons that choose between modes: a radio button that
+  // reads as selected while its mode is the one chosen.
+  class ModeChoiceButton : public TextButton {
+    public:
+      using TextButton::TextButton;
+
+      std::unique_ptr<AccessibilityHandler> createAccessibilityHandler() override {
+        return std::make_unique<OffscreenButtonAccessibilityHandler>(*this, AccessibilityRole::radioButton);
       }
   };
 
@@ -6573,9 +6673,21 @@ class AccessibleParameterRow : public Component {
       updateAccessibleCommand();
     }
 
-    void setFineTuneCallbacks(std::function<bool()> getState, std::function<void()> toggle) {
-      fine_tune_state_ = std::move(getState);
-      fine_tune_toggle_ = std::move(toggle);
+    // A Show as submenu in the context menu: the units the row can read in,
+    // the one it reads in now and the choice of another.
+    void setUnitsCallbacks(StringArray names, std::function<int()> current, std::function<void(int)> choose) {
+      units_names_ = std::move(names);
+      units_current_ = std::move(current);
+      units_choose_ = std::move(choose);
+    }
+
+    ParameterSlider& slider() { return slider_; }
+
+    // The value reads in other units now: show and say it again.
+    void refreshValueText() {
+      if (!use_combo_control_ && !use_toggle_control_)
+        slider_.updateText();
+      notifyDisplayChanged();
     }
 
     void setFxAutomationCallbacks(std::function<String(const String&)> assignmentName,
@@ -6764,9 +6876,9 @@ class AccessibleParameterRow : public Component {
       kContextClearMidi,
       kContextRenameMacro,
       kContextToggleBipolar,
-      kContextFineTune,
       kContextAutomateFx,
       kContextRemoveFxAutomation,
+      kContextUnitsBase = 500,
       kContextAddModulationBase = 1000,
       kContextEditModulationBase = 2000,
       kContextRemoveModulationBase = 3000,
@@ -6800,8 +6912,13 @@ class AccessibleParameterRow : public Component {
       if (!is_toggle && slider_.onTextEntryCommand)
         menu.addItem(kContextTypeValue, "Type a value...");
       menu.addItem(kContextResetDefault, "Reset to default");
-      if (fine_tune_toggle_)
-        menu.addItem(kContextFineTune, "Fine tune", true, fine_tune_state_ && fine_tune_state_());
+      if (!units_names_.isEmpty()) {
+        PopupMenu units_menu;
+        const int current = units_current_ ? units_current_() : -1;
+        for (int i = 0; i < units_names_.size(); ++i)
+          units_menu.addItem(kContextUnitsBase + i, units_names_[i], true, i == current);
+        menu.addSubMenu("Show as", units_menu);
+      }
       if (fx_automation_change_assignment_) {
         if (fx_automation_slot.isEmpty())
           menu.addItem(kContextAutomateFx, "Automate");
@@ -6862,6 +6979,12 @@ class AccessibleParameterRow : public Component {
           return;
         }
 
+        if (result >= kContextUnitsBase && result < kContextUnitsBase + units_names_.size()) {
+          if (units_choose_)
+            units_choose_(result - kContextUnitsBase);
+          return;
+        }
+
         switch (result) {
           case kContextTypeValue:
             if (slider_.onTextEntryCommand)
@@ -6886,10 +7009,6 @@ class AccessibleParameterRow : public Component {
           case kContextToggleBipolar:
             if (extra_command_callback_)
               extra_command_callback_(parameter_id, KeyPress('b', ModifierKeys(), 'b'), *invoked);
-            break;
-          case kContextFineTune:
-            if (fine_tune_toggle_)
-              fine_tune_toggle_();
             break;
           case kContextAutomateFx:
             if (fx_automation_change_assignment_)
@@ -6939,8 +7058,9 @@ class AccessibleParameterRow : public Component {
     std::function<void(const String&, const String&, Component&)> modulation_remove_callback_;
     std::function<void(const String&, Component&, bool)> midi_learn_callback_;
     std::function<bool(const String&, const KeyPress&, Component&)> extra_command_callback_;
-    std::function<bool()> fine_tune_state_;
-    std::function<void()> fine_tune_toggle_;
+    StringArray units_names_;
+    std::function<int()> units_current_;
+    std::function<void(int)> units_choose_;
     std::function<String(const String&)> fx_automation_assignment_name_;
     std::function<void(const String&, bool)> fx_automation_change_assignment_;
     std::function<void(const String&, bool)> fx_automation_gesture_;
@@ -7864,6 +7984,9 @@ SynthEditor::~SynthEditor() {
   revertModulationAudition();
   // Key releases can no longer reach this editor; don't leave notes held.
   allQwertyNotesOff();
+  // Nor a slice still auditioning (up to four seconds, for ever with Slice
+  // Loop on): its release was due from this editor.
+  releaseSliceAuditions();
   detachQwertyKeyInterceptor();
   if (ir_browser_scan_) ir_browser_scan_->cancelled.store(true);
   if (ir_browser_scan_thread_.joinable()) ir_browser_scan_thread_.join();
@@ -8370,20 +8493,19 @@ std::unique_ptr<AccessibleParameterRow> SynthEditor::buildAccessibleParameterRow
     const String title = legacy_id == "sample_root_key" ? "Sample root key" : "Granular root key";
     return std::make_unique<AccessibleParameterRow>(
         parameter, title,
-        [](double value) { return midiRootKeyText(value); }, 1.0, 0.0,
+        // The row's value is normalized; the readout wants the MIDI note.
+        [bridge](double value) { return midiRootKeyText(bridge->convertToEngineValue(static_cast<float>(value))); },
+        1.0, 0.0,
         String(), String(),
         "Set the MIDI note that plays the loaded sample at its original pitch", true);
   }
 
-  if (isSampleLoopPointParameter(parameter_id)) {
-    return std::make_unique<AccessibleParameterRow>(
+  if (isSamplePositionParameter(parameter_id)) {
+    auto row = std::make_unique<AccessibleParameterRow>(
         parameter, bridge->getName(128),
-        [this, bridge](double value) -> String {
-          const int length = sampleLoopPointLength(bridge->getParameterId());
-          if (fine_tune_sample_loop_ && length > 0)
-            return String(juce::roundToInt(value * length));
-          return accessibleParameterText(*bridge, value);
-        });
+        [this, bridge](double value) { return samplePositionText(*bridge, value); });
+    row->setValueFromText([this, bridge](const String& text) { return samplePositionValue(*bridge, text); });
+    return row;
   }
 
   // An LFO's Frequency reads in seconds or, with Sync on Hertz, in Hz.
@@ -8556,7 +8678,7 @@ std::unique_ptr<AccessibleParameterRow> SynthEditor::buildAccessibleParameterRow
         return std::make_unique<AccessibleParameterRow>(
             parameter, String(), std::function<String(double)>(), 1.0, 0.0, String(), String(),
             "Choose this oscillator's type: Wavetable, Analog, Sample, Granular, Spectral, Noise, Multi-sample, Macro, "
-            "OpenWurli or OpenB3. "
+            "OpenWurli, OpenB3 or Speech. "
             "Each type keeps its own settings, wavetable and sample for when you switch back.", true);
       }
       if (suffix == "analog_waveform")
@@ -8741,28 +8863,95 @@ std::unique_ptr<AccessibleParameterRow> SynthEditor::buildAccessibleParameterRow
                                                   accessibleParameterTitle(sectionName, parameter.getName(128)));
 }
 
-int SynthEditor::sampleLoopPointLength(const String& parameterId) const {
+vital::Sample* SynthEditor::samplePositionSample(const String& parameterId) const {
   const int slot = sourceSlotForId(parameterId);
-  auto* sample = isPositiveAndBelow(slot, vital::kNumOscillators) ? synth_.getSample(slot) : nullptr;
-  return sample != nullptr ? sample->originalLength() : 0;
+  return isPositiveAndBelow(slot, vital::kNumOscillators) ? synth_.getSample(slot) : nullptr;
 }
 
-void SynthEditor::toggleSampleLoopFineTune() {
-  fine_tune_sample_loop_ = !fine_tune_sample_loop_;
-  for (auto& row : rows_) {
-    if (row != nullptr && isSampleLoopPointParameter(row->parameterId()))
-      row->notifyDisplayChanged();
+namespace {
+  // How many milliseconds or samples the loaded file spans, or 0 while there
+  // is no file or the rows read percent.
+  double samplePositionFileSpan(const vital::Sample* sample, int units) {
+    const int length = sample != nullptr ? sample->originalLength() : 0;
+    if (length <= 0 || units == kSamplePositionPercent)
+      return 0.0;
+    if (units == kSamplePositionSamples)
+      return length;
+    return sample->sampleRate() > 0 ? length * 1000.0 / sample->sampleRate() : 0.0;
   }
-  postPluginAnnouncement(String("Sample loop fine tune ") +
-                             (fine_tune_sample_loop_ ? "on, sample numbers" : "off, percent"),
+}
+
+// The rows' engine values are fractions of the file: 0 to 1 for a point,
+// -1 to 1 for Loop shift.
+String SynthEditor::samplePositionText(const ValueBridge& bridge, double value) const {
+  const int units = LoadSave::samplePositionUnits();
+  const double span = samplePositionFileSpan(samplePositionSample(bridge.getParameterId()), units);
+  if (span <= 0.0)
+    return accessibleParameterText(bridge, value);
+  const double fraction = bridge.convertToEngineValue(static_cast<float>(value));
+  if (units == kSamplePositionSamples)
+    return String(juce::roundToInt(fraction * span));
+  return compactFloat(static_cast<float>(fraction * span), 1) + " ms";
+}
+
+// Typed text in the unit it names (%, ms, s or samples), otherwise in the
+// units the rows show.
+double SynthEditor::samplePositionValue(const ValueBridge& bridge, const String& text) const {
+  const String trimmed = text.trim().toLowerCase();
+  int units = LoadSave::samplePositionUnits();
+  double scale = 1.0;
+  if (trimmed.endsWith("%"))
+    units = kSamplePositionPercent;
+  else if (trimmed.endsWith("samples") || trimmed.endsWith("sample"))
+    units = kSamplePositionSamples;
+  else if (trimmed.endsWith("ms"))
+    units = kSamplePositionMilliseconds;
+  else if (trimmed.endsWith("s")) {
+    units = kSamplePositionMilliseconds;
+    scale = 1000.0;
+  }
+  const double span = samplePositionFileSpan(samplePositionSample(bridge.getParameterId()), units);
+  const float fraction = static_cast<float>(trimmed.getDoubleValue() * scale / (span > 0.0 ? span : 100.0));
+  return bridge.convertToPluginValue(jlimit(bridge.getDetails().min, bridge.getDetails().max, fraction));
+}
+
+void SynthEditor::setSamplePositionUnits(int units) {
+  LoadSave::saveSamplePositionUnits(units);
+  for (auto& row : rows_) {
+    if (row != nullptr && isSamplePositionParameter(row->parameterId()))
+      row->refreshValueText();
+  }
+  postPluginAnnouncement("Sample positions in " + String(kSamplePositionUnitNames[units]).toLowerCase(),
                          AccessibilityHandler::AnnouncementPriority::high);
 }
 
-void SynthEditor::wireSampleLoopFineTune(AccessibleParameterRow& row) {
-  if (!isSampleLoopPointParameter(row.parameterId()))
+void SynthEditor::wireSamplePositionUnits(AccessibleParameterRow& row) {
+  const String parameter_id = row.parameterId();
+  if (!isSamplePositionParameter(parameter_id))
     return;
-  row.setFineTuneCallbacks([this] { return fine_tune_sample_loop_; },
-                           [this] { toggleSampleLoopFineTune(); });
+  row.setUnitsCallbacks(StringArray(kSamplePositionUnitNames, 3),
+                        [] { return LoadSave::samplePositionUnits(); },
+                        [this](int units) { setSamplePositionUnits(units); });
+  // Keys step one percent, one millisecond or one sample, whichever the row
+  // shows; samples stay whole, so Shift arrows step a whole sample too.
+  auto file_span = [this, parameter_id] {
+    return samplePositionFileSpan(samplePositionSample(parameter_id), LoadSave::samplePositionUnits());
+  };
+  ValueBridge* bridge = parameterBridge(parameter_id);
+  if (bridge == nullptr)
+    return;
+  ParameterSlider& slider = row.slider();
+  slider.toAdjustmentValue = [bridge, file_span](double value) {
+    const double span = file_span();
+    return bridge->convertToEngineValue(static_cast<float>(value)) * (span > 0.0 ? span : 100.0);
+  };
+  slider.fromAdjustmentValue = [bridge, file_span](double value) {
+    const double span = file_span();
+    if (span > 0.0 && LoadSave::samplePositionUnits() == kSamplePositionSamples)
+      value = std::round(value);
+    return static_cast<double>(bridge->convertToPluginValue(static_cast<float>(value / (span > 0.0 ? span : 100.0))));
+  };
+  slider.adjustmentStep = [] { return 1.0; };
 }
 
 bool SynthEditor::shouldShowParameterInSection(const String& sectionName, AudioProcessorParameter* parameter) const {
@@ -8823,8 +9012,15 @@ bool SynthEditor::shouldShowParameterInSection(const String& sectionName, AudioP
     const int type = sourceSlotType(osc - 1);
     // Each type shows only its own parameters; slot-level controls always show.
     const int owner = vital::source_types::typeForParameterSuffix(suffix.toStdString());
-    if (owner >= 0)
-      return vital::source_types::shareModule(owner, type);
+    if (owner >= 0) {
+      if (!vital::source_types::shareModule(owner, type))
+        return false;
+      if (owner == vital::source_types::kGranular && suffix.startsWith("granular_"))
+        return isGranularRowRelevant(osc - 1, suffix.fromFirstOccurrenceOf("granular_", false, false));
+      if (owner == vital::source_types::kSample && suffix.startsWith("sample_"))
+        return isSampleRowRelevant(osc - 1, suffix.fromFirstOccurrenceOf("sample_", false, false));
+      return true;
+    }
     if (isSlotLevelOscillatorSuffix(suffix))
       return true;
     // Sample, Granular, Spectral and Noise read the slot's distortion mode and
@@ -9081,7 +9277,7 @@ std::unique_ptr<AccessibleParameterRow> SynthEditor::createConfiguredSectionRow(
                                                     Component& target) {
     return handleMacroShortcut(parameterId, key, target) || handleEffectShortcut(section_name, key, target);
   });
-  wireSampleLoopFineTune(*row);
+  wireSamplePositionUnits(*row);
   return row;
 }
 
@@ -9249,8 +9445,24 @@ void SynthEditor::addOscillatorSectionContent(int oscillator, const String& sect
   if (type.uses_sample) {
     addSampleControlsGroup(oscillator, parent, y, x, width, focus_order, section_name,
                            [&](Component& group, int& inner_y, int inner_width) {
-                             add_rows_to(dynamic_cast<AccessibleSectionHeader*>(&group),
-                                         rows_in(OscillatorRowGroup::kSample), inner_y, inner_width);
+                             auto* header = dynamic_cast<AccessibleSectionHeader*>(&group);
+                             const bool sample_type = slot_type == vital::source_types::kSample;
+                             if (sample_type && header != nullptr)
+                               addSampleModeGroup(oscillator, *header, inner_y, inner_width, focus_order, section_name);
+                             // The Slices editor follows the row that cuts the slices.
+                             bool editor_pending = sample_type && header != nullptr &&
+                                                   sampleMode(oscillator) == vital::SampleSource::kSlicer;
+                             for (auto* parameter : rows_in(OscillatorRowGroup::kSample)) {
+                               place_row(*parameter, group, header, inner_y, 10, jmax(580, inner_width - 20));
+                               auto* bridge = dynamic_cast<ValueBridge*>(parameter);
+                               const String id = bridge != nullptr ? bridge->getParameterId() : String();
+                               if (editor_pending && (id.endsWith("_slice_divisions") || id.endsWith("_slice_sensitivity"))) {
+                                 addSampleSliceEditor(oscillator, *header, inner_y, inner_width, focus_order);
+                                 editor_pending = false;
+                               }
+                             }
+                             if (editor_pending)
+                               addSampleSliceEditor(oscillator, *header, inner_y, inner_width, focus_order);
                            });
   }
   add_group(OscillatorRowGroup::kAnalog, "Analog controls", "analog controls",
@@ -9834,25 +10046,98 @@ int SynthEditor::oscillatorModeKey(int oscillator) const {
     return type * 64 + multiSampleUiState(oscillator);
   if (type == vital::source_types::kBraids)
     return type * 64 + braidsModel(oscillator);
+  if (type == vital::source_types::kGranular)
+    return type * 64 + granularRowKey(oscillator);
+  if (type == vital::source_types::kSample) {
+    // Mode, Slice by and the stretch mode of each mode all pick rows.
+    const auto value = [&](const char* suffix, int top) { return jlimit(0, top, roundToInt(sourceSlotValue(oscillator, suffix))); };
+    return type * 64 + value("sample_mode", 1) + (value("sample_slice_by", 1) << 1) +
+           (value("sample_stretch_mode", 2) << 2) + (value("sample_slice_stretch_mode", 2) << 4);
+  }
   if (!isAnalogOscillator(oscillator))
     return type * 64 - 1;
   return type * 64 + roundToInt(engineValueFor(parameterBridge("osc_" + String(oscillator + 1) + "_analog_waveform")));
 }
 
+float SynthEditor::sourceSlotValue(int oscillator, const char* suffix) const {
+  const std::string id = vital::source_types::slotPrefix(oscillator) + suffix;
+  if (auto* bridge = parameterBridge(id))
+    return engineValueFor(bridge);
+  const auto& controls = synth_.getControls();
+  const auto found = controls.find(id);
+  return found != controls.end() && found->second != nullptr ? found->second->value() : 0.0f;
+}
+
 int SynthEditor::braidsModel(int oscillator) const {
   if (!isPositiveAndBelow(oscillator, vital::kNumOscillators))
     return 0;
-  const std::string id = vital::source_types::slotPrefix(oscillator) + "braids_model";
-  float value = 0.0f;
-  if (auto* bridge = parameterBridge(id))
-    value = engineValueFor(bridge);
-  else {
-    const auto& controls = synth_.getControls();
-    const auto found = controls.find(id);
-    if (found != controls.end() && found->second != nullptr)
-      value = found->second->value();
+  return jlimit(0, vital::braids_engine::kNumModels - 1, roundToInt(sourceSlotValue(oscillator, "braids_model")));
+}
+
+int SynthEditor::granularRowKey(int oscillator) const {
+  if (!isPositiveAndBelow(oscillator, vital::kNumOscillators))
+    return 0;
+  const auto on = [&](const char* suffix) { return roundToInt(sourceSlotValue(oscillator, suffix)) >= 1 ? 1 : 0; };
+  return on("granular_mode") | on("granular_timing_mode") << 1 | on("granular_size_mode") << 2 |
+         on("granular_midi_density") << 3 | on("granular_keytrack") << 4;
+}
+
+bool SynthEditor::isGranularRowRelevant(int oscillator, const String& suffix) const {
+  // What the engine reads (GranularSource::process): Play-through moves the
+  // playhead at Speed and never reads Position, Manual the reverse; grid
+  // timing replaces Density and MIDI density with Grid rate, and MIDI density
+  // replaces Density; Grid Steps reads Grid length and Grid rate instead of
+  // Grain size; Root key counts only with Keytrack on.
+  const auto on = [&](const char* name) { return roundToInt(sourceSlotValue(oscillator, name)) >= 1; };
+  const bool manual = on("granular_mode");
+  const bool grid_timing = on("granular_timing_mode");
+  const bool grid_size = on("granular_size_mode");
+  if (suffix == "speed") return !manual;
+  if (suffix == "position") return manual;
+  if (suffix == "density") return !grid_timing && !on("granular_midi_density");
+  if (suffix == "midi_density") return !grid_timing;
+  if (suffix == "grid_rate") return grid_timing || grid_size;
+  if (suffix == "grain_size") return !grid_size;
+  if (suffix == "grid_length") return grid_size;
+  if (suffix == "root_key") return on("granular_keytrack");
+  return true;
+}
+
+int SynthEditor::sampleMode(int oscillator) const {
+  return jlimit(0, vital::SampleSource::kNumModes - 1, roundToInt(sourceSlotValue(oscillator, "sample_mode")));
+}
+
+bool SynthEditor::isSampleRowRelevant(int oscillator, const String& suffix) const {
+  // The Mode's row is its Classic and Slicer buttons (addSampleModeGroup).
+  if (suffix == "mode")
+    return false;
+  // Each mode shows its own rows (SampleSource::process): Slicer plays the
+  // slice a key picks in place of the Start, End, loop and playback rows,
+  // and cuts the slices by Divisions on the grid or by Sensitivity at the
+  // transients. Tempo mode reads Sample BPM, Fixed mode Stretch length, and
+  // both the formant switch.
+  const bool slicer = sampleMode(oscillator) == vital::SampleSource::kSlicer;
+  int stretch_mode = 0;
+  if (slicer) {
+    static const StringArray classic_only { "keytrack", "start", "end", "loop_start", "loop_end", "loop_shift",
+                                            "loop_crossfade", "playback_mode", "random_phase", "loop", "bounce",
+                                            "stretch_mode" };
+    if (classic_only.contains(suffix))
+      return false;
+    const bool transients = roundToInt(sourceSlotValue(oscillator, "sample_slice_by")) == 1;
+    if (suffix == "slice_divisions") return !transients;
+    if (suffix == "slice_sensitivity") return transients;
+    stretch_mode = jlimit(0, 2, roundToInt(sourceSlotValue(oscillator, "sample_slice_stretch_mode")));
   }
-  return jlimit(0, vital::braids_engine::kNumModels - 1, roundToInt(value));
+  else {
+    if (suffix.startsWith("slice_") || suffix.startsWith("stutter") || suffix == "play_through")
+      return false;
+    stretch_mode = jlimit(0, 2, roundToInt(sourceSlotValue(oscillator, "sample_stretch_mode")));
+  }
+  if (suffix == "bpm") return stretch_mode == vital::SampleSource::kStretchTempo;
+  if (suffix == "stretch_length") return stretch_mode == vital::SampleSource::kStretchFixed;
+  if (suffix == "formants") return stretch_mode != vital::SampleSource::kStretchOff;
+  return true;
 }
 
 int SynthEditor::sourceSlotType(int oscillator) const {
@@ -10095,12 +10380,8 @@ void SynthEditor::showAllSections(bool announce) {
             return handleEffectShortcut(section_name, key, target);
           };
         }
-        if (const int oscillator = oscillatorIndexForSectionName(section_name);
-            isPositiveAndBelow(oscillator, vital::kNumOscillators)) {
-          section_ptr->onContextMenuCommand = [this, oscillator](Component& target) {
-            showOscillatorContextMenu(oscillator, target);
-          };
-        }
+        if (auto menu = sectionContextMenu(section_name))
+          section_ptr->onContextMenuCommand = std::move(menu);
         section_ptr->setExplicitFocusOrder(focus_order++);
         group_ptr->addAndMakeVisible(section_ptr);
         group_ptr->addAccessibleChild(section_ptr);
@@ -10108,12 +10389,8 @@ void SynthEditor::showAllSections(bool announce) {
         section_headers_.push_back(std::move(section_component));
         section_y = section_ptr->headerHeight();
       }
-      else if (const int oscillator = oscillatorIndexForSectionName(section_name);
-               isPositiveAndBelow(oscillator, vital::kNumOscillators)) {
-        section_ptr->onContextMenuCommand = [this, oscillator](Component& target) {
-          showOscillatorContextMenu(oscillator, target);
-        };
-      }
+      else if (auto menu = sectionContextMenu(section_name))
+        section_ptr->onContextMenuCommand = std::move(menu);
 
       if (section_name == "Modulation routing") {
         const int slot_width = jmax(620, width - (flatten_section ? 32 : 34));
@@ -10770,7 +11047,7 @@ class AtlasSettingsContent : public Component, private FocusChangeListener, priv
         { "Use speech feedback",                      &AccessibilitySpeechSettings::speech_feedback  },
         { "Navigation announcements",                 &AccessibilitySpeechSettings::navigation       },
         { "Preset announcements",                     &AccessibilitySpeechSettings::presets          },
-        { "LFO and Trance gate editor announcements", &AccessibilitySpeechSettings::lfo_editor       },
+        { "LFO, Trance gate and slice editor announcements", &AccessibilitySpeechSettings::lfo_editor },
         { "Wavetable editor announcements",           &AccessibilitySpeechSettings::wavetable_editor },
         { "Sample and granular announcements",        &AccessibilitySpeechSettings::sample_browser   },
         { "Modulation announcements",                 &AccessibilitySpeechSettings::modulation       },
@@ -11754,7 +12031,8 @@ namespace {
                  "groupings inside them, such as an EQ's bands or Glitch Delay's groups\n"
                : "  On an effects chain, Comma / Period also step through its effects (Slot 1, Slot 2 and so on)\n")
         : "";
-    return String::fromUTF8(text).replace("{Cmd}", command).replace("{ContextMenuKeys}", context_menu)
+    return String::fromUTF8(text).replace("{Cmd}", command)
+                       .replace("{ContextMenuKeys}", context_menu)
                        .replace("{HeadingMenuKeys}", heading_menu)
                        .replace("{EffectSlotSteps}", effect_slot_steps);
   }
@@ -11770,11 +12048,19 @@ String SynthEditor::keyboardHelpText() {
       "ATLAS keyboard shortcuts\n"
       "\nTrance gate editor\n"
       "  Left/Right move between steps.\n"
-      "  G/H change the step's shape: Whole, Medium, Short, Ramp down or Ramp up.\n"
+      "  Up/Down change the step's shape: Whole, Medium, Short, Ramp down or Ramp up.\n"
       "  M mutes or unmutes the step.\n"
       "  Minus/Equals make the grid coarser/finer. Semicolon/Apostrophe shorten/lengthen the pattern.\n"
       "  Backspace resets the pattern to its default: every step Whole at full level, grid and length too.\n"
       "  Global controls use Atlas slider shortcuts. Navigation announces position first; edits announce only what changed.\n"
+      "\nSlices editor (the Sample type's Slicer mode)\n"
+      "  Up/Down move between slices; Home/End go to the first and last.\n"
+      "  Left/Right move the slice's start by 10 ms, with Shift by 1 ms.\n"
+      "  Comma/Period lower/raise the slice's pitch by a semitone, with Shift by a tenth.\n"
+      "  Page Down/Page Up lower/raise its gain by 1 dB, with Shift by a tenth. V turns it around.\n"
+      "  0 puts the slice's pitch, gain and direction back.\n"
+      "  Return splits the slice in the middle. Backspace or Delete removes it. R moves every start to a random place.\n"
+      "  Space plays the slice on its key. {ContextMenuKeys} open its menu, with Show as for the units it reads in.\n"
       "\n"
       "Most single-letter shortcuts work when a parameter or the editor has focus, but not while a "
       "text field is focused.\n"
@@ -11807,7 +12093,7 @@ String SynthEditor::keyboardHelpText() {
       "{EffectSlotSteps}"
       "\n"
       "Headings with a menu\n"
-      "  {HeadingMenuKeys} on an oscillator heading - Copy an oscillator or paste one into this one\n"
+      "  {HeadingMenuKeys} on an oscillator, envelope, LFO or random modulator heading - Copy it, or paste a copied one into it\n"
       "  {HeadingMenuKeys} on an effect slot heading - Copy the effect, paste it to another bus, replace or remove it\n"
       "\n"
       "Adjusting a parameter (when a slider has focus)\n"
@@ -11872,14 +12158,14 @@ String SynthEditor::keyboardHelpText() {
       "  R - Clear all selections\n"
       "  E or Delete - Delete the current point, complete performer shape, or step\n"
       "  I / K - Cycle curve type in LFO/Performer; ignored in Step Sequencer\n"
-      "  {Cmd} + Up / Down - Cycle curve type up / down\n"
+      "  {Cmd} + Up / Down - Bend the following segment's curve by 5%, from -100% to 100%; with Shift by 1%\n"
       "  J / L - Move point in time left / right\n"
       "  G / H - Cycle shape presets backward / forward\n"
       "  Shift+A - Apply selected shape preset\n"
       "  Semicolon ( ; ) / Apostrophe ( ' ) - Cycle LFO cycle length\n"
       "  Minus ( - ) / Equals ( = ) - Make grid coarser / finer\n"
       "  C / V - Copy / paste selected points\n"
-      "  Shift+C / Shift+V - Copy / paste the whole shape\n"
+      "  F / Shift+F - Flip the shape vertically / horizontally\n"
       "  Backspace - Clear the LFO shape\n"
       "\n"
       "Modulation remap editor (when its keyboard editor has focus)\n"
@@ -13594,39 +13880,49 @@ void SynthEditor::populatePresetFilters() {
   if (!preset_tags_.contains(last_preset_tag_))
     last_preset_tag_ = kAllTags;
 
-  auto matchesLibrary = [](const PresetBrowserItem& item, const String& library) {
-    return library == kAllLibraries || item.library == library;
-  };
-  auto matchesBank = [](const PresetBrowserItem& item, const String& bank) {
-    return bank == kAllBanks || item.bank == bank;
-  };
-  auto matchesCategory = [](const PresetBrowserItem& item, const String& category) {
-    return category == kAllCategories || item.category == category;
-  };
-  auto matchesTag = [](const PresetBrowserItem& item, const String& tag) {
-    return tag == kAllTags || item.tags.contains(tag);
-  };
-  auto countMatching = [this](auto predicate) {
-    int count = 0;
-    for (const auto& item : activePresetIndex()) {
-      if (predicate(item))
-        ++count;
+  // One pass over the presets counts every row of every list. Counting each
+  // row with a pass of its own (presets times rows, comparing strings) held
+  // the message thread for a second and more with a few thousand presets,
+  // each time the list loaded or a filter changed.
+  const bool any_library = last_preset_library_ == kAllLibraries;
+  const bool any_bank = last_preset_bank_ == kAllBanks;
+  const bool any_category = last_preset_category_ == kAllCategories;
+  const bool any_tag = last_preset_tag_ == kAllTags;
+  std::map<String, int> library_counts, bank_counts, category_counts, tag_counts;
+  int total = 0, in_library = 0, in_bank = 0, in_category = 0;
+  int all_matching_count = 0, favorite_matching_count = 0;
+  for (const auto& item : activePresetIndex()) {
+    ++total;
+    ++library_counts[item.library];
+    if (!any_library && item.library != last_preset_library_)
+      continue;
+    ++in_library;
+    ++bank_counts[item.bank];
+    if (!any_bank && item.bank != last_preset_bank_)
+      continue;
+    ++in_bank;
+    ++category_counts[item.category];
+    if (!any_category && item.category != last_preset_category_)
+      continue;
+    ++in_category;
+    // A preset listing a tag twice still counts once for it.
+    for (int tag = 0; tag < item.tags.size(); ++tag) {
+      if (item.tags.indexOf(item.tags[tag]) == tag)
+        ++tag_counts[item.tags[tag]];
     }
-    return count;
+    if (any_tag || item.tags.contains(last_preset_tag_)) {
+      ++all_matching_count;
+      if (preset_favorites_.count(item.file.getFullPathName().toStdString()) != 0)
+        ++favorite_matching_count;
+    }
+  }
+  auto countOf = [](const std::map<String, int>& counts, const String& value) {
+    const auto found = counts.find(value);
+    return found == counts.end() ? 0 : found->second;
   };
   auto addFacet = [this](int kind, const String& section, const String& value, int count, bool active) {
     preset_facets_.push_back({ kind, section, value, count, active });
   };
-
-  const int all_matching_count = countMatching([&](const PresetBrowserItem& item) {
-    return matchesLibrary(item, last_preset_library_) && matchesBank(item, last_preset_bank_) &&
-           matchesCategory(item, last_preset_category_) && matchesTag(item, last_preset_tag_);
-  });
-  const int favorite_matching_count = countMatching([&](const PresetBrowserItem& item) {
-    return matchesLibrary(item, last_preset_library_) && matchesBank(item, last_preset_bank_) &&
-           matchesCategory(item, last_preset_category_) && matchesTag(item, last_preset_tag_) &&
-           preset_favorites_.count(item.file.getFullPathName().toStdString()) != 0;
-  });
 
   preset_facets_.clear();
   const PresetCollection collection = presetCollection();
@@ -13640,32 +13936,21 @@ void SynthEditor::populatePresetFilters() {
     addFacet(kCollectionFacet, "Collection", kCommunityBanksCollection, static_cast<int>(community_bank_index_.size()),
              collection == PresetCollection::kCommunityBanks);
   }
-  for (const auto& library : preset_libraries_) {
-    const int count = countMatching([&](const PresetBrowserItem& item) {
-      return matchesLibrary(item, library);
-    });
-    addFacet(kLibraryFacet, "Library", library, count, library == last_preset_library_);
-  }
-  for (const auto& bank : preset_banks_) {
-    const int count = countMatching([&](const PresetBrowserItem& item) {
-      return matchesLibrary(item, last_preset_library_) && matchesBank(item, bank);
-    });
-    addFacet(kBankFacet, "Bank", bank, count, bank == last_preset_bank_);
-  }
-  for (const auto& category : preset_categories_) {
-    const int count = countMatching([&](const PresetBrowserItem& item) {
-      return matchesLibrary(item, last_preset_library_) && matchesBank(item, last_preset_bank_) &&
-             matchesCategory(item, category);
-    });
-    addFacet(kCategoryFacet, "Category", category, count, category == last_preset_category_);
-  }
-  for (const auto& tag : preset_tags_) {
-    const int count = countMatching([&](const PresetBrowserItem& item) {
-      return matchesLibrary(item, last_preset_library_) && matchesBank(item, last_preset_bank_) &&
-             matchesCategory(item, last_preset_category_) && matchesTag(item, tag);
-    });
-    addFacet(kTagFacet, "Tag", tag, count, tag == last_preset_tag_);
-  }
+  // Each list's first row stands for every value: it counts what the lists
+  // before it let through.
+  for (const auto& library : preset_libraries_)
+    addFacet(kLibraryFacet, "Library", library,
+             library == kAllLibraries ? total : countOf(library_counts, library), library == last_preset_library_);
+  for (const auto& bank : preset_banks_)
+    addFacet(kBankFacet, "Bank", bank, bank == kAllBanks ? in_library : countOf(bank_counts, bank),
+             bank == last_preset_bank_);
+  for (const auto& category : preset_categories_)
+    addFacet(kCategoryFacet, "Category", category,
+             category == kAllCategories ? in_bank : countOf(category_counts, category),
+             category == last_preset_category_);
+  for (const auto& tag : preset_tags_)
+    addFacet(kTagFacet, "Tag", tag, tag == kAllTags ? in_category : countOf(tag_counts, tag),
+             tag == last_preset_tag_);
 
   for (int kind = kLibraryFacet; kind <= kCollectionFacet; ++kind) {
     auto* table = presetFacetTableForKind(kind);
@@ -16397,7 +16682,7 @@ String SynthEditor::lfoPointDescriptionFor(int lfoIndex, int pointIndex) const {
       : generator->getPower(jmax(0, pointIndex - 1));
   return lfoTimeDescriptionFor(lfoIndex, point.first) +
          ", " + percentString(1.0f - point.second) +
-         ", " + curveNameForIndex(curveIndexForPower(power, generator->smooth()));
+         ", " + lfoCurveText(power, generator->smooth());
 }
 
 String SynthEditor::lfoTimeDescription(float phase) const {
@@ -16456,7 +16741,8 @@ String SynthEditor::lfoMsegStatusTextFor(int lfoIndex) const {
 
   const int selected = lfoIndex == active_lfo_index_ ? currentLfoPointIndex() : 0;
   if (isPositiveAndBelow(selected, generator->getNumPoints()))
-    return lfoPointDescriptionFor(lfoIndex, selected) + ", " + String(msegTimeDivisions()[lfo_grid_index_].name);
+    return "Point " + String(selected + 1) + " of " + String(generator->getNumPoints()) + ", " +
+           lfoPointDescriptionFor(lfoIndex, selected) + ", " + String(msegTimeDivisions()[lfo_grid_index_].name);
   return lfoTimeDescriptionFor(lfoIndex, lfo_cursor_phase_) + ", value " +
          percentString(generator->valueAtPhase(lfo_cursor_phase_)) + ", no point, grid " +
          String(msegTimeDivisions()[lfo_grid_index_].name);
@@ -16777,25 +17063,21 @@ void SynthEditor::moveToLfoPerformerBlock(int direction) {
                       ", " + String(msegTimeDivisions()[lfo_grid_index_].name));
 }
 
-void SynthEditor::stepLfoCurve(int direction) {
-  auto* generator = activeLfoGenerator();
-  if (generator == nullptr || generator->getNumPoints() < 2)
-    return;
-
-  const int mode = generator->getShapeMode();
+std::vector<int> SynthEditor::lfoCurvePointIndices(LineGenerator& generator) {
+  const int mode = generator.getShapeMode();
   if (mode == LineGenerator::kModeStepSequencer) {
     postLfoAnnouncement("Curve editing is ignored in Step Sequencer mode; every step uses Hold");
-    return;
+    return {};
   }
 
   std::vector<int> indices;
   if (mode == LineGenerator::kModePerformer) {
     const float start = lfoEditorBlockStart(lfo_cursor_phase_);
-    if (!lfoPerformerBlockHasShape(generator, start)) {
+    if (!lfoPerformerBlockHasShape(&generator, start)) {
       postLfoAnnouncement("No performer shape at " + lfoTimeDescription(start));
-      return;
+      return {};
     }
-    indices = lfoEditorBlockPointIndices(generator, start);
+    indices = lfoEditorBlockPointIndices(&generator, start);
   }
   else if (lfo_multi_selection_mode_)
     indices = selectedLfoPointIndices();
@@ -16803,10 +17085,53 @@ void SynthEditor::stepLfoCurve(int direction) {
   const int cursor_index = lfoPointIndexAtPhase(lfo_cursor_phase_);
   if (indices.empty() && cursor_index >= 0)
     indices.push_back(cursor_index);
-  if (indices.empty()) {
+  if (indices.empty())
     postLfoAnnouncement("No point selected. Press A to add a point at " + lfoTimeDescription(lfo_cursor_phase_));
+  return indices;
+}
+
+void SynthEditor::adjustLfoPointCurve(int deltaPercent) {
+  auto* generator = activeLfoGenerator();
+  if (generator == nullptr || generator->getNumPoints() < 2)
     return;
+  const auto indices = lfoCurvePointIndices(*generator);
+  if (indices.empty())
+    return;
+
+  // The bend of the segment after the first point, or before the last one.
+  const int reference_index = indices.front();
+  const int curve_point = isPositiveAndBelow(reference_index, generator->getNumPoints() - 1)
+      ? reference_index : generator->getNumPoints() - 2;
+  const int percent = jlimit(-100, 100, curvePercentForPower(generator->getPower(curve_point)) + deltaPercent);
+  for (int index : indices) {
+    if (isPositiveAndBelow(index, generator->getNumPoints() - 1))
+      generator->setPower(index, powerForCurvePercent(percent));
   }
+  generator->render();
+  synth_.markStateChanged(lfoUndoBlock(generator));
+
+  // "Curve Linear" as the I and K keys say it; a bend already reads "Curve 35%".
+  String curve = lfoCurveText(generator->getPower(curve_point), generator->smooth());
+  if (!curve.startsWith("Curve "))
+    curve = "Curve " + curve;
+  if (generator->getShapeMode() == LineGenerator::kModePerformer)
+    postLfoAnnouncement("Performer shape " + curve.substring(0, 1).toLowerCase() + curve.substring(1) + ", " +
+                        lfoTimeDescription(lfoEditorBlockStart(lfo_cursor_phase_)));
+  else if (indices.size() == 1)
+    postLfoAnnouncement(curve + ", " + lfoPointDescription(indices.front()));
+  else
+    postLfoAnnouncement(curve + ", " + String(static_cast<int>(indices.size())) + " points");
+}
+
+void SynthEditor::stepLfoCurve(int direction) {
+  auto* generator = activeLfoGenerator();
+  if (generator == nullptr || generator->getNumPoints() < 2)
+    return;
+
+  const int mode = generator->getShapeMode();
+  const auto indices = lfoCurvePointIndices(*generator);
+  if (indices.empty())
+    return;
 
   const int reference_index = indices.front();
   const int reference_curve_point = isPositiveAndBelow(reference_index, generator->getNumPoints() - 1)
@@ -16909,6 +17234,69 @@ void SynthEditor::clearLfoShape() {
   postLfoAnnouncement("Cleared LFO " + String(active_lfo_index_ + 1));
 }
 
+void SynthEditor::flipLfoShape(bool horizontal) {
+  auto* generator = activeLfoGenerator();
+  if (generator == nullptr)
+    return;
+
+  if (!horizontal) {
+    generator->flipVertical();
+    synth_.markStateChanged(lfoUndoBlock(generator));
+    syncLfoEditorState();
+    postLfoAnnouncement("Flipped vertically");
+    return;
+  }
+
+  // Played backwards a curve bends the other way (its power negated), but a
+  // held segment still holds: it jumps to its level where it now starts rather
+  // than where it ends. So steps stay steps and empty Performer blocks empty.
+  const int count = generator->getNumPoints();
+  std::vector<CopiedLfoPoint> points;
+  points.reserve(static_cast<size_t>(2 * count));
+  bool previous_held = true;
+  for (int i = count - 2; i >= 0; --i) {
+    const auto from = generator->getPoint(i);
+    const auto to = generator->getPoint(i + 1);
+    const float power = generator->getPower(i);
+    const float start = 1.0f - to.first;
+    const bool held = LineGenerator::isHoldPower(power);
+    if (!held)
+      points.push_back({ { start, to.second }, -power });
+    else {
+      // A curve before the hold ends at its own level, then jumps. The jump's
+      // point holds too, as a Performer shape's last point before an empty
+      // block does, so that block still reads as empty.
+      if (!previous_held && to.second != from.second)
+        points.push_back({ { start, to.second }, power });
+      points.push_back({ { start, from.second }, power });
+    }
+    previous_held = held;
+  }
+  points.push_back({ { 1.0f, generator->getPoint(0).second }, generator->getPower(count - 1) });
+
+  if (points.size() <= static_cast<size_t>(LineGenerator::kMaxPoints))
+    writeLfoPoints(generator, std::move(points), generator->smooth());
+  else {
+    // No room for the jumps: the holds bend the other way, as the curves do.
+    generator->flipHorizontal();
+    synth_.markStateChanged(lfoUndoBlock(generator));
+  }
+
+  // The cursor and the selection stay on what they were on, now at the
+  // mirrored time: a point's own, or in Performer and Step Sequencer the
+  // mirrored grid block.
+  const bool blocks = generator->getShapeMode() != LineGenerator::kModeLfo;
+  const auto mirrored = [this, blocks](float phase) {
+    return blocks ? lfoEditorBlockStart(1.0f - lfoEditorBlockSamplePhase(lfoEditorBlockStart(phase)))
+                  : jlimit(0.0f, 1.0f, 1.0f - phase);
+  };
+  lfo_cursor_phase_ = mirrored(lfo_cursor_phase_);
+  for (float& phase : selected_lfo_point_phases_)
+    phase = mirrored(phase);
+  syncLfoEditorState();
+  postLfoAnnouncement("Flipped horizontally");
+}
+
 bool SynthEditor::handleLfoMsegShortcut(const KeyPress& key) {
   const juce_wchar character = CharacterFunctions::toLowerCase(key.getTextCharacter());
   const bool shift = key.getModifiers().isShiftDown();
@@ -16924,16 +17312,9 @@ bool SynthEditor::handleLfoMsegShortcut(const KeyPress& key) {
     return true;
   }
 
-  if (isCommandChord(key.getModifiers()) && !shift && (code == KeyPress::upKey || code == KeyPress::downKey)) {
-    if (auto* generator = activeLfoGenerator()) {
-      // Step from the curve after the current point, or before it for the last point.
-      const int point_index = currentLfoPointIndex();
-      const int curve_point = isPositiveAndBelow(point_index, generator->getNumPoints() - 1)
-          ? point_index : jmax(0, point_index - 1);
-      const int current = curveIndexForPower(generator->getPower(curve_point), generator->smooth());
-      setLfoPointCurve((current + (code == KeyPress::upKey ? 1 : -1) + kNumAccessibleLfoCurves) %
-                       kNumAccessibleLfoCurves);
-    }
+  // Command Up and Down bend the segment; I and K choose a named curve.
+  if (isCommandChord(key.getModifiers()) && (code == KeyPress::upKey || code == KeyPress::downKey)) {
+    adjustLfoPointCurve((code == KeyPress::upKey ? 1 : -1) * (shift ? 1 : 5));
     return true;
   }
   if (shift_only && (code == KeyPress::leftKey || code == KeyPress::rightKey)) {
@@ -16953,12 +17334,8 @@ bool SynthEditor::handleLfoMsegShortcut(const KeyPress& key) {
     clearLfoShape();
     return true;
   }
-  if (shift && character == 'c') {
-    copyLfoShape();
-    return true;
-  }
-  if (shift && character == 'v') {
-    pasteLfoShape();
+  if (character == 'f' && !command && !key.getModifiers().isCtrlDown() && !key.getModifiers().isAltDown()) {
+    flipLfoShape(shift);
     return true;
   }
   if (shift && character == 'a') {
@@ -17182,46 +17559,6 @@ void SynthEditor::pasteLfoPoints() {
   syncLfoEditorState();
   postLfoAnnouncement("Pasted " + String(static_cast<int>(source.size())) + " point" +
                       (source.size() == 1 ? "" : "s") + " at " + lfoTimeDescription(paste_start));
-}
-
-void SynthEditor::copyLfoShape() {
-  auto* generator = activeLfoGenerator();
-  if (generator == nullptr)
-    return;
-
-  copied_lfo_shape_.clear();
-  for (int i = 0; i < generator->getNumPoints(); ++i)
-    copied_lfo_shape_.push_back({ generator->getPoint(i), generator->getPower(i) });
-  // Smooth and S Curve segments live in the smooth flag, not in the points.
-  copied_lfo_shape_smooth_ = generator->smooth();
-  copied_lfo_shape_mode_ = generator->getShapeMode();
-  postLfoAnnouncement("Copied LFO " + String(active_lfo_index_ + 1));
-}
-
-void SynthEditor::pasteLfoShape() {
-  auto* generator = activeLfoGenerator();
-  if (generator == nullptr)
-    return;
-  if (copied_lfo_shape_.empty()) {
-    postLfoAnnouncement("No pattern copied");
-    return;
-  }
-
-  const int count = jmin(static_cast<int>(copied_lfo_shape_.size()), LineGenerator::kMaxPoints);
-  generator->setNumPoints(count);
-  for (int i = 0; i < count; ++i) {
-    generator->setPoint(i, copied_lfo_shape_[static_cast<size_t>(i)].point);
-    generator->setPower(i, copied_lfo_shape_[static_cast<size_t>(i)].power);
-  }
-  generator->setShapeMode(copied_lfo_shape_mode_);
-  generator->setSmooth(copied_lfo_shape_smooth_);
-  generator->render();
-  synth_.markStateChanged(lfoUndoBlock(generator));
-
-  lfo_cursor_phase_ = 0.0f;
-  selected_lfo_point_phases_.clear();
-  syncLfoEditorState();
-  postLfoAnnouncement("Pasted to LFO " + String(active_lfo_index_ + 1));
 }
 
 void SynthEditor::applyLfoShapePreset() {
@@ -17815,38 +18152,129 @@ void SynthEditor::showOscillatorContextMenu(int targetOscillator, Component& tar
   if (!isPositiveAndBelow(targetOscillator, vital::kNumOscillators))
     return;
 
-  enum {
-    kPasteItem = 1,
-    kCopyBase = 100,
-    kCopyWithModulationsBase = 200,
-  };
-
+  enum { kPasteItem = 1, kCopyItem, kCopyWithModulationsItem };
+  const String name = "Oscillator " + String(targetOscillator + 1);
   PopupMenu menu;
-  menu.addItem(kPasteItem, "Paste to Oscillator " + String(targetOscillator + 1),
-               !copied_oscillator_.parameters.empty());
+  menu.addItem(kPasteItem, "Paste to " + name, !copied_oscillator_.parameters.empty());
   menu.addSeparator();
-  for (int oscillator = 0; oscillator < vital::kNumOscillators; ++oscillator) {
-    const String name = "Oscillator " + String(oscillator + 1);
-    menu.addItem(kCopyBase + oscillator, "Copy from " + name);
-    menu.addItem(kCopyWithModulationsBase + oscillator, "Copy from " + name + " with modulations");
-  }
+  menu.addItem(kCopyItem, "Copy from " + name);
+  menu.addItem(kCopyWithModulationsItem, "Copy from " + name + " with modulations");
 
   Component::SafePointer<Component> target_pointer(&target);
   showAccessibleMenuAsync(menu, PopupMenu::Options().withTargetComponent(&target),
-                     [this, targetOscillator, target_pointer](int result) {
-    if (result == kPasteItem) {
-      if (target_pointer != nullptr)
-        pasteOscillatorClipboard(targetOscillator, *target_pointer);
-      return;
-    }
-    if (result >= kCopyWithModulationsBase &&
-        result < kCopyWithModulationsBase + vital::kNumOscillators) {
-      copyOscillatorToClipboard(result - kCopyWithModulationsBase, true);
-      return;
-    }
-    if (result >= kCopyBase && result < kCopyBase + vital::kNumOscillators)
-      copyOscillatorToClipboard(result - kCopyBase, false);
+                          [this, targetOscillator, target_pointer](int result) {
+    if (result == kPasteItem && target_pointer != nullptr)
+      pasteOscillatorClipboard(targetOscillator, *target_pointer);
+    else if (result == kCopyItem || result == kCopyWithModulationsItem)
+      copyOscillatorToClipboard(targetOscillator, result == kCopyWithModulationsItem);
   });
+}
+
+std::function<void(Component&)> SynthEditor::sectionContextMenu(const String& sectionName) {
+  if (const int oscillator = oscillatorIndexForSectionName(sectionName); oscillator >= 0)
+    return [this, oscillator](Component& target) { showOscillatorContextMenu(oscillator, target); };
+  if (copyableModulatorPrefix(sectionName).isNotEmpty())
+    return [this, sectionName](Component& target) { showModulatorContextMenu(sectionName, target); };
+  return {};
+}
+
+void SynthEditor::showModulatorContextMenu(const String& sectionName, Component& target) {
+  const String prefix = copyableModulatorPrefix(sectionName);
+  if (prefix.isEmpty())
+    return;
+
+  // Each kind pastes only into its own kind.
+  CopiedModulator& clipboard = prefix.startsWith("env_") ? copied_envelope_
+                             : prefix.startsWith("lfo_") ? copied_lfo_ : copied_random_;
+  enum { kPasteItem = 1, kCopyItem };
+  PopupMenu menu;
+  menu.addItem(kPasteItem, "Paste to " + sectionName, !clipboard.parameters.empty());
+  menu.addSeparator();
+  menu.addItem(kCopyItem, "Copy from " + sectionName);
+
+  showAccessibleMenuAsync(menu, PopupMenu::Options().withTargetComponent(&target),
+                          [this, sectionName, prefix, &clipboard](int result) {
+    // An LFO's shape is kept beside its controls; envelopes and random modulators have none.
+    const int lfo = lfoIndexForParameterId(prefix);
+    auto* generator = lfoGeneratorForIndex(lfo);
+    if (result == kCopyItem) {
+      clipboard.parameters = copyParameters(prefix);
+      clipboard.shape = generator != nullptr ? generator->stateToJson() : json();
+      postClipboardAnnouncement("Copied " + sectionName);
+    }
+    else if (result == kPasteItem && !clipboard.parameters.empty()) {
+      synth_.undoHistory().describeNextStep("paste to " + sectionName);
+      const bool paste_shape = generator != nullptr && !clipboard.shape.is_null();
+      if (paste_shape) {
+        generator->jsonToState(clipboard.shape);
+        synth_.markStateChanged(lfoUndoBlock(generator));
+      }
+      for (const auto& parameter : clipboard.parameters)
+        setParameterEngineValue(prefix + parameter.suffix, parameter.engine_value);
+      // The LFO keyboard editor starts again from the pasted shape's beginning.
+      if (paste_shape && active_lfo_index_ == lfo) {
+        lfo_cursor_phase_ = 0.0f;
+        selected_lfo_point_phases_.clear();
+        syncLfoEditorState();
+      }
+      postClipboardAnnouncement("Pasted to " + sectionName);
+    }
+  });
+}
+
+std::vector<SynthEditor::CopiedParameter> SynthEditor::copyParameters(const String& prefix) const {
+  std::vector<CopiedParameter> parameters;
+  for (const auto& [id, bridge] : parameters_by_id_) {
+    if (bridge != nullptr && id.startsWith(prefix))
+      parameters.push_back({ id.substring(prefix.length()), bridge->convertToEngineValue(bridge->getValue()) });
+  }
+  return parameters;
+}
+
+std::vector<SynthEditor::CopiedModulation> SynthEditor::copyModulations(const String& prefix) const {
+  std::vector<CopiedModulation> modulations;
+  for (auto* route : synth_.getModulationConnections()) {
+    if (route == nullptr || route->source_name.empty() || route->destination_name.empty())
+      continue;
+
+    const String destination(route->destination_name);
+    if (!destination.startsWith(prefix))
+      continue;
+
+    const int connection = synth_.getConnectionIndex(route->source_name, route->destination_name);
+    if (connection < 0)
+      continue;
+
+    const String modulation_prefix = "modulation_" + String(connection + 1) + "_";
+    const auto read = [this, &modulation_prefix](const char* suffix) {
+      const auto* bridge = parameterBridge(modulation_prefix + suffix);
+      return bridge != nullptr ? bridge->convertToEngineValue(bridge->getValue()) : 0.0f;
+    };
+    modulations.push_back({ String(route->source_name), destination.substring(prefix.length()), read("amount"),
+                            read("power"), read("bipolar"), read("stereo"), read("bypass"), read("random_mode") });
+  }
+  return modulations;
+}
+
+void SynthEditor::pasteModulations(const std::vector<CopiedModulation>& modulations, const String& prefix) {
+  for (const auto& modulation : modulations) {
+    const String destination = prefix + modulation.destination_suffix;
+    if (isInvalidModulationPair(modulation.source_id, destination))
+      continue;
+
+    synth_.connectModulation(modulation.source_id.toStdString(), destination.toStdString());
+    const int connection = synth_.getConnectionIndex(modulation.source_id.toStdString(), destination.toStdString());
+    if (connection < 0)
+      continue;
+
+    const String modulation_prefix = "modulation_" + String(connection + 1) + "_";
+    setParameterEngineValue(modulation_prefix + "amount", modulation.amount);
+    setParameterEngineValue(modulation_prefix + "power", modulation.power);
+    setParameterEngineValue(modulation_prefix + "bipolar", modulation.bipolar);
+    setParameterEngineValue(modulation_prefix + "stereo", modulation.stereo);
+    setParameterEngineValue(modulation_prefix + "bypass", modulation.bypass);
+    setParameterEngineValue(modulation_prefix + "random_mode", modulation.random_mode);
+  }
 }
 
 void SynthEditor::copyOscillatorToClipboard(int sourceOscillator, bool includeModulations) {
@@ -17873,49 +18301,9 @@ void SynthEditor::copyOscillatorToClipboard(int sourceOscillator, bool includeMo
   }
 
   const String prefix = "osc_" + String(sourceOscillator + 1) + "_";
-  for (const auto& entry : parameters_by_id_) {
-    const String id = entry.first;
-    auto* bridge = entry.second;
-    if (bridge == nullptr || !id.startsWith(prefix))
-      continue;
-
-    CopiedOscillatorParameter parameter;
-    parameter.suffix = id.substring(prefix.length());
-    parameter.engine_value = bridge->convertToEngineValue(bridge->getValue());
-    copied_oscillator_.parameters.push_back(parameter);
-  }
-
-  if (includeModulations) {
-    for (auto* route : synth_.getModulationConnections()) {
-      if (route == nullptr || route->source_name.empty() || route->destination_name.empty())
-        continue;
-
-      const String destination(route->destination_name);
-      if (!destination.startsWith(prefix))
-        continue;
-
-      const int connection = synth_.getConnectionIndex(route->source_name, route->destination_name);
-      if (connection < 0)
-        continue;
-
-      auto readModulationParameter = [this, connection](const String& suffix) {
-        if (auto* bridge = parameterBridge("modulation_" + String(connection + 1) + "_" + suffix))
-          return bridge->convertToEngineValue(bridge->getValue());
-        return 0.0f;
-      };
-
-      CopiedModulation modulation;
-      modulation.source_id = String(route->source_name);
-      modulation.destination_suffix = destination.substring(prefix.length());
-      modulation.amount = readModulationParameter("amount");
-      modulation.power = readModulationParameter("power");
-      modulation.bipolar = readModulationParameter("bipolar");
-      modulation.stereo = readModulationParameter("stereo");
-      modulation.bypass = readModulationParameter("bypass");
-      modulation.random_mode = readModulationParameter("random_mode");
-      copied_oscillator_.modulations.push_back(modulation);
-    }
-  }
+  copied_oscillator_.parameters = copyParameters(prefix);
+  if (includeModulations)
+    copied_oscillator_.modulations = copyModulations(prefix);
 
   String message = "Copied Oscillator " + String(sourceOscillator + 1);
   if (includeModulations)
@@ -17949,27 +18337,8 @@ void SynthEditor::pasteOscillatorClipboard(int targetOscillator, Component& targ
   }
   synth_.pauseProcessing(false);
 
-  if (copied_oscillator_.include_modulations) {
-    for (const auto& modulation : copied_oscillator_.modulations) {
-      const String destination = target_prefix + modulation.destination_suffix;
-      if (isInvalidModulationPair(modulation.source_id, destination))
-        continue;
-
-      synth_.connectModulation(modulation.source_id.toStdString(), destination.toStdString());
-      const int connection = synth_.getConnectionIndex(modulation.source_id.toStdString(),
-                                                       destination.toStdString());
-      if (connection < 0)
-        continue;
-
-      const String modulation_prefix = "modulation_" + String(connection + 1) + "_";
-      setParameterEngineValue(modulation_prefix + "amount", modulation.amount);
-      setParameterEngineValue(modulation_prefix + "power", modulation.power);
-      setParameterEngineValue(modulation_prefix + "bipolar", modulation.bipolar);
-      setParameterEngineValue(modulation_prefix + "stereo", modulation.stereo);
-      setParameterEngineValue(modulation_prefix + "bypass", modulation.bypass);
-      setParameterEngineValue(modulation_prefix + "random_mode", modulation.random_mode);
-    }
-  }
+  if (copied_oscillator_.include_modulations)
+    pasteModulations(copied_oscillator_.modulations, target_prefix);
 
   refreshVisibleModulationLabels();
   if (!copied_oscillator_.wavetable.is_null()) {
@@ -20310,16 +20679,10 @@ void SynthEditor::applyParameterValue() {
   auto* bridge = parameterBridge(parameter_id);
   if (bridge != nullptr) {
     float value;
-    if (fine_tune_sample_loop_ && isSampleLoopPointParameter(parameter_id)) {
-      const int length = sampleLoopPointLength(parameter_id);
-      const double normalized = length > 0
-          ? modulation_amount_editor_.getText().trim().getDoubleValue() / length
-          : bridge->getValue();
-      value = static_cast<float>(jlimit(0.0, 1.0, normalized));
-    }
-    else {
+    if (isSamplePositionParameter(parameter_id))
+      value = static_cast<float>(samplePositionValue(*bridge, modulation_amount_editor_.getText()));
+    else
       value = static_cast<float>(parameterValueForText(*bridge, modulation_amount_editor_.getText()));
-    }
     const int macro_index = macroIndexForControlId(parameter_id);
     if (macro_index >= 0) {
       if (isMacroBipolar(macro_index)) {
@@ -23438,6 +23801,156 @@ void SynthEditor::addSampleControlsGroup(int sample_target, Component& parent, i
   y += group_y + 10;
 }
 
+void SynthEditor::addSampleModeGroup(int oscillator, AccessibleSectionHeader& parent, int& y, int width,
+                                     int& focus_order, const String& section_name) {
+  auto group = makeSectionHeader("Mode", groupRank("Oscillators"), false, section_name + " sample mode");
+  auto* group_ptr = group.get();
+  group_ptr->setDescription("Classic or Slicer for " + section_name);
+  group_ptr->setExplicitFocusOrder(focus_order++);
+  parent.addAndMakeVisible(group_ptr);
+  parent.addAccessibleChild(group_ptr);
+  row_focus_order_.push_back(group_ptr);
+  section_headers_.push_back(std::move(group));
+
+  const int current = sampleMode(oscillator);
+  const String id = vital::source_types::slotPrefix(oscillator) + "sample_mode";
+  int group_y = group_ptr->headerHeight() + 8;
+  for (int mode = 0; mode < vital::SampleSource::kNumModes; ++mode) {
+    const String title = strings::kSampleModeNames[mode];
+    auto button = std::make_unique<ModeChoiceButton>(title);
+    auto* button_ptr = button.get();
+    button_ptr->setTitle(title);
+    button_ptr->setRadioGroupId(1);
+    button_ptr->setClickingTogglesState(true);
+    button_ptr->setToggleState(mode == current, dontSendNotification);
+    button_ptr->setWantsKeyboardFocus(true);
+    button_ptr->setExplicitFocusOrder(focus_order++);
+    // The timer rebuilds the slot's rows for the new mode and brings the
+    // focus back to this button by its title.
+    // A radio group also clicks the button it turns off, and first: without
+    // the check, choosing Slicer set Classic and said "Classic mode" before
+    // it set and said Slicer, and NVDA speaks both.
+    button_ptr->onClick = [this, id, mode, title, safe_button = Component::SafePointer<Button>(button_ptr)] {
+      if (safe_button == nullptr || !safe_button->getToggleState())
+        return;
+      setParameterEngineValue(id, static_cast<float>(mode));
+      postLfoAnnouncement(title + " mode");
+    };
+    button_ptr->setBounds(10, group_y, jmax(200, width - 40), 38);
+    group_ptr->addAndMakeVisible(button_ptr);
+    group_ptr->addAccessibleChild(button_ptr);
+    row_focus_order_.push_back(button_ptr);
+    section_headers_.push_back(std::move(button));
+    group_y += 44;
+  }
+  group_ptr->setBounds(10, y, jmax(220, width - 20), group_y + 2);
+  y += group_y + 10;
+}
+
+String SynthEditor::slicePositionText(const vital::Sample& sample, int samples) const {
+  const int units = LoadSave::samplePositionUnits();
+  const int length = sample.originalLength();
+  if (units == kSamplePositionSamples || length <= 0)
+    return String(samples);
+  if (units == kSamplePositionMilliseconds)
+    return compactFloat(samples * 1000.0f / jmax(1, sample.sampleRate()), 1) + " ms";
+  return compactFloat(samples * 100.0f / length, 1) + "%";
+}
+
+void SynthEditor::addSampleSliceEditor(int oscillator, AccessibleSectionHeader& parent, int& y, int width,
+                                       int& focus_order) {
+  auto editor = std::make_unique<SampleSliceEditor>(sample_slice_editor_states_[oscillator]);
+  auto* keyboard = editor.get();
+  auto sample = [this, oscillator]() -> vital::Sample* { return synth_.getSample(oscillator); };
+  keyboard->readSlices = [sample] {
+    return sample() != nullptr ? sample()->sliceList() : std::vector<vital::Sample::Slice>();
+  };
+  keyboard->writeSlices = [this, oscillator](const std::vector<vital::Sample::Slice>& slices, const String& description,
+                                              const String& merge_key) {
+    synth_.undoHistory().describeNextStep(description, merge_key.isEmpty() ? String()
+                                                                            : merge_key + ":" + String(oscillator));
+    synth_.setSampleSlices(oscillator, slices);
+  };
+  keyboard->fileLength = [sample] { return sample() != nullptr ? sample()->originalLength() : 0; };
+  keyboard->sampleRate = [sample] { return sample() != nullptr ? sample()->sampleRate() : 0; };
+  keyboard->positionText = [this, sample](int samples) {
+    return sample() != nullptr ? slicePositionText(*sample(), samples) : String(samples);
+  };
+  keyboard->announce = [](const String& message) { postLfoAnnouncement(message); };
+  keyboard->audition = [this, oscillator](int slice, int start, int end) { auditionSlice(oscillator, slice, start, end); };
+  keyboard->onShowMenu = [this, keyboard] { showSliceEditorMenu(*keyboard); };
+  keyboard->onKeyPressed = [this, keyboard](const KeyPress& key) {
+    if (isContextMenuKey(key)) {
+      showSliceEditorMenu(*keyboard);
+      return true;
+    }
+    return keyboard->handleShortcut(key);
+  };
+  keyboard->setExplicitFocusOrder(focus_order++);
+  keyboard->setBounds(10, y, jmax(200, width - 20), 82);
+  parent.addAndMakeVisible(keyboard);
+  parent.addAccessibleChild(keyboard);
+  row_focus_order_.push_back(keyboard);
+  section_headers_.push_back(std::move(editor));
+  y += 90;
+}
+
+void SynthEditor::showSliceEditorMenu(SampleSliceEditor& editor) {
+  enum { kRandomize = 1, kUnitsBase = 10 };
+  PopupMenu menu;
+  menu.addSectionHeader("Slices editor");
+  menu.addItem(kRandomize, "Randomize slice starts");
+  PopupMenu units_menu;
+  const int current = LoadSave::samplePositionUnits();
+  for (int i = 0; i < 3; ++i)
+    units_menu.addItem(kUnitsBase + i, kSamplePositionUnitNames[i], true, i == current);
+  menu.addSubMenu("Show as", units_menu);
+  Component::SafePointer<SampleSliceEditor> safe_editor(&editor);
+  showAccessibleMenuAsync(menu, PopupMenu::Options().withTargetComponent(&editor), [this, safe_editor](int result) {
+    if (safe_editor == nullptr || result == 0)
+      return;
+    if (result == kRandomize)
+      safe_editor->handleShortcut(KeyPress('R', ModifierKeys(), 'r'));
+    else if (result >= kUnitsBase && result < kUnitsBase + 3) {
+      setSamplePositionUnits(result - kUnitsBase);
+      safe_editor->repaint();
+    }
+  });
+}
+
+void SynthEditor::auditionSlice(int oscillator, int slice, int start, int end) {
+  MidiKeyboardState* state = synth_.getKeyboardState();
+  vital::Sample* sample = synth_.getSample(oscillator);
+  if (state == nullptr || sample == nullptr)
+    return;
+  const int note = jlimit(0, 127, roundToInt(sourceSlotValue(oscillator, "sample_root_key")) + slice);
+  // Held for the slice's length in the file, at least a tenth of a second.
+  const int milliseconds = jlimit(100, 4000, roundToInt((end - start) * 1000.0 / jmax(1, sample->sampleRate())));
+  state->noteOn(1, note, 0.8f);
+  slice_audition_notes_.push_back(note);
+  Component::SafePointer<SynthEditor> safe_this(this);
+  Timer::callAfterDelay(milliseconds, [safe_this, note] {
+    // An editor closed meanwhile released the note as it went.
+    if (safe_this == nullptr)
+      return;
+    auto& notes = safe_this->slice_audition_notes_;
+    const auto held = std::find(notes.begin(), notes.end(), note);
+    if (held == notes.end())
+      return;
+    notes.erase(held);
+    if (MidiKeyboardState* keyboard = safe_this->synth_.getKeyboardState())
+      keyboard->noteOff(1, note, 0.0f);
+  });
+}
+
+void SynthEditor::releaseSliceAuditions() {
+  if (MidiKeyboardState* keyboard = synth_.getKeyboardState()) {
+    for (int note : slice_audition_notes_)
+      keyboard->noteOff(1, note, 0.0f);
+  }
+  slice_audition_notes_.clear();
+}
+
 namespace {
   String instrumentPresetLabel(const vital::multisample::PresetName& preset) {
     String name = String::fromUTF8(preset.name.c_str()).trim();
@@ -24354,9 +24867,113 @@ void SynthEditor::chooseSampleFile(int sample_target) {
   });
 }
 
-void SynthEditor::loadSampleFile(const File& file, int sample_target) {
-  static constexpr int kMaxFileSamples = 17640000;
+namespace {
+  // What a WAV's smpl chunk or an AIFF's INST chunk says about the file: its
+  // first loop (start and end sample, whether it alternates) if it lies in
+  // the part kept, and its root note.
+  struct SampleFileInfo {
+    int loop_start = -1, loop_end = -1;
+    bool loop_alternates = false;
+    int root_note = -1;
+    float tempo = 0.0f;   // from a WAV's acid chunk: its tempo, or its beats over its length
+  };
 
+  constexpr float kMinSampleTempo = 20.0f, kMaxSampleTempo = 400.0f;
+
+  SampleFileInfo readSampleFileInfo(const StringPairArray& metadata, int64 length, int kept_length, int sample_rate) {
+    SampleFileInfo info;
+    const auto note = [&](const char* key) {
+      const int value = metadata.containsKey(key) ? metadata.getValue(key, "").getIntValue() : -1;
+      return isPositiveAndBelow(value, 128) ? value : -1;
+    };
+    info.root_note = note("MidiUnityNote");
+    if (info.root_note < 0)
+      info.root_note = note(AiffAudioFormat::appleRootNote);
+
+    if (metadata.getValue(WavAudioFormat::acidOneShot, "0").getIntValue() == 0) {
+      const float tempo = metadata.getValue(WavAudioFormat::acidTempo, "0").getFloatValue();
+      const int beats = metadata.getValue(WavAudioFormat::acidBeats, "0").getIntValue();
+      const double seconds = sample_rate > 0 ? length / double(sample_rate) : 0.0;
+      if (tempo > 0.0f)
+        info.tempo = tempo;
+      else if (beats > 0 && seconds > 0.0)
+        info.tempo = static_cast<float>(beats * 60.0 / seconds);
+      if (info.tempo < kMinSampleTempo || info.tempo > kMaxSampleTempo)
+        info.tempo = 0.0f;
+    }
+
+    if (metadata.getValue("NumSampleLoops", "0").getIntValue() <= 0)
+      return info;
+    const int type = metadata.getValue("Loop0Type", "0").getIntValue();
+    int start = -1, end = -1;
+    if (metadata.containsKey("Loop0Start")) {
+      // WAV: sample positions; type 1 alternates.
+      start = metadata.getValue("Loop0Start", "").getIntValue();
+      end = metadata.getValue("Loop0End", "").getIntValue();
+      info.loop_alternates = type == 1;
+    }
+    else if (metadata.containsKey("Loop0StartIdentifier") && type != 0) {
+      // AIFF: marker ids; type 2 alternates and 0 means no loop.
+      const int start_id = metadata.getValue("Loop0StartIdentifier", "").getIntValue();
+      const int end_id = metadata.getValue("Loop0EndIdentifier", "").getIntValue();
+      const int cues = metadata.getValue("NumCuePoints", "0").getIntValue();
+      for (int i = 0; i < cues; ++i) {
+        const String prefix = "Cue" + String(i);
+        const int id = metadata.getValue(prefix + "Identifier", "").getIntValue();
+        if (id == start_id)
+          start = metadata.getValue(prefix + "Offset", "").getIntValue();
+        if (id == end_id)
+          end = metadata.getValue(prefix + "Offset", "").getIntValue();
+      }
+      info.loop_alternates = type == 2;
+    }
+    if (start >= 0 && end > start && end < kept_length) {
+      info.loop_start = start;
+      info.loop_end = end;
+    }
+    return info;
+  }
+
+  // A tempo in a file name: "120bpm", "120 bpm" or "Loop_120_" (a bare whole
+  // number from 50 to 300, the first one).
+  float tempoFromName(const String& name) {
+    const StringArray words = StringArray::fromTokens(name.toLowerCase(), " _-.()[]", "");
+    float bare = 0.0f;
+    for (int i = 0; i < words.size(); ++i) {
+      String word = words[i];
+      bool marked = false;
+      if (word.endsWith("bpm")) {
+        word = word.dropLastCharacters(3);
+        marked = true;
+      }
+      else if (i + 1 < words.size() && words[i + 1] == "bpm")
+        marked = true;
+      if (word.isEmpty() || !word.containsOnly("0123456789."))
+        continue;
+      const float tempo = word.getFloatValue();
+      if (marked && tempo >= kMinSampleTempo && tempo <= kMaxSampleTempo)
+        return tempo;
+      if (!marked && bare == 0.0f && word.containsOnly("0123456789") && tempo >= 50.0f && tempo <= 300.0f)
+        bare = tempo;
+    }
+    return bare;
+  }
+
+  // A note in a file name, such as "Piano C3" or "cello_f#2": the last word
+  // that names one.
+  int rootNoteFromName(const String& name) {
+    int result = -1;
+    for (const String& word : StringArray::fromTokens(name, " _-.()[]", "")) {
+      float midi_note = 0.0f;
+      if (word.length() <= 4 && parseNoteNameToMidi(word, midi_note) && isPositiveAndBelow(roundToInt(midi_note), 128))
+        result = roundToInt(midi_note);
+    }
+    return result;
+  }
+}
+
+void SynthEditor::loadSampleFile(const File& file, int sample_target) {
+  bool paused = false;
   try {
     AudioFormatManager format_manager;
     format_manager.registerBasicFormats();
@@ -24364,7 +24981,7 @@ void SynthEditor::loadSampleFile(const File& file, int sample_target) {
     if (format_reader == nullptr)
       throw std::runtime_error("Unable to decode audio file");
 
-    const int num_samples = static_cast<int>(std::min<long long>(format_reader->lengthInSamples, kMaxFileSamples));
+    const int num_samples = static_cast<int>(std::min<int64>(format_reader->lengthInSamples, vital::Sample::kMaxLength));
     if (num_samples <= 0)
       throw std::runtime_error("Audio file is empty");
 
@@ -24376,16 +24993,19 @@ void SynthEditor::loadSampleFile(const File& file, int sample_target) {
     if (sample == nullptr)
       throw std::runtime_error("Sample engine is unavailable");
 
+    // Built before pausing, so a long file does not hold up the host's audio.
+    auto data = vital::Sample::createData(sample_buffer.getReadPointer(0),
+                                          sample_buffer.getNumChannels() > 1 ? sample_buffer.getReadPointer(1) : nullptr,
+                                          num_samples, static_cast<int>(format_reader->sampleRate));
     synth_.pauseProcessing(true);
-    if (sample_buffer.getNumChannels() > 1)
-      sample->loadSample(sample_buffer.getReadPointer(0), sample_buffer.getReadPointer(1),
-                         num_samples, static_cast<int>(format_reader->sampleRate));
-    else
-      sample->loadSample(sample_buffer.getReadPointer(0), num_samples, static_cast<int>(format_reader->sampleRate));
+    paused = true;
+    sample->loadData(std::move(data));
     sample->setName(file.getFileNameWithoutExtension().toStdString());
     sample->setLastBrowsedFile(file.getFullPathName().toStdString());
     synth_.pauseProcessing(false);
+    paused = false;
     synth_.markStateChanged();
+    synth_.resliceSample(sample_target);
 
     // Granular and spectral oscillators switch on when given material, as the fixed sources did.
     const int type = sourceSlotType(sample_target);
@@ -24394,11 +25014,45 @@ void SynthEditor::loadSampleFile(const File& file, int sample_target) {
 
     refreshSampleNameLabel(sample_target);
 
-    postPluginAnnouncement("Loaded sample " + file.getFileNameWithoutExtension(),
+    // The file's own loop and root note set the slot's, as a sampler expects.
+    const SampleFileInfo info = readSampleFileInfo(format_reader->metadataValues, format_reader->lengthInSamples,
+                                                   num_samples, static_cast<int>(format_reader->sampleRate));
+    const String prefix = vital::source_types::slotPrefix(sample_target) + "sample_";
+    // What was taken, and from where, for the announcement.
+    StringArray from_file, from_name;
+    if (info.loop_start >= 0) {
+      setParameterEngineValue(prefix + "loop_start", static_cast<float>(info.loop_start) / num_samples);
+      setParameterEngineValue(prefix + "loop_end", static_cast<float>(info.loop_end + 1) / num_samples);
+      if (info.loop_alternates)
+        setParameterEngineValue(prefix + "bounce", 1.0f);
+      from_file.add("loop");
+    }
+    const int root_note = info.root_note >= 0 ? info.root_note : rootNoteFromName(file.getFileNameWithoutExtension());
+    if (root_note >= 0) {
+      setParameterEngineValue(prefix + "root_key", static_cast<float>(root_note));
+      setParameterEngineValue(vital::source_types::slotPrefix(sample_target) + "granular_root_key",
+                              static_cast<float>(root_note));
+      (info.root_note >= 0 ? from_file : from_name).add("root key " + midiRootKeyText(root_note));
+    }
+    const float tempo = info.tempo > 0.0f ? info.tempo : tempoFromName(file.getFileNameWithoutExtension());
+    if (tempo > 0.0f) {
+      setParameterEngineValue(prefix + "bpm", tempo);
+      (info.tempo > 0.0f ? from_file : from_name).add(String(tempo, tempo == std::floor(tempo) ? 0 : 1) + " BPM");
+    }
+    String taken;
+    if (format_reader->lengthInSamples > num_samples)
+      taken += ", cut to the first " + atlas::community::durationText(num_samples / format_reader->sampleRate);
+    if (!from_file.isEmpty())
+      taken += ", " + from_file.joinIntoString(" and ") + " from the file";
+    if (!from_name.isEmpty())
+      taken += ", " + from_name.joinIntoString(" and ") + " from its name";
+
+    postPluginAnnouncement("Loaded sample " + file.getFileNameWithoutExtension() + taken,
                                            AccessibilityHandler::AnnouncementPriority::high);
   }
   catch (const std::exception& error) {
-    synth_.pauseProcessing(false);
+    if (paused)
+      synth_.pauseProcessing(false);
     showWarningBox("Unable to load sample", error.what());
     postPluginAnnouncement("Unable to load sample",
                                            AccessibilityHandler::AnnouncementPriority::high);
@@ -25027,13 +25681,40 @@ void SynthEditor::showEffectPresetBrowserMenu(const String& sectionName, int slo
                      });
 }
 
+namespace {
+  // Version 2 saves the Trance gate's Ramp up rising from silence
+  // (engine behaviour version 4).
+  constexpr int kFxPresetVersion = 2;
+
+  // A version 1 Trance gate preset's Ramp up steps, as LoadSave migrates a
+  // patch's (trance_gate::migrateRampUp).
+  void migrateFxPreset(json& data, const String& effect_id) {
+    const int version = data.count("version") && data["version"].is_number() ? data["version"].get<int>() : 1;
+    if (version >= 2 || effect_id != "trance_gate")
+      return;
+    auto& parameters = data["parameters"];
+    for (int step = 1; step <= vital::trance_gate::kSteps; ++step) {
+      const std::string prefix = "trance_gate_step_" + std::to_string(step) + "_";
+      if (!parameters.count(prefix + "mode") || !parameters[prefix + "mode"].is_number())
+        continue;
+      int mode = roundToInt(parameters[prefix + "mode"].get<float>());
+      double value = parameters.count(prefix + "value") && parameters[prefix + "value"].is_number()
+          ? parameters[prefix + "value"].get<double>() : 0.0;
+      if (!vital::trance_gate::migrateRampUp(value, mode))
+        continue;
+      parameters[prefix + "mode"] = static_cast<float>(mode);
+      parameters[prefix + "value"] = static_cast<float>(value);
+    }
+  }
+}
+
 bool SynthEditor::loadEffectPresetIntoSlot(const String& sectionName, int slot, const File& file) {
   const int type = effectSlotType(sectionName, slot);
   if (type <= 0 || !file.existsAsFile())
     return false;
   const String effect_id = strings::kEffectOrder[type - 1];
   const String effect_name = effectName(type - 1);
-  const json data = json::parse(file.loadFileAsString().toStdString(), nullptr, false);
+  json data = json::parse(file.loadFileAsString().toStdString(), nullptr, false);
   if (data.is_discarded() || !data.is_object() || !data.count("parameters") || !data["parameters"].is_object()) {
     showWarningBox("Unable to import FX preset", "The selected file is not a valid Atlas FX preset.");
     postPluginAnnouncement("Unable to import FX preset", AccessibilityHandler::AnnouncementPriority::high);
@@ -25046,6 +25727,7 @@ bool SynthEditor::loadEffectPresetIntoSlot(const String& sectionName, int slot, 
                            AccessibilityHandler::AnnouncementPriority::high);
     return false;
   }
+  migrateFxPreset(data, effect_id);
 
   const String slot_prefix = effectSlotPrefix(sectionName, slot);
   const auto& controls = synth_.getControls();
@@ -25157,7 +25839,7 @@ void SynthEditor::saveEffectPresetFromSlot(const String& sectionName, int slot) 
       return;
     json data;
     data["type"] = "Atlas FX Preset";
-    data["version"] = 1;
+    data["version"] = kFxPresetVersion;
     data["effect"] = effect_id.toStdString();
     data["name"] = file.getFileNameWithoutExtension().toStdString();
     data["parameters"] = parameters;
@@ -25241,7 +25923,7 @@ void SynthEditor::saveEffectPresetFile(const String& sectionName) {
     if (file != File()) {
       json data;
       data["type"] = "Atlas FX Preset";
-      data["version"] = 1;
+      data["version"] = kFxPresetVersion;
       data["effect"] = effect_id.toStdString();
       data["name"] = accessibleSectionTitle(sectionName).toStdString();
       data["parameters"] = parameters;

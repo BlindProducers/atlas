@@ -21,6 +21,7 @@
 #include "parameter_slider.h"
 #include "sequence_keyboard_component.h"
 #include "trance_gate_editor.h"
+#include "sample_slice_editor.h"
 #include "synth_gui_interface.h"
 #include "community_library.h"
 #include "library_layout.h"
@@ -528,9 +529,13 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
                                                                          const String& sectionName);
     std::unique_ptr<AccessibleParameterRow> buildAccessibleParameterRow(AudioProcessorParameter& parameter,
                                                                         const String& sectionName);
-    int sampleLoopPointLength(const String& parameterId) const;
-    void toggleSampleLoopFineTune();
-    void wireSampleLoopFineTune(AccessibleParameterRow& row);
+    // The Sample type's Start, End, Loop start and Loop end read in percent,
+    // milliseconds or samples of the loaded file (LoadSave::samplePositionUnits).
+    vital::Sample* samplePositionSample(const String& parameterId) const;
+    String samplePositionText(const ValueBridge& bridge, double value) const;
+    double samplePositionValue(const ValueBridge& bridge, const String& text) const;
+    void setSamplePositionUnits(int units);
+    void wireSamplePositionUnits(AccessibleParameterRow& row);
     bool shouldShowParameterInSection(const String& sectionName, AudioProcessorParameter* parameter) const;
     bool refreshFilterRowsIfNeeded();
     bool refreshSeedRowsIfNeeded();
@@ -549,6 +554,29 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     int sourceSlotType(int oscillator) const;
     void setAutomationProxyCallbacks(AccessibleParameterRow& row);
     int oscillatorModeKey(int oscillator) const;
+    // A slot parameter's engine value, from its host parameter or the control.
+    float sourceSlotValue(int oscillator, const char* suffix) const;
+    // The Granular settings that decide which of its rows show, as one number.
+    int granularRowKey(int oscillator) const;
+    // Whether a Granular row (its suffix after "granular_") does anything
+    // under the slot's Mode, Timing mode, Size mode, MIDI density and Keytrack.
+    bool isGranularRowRelevant(int oscillator, const String& suffix) const;
+    bool isSampleRowRelevant(int oscillator, const String& suffix) const;
+    // A Sample slot's Mode: SampleSource::kClassic or kSlicer.
+    int sampleMode(int oscillator) const;
+    // The Mode's Classic and Slicer buttons, in a group of their own.
+    void addSampleModeGroup(int oscillator, AccessibleSectionHeader& parent, int& y, int width, int& focusOrder,
+                            const String& sectionName);
+    // The Slicer's keyboard editor of a slot's slices.
+    void addSampleSliceEditor(int oscillator, AccessibleSectionHeader& parent, int& y, int width, int& focusOrder);
+    // A position or length in a slot's file, in the Show as units of the Sample rows.
+    String slicePositionText(const vital::Sample& sample, int samples) const;
+    // Plays a slice on its key for its length.
+    void auditionSlice(int oscillator, int slice, int start, int end);
+    // Releases the slices still auditioning (the editor is closing).
+    void releaseSliceAuditions();
+    // The Slices editor's context menu: Randomize, and Show as.
+    void showSliceEditorMenu(SampleSliceEditor& editor);
     bool refreshOscillatorModeRowsIfNeeded();
     bool refreshZoneCrossfadeRowIfNeeded();
     bool refreshEnvelopeAnalogRowsIfNeeded();
@@ -1264,6 +1292,8 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void stepLfoGrid(int direction);
     void switchLfoFromShortcut(int lfoIndex);
     void clearLfoShape();
+    // Reverses the active LFO's shape in time (horizontal) or turns it upside down.
+    void flipLfoShape(bool horizontal);
     void applyLfoShapePreset();
     void addLfoPoint();
     void deleteLfoPoint();
@@ -1275,9 +1305,12 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void clearLfoPointSelection();
     void copyLfoPoints();
     void pasteLfoPoints();
-    void copyLfoShape();
-    void pasteLfoShape();
     void setLfoPointCurve(int curveIndex);
+    void adjustLfoPointCurve(int deltaPercent);
+    // The points whose following segment a curve command changes: the
+    // performer shape at the cursor, the selection, or the point at the
+    // cursor. Empty, with the reason announced, when there is none.
+    std::vector<int> lfoCurvePointIndices(LineGenerator& generator);
     LineGenerator* lfoGeneratorForIndex(int lfoIndex) const;
     LineGenerator* activeLfoGenerator() const;
     // The part of the state an LFO, wavetable or filter table edit changes,
@@ -1351,6 +1384,7 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void pasteOscillatorClipboard(int targetOscillator, Component& target);
 
     std::map<String, TranceGateEditor::State> trance_gate_editor_states_;
+    std::map<int, SampleSliceEditor::State> sample_slice_editor_states_;
     SynthPlugin& synth_;
     // This instance's section and preset browser state (SynthPlugin::EditorMemory):
     // reopening the window returns to them, other Atlas instances keep their own.
@@ -1464,7 +1498,6 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     // An effect's mode changed: the rebuild it queued keeps the focused row.
     bool keep_switching_row_on_rebuild_ = false;
     std::vector<std::unique_ptr<ValueBridge>> internal_fx_bridges_;
-    bool fine_tune_sample_loop_ = false;
     std::map<String, std::vector<AudioProcessorParameter*>> sections_;
     std::map<String, StringArray> group_sections_;
     std::map<String, ValueBridge*> parameters_by_id_;
@@ -1496,7 +1529,7 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     std::unique_ptr<PresetFacetTableModel> preset_tag_model_;
     std::unique_ptr<PresetResultsTableModel> preset_table_model_;
     StringArray modulation_source_ids_;
-    struct CopiedOscillatorParameter {
+    struct CopiedParameter {
       String suffix;
       float engine_value = 0.0f;
     };
@@ -1517,10 +1550,28 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
       json sample;
       // A Multi-sample slot's instrument (shared, not reloaded, when pasted).
       json instrument;
-      std::vector<CopiedOscillatorParameter> parameters;
+      std::vector<CopiedParameter> parameters;
       std::vector<CopiedModulation> modulations;
     };
     CopiedOscillatorState copied_oscillator_;
+    // An envelope, LFO or random modulator copied from its heading's menu: its
+    // controls, and an LFO's shape (LineGenerator::stateToJson).
+    struct CopiedModulator {
+      std::vector<CopiedParameter> parameters;
+      json shape;
+    };
+    CopiedModulator copied_envelope_;
+    CopiedModulator copied_lfo_;
+    CopiedModulator copied_random_;
+    // The Shift M menu of a section's heading: copy and paste for oscillators,
+    // envelopes, LFOs and random modulators, none for other sections.
+    std::function<void(Component&)> sectionContextMenu(const String& sectionName);
+    void showModulatorContextMenu(const String& sectionName, Component& target);
+    // The parameters under `prefix` and the modulations routed into them, each
+    // named by the rest of its id, so a paste can put them under another prefix.
+    std::vector<CopiedParameter> copyParameters(const String& prefix) const;
+    std::vector<CopiedModulation> copyModulations(const String& prefix) const;
+    void pasteModulations(const std::vector<CopiedModulation>& modulations, const String& prefix);
     struct CopiedEffectSlot {
       int source_bus = -1;
       int type = 0;
@@ -1535,9 +1586,6 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     CopiedEffectSlot copied_effect_slot_;
     std::vector<std::pair<String, Component::SafePointer<Button>>> fx_bus_toggles_;
     std::vector<CopiedLfoPoint> copied_lfo_points_;
-    std::vector<CopiedLfoPoint> copied_lfo_shape_;
-    bool copied_lfo_shape_smooth_ = false;
-    int copied_lfo_shape_mode_ = 0;
     std::vector<float> selected_lfo_point_phases_;
     // The keyboard editor's items (points, performer shapes or steps) and the chosen one.
     std::vector<float> lfo_editor_item_phases_;
@@ -1794,6 +1842,8 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     int qwerty_octave_ = 5;
     int qwerty_velocity_ = 127;
     std::set<int> qwerty_notes_down_;
+    // The notes auditionSlice holds until their slices' lengths have passed.
+    std::vector<int> slice_audition_notes_;
     std::set<int> qwerty_control_keys_down_;
     // Focused controls see a key before this editor does. While the virtual keyboard is on,
     // this listener sits on the focused control and hands note, octave and velocity keys to

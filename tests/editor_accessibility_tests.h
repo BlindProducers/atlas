@@ -1255,6 +1255,86 @@ namespace {
     atlas::speech::setObserverForTesting(nullptr);
   }
 
+  // Shift F in LFO 1's keyboard editor plays the shape backwards, with its held
+  // segments still holding, and F turns it upside down.
+  void testLfoFlip() {
+    atlas::speech::setObserverForTesting([](const String&) {});
+    SynthPlugin synth;
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    pumpEditorEvents();
+    auto* section = editorSection(editor, "LFO 1");
+    Component::SafePointer<Component> keys(section != nullptr ? titled(*section, "LFO 1 accessible editor") : nullptr);
+    LineGenerator* lfo = synth.getLfoSource(0);
+    expect(keys != nullptr && lfo != nullptr, "LFO 1 has its keyboard editor");
+    if (keys == nullptr || lfo == nullptr) {
+      editor.removeFromDesktop();
+      atlas::speech::setObserverForTesting(nullptr);
+      return;
+    }
+
+    const float hold = LineGenerator::kHoldPowerThreshold;
+    const auto setShape = [lfo](int mode, const std::vector<std::array<float, 3>>& points) {
+      lfo->setShapeMode(mode);
+      lfo->setNumPoints(static_cast<int>(points.size()));
+      for (int i = 0; i < static_cast<int>(points.size()); ++i) {
+        lfo->setPoint(i, { points[static_cast<size_t>(i)][0], points[static_cast<size_t>(i)][1] });
+        lfo->setPower(i, points[static_cast<size_t>(i)][2]);
+      }
+      lfo->setSmooth(false);
+    };
+    const KeyPress flip_horizontally('F', ModifierKeys::shiftModifier, 'F');
+    const KeyPress flip_vertically('F', ModifierKeys(), 'f');
+
+    // Held, curved, held: reversed, the curve comes before a jump to a hold.
+    setShape(LineGenerator::kModeLfo, { { 0.0f, 0.5f, hold }, { 0.4f, 0.0f, 4.0f },
+                                        { 0.7f, 1.0f, hold }, { 1.0f, 0.2f, 0.0f } });
+    std::vector<float> before;
+    for (float phase = 0.05f; phase < 1.0f; phase += 0.1f)
+      before.push_back(lfo->valueAtPhase(phase));
+    keys->keyPressed(flip_horizontally);
+    pumpEditorEvents();
+    float worst = 0.0f;
+    size_t sample = 0;
+    for (float phase = 0.05f; phase < 1.0f; phase += 0.1f)
+      worst = jmax(worst, std::abs(lfo->valueAtPhase(phase) - before[before.size() - 1 - sample++]));
+    expect(worst < 0.01f, "Shift F plays an LFO shape backwards: off by " + String(worst).toStdString());
+
+    before.clear();
+    for (float phase = 0.05f; phase < 1.0f; phase += 0.1f)
+      before.push_back(lfo->valueAtPhase(phase));
+    keys->keyPressed(flip_vertically);
+    pumpEditorEvents();
+    worst = 0.0f;
+    sample = 0;
+    for (float phase = 0.05f; phase < 1.0f; phase += 0.1f)
+      worst = jmax(worst, std::abs(lfo->valueAtPhase(phase) - (1.0f - before[sample++])));
+    expect(worst < 0.01f, "F turns it upside down: off by " + String(worst).toStdString());
+
+    // Four steps, reversed, stay four hard steps.
+    setShape(LineGenerator::kModeStepSequencer, { { 0.0f, 0.0f, hold }, { 0.25f, 0.25f, hold },
+                                                  { 0.5f, 0.5f, hold }, { 0.75f, 0.9f, hold },
+                                                  { 1.0f, 0.9f, hold } });
+    std::array<float, 4> steps {};
+    for (int step = 0; step < 4; ++step)
+      steps[static_cast<size_t>(step)] = lfo->valueAtPhase(0.25f * step + 0.125f);
+    keys->keyPressed(flip_horizontally);
+    pumpEditorEvents();
+    bool reversed = lfo->getNumPoints() == 5;
+    for (int step = 0; step < 4; ++step) {
+      const float expected = steps[static_cast<size_t>(3 - step)];
+      reversed &= std::abs(lfo->valueAtPhase(0.25f * step + 0.03f) - expected) < 0.005f &&
+                  std::abs(lfo->valueAtPhase(0.25f * step + 0.22f) - expected) < 0.005f &&
+                  LineGenerator::isHoldPower(lfo->getPower(step));
+    }
+    expect(reversed, "Shift F reverses Step Sequencer steps and keeps them held");
+
+    editor.removeFromDesktop();
+    atlas::speech::setObserverForTesting(nullptr);
+  }
+
   void testLfoViewTabs() {
     atlas::speech::setObserverForTesting([](const String&) {});
     SynthPlugin synth;
@@ -2999,6 +3079,49 @@ namespace {
     editor.removeFromDesktop();
   }
 
+  // The Granular oscillator shows only the rows its Mode, Timing mode, Size
+  // mode, MIDI density and Keytrack read, and a change of any of them rebuilds
+  // the rows.
+  void testGranularRows() {
+    SynthPlugin synth;
+    synth.valueChanged("osc_1_type", static_cast<float>(vital::source_types::kGranular));
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    pumpEditorEvents();
+
+    const String prefix = "osc_1_granular_";
+    const auto shown = [&](const char* suffix) { return editor.controlForParameter(prefix + suffix) != nullptr; };
+    const auto expectRows = [&](const char* when, std::initializer_list<const char*> visible,
+                                std::initializer_list<const char*> hidden) {
+      for (const char* suffix : visible)
+        expect(shown(suffix), std::string("Granular ") + when + ": " + suffix + " has a row");
+      for (const char* suffix : hidden)
+        expect(!shown(suffix), std::string("Granular ") + when + ": " + suffix + " has no row");
+    };
+    const auto set = [&](const char* suffix, float value) {
+      synth.valueChanged((prefix + suffix).toStdString(), value);
+      editor.pollStateNow();
+      pumpEditorEvents();
+    };
+    expectRows("by default", { "speed", "density", "midi_density", "grain_size", "root_key" },
+               { "position", "grid_rate", "grid_length" });
+    set("mode", 1.0f);
+    expectRows("in Manual", { "position" }, { "speed" });
+    set("timing_mode", 1.0f);
+    expectRows("on the tempo grid", { "grid_rate", "grain_size" }, { "density", "midi_density" });
+    set("timing_mode", 0.0f);
+    set("midi_density", 1.0f);
+    expectRows("with MIDI density", { "midi_density" }, { "density", "grid_rate" });
+    set("size_mode", 1.0f);
+    expectRows("in Grid Steps", { "grid_length", "grid_rate" }, { "grain_size" });
+    set("keytrack", 0.0f);
+    expectRows("without Keytrack", { "transpose" }, { "root_key" });
+
+    editor.removeFromDesktop();
+  }
+
   // The EQ gives each band its own group. Mid Side EQ nests the bands of each
   // channel in a Mid group and a Side group.
   void testEqualizerBandGroups() {
@@ -3534,17 +3657,18 @@ namespace {
     slot_ids::useLegacySourceTypes(synth);
     SynthEditor editor(synth);
     pumpEditorEvents();
+    // Size mode decides which rows show, so it is a menu, named after its choices.
     const auto valueText = [&]() {
-      auto* control = dynamic_cast<Slider*>(titled(editor, "6 Granular size mode"));
-      expect(control != nullptr, "Granular size mode must be a named choice, not an on/off toggle");
-      auto handler = control ? control->createAccessibilityHandler() : nullptr;
-      auto* value = handler ? handler->getValueInterface() : nullptr;
-      return value ? value->getCurrentValueAsString() : String();
+      auto* control = dynamic_cast<ComboBox*>(editor.controlForParameter(String(slot_ids::id("granular_size_mode"))));
+      expect(control != nullptr, "Granular size mode must be a menu of named choices, not an on/off toggle");
+      return control ? control->getText() : String();
     };
     expect(valueText() == "Milliseconds", "Granular size mode reads Milliseconds by default");
     synth.parameterChanged(slot_ids::id("granular_size_mode"), 1.0f);
+    editor.pollStateNow();
     pumpEditorEvents();
-    expect(valueText() == "Grid steps", "Granular size mode reads Grid steps when selected");
+    expect(valueText() == "Grid steps",
+           "Granular size mode reads Grid steps when selected (reads " + valueText().toStdString() + ")");
   }
 
   // Levels and amounts read as percentages of their range, 0% to 100% or
@@ -3612,6 +3736,25 @@ namespace {
       expect(level->getTextFromValue(level->getValue()) == "1%", "the Level row reads 1%");
       level->keyPressed(KeyPress(KeyPress::backspaceKey));
     }
+  }
+
+  // The Polyphony row runs to every voice the engine has, and reads the count.
+  void testPolyphonyRowReachesEveryVoice() {
+    SynthPlugin synth;
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    auto* row = dynamic_cast<ParameterSlider*>(editor.controlForParameter("polyphony"));
+    expect(row != nullptr, "the editor has a Polyphony row");
+    if (row == nullptr)
+      return;
+    row->keyPressed(KeyPress(KeyPress::homeKey));
+    close(synth.getControls().at("polyphony")->value(), static_cast<float>(vital::kMaxActivePolyphony),
+          "Home takes Polyphony to the engine's voice limit");
+    const String text = row->getTextFromValue(row->getValue());
+    expect(text == String(vital::kMaxActivePolyphony) + " voices",
+           "the Polyphony row reads the voice count: " + text.toStdString());
+    row->keyPressed(KeyPress(KeyPress::endKey));
+    close(synth.getControls().at("polyphony")->value(), 1.0f, "End takes Polyphony to one voice");
   }
 
   void testFilterFxModelControlsAndValues() {

@@ -2403,6 +2403,7 @@ int main(int argc, char** argv) {
     irSwitchingKeepsLiveEngine();
     asyncIrLoadingIsLatestWins();
     irTrimAtEndIsSafe();
+    predelayChangeIsSmooth();
     return failures ? 1 : 0;
   }
   if (argc > 1 && String(argv[1]) == "--construction") {

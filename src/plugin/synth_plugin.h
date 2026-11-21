@@ -60,7 +60,7 @@ class SynthPlugin : public SynthBase, public AudioProcessor, public ValueBridge:
     // The same for a change in one part of the state, named as
     // UndoHistory::noteStructureEdit names it ("settings/lfos/2"), which
     // undo records at less cost than a change anywhere.
-    void markStateChanged(const std::string& undoBlock);
+    void markStateChanged(const std::string& undoBlock) override;
     UndoHistory& undoHistory() { return undo_history_; }
     // Parameter bridges the editor owns tell undo about their gestures here,
     // as the host's parameters do.

@@ -61,7 +61,7 @@ class WavetableCreator {
     // The oscillators' default table: sine, saturated sine, triangle, saw,
     // square and two narrower pulses, a shape every 32 frames, as Vital's
     // Basic Shapes holds them.
-    void initBasicShapes();
+    void initBasicShapes(bool render_table = true);
     void initFromAudioFile(const float* audio_buffer, int num_samples, int sample_rate,
                            AudioFileLoadStyle load_style, FileSource::FadeStyle fade_style);
     // A held note of a known period, as preset resynthesis captures one: Cycle
@@ -78,7 +78,12 @@ class WavetableCreator {
     static bool isValidJson(json data);
     json updateJson(json data);
     json stateToJson();
-    void jsonToState(json data);
+    // Whether `data` is the state held now, so that taking it would change
+    // nothing. Cheap for a different table: the name is compared first.
+    bool holdsState(const json& data);
+    // Takes the state and renders the table from it. A caller that renders
+    // the table itself, or leaves it for later, passes false.
+    void jsonToState(json data, bool render_table = true);
 
     vital::Wavetable* getWavetable() { return wavetable_; }
 
@@ -87,10 +92,18 @@ class WavetableCreator {
                                   FileSource::FadeStyle fade_style);
     void initFromVocodedAudioFile(const float* audio_buffer, int num_samples, int sample_rate, bool ttwt);
     void initFromPitchedAudioFile(const float* audio_buffer, int num_samples, int sample_rate);
-    void initFromLineGenerator(LineGenerator* line_generator);
+    void initFromLineGenerator(LineGenerator* line_generator, bool render_table = true);
+    // Renders one frame into the table. `in_order` says render() is going
+    // through the frames from the first: a frame the same as the one before
+    // it is then copied from it.
+    float renderFrame(int position, bool in_order);
 
     vital::WaveFrame compute_frame_combine_;
     vital::WaveFrame compute_frame_;
+    // The wave and harmonics of the frame render() loaded last, and where.
+    vital::mono_float held_time_[vital::WaveFrame::kWaveformSize] = {};
+    std::complex<float> held_harmonics_[vital::Wavetable::kNumHarmonics] = {};
+    int held_position_ = -1;
     std::vector<std::unique_ptr<WavetableGroup>> groups_;
 
     std::string last_file_loaded_;

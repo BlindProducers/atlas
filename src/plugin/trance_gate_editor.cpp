@@ -13,17 +13,17 @@ String levelText(double value) { return String(roundToInt((value + 1.0) * 100.0)
 
 TranceGateEditor::TranceGateEditor(State& state) : state_(state) {
   setTitle("Trance gate Editor");
-  setDescription("Keyboard step sequencer with position announcements and concise edit feedback.");
+  setDescription("Keyboard step sequencer with step announcements and concise edit feedback.");
   setHelpText(helpText());
   getStatusText = [this] { return statusText(); };
   onKeyPressed = [this](const KeyPress& key) { return handleShortcut(key); };
 }
 
 String TranceGateEditor::helpText() {
-  return "Left/Right move between steps. G/H change the step's shape: Whole, Medium, Short, Ramp down or Ramp up. "
+  return "Left/Right move between steps. Up/Down change the step's shape: Whole, Medium, Short, Ramp down or Ramp up. "
          "M mutes or unmutes the step. Minus/Equals make the grid coarser/finer. "
          "Semicolon/Apostrophe shorten/lengthen the pattern. Backspace resets the pattern to its default. "
-         "Navigation announces position first. Edits announce only what changed.";
+         "Navigation announces the step. Edits announce only what changed.";
 }
 
 TranceGateEditor::Step TranceGateEditor::step(int index) const {
@@ -34,17 +34,21 @@ TranceGateEditor::Step TranceGateEditor::step(int index) const {
 String TranceGateEditor::statusText() const {
   if (!read) return "Trance gate editor unavailable";
   const auto value = step(state_.cursor);
-  const int grid = jlimit(0, 7, roundToInt(read("grid")));
-  const int time = roundToInt(state_.cursor * vital::trance_gate::beatsPerStep(grid) * 100.0);
+  // The step's number counts to the last step the pattern plays, whichever
+  // way the pattern runs. A step outside the pattern is still there to edit.
+  const int start = jlimit(1, vital::trance_gate::kSteps, roundToInt(read("start")));
+  const int stop = jlimit(1, vital::trance_gate::kSteps, roundToInt(read("stop")));
+  const int number = state_.cursor + 1;
+  const String position = number >= jmin(start, stop) && number <= jmax(start, stop)
+      ? ", step " + String(number) + " of " + String(jmax(start, stop))
+      : ", step " + String(number) + ", not played";
   // The level only when a preset set one other than full or silent.
   String level;
   if (isMuted(value.value))
     level = ", muted";
   else if (std::abs(value.value) >= 0.005)
     level = ", level " + levelText(value.value);
-  return "Bar " + String(time / 400 + 1) + " beat " + String((time % 400) / 100 + 1) + " " +
-      String(time % 100) + "%, Step " + String(state_.cursor + 1) + ", " +
-      String(strings::kTranceGateModeNames[value.mode]) + level;
+  return String(strings::kTranceGateModeNames[value.mode]) + position + level;
 }
 
 void TranceGateEditor::refresh() {
@@ -99,7 +103,7 @@ bool TranceGateEditor::handleShortcut(const KeyPress& key) {
   const int code = key.getKeyCode();
   if (!shift && code == KeyPress::leftKey) { move(-1); return true; }
   if (!shift && code == KeyPress::rightKey) { move(1); return true; }
-  if (!shift && (character == 'g' || character == 'h')) { changeMode(character == 'h' ? 1 : -1); return true; }
+  if (!shift && (code == KeyPress::upKey || code == KeyPress::downKey)) { changeMode(code == KeyPress::upKey ? 1 : -1); return true; }
   if (!shift && character == 'm') { toggleMute(); return true; }
   if (!shift && code == KeyPress::backspaceKey) { resetPattern(); return true; }
   if (character == '-' || character == '_' || character == '=' || character == '+') {

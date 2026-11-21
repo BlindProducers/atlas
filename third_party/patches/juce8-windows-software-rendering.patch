@@ -1,0 +1,173 @@
+diff --git a/modules/juce_graphics/native/juce_Direct2DImage_windows.cpp b/modules/juce_graphics/native/juce_Direct2DImage_windows.cpp
+index f49dd1b..c3ce1ae 100644
+--- a/modules/juce_graphics/native/juce_Direct2DImage_windows.cpp
++++ b/modules/juce_graphics/native/juce_Direct2DImage_windows.cpp
+@@ -1020,7 +1020,16 @@ extern bool juce_isRunningInWine();
+ //==============================================================================
+ ImagePixelData::Ptr NativeImageType::create (Image::PixelFormat format, int width, int height, bool clearImage) const
+ {
+-    if (! juce_isRunningInWine())
++    // Atlas: with ATLAS_JUCE_SOFTWARE_RENDERING images are software ones, as
++    // under Wine, so that drawing into one makes no Direct2D device either
++    // (see Component::createNewPeer).
++   #if ATLAS_JUCE_SOFTWARE_RENDERING
++    const auto direct2D = false;
++   #else
++    const auto direct2D = ! juce_isRunningInWine();
++   #endif
++
++    if (direct2D)
+     {
+         SharedResourcePointer<DirectX> directX;
+ 
+diff --git a/modules/juce_graphics/native/juce_DirectX_windows.cpp b/modules/juce_graphics/native/juce_DirectX_windows.cpp
+index ccbd6ca..aa6daf0 100644
+--- a/modules/juce_graphics/native/juce_DirectX_windows.cpp
++++ b/modules/juce_graphics/native/juce_DirectX_windows.cpp
+@@ -130,6 +130,20 @@ DxgiAdapters::~DxgiAdapters()
+ 
+ void DxgiAdapters::updateAdapters()
+ {
++    // Atlas: the adapters' Direct3D and Direct2D devices are made the first
++    // time something asks for an adapter (createAdaptersIfNeeded), not with the
++    // first window. Making them loads the graphics driver into the host, which
++    // holds the message thread while it does (a fifth of a second where the
++    // driver checks its own signature first), and a window the software
++    // renderer draws never asks: its vblank thread reads getDxgiAdapters.
++    if (! adaptersWanted)
++    {
++        if (factory == nullptr || ! factory->IsCurrent())
++            factory = makeDxgiFactory();
++
++        return;
++    }
++
+     if (factory != nullptr && factory->IsCurrent() && ! adapterArray.isEmpty())
+         return;
+ 
+@@ -170,8 +184,45 @@ void DxgiAdapters::releaseAdapters()
+     adapterArray.clear();
+ }
+ 
++void DxgiAdapters::createAdaptersIfNeeded() const
++{
++    if (adaptersCreated)
++        return;
++
++    const std::lock_guard lock { adapterCreation };
++
++    if (adaptersCreated)
++        return;
++
++    adaptersWanted = true;
++    const_cast<DxgiAdapters*> (this)->updateAdapters();
++    adaptersCreated = true;
++}
++
++std::vector<ComSmartPtr<IDXGIAdapter1>> DxgiAdapters::getDxgiAdapters() const
++{
++    std::vector<ComSmartPtr<IDXGIAdapter1>> result;
++
++    if (factory == nullptr)
++        return result;
++
++    for (UINT i = 0;; ++i)
++    {
++        ComSmartPtr<IDXGIAdapter1> dxgiAdapter;
++
++        if (FAILED (factory->EnumAdapters1 (i, dxgiAdapter.resetAndGetPointerAddress())) || dxgiAdapter == nullptr)
++            break;
++
++        result.push_back (dxgiAdapter);
++    }
++
++    return result;
++}
++
+ DxgiAdapter::Ptr DxgiAdapters::getAdapterForHwnd (HWND hwnd) const
+ {
++    createAdaptersIfNeeded();
++
+     const auto monitor = MonitorFromWindow (hwnd, MONITOR_DEFAULTTONULL);
+ 
+     if (monitor == nullptr)
+@@ -196,6 +247,7 @@ DxgiAdapter::Ptr DxgiAdapters::getAdapterForHwnd (HWND hwnd) const
+ 
+ DxgiAdapter::Ptr DxgiAdapters::getDefaultAdapter() const
+ {
++    createAdaptersIfNeeded();
+     return adapterArray.getFirst();
+ }
+ 
+diff --git a/modules/juce_graphics/native/juce_DirectX_windows.h b/modules/juce_graphics/native/juce_DirectX_windows.h
+index e44f510..af9566b 100644
+--- a/modules/juce_graphics/native/juce_DirectX_windows.h
++++ b/modules/juce_graphics/native/juce_DirectX_windows.h
+@@ -90,9 +90,14 @@ public:
+ 
+     const auto& getAdapterArray() const
+     {
++        createAdaptersIfNeeded();
+         return adapterArray;
+     }
+ 
++    // Atlas: the adapters as DXGI lists them, without the Direct3D and Direct2D
++    // devices of the ones above. A vblank thread needs only their outputs.
++    std::vector<ComSmartPtr<IDXGIAdapter1>> getDxgiAdapters() const;
++
+     auto getFactory() const
+     {
+         return factory;
+@@ -108,6 +113,11 @@ public:
+ private:
+     static ComSmartPtr<IDXGIFactory2> makeDxgiFactory();
+ 
++    // Atlas: see updateAdapters.
++    void createAdaptersIfNeeded() const;
++    mutable std::mutex adapterCreation;
++    mutable std::atomic<bool> adaptersWanted { false }, adaptersCreated { false };
++
+     ComSmartPtr<ID2D1Factory2> d2dFactory;
+ 
+     // It's possible that we'll need to add/remove listeners from background threads, especially in
+diff --git a/modules/juce_gui_basics/native/juce_VBlank_windows.cpp b/modules/juce_gui_basics/native/juce_VBlank_windows.cpp
+index e569636..23f8cad 100644
+--- a/modules/juce_gui_basics/native/juce_VBlank_windows.cpp
++++ b/modules/juce_gui_basics/native/juce_VBlank_windows.cpp
+@@ -238,12 +238,14 @@ public:
+         if (threadWithListener != threads.end())
+             removeListener (threadWithListener, listener);
+ 
+-        for (const auto& adapter : directX->adapters.getAdapterArray())
++        // Atlas: the adapters without their devices, which waiting for a vblank
++        // needs none of (DxgiAdapters::updateAdapters).
++        for (const auto& dxgiAdapter : directX->adapters.getDxgiAdapters())
+         {
+             for (UINT i = 0;; ++i)
+             {
+                 ComSmartPtr<IDXGIOutput> output;
+-                const auto result = adapter->dxgiAdapter->EnumOutputs (i, output.resetAndGetPointerAddress());
++                const auto result = dxgiAdapter->EnumOutputs (i, output.resetAndGetPointerAddress());
+ 
+                 if (result == DXGI_ERROR_NOT_CURRENTLY_AVAILABLE)
+                     break;
+diff --git a/modules/juce_gui_basics/native/juce_Windowing_windows.cpp b/modules/juce_gui_basics/native/juce_Windowing_windows.cpp
+index 08a728f..2c59cb8 100644
+--- a/modules/juce_gui_basics/native/juce_Windowing_windows.cpp
++++ b/modules/juce_gui_basics/native/juce_Windowing_windows.cpp
+@@ -4696,7 +4696,15 @@ extern bool juce_isRunningInWine();
+ 
+ ComponentPeer* Component::createNewPeer (int styleFlags, void* parentHWND)
+ {
++    // Atlas: with ATLAS_JUCE_SOFTWARE_RENDERING every window is drawn by the
++    // software renderer, as under Wine. The Direct2D one makes a Direct3D
++    // device with the first window and a swap chain with each, for an
++    // interface of labels and sliders whose users mostly never look at it.
++   #if ATLAS_JUCE_SOFTWARE_RENDERING
++    const auto renderer = 0;
++   #else
+     const auto renderer = juce_isRunningInWine() ? 0 : 1;
++   #endif
+     return new HWNDComponentPeer { *this, styleFlags, (HWND) parentHWND, false, renderer };
+ }
+ 

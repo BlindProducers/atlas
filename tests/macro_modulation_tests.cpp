@@ -1280,6 +1280,7 @@ int main(int argc, char** argv) {
     testFilterFxModelControlsAndValues();
     testGranularSizeModeNamesBothChoices();
     testLevelsAndAmountsReadAsPercent();
+    testPolyphonyRowReachesEveryVoice();
     testSlotTypeRowsFollowTheType();
     testArpeggiatorRatesOfferOnlyFreeRunningSources();
     testWavetableEditingOnASlotSwitchedToWavetable();
@@ -1287,10 +1288,12 @@ int main(int argc, char** argv) {
     testAnalogueCompressorRows();
     testFrequencyShifterModeRows();
     testMaimRows();
+    testGranularRows();
     testDriveDynamicsRows();
     testAnalogSwitchKeepsItsControl();
     testLfoViewTabs();
     testLfoShapePresets();
+    testLfoFlip();
     testEffectMoveKeepsFocusAcrossTimerTick();
     testSectionKeysStepThroughEffectSlots();
     testGroupShortcutsReachTheEditorsGroups();

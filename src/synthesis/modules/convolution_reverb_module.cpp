@@ -212,6 +212,7 @@ namespace vital {
     for (auto& line : predelay_buffer_)
       line.assign(predelay_size, 0.0f);
     predelay_write_ = 0;
+    predelay_cleared_ = true;
 
     juce::dsp::ProcessSpec spec;
     spec.sampleRate = getSampleRate();
@@ -316,40 +317,46 @@ namespace vital {
     float* left = wet_buffer_.getWritePointer(0);
     float* right = wet_buffer_.getWritePointer(1);
     const int line_size = static_cast<int>(predelay_buffer_[0].size());
-    const float target_predelay = predelaySeconds() * getSampleRate();
-    if (line_size > 0 && (target_predelay > 0.5f || current_predelay_samples_ > 0.5f)) {
-      // Glide the delay across the block so a change never clicks.
-      const float start_delay = current_predelay_samples_;
-      const float step = (target_predelay - start_delay) / num_samples;
+    if (line_size > 0) {
+      const int target = utils::iclamp(static_cast<int>(predelaySeconds() * getSampleRate() + 0.5f),
+                                       0, line_size - 1);
+      if (predelay_cleared_) {
+        predelay_samples_ = predelay_next_samples_ = target;
+        predelay_fade_ = 0;
+        predelay_cleared_ = false;
+      }
+      const int fade_length = std::max(1, static_cast<int>(kPredelayFadeSeconds * getSampleRate()));
+      // The line is written every sample, even at no delay, so turning predelay
+      // up never replays old audio; a delay of 0 reads the sample just written.
+      auto tap = [this, line_size](int channel, int delay) {
+        const int read = predelay_write_ >= delay ? predelay_write_ - delay : predelay_write_ - delay + line_size;
+        return predelay_buffer_[channel][static_cast<size_t>(read)];
+      };
       for (int i = 0; i < num_samples; ++i) {
         predelay_buffer_[0][static_cast<size_t>(predelay_write_)] = audio_in[i][0];
         predelay_buffer_[1][static_cast<size_t>(predelay_write_)] = audio_in[i][1];
-        const float delay = utils::clamp(start_delay + step * (i + 1), 0.0f, static_cast<float>(line_size - 2));
-        float read = static_cast<float>(predelay_write_) - delay;
-        if (read < 0.0f) read += line_size;
-        const int index = static_cast<int>(read);
-        const int next = index + 1 >= line_size ? 0 : index + 1;
-        const float fraction = read - index;
-        left[i] = predelay_buffer_[0][static_cast<size_t>(index)] * (1.0f - fraction) +
-                  predelay_buffer_[0][static_cast<size_t>(next)] * fraction;
-        right[i] = predelay_buffer_[1][static_cast<size_t>(index)] * (1.0f - fraction) +
-                   predelay_buffer_[1][static_cast<size_t>(next)] * fraction;
+        // A change made during a crossfade starts once that one ends.
+        if (predelay_fade_ == 0 && target != predelay_samples_) {
+          predelay_next_samples_ = target;
+          predelay_fade_ = fade_length;
+        }
+        left[i] = tap(0, predelay_samples_);
+        right[i] = tap(1, predelay_samples_);
+        if (predelay_fade_ > 0) {
+          const float amount = static_cast<float>(fade_length - predelay_fade_ + 1) / fade_length;
+          left[i] += (tap(0, predelay_next_samples_) - left[i]) * amount;
+          right[i] += (tap(1, predelay_next_samples_) - right[i]) * amount;
+          if (--predelay_fade_ == 0)
+            predelay_samples_ = predelay_next_samples_;
+        }
         if (++predelay_write_ >= line_size) predelay_write_ = 0;
       }
-      current_predelay_samples_ = target_predelay;
     }
     else {
       for (int i = 0; i < num_samples; ++i) {
         left[i] = audio_in[i][0];
         right[i] = audio_in[i][1];
-        if (line_size > 0) {
-          // Keep the line current so turning predelay up never replays old audio.
-          predelay_buffer_[0][static_cast<size_t>(predelay_write_)] = audio_in[i][0];
-          predelay_buffer_[1][static_cast<size_t>(predelay_write_)] = audio_in[i][1];
-          if (++predelay_write_ >= line_size) predelay_write_ = 0;
-        }
       }
-      current_predelay_samples_ = target_predelay;
     }
 
     juce::dsp::AudioBlock<float> block(wet_buffer_);
@@ -426,7 +433,7 @@ namespace vital {
   void ConvolutionReverbModule::resetFilters() {
     for (auto& line : predelay_buffer_)
       std::fill(line.begin(), line.end(), 0.0f);
-    current_predelay_samples_ = predelaySeconds() * getSampleRate();
+    predelay_cleared_ = true;
     for (auto& filter : tone_filter_)
       filter.reset();
     for (int channel = 0; channel < kNumChannels; ++channel) {

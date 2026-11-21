@@ -85,6 +85,8 @@ namespace vital {
 
       // Predelay longer than this is clamped (synced values at slow tempos).
       static constexpr float kMaxPredelaySeconds = 2.0f;
+      // A predelay change crossfades from the old delay to the new one over this long.
+      static constexpr float kPredelayFadeSeconds = 0.02f;
       // Tone tilts the wet signal around this frequency, up to this many dB per side.
       static constexpr float kToneCrossoverHz = 800.0f;
       static constexpr float kToneMaxDb = 6.0f;
@@ -232,10 +234,15 @@ namespace vital {
       std::atomic<float> last_fade_out_ { 0.0f };
 
       // Predelay: a delay line on the signal feeding the convolver, so it can
-      // move while playing without rebuilding the impulse response.
+      // move while playing without rebuilding the impulse response. A change
+      // crossfades between two taps; sliding one tap to the new delay would
+      // replay the audio in between many times faster, a burst of noise.
       std::vector<float> predelay_buffer_[kNumChannels];
       int predelay_write_ = 0;
-      float current_predelay_samples_ = 0.0f;
+      int predelay_samples_ = 0;      // the tap playing
+      int predelay_next_samples_ = 0; // the tap it fades to while predelay_fade_ runs
+      int predelay_fade_ = 0;         // samples left in that crossfade
+      bool predelay_cleared_ = true;  // the line holds nothing: take the delay at once
       OnePole tone_filter_[kNumChannels];
       float current_tone_ = 0.0f;
 

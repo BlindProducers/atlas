@@ -10,6 +10,10 @@
 #include "synth_plugin.h"
 #include "sound_engine.h"
 #include "sample_source.h"
+#include "sample_stretch.h"
+#if JUCE_MAC
+#include <malloc/malloc.h>
+#endif
 #include "noise_source.h"
 #include "analog_waveforms.h"
 #include "wavetable_creator.h"
@@ -424,7 +428,7 @@ namespace {
 
   // ---- Behaviour tests -------------------------------------------------------
 
-  std::vector<float> renderNote(SynthPlugin& plugin, int samples) {
+  std::vector<float> renderNote(SynthPlugin& plugin, int samples, int note = 60) {
     std::vector<float> result(size_t(samples) * 2);
     for (int offset = 0, block = 0; offset < samples; ++block) {
       const int count = std::min(128, samples - offset);
@@ -432,7 +436,7 @@ namespace {
       juce::MidiBuffer midi;
       audio.clear();
       if (offset == 0)
-        midi.addEvent(juce::MidiMessage::noteOn(1, 60, 0.7f), 0);
+        midi.addEvent(juce::MidiMessage::noteOn(1, note, 0.7f), 0);
       plugin.processBlock(audio, midi);
       for (int i = 0; i < count; ++i)
         for (int channel = 0; channel < 2; ++channel)
@@ -441,7 +445,7 @@ namespace {
     }
     juce::AudioBuffer<float> audio(2, 128);
     juce::MidiBuffer midi;
-    midi.addEvent(juce::MidiMessage::noteOff(1, 60), 0);
+    midi.addEvent(juce::MidiMessage::noteOff(1, note), 0);
     plugin.processBlock(audio, midi);
     // Let the release tail finish so the next note starts from silence.
     for (int block = 0; block < 2000; ++block) {
@@ -1117,7 +1121,9 @@ namespace {
     SynthPlugin plugin;
     preparePlugin(plugin);
     for (int slot = 0; slot < 8; ++slot) {
-      expect(plugin.getWavetable(slot)->numFrames() == 1, "an initialised slot holds a one-frame default table");
+      // Basic Shapes, the default table, holds its last shape at frame 224.
+      expect(plugin.getWavetable(slot)->numFrames() == (slot >= 4 ? 1 : 225),
+             "slots 1-4 hold Basic Shapes rendered, slots 5-8 a one-frame table");
       expect(plugin.isWavetableRenderPending(slot) == (slot >= 4),
              "slots 5-8 (not wavetable types) hold their render back, slots 1-4 are rendered");
     }
@@ -1158,6 +1164,8 @@ namespace {
       SynthPlugin plugin;
       preparePlugin(plugin);
       set(plugin, "osc_1_on", 1.0f);
+      // Basic Shapes' saw: its first frame, a sine, has no harmonics for a morph to move.
+      set(plugin, "osc_1_wave_frame", 96.0f);
       set(plugin, "osc_1_unison_voices", voices);
       set(plugin, "osc_1_unison_detune", 0.0f);
       set(plugin, "osc_1_spectral_unison", 1.0f);  // Morph spreads apply per unison voice only with spectral unison.
@@ -1190,7 +1198,516 @@ namespace {
            "the secondary spread parameters exist on every slot");
   }
 
+  float peakNear(const std::vector<float>& stereo, int centre, int radius) {
+    float peak = 0.0f;
+    for (int i = std::max(0, centre - radius); i < std::min(int(stereo.size() / 2), centre + radius); ++i)
+      peak = std::max(peak, std::abs(stereo[size_t(i) * 2]));
+    return peak;
+  }
+
+  // Loop shift slides the loop at its full length, stopping at Sample End,
+  // and crossed loop points loop the part between them backwards.
+  void testSampleLoopShift() {
+    SynthPlugin plugin;
+    preparePlugin(plugin);
+    setType(plugin, 0, vital::source_types::kSample);
+    set(plugin, "osc_1_on", 1.0f);
+    set(plugin, "env_1_attack", 0.0f);
+    const int length = kSampleRate / 4;
+    std::vector<float> audio(size_t(length), 0.0f);
+    audio[2000] = 1.0f;
+    audio[size_t(length * 3 / 4)] = 1.0f;
+    audio[size_t(length * 95 / 100)] = 1.0f;
+    plugin.getSample(0)->loadSample(audio.data(), int(audio.size()), kSampleRate);
+    set(plugin, "osc_1_sample_random_phase", 0.0f);
+    set(plugin, "osc_1_sample_keytrack", 0.0f);
+    set(plugin, "osc_1_sample_loop", 1.0f);
+    set(plugin, "osc_1_sample_loop_start", 0.1f);
+    set(plugin, "osc_1_sample_loop_end", 0.4f);
+    const int loop_length = length * 3 / 10;
+    const auto unshifted = renderNote(plugin, length * 2);
+    expect(peakNear(unshifted, 2000, 100) > 0.1f && peakNear(unshifted, 2000 + loop_length, 100) > 0.1f &&
+           peakNear(unshifted, length * 3 / 4, 100) < 0.01f, "a loop of the early click repeats it");
+    set(plugin, "osc_1_sample_loop_shift", 0.4f);
+    const auto shifted = renderNote(plugin, length * 2);
+    expect(peakNear(shifted, length * 3 / 4, 100) > 0.1f && peakNear(shifted, length * 3 / 4 + loop_length, 100) > 0.1f &&
+           peakNear(shifted, 2000 + loop_length, 100) < 0.01f && peakNear(shifted, length * 95 / 100, 100) < 0.01f,
+           "loop shift moves the loop to the later click");
+    set(plugin, "osc_1_sample_loop_shift", 0.9f);
+    const auto clamped = renderNote(plugin, length * 2);
+    expect(peakNear(clamped, length * 95 / 100, 100) > 0.1f && peakNear(clamped, length * 3 / 4 + loop_length, 100) > 0.1f &&
+           peakNear(clamped, 2000 + loop_length, 100) < 0.01f, "loop shift stops at Sample End at full length");
+    set(plugin, "osc_1_sample_loop_shift", 0.0f);
+    set(plugin, "osc_1_sample_loop_start", 0.4f);
+    set(plugin, "osc_1_sample_loop_end", 0.1f);
+    // The file plays forward to the loop start, a tenth in, then the loop
+    // runs from its end down: the click at 2000 comes (0.4 - 0.2) of the file
+    // after that, and once more a loop later.
+    const auto crossed = renderNote(plugin, length * 2);
+    const int first = length / 10 + (length * 4 / 10 - 2000);
+    expect(peakNear(crossed, first, 100) > 0.1f && peakNear(crossed, first + loop_length, 100) > 0.1f &&
+           peakNear(crossed, 2000, 100) < 0.01f && peakNear(crossed, length * 3 / 4, 100) < 0.01f,
+           "crossed loop points loop the part between them backwards");
+  }
+
+  // The amplitude of `frequency` in the left channel of `count` samples from `from`.
+  double harmonicLevel(const std::vector<float>& stereo, int from, int count, double frequency) {
+    double re = 0.0, im = 0.0;
+    for (int i = 0; i < count; ++i) {
+      const double window = 0.5 - 0.5 * std::cos(2.0 * M_PI * i / count);
+      const double phase = 2.0 * M_PI * frequency * i / kSampleRate;
+      re += window * stereo[size_t(from + i) * 2] * std::cos(phase);
+      im += window * stereo[size_t(from + i) * 2] * std::sin(phase);
+    }
+    return std::sqrt(re * re + im * im);
+  }
+
+  // A looped single cycle keeps its shape at every pitch, also a cycle whose
+  // length does not halve evenly: a triangle gains no even harmonics.
+  void testSampleSingleCycleLoop() {
+    for (int length : { 32, 101 }) {
+      SynthPlugin plugin;
+      preparePlugin(plugin);
+      setType(plugin, 0, vital::source_types::kSample);
+      set(plugin, "osc_1_on", 1.0f);
+      set(plugin, "env_1_attack", 0.0f);
+      // A triangle starting at its trough, where a wrong wrap shows most.
+      std::vector<float> triangle;
+      for (int i = 0; i < length; ++i) {
+        const double phase = double(i) / length;
+        triangle.push_back(float(phase < 0.5 ? 4.0 * phase - 1.0 : 3.0 - 4.0 * phase) * 0.5f);
+      }
+      plugin.getSample(0)->loadSample(triangle.data(), length, kSampleRate);
+      set(plugin, "osc_1_sample_random_phase", 0.0f);
+      set(plugin, "osc_1_sample_keytrack", 1.0f);
+      set(plugin, "osc_1_sample_loop", 1.0f);
+      for (int offset : { -12, 12, 24, 36 }) {
+        const double frequency = double(kSampleRate) / length * std::pow(2.0, offset / 12.0);
+        if (frequency * 2.0 > kSampleRate / 2)
+          continue;
+        const auto audio = renderNote(plugin, kSampleRate / 2, 60 + offset);
+        const double fundamental = harmonicLevel(audio, kSampleRate / 8, kSampleRate / 4, frequency);
+        const double second = harmonicLevel(audio, kSampleRate / 8, kSampleRate / 4, frequency * 2.0);
+        expect(fundamental > 0.0 && second < 0.01 * fundamental,
+               "a looped " + std::to_string(length) + "-sample triangle " + std::to_string(offset) +
+               " semitones from its root has no second harmonic (" + std::to_string(second / fundamental) + ")");
+      }
+    }
+  }
+
+  // Slicer mode: a key plays its slice and nothing else, slice 1 on the root
+  // key and one per semitone up; the slices follow Divisions, hand edits and
+  // the preset, and a new file resets them.
+  void testSampleSlicer() {
+    SynthPlugin plugin;
+    preparePlugin(plugin);
+    setType(plugin, 0, vital::source_types::kSample);
+    set(plugin, "osc_1_on", 1.0f);
+    set(plugin, "env_1_attack", 0.0f);
+    set(plugin, "env_1_release", 0.0f);
+    // A click in the middle of each quarter of a half-second file.
+    const int length = kSampleRate / 2;
+    const int quarter = length / 4;
+    std::vector<float> audio(size_t(length), 0.0f);
+    for (int i = 0; i < 4; ++i)
+      audio[size_t(i * quarter + quarter / 2)] = 1.0f;
+    plugin.getSample(0)->loadSample(audio.data(), int(audio.size()), kSampleRate);
+    set(plugin, "osc_1_sample_mode", float(vital::SampleSource::kSlicer));
+    set(plugin, "osc_1_sample_slice_stretch_mode", float(vital::SampleSource::kStretchOff));
+    set(plugin, "osc_1_sample_slice_divisions", 4.0f);
+    set(plugin, "osc_1_sample_root_key", 60.0f);
+    plugin.resliceSample(0);
+    const auto slices = plugin.getSample(0)->slices();
+    expect(slices == std::vector<int>({ 0, quarter, 2 * quarter, 3 * quarter }),
+           "four divisions cut the file into quarters");
+    for (int slice = 0; slice < 4; ++slice) {
+      const auto note = renderNote(plugin, length, 60 + slice);
+      bool own_click = peakNear(note, quarter / 2, 100) > 0.1f;
+      bool other_click = false;
+      for (int other = 1; other < 4; ++other)
+        other_click = other_click || peakNear(note, other * quarter + quarter / 2, 100) > 0.01f;
+      expect(own_click && !other_click,
+             "key " + std::to_string(60 + slice) + " plays slice " + std::to_string(slice + 1) + "'s click and no other");
+    }
+    expect(energy(renderNote(plugin, length, 64)) < 1.0e-9, "a key past the last slice plays nothing");
+    expect(energy(renderNote(plugin, length, 59)) < 1.0e-9, "a key below the root plays nothing");
+    // Play through runs on from the slice to the end of the file.
+    set(plugin, "osc_1_sample_play_through", 1.0f);
+    const auto through = renderNote(plugin, length, 62);
+    expect(peakNear(through, quarter / 2, 100) > 0.1f && peakNear(through, quarter / 2 + quarter, 100) > 0.1f &&
+           peakNear(through, quarter / 2 + 2 * quarter, 100) < 0.01f,
+           "Play through plays slice 3 and then slice 4");
+    set(plugin, "osc_1_sample_play_through", 0.0f);
+    // A looping slice repeats; a slice played plain stops.
+    set(plugin, "osc_1_sample_slice_loop", 1.0f);
+    const auto looped = renderNote(plugin, length, 61);
+    expect(peakNear(looped, quarter / 2, 100) > 0.1f && peakNear(looped, quarter / 2 + quarter, 100) > 0.1f,
+           "a looping slice plays its click once per loop");
+    set(plugin, "osc_1_sample_slice_loop", 0.0f);
+    // Hand edits move slice 2's start past its click, so slice 1 plays two clicks.
+    plugin.getSample(0)->setSlices({ 0, quarter + quarter / 2 + 1000, 2 * quarter, 3 * quarter });
+    const auto edited = renderNote(plugin, length, 60);
+    expect(peakNear(edited, quarter / 2, 100) > 0.1f && peakNear(edited, quarter / 2 + quarter, 100) > 0.1f &&
+           peakNear(edited, quarter / 2 + 2 * quarter, 100) < 0.01f, "an edited slice 1 plays both clicks");
+    // The slices are saved with the sample and come back with the preset.
+    json saved = pluginState(plugin);
+    SynthPlugin restored;
+    preparePlugin(restored);
+    const std::string text = saved.dump();
+    restored.setStateInformation(text.data(), int(text.size()));
+    expect(restored.getSample(0)->slices() == std::vector<int>({ 0, quarter + quarter / 2 + 1000, 2 * quarter, 3 * quarter }),
+           "the slices come back with the preset");
+    // Transients find the four clicks, and a new file resets the slices.
+    set(plugin, "osc_1_sample_slice_by", 1.0f);
+    plugin.resliceSample(0);
+    const auto found = plugin.getSample(0)->slices();
+    // Slice 1 is the silence before the first click, then one slice per click.
+    expect(found.size() == 5, "transient detection finds the four clicks: " + std::to_string(found.size()));
+    for (size_t i = 1; i < found.size() && i < 5; ++i) {
+      expect(std::abs(found[i] - int((i - 1) * quarter + quarter / 2)) < 600,
+             "transient " + std::to_string(i) + " lands at its click: " + std::to_string(found[i]));
+    }
+    expect(found.size() > 0 && found[0] == 0, "slice 1 starts at the beginning");
+    std::vector<float> other(size_t(length / 2), 0.0f);
+    plugin.getSample(0)->loadSample(other.data(), int(other.size()), kSampleRate);
+    expect(plugin.getSample(0)->slices().size() == size_t(vital::Sample::kDefaultSliceDivisions),
+           "a new file starts from the default grid");
+    expect(plugin.getEngine()->getMonoModulationDestination("osc_1_sample_reverse") != nullptr,
+           "Reverse is a modulation destination");
+  }
+
+  // Stutter plays a slice's first part over and over inside its length, and
+  // Slice Decay fades a slice out as it plays.
+  void testSampleStutterAndDecay() {
+    SynthPlugin plugin;
+    preparePlugin(plugin);
+    setType(plugin, 0, vital::source_types::kSample);
+    set(plugin, "osc_1_on", 1.0f);
+    set(plugin, "env_1_attack", 0.0f);
+    set(plugin, "env_1_release", 0.0f);
+    // Four slices of a quarter each; slice 1 holds a click near its start
+    // and one late, slice 2 one near its start.
+    const int length = kSampleRate / 2;
+    const int quarter = length / 4;
+    const int late = quarter * 3 / 4 - 500;
+    std::vector<float> audio(size_t(length), 0.0f);
+    audio[100] = 1.0f;
+    audio[size_t(late)] = 1.0f;
+    audio[size_t(quarter + 100)] = 1.0f;
+    plugin.getSample(0)->loadSample(audio.data(), int(audio.size()), kSampleRate);
+    set(plugin, "osc_1_sample_mode", float(vital::SampleSource::kSlicer));
+    set(plugin, "osc_1_sample_slice_stretch_mode", float(vital::SampleSource::kStretchOff));
+    set(plugin, "osc_1_sample_slice_divisions", 4.0f);
+    plugin.resliceSample(0);
+    const auto plain = renderNote(plugin, length, 60);
+    expect(peakNear(plain, 100, 50) > 0.1f && peakNear(plain, late, 100) > 0.1f &&
+           peakNear(plain, quarter + 100, 50) < 0.01f, "without stutter slice 1 plays its two clicks");
+    set(plugin, "osc_1_sample_stutter", 3.0f);   // 4 repeats
+    set(plugin, "osc_1_sample_stutter_chance", 1.0f);
+    const auto stuttered = renderNote(plugin, length, 60);
+    bool repeats = true;
+    for (int i = 0; i < 4; ++i)
+      repeats = repeats && peakNear(stuttered, 100 + i * (quarter / 4), 50) > 0.1f;
+    expect(repeats && peakNear(stuttered, late, 100) < 0.01f && peakNear(stuttered, quarter + 100, 50) < 0.01f,
+           "Stutter 4 plays the first quarter of the slice four times and nothing after");
+    set(plugin, "osc_1_sample_stutter_chance", 0.0f);
+    const auto never = renderNote(plugin, length, 60);
+    expect(peakNear(never, late, 100) > 0.1f && peakNear(never, 100 + quarter / 4, 50) < 0.01f,
+           "at 0% chance the slice plays as it is");
+    // A looping slice rolls again on every pass: at 100% its second pass
+    // stutters too, and at 50% some passes stutter and others play the slice
+    // as it is, both channels alike.
+    set(plugin, "osc_1_sample_slice_loop", 1.0f);
+    set(plugin, "osc_1_sample_stutter_chance", 1.0f);
+    const auto looped = renderNote(plugin, length, 60);
+    bool again = true;
+    for (int i = 4; i < 8; ++i)
+      again = again && peakNear(looped, 100 + i * (quarter / 4), 50) > 0.1f;
+    expect(again && peakNear(looped, quarter + late, 100) < 0.01f, "a looping slice stutters on its second pass too");
+    set(plugin, "osc_1_sample_stutter_chance", 0.5f);
+    const int passes = 16;
+    const auto mixed = renderNote(plugin, passes * quarter, 60);
+    int stuttered_passes = 0;
+    int plain_passes = 0;
+    for (int pass = 0; pass < passes; ++pass) {
+      stuttered_passes += peakNear(mixed, pass * quarter + 100 + quarter / 4, 50) > 0.1f ? 1 : 0;
+      plain_passes += peakNear(mixed, pass * quarter + late, 100) > 0.1f ? 1 : 0;
+    }
+    expect(stuttered_passes > 0 && plain_passes > 0 && stuttered_passes + plain_passes == passes,
+           "at 50% a looping slice stutters on some passes only: " + std::to_string(stuttered_passes) +
+               " stuttered, " + std::to_string(plain_passes) + " plain");
+    float channel_difference = 0.0f;
+    for (size_t i = 0; i < mixed.size(); i += 2)
+      channel_difference = std::max(channel_difference, std::abs(mixed[i] - mixed[i + 1]));
+    expect(channel_difference < 1.0e-6f, "both channels stutter alike: " + std::to_string(channel_difference));
+    set(plugin, "osc_1_sample_slice_loop", 0.0f);
+    set(plugin, "osc_1_sample_stutter", 0.0f);
+    set(plugin, "osc_1_sample_slice_decay", 1.0f);
+    const auto decayed = renderNote(plugin, length, 60);
+    expect(peakNear(decayed, 100, 50) > 0.1f && peakNear(decayed, late, 100) < 0.01f,
+           "Slice Decay at 100% keeps the early click and fades the late one away: " +
+               std::to_string(peakNear(decayed, late, 100)));
+    set(plugin, "osc_1_sample_slice_decay", 0.0f);
+    // A slice's own pitch: an octave up plays slice 1 twice as fast with
+    // the stretcher off, so its late click comes at half the time, and it
+    // comes back with the preset.
+    plugin.setSampleSlices(0, plugin.getSample(0)->slices(), { 12.0f, 0.0f, 0.0f, 0.0f });
+    const auto pitched = renderNote(plugin, length, 60);
+    expect(peakNear(pitched, late / 2, 100) > 0.1f && peakNear(pitched, late, 100) < 0.01f,
+           "a slice an octave up plays twice as fast");
+    const auto unpitched = renderNote(plugin, length, 61);
+    expect(peakNear(unpitched, 100, 50) > 0.1f, "the other slices keep the file's pitch");
+    json saved = pluginState(plugin);
+    SynthPlugin restored;
+    preparePlugin(restored);
+    const std::string text = saved.dump();
+    restored.setStateInformation(text.data(), int(text.size()));
+    const auto pitches = restored.getSample(0)->slicePitches();
+    expect(pitches.size() == 4 && pitches[0] == 12.0f && pitches[1] == 0.0f, "slice pitches come back with the preset");
+    // A slice's own gain and direction: slice 1 at -6 dB plays its early
+    // click at half the level, and reversed it plays that click last.
+    std::vector<vital::Sample::Slice> list = plugin.getSample(0)->sliceList();
+    list[0].pitch = 0.0f;
+    plugin.setSampleSlices(0, list);
+    // Against a fresh render: the first note of a plugin plays under the level smoother.
+    const float plain_peak = peakNear(renderNote(plugin, length, 60), 100, 50);
+    list[0].gain = -6.0f;
+    plugin.setSampleSlices(0, list);
+    const auto quieter = renderNote(plugin, length, 60);
+    expect(std::abs(peakNear(quieter, 100, 50) / plain_peak - 0.5f) < 0.05f,
+           "a slice at -6 dB plays at half its level: " + std::to_string(peakNear(quieter, 100, 50) / plain_peak));
+    list[0].gain = 0.0f;
+    list[0].reverse = true;
+    plugin.setSampleSlices(0, list);
+    const auto backwards = renderNote(plugin, length, 60);
+    expect(peakNear(backwards, quarter - 100, 100) > 0.1f && peakNear(backwards, 100, 50) < 0.01f,
+           "a reversed slice plays its early click last");
+    json saved_again = pluginState(plugin);
+    SynthPlugin restored_again;
+    preparePlugin(restored_again);
+    const std::string text_again = saved_again.dump();
+    restored_again.setStateInformation(text_again.data(), int(text_again.size()));
+    const auto back = restored_again.getSample(0)->sliceList();
+    expect(back.size() == 4 && back[0].reverse && !back[1].reverse && std::abs(back[0].gain) < 0.01f,
+           "slice gains and directions come back with the preset");
+  }
+
+  // Normalize plays a quiet file with its peak at 0 dB, and off plays it as it is.
+  void testSampleNormalize() {
+    SynthPlugin plugin;
+    preparePlugin(plugin);
+    setType(plugin, 0, vital::source_types::kSample);
+    set(plugin, "osc_1_on", 1.0f);
+    set(plugin, "env_1_attack", 0.0f);
+    const int length = kSampleRate / 4;
+    std::vector<float> audio(size_t(length), 0.0f);
+    audio[2000] = 0.25f;
+    plugin.getSample(0)->loadSample(audio.data(), int(audio.size()), kSampleRate);
+    set(plugin, "osc_1_sample_random_phase", 0.0f);
+    set(plugin, "osc_1_sample_keytrack", 0.0f);
+    set(plugin, "osc_1_sample_loop", 0.0f);
+    const float plain = peakNear(renderNote(plugin, length), 2000, 100);
+    set(plugin, "osc_1_sample_normalize", 1.0f);
+    const float normalized = peakNear(renderNote(plugin, length), 2000, 100);
+    set(plugin, "osc_1_sample_normalize", 0.0f);
+    const float plain_again = peakNear(renderNote(plugin, length), 2000, 100);
+    expect(plain > 0.01f && std::abs(normalized / plain - 4.0f) < 0.1f,
+           "Normalize raises a quarter-scale file to full scale: " + std::to_string(normalized / plain));
+    expect(plain_again == plain, "Normalize off plays the file at its own level again");
+  }
+
+  // Reverse plays the file from its end, and its loop backwards.
+  void testSampleReverse() {
+    SynthPlugin plugin;
+    preparePlugin(plugin);
+    setType(plugin, 0, vital::source_types::kSample);
+    set(plugin, "osc_1_on", 1.0f);
+    set(plugin, "env_1_attack", 0.0f);
+    // Clicks near the start and at three quarters of a quarter-second file.
+    const int length = kSampleRate / 4;
+    std::vector<float> audio(size_t(length), 0.0f);
+    audio[2000] = 1.0f;
+    audio[size_t(length * 3 / 4)] = 1.0f;
+    plugin.getSample(0)->loadSample(audio.data(), int(audio.size()), kSampleRate);
+    set(plugin, "osc_1_sample_random_phase", 0.0f);
+    set(plugin, "osc_1_sample_keytrack", 0.0f);
+    set(plugin, "osc_1_sample_loop", 0.0f);
+    const auto forward = renderNote(plugin, length);
+    expect(peakNear(forward, 2000, 100) > 0.1f && peakNear(forward, length - 2000, 100) < 0.01f,
+           "forward playback reaches the early click first");
+    set(plugin, "osc_1_sample_reverse", 1.0f);
+    const auto reversed = renderNote(plugin, length);
+    expect(peakNear(reversed, length - 2000, 100) > 0.1f && peakNear(reversed, 2000, 100) < 0.01f,
+           "reverse playback reaches the early click last");
+    // Looping the second half backwards: the file plays from its end down to
+    // the loop start, so the click at three quarters comes a quarter in and
+    // then once per loop, and the early click never plays.
+    set(plugin, "osc_1_sample_loop", 1.0f);
+    set(plugin, "osc_1_sample_loop_start", 0.5f);
+    set(plugin, "osc_1_sample_loop_end", 1.0f);
+    const auto looped = renderNote(plugin, length * 2);
+    expect(peakNear(looped, length / 4, 100) > 0.1f && peakNear(looped, length * 3 / 4, 100) > 0.1f &&
+           peakNear(looped, length / 4 + length / 2 * 3, 100) > 0.1f && peakNear(looped, 2000, 100) < 0.01f,
+           "a reversed loop repeats its region backwards");
+  }
+
+  // A sine of `seconds` with 5 ms fades at both ends.
+  std::vector<float> sineFile(float seconds, float frequency) {
+    const int length = int(seconds * kSampleRate);
+    const int fade = kSampleRate / 200;
+    std::vector<float> audio(static_cast<size_t>(length), 0.0f);
+    for (int i = 0; i < length; ++i) {
+      const float window = std::min({ 1.0f, i / float(fade), (length - 1 - i) / float(fade) });
+      audio[size_t(i)] = 0.5f * window * std::sin(2.0f * float(M_PI) * frequency * i / kSampleRate);
+    }
+    return audio;
+  }
+
+  // Where the left channel last rises above a tenth of its peak, in samples.
+  int soundLength(const std::vector<float>& stereo) {
+    float peak = 0.0f;
+    for (size_t i = 0; i < stereo.size(); i += 2)
+      peak = std::max(peak, std::abs(stereo[i]));
+    for (size_t i = stereo.size() / 2; i-- > 0;) {
+      if (std::abs(stereo[i * 2]) > 0.1f * peak)
+        return int(i);
+    }
+    return 0;
+  }
+
+  // The left channel's frequency from its zero crossings between a fifth and
+  // three fifths of `length`.
+  float soundFrequency(const std::vector<float>& stereo, int length) {
+    int crossings = 0;
+    const int start = length / 5, end = length * 3 / 5;
+    for (int i = start + 1; i < end; ++i) {
+      if ((stereo[size_t(i) * 2] >= 0.0f) != (stereo[size_t(i - 1) * 2] >= 0.0f))
+        ++crossings;
+    }
+    return crossings * 0.5f * kSampleRate / float(end - start);
+  }
+
+  void prepareStretchSample(SynthPlugin& plugin, const std::vector<float>& audio) {
+    preparePlugin(plugin);
+    setType(plugin, 0, vital::source_types::kSample);
+    set(plugin, "osc_1_on", 1.0f);
+    set(plugin, "env_1_attack", 0.0f);
+    set(plugin, "env_1_release", 0.0f);
+    plugin.getSample(0)->loadSample(audio.data(), int(audio.size()), kSampleRate);
+    set(plugin, "osc_1_sample_random_phase", 0.0f);
+    set(plugin, "osc_1_sample_loop", 0.0f);
+  }
+
+  // Fixed stretch mode keeps a file's length on every key, and the key still
+  // moves its pitch; Off plays a fifth up in two thirds of the time.
+  void testSampleStretchFixed() {
+    SynthPlugin plugin;
+    const int length = kSampleRate / 4;
+    prepareStretchSample(plugin, sineFile(0.25f, 440.0f));
+    set(plugin, "osc_1_sample_keytrack", 1.0f);
+    set(plugin, "osc_1_sample_root_key", 60.0f);
+    const int render = length * 2;
+    const auto plain = renderNote(plugin, render, 67);
+    const int plain_length = soundLength(plain);
+    const float plain_frequency = soundFrequency(plain, plain_length);
+    expect(std::abs(plain_length - length * 2 / 3) < kSampleRate / 100 && std::abs(plain_frequency - 659.0f) < 20.0f,
+           "Off plays a fifth up in two thirds of the time: " + std::to_string(plain_length) + " samples at " +
+           std::to_string(plain_frequency) + " Hz");
+    set(plugin, "osc_1_sample_stretch_mode", float(vital::SampleSource::kStretchFixed));
+    const auto fixed = renderNote(plugin, render, 67);
+    const int fixed_length = soundLength(fixed);
+    const float fixed_frequency = soundFrequency(fixed, fixed_length);
+    expect(std::abs(fixed_length - length) < kSampleRate / 100,
+           "Fixed keeps the file's length a fifth up, within 10 ms: " + std::to_string(fixed_length) + " of " +
+           std::to_string(length) + " samples");
+    expect(std::abs(fixed_frequency - 659.0f) < 20.0f,
+           "Fixed raises the pitch by the fifth: " + std::to_string(fixed_frequency) + " Hz");
+    std::cout << "stretch: Off " << plain_length << " samples at " << plain_frequency << " Hz, Fixed " << fixed_length
+              << " samples at " << fixed_frequency << " Hz (file " << length << " samples at 440 Hz)\n";
+    const auto root = renderNote(plugin, render, 60);
+    expect(std::abs(soundFrequency(root, soundLength(root)) - 440.0f) < 15.0f &&
+           std::abs(soundLength(root) - length) < kSampleRate / 100,
+           "Fixed plays the root key at the file's pitch and length");
+    set(plugin, "osc_1_sample_stretch_length", 2.0f);
+    const auto doubled = renderNote(plugin, render, 60);
+    expect(std::abs(soundLength(doubled) - 2 * length) < kSampleRate / 50,
+           "Stretch length 200% doubles the length: " + std::to_string(soundLength(doubled)));
+    set(plugin, "osc_1_sample_stretch_length", 1.0f);
+    set(plugin, "osc_1_sample_stretch_mode", float(vital::SampleSource::kStretchOff));
+    const auto plain_again = renderNote(plugin, render, 67);
+    expect(std::abs(soundLength(plain_again) - plain_length) < 10, "Off plays the file at the key's speed again");
+  }
+
+  // Tempo stretch mode fits a two-beat file at its own BPM into two beats of
+  // the plugin's tempo.
+  void testSampleStretchTempo() {
+    SynthPlugin plugin;
+    // Two beats at 100 BPM: 1.2 seconds.
+    prepareStretchSample(plugin, sineFile(1.2f, 220.0f));
+    set(plugin, "osc_1_sample_keytrack", 0.0f);
+    set(plugin, "osc_1_sample_bpm", 100.0f);
+    plugin.getControls().at("beats_per_minute")->set(2.0f);  // 120 BPM, in beats per second
+    const int render = kSampleRate * 3 / 2;
+    const auto plain = renderNote(plugin, render);
+    expect(std::abs(soundLength(plain) - kSampleRate * 12 / 10) < kSampleRate / 100,
+           "Off plays the two beats in 1.2 seconds: " + std::to_string(soundLength(plain)));
+    set(plugin, "osc_1_sample_stretch_mode", float(vital::SampleSource::kStretchTempo));
+    const auto tempo = renderNote(plugin, render);
+    std::cout << "stretch: two beats at 100 BPM play " << soundLength(plain) << " samples plain and "
+              << soundLength(tempo) << " at 120 BPM\n";
+    expect(std::abs(soundLength(tempo) - kSampleRate) < kSampleRate / 100,
+           "Tempo plays the two beats in one second at 120 BPM, within 10 ms: " + std::to_string(soundLength(tempo)));
+    expect(std::abs(soundFrequency(tempo, soundLength(tempo)) - 220.0f) < 10.0f,
+           "Tempo keeps the pitch: " + std::to_string(soundFrequency(tempo, soundLength(tempo))) + " Hz");
+    plugin.getControls().at("beats_per_minute")->set(80.0f / 60.0f);
+    const auto slower = renderNote(plugin, render);
+    expect(std::abs(soundLength(slower) - kSampleRate * 3 / 2) < kSampleRate / 50,
+           "at 80 BPM the two beats last 1.5 seconds: " + std::to_string(soundLength(slower)));
+  }
+
+  // A preset written outside the Atlas folder (shared, exported) names no
+  // file on this computer; one saved there keeps the sample's folder.
+  void testSharedPresetHidesPaths() {
+    SynthPlugin plugin;
+    preparePlugin(plugin);
+    setType(plugin, 0, vital::source_types::kSample);
+    std::vector<float> audio(size_t(4800), 0.0f);
+    plugin.getSample(0)->loadSample(audio.data(), int(audio.size()), kSampleRate);
+    plugin.getSample(0)->setLastBrowsedFile("/Users/someone/Samples/Kick.wav");
+    const juce::File folder = juce::File::getSpecialLocation(juce::File::tempDirectory)
+                                  .getNonexistentChildFile("atlas_shared_preset", {}, false);
+    expect(folder.createDirectory().wasOk(), "a folder for the shared preset");
+    const juce::File preset = folder.getChildFile("Shared.atp");
+    expect(plugin.saveCopyToFile(preset), "the preset is written outside the Atlas folder");
+    const json written = json::parse(preset.loadFileAsString().toStdString(), nullptr, false);
+    const bool has_settings = written.is_object() && written.count("settings");
+    expect(has_settings && written["settings"].count("osc_1_sample") &&
+           !written["settings"]["osc_1_sample"].count("last_browsed_file"),
+           "a shared preset carries the sample but not the file it was browsed from");
+    expect(plugin.getSample(0)->getLastBrowsedFile() == "/Users/someone/Samples/Kick.wav",
+           "the plugin itself keeps the sample's folder");
+    json state;
+    state["settings"]["osc_2_multisample"] = { { "path", "/Users/someone/Piano/piano.sfz" }, { "hash", "abc" },
+                                               { "library_instrument", "Piano/piano.sfz" } };
+    state["settings"]["osc_1_sample"] = { { "name", "Kick" }, { "last_browsed_file", "/Users/someone/Kick.wav" } };
+    expect(LoadSave::stripPrivatePaths(state) && !state["settings"]["osc_2_multisample"].count("path") &&
+           state["settings"]["osc_2_multisample"].count("library_instrument") &&
+           !state["settings"]["osc_1_sample"].count("last_browsed_file"),
+           "stripping removes the instrument's path and the sample's file and keeps the rest");
+    expect(!LoadSave::stripPrivatePaths(state), "a stripped patch has nothing more to remove");
+    folder.deleteRecursively();
+  }
+
   int behaviour() {
+    testSharedPresetHidesPaths();
+    testSampleStretchFixed();
+    testSampleStretchTempo();
+    testSampleLoopShift();
+    testSampleSingleCycleLoop();
+    testSampleSlicer();
+    testSampleStutterAndDecay();
+    testSampleNormalize();
+    testSampleReverse();
     testDetoursLeaveTypesUnchanged();
     testDefaultPatch();
     testTypeSwitchBuildsOnlyTheActiveEngine();
@@ -1712,6 +2229,50 @@ namespace {
     return best;
   }
 
+  // What the Sample type's stretcher costs: two seconds of looped playback
+  // with each stretch mode against Off, for one voice and eight. Prints only.
+  int stretchCpu() {
+    const double seconds = 2.0;
+    const auto configure = [](int mode, bool formants) {
+      return [=](SynthPlugin& plugin) {
+        setType(plugin, 0, vital::source_types::kSample);
+        loadTestSample(plugin.getSample(0));
+        set(plugin, "osc_1_sample_loop", 1.0f);
+        set(plugin, "osc_1_sample_keytrack", 1.0f);
+        set(plugin, "osc_1_sample_stretch_mode", float(mode));
+        set(plugin, "osc_1_sample_formants", formants ? 1.0f : 0.0f);
+        set(plugin, "osc_1_on", 1.0f);
+        set(plugin, "polyphony", 16.0f);
+      };
+    };
+    std::cout << std::fixed << std::setprecision(1);
+#if JUCE_MAC
+    const size_t heap_before = mstats().bytes_used;
+#endif
+    atlas::SampleStretcher stretcher;
+    stretcher.configure(kSampleRate);
+#if JUCE_MAC
+    std::cout << "one stretcher: " << (mstats().bytes_used - heap_before) / 1024 << " KB\n";
+#endif
+    std::cout << "stretcher latency: " << stretcher.latency() << " samples at "
+              << kSampleRate << " Hz (" << stretcher.latency() * 1000.0 / kSampleRate << " ms)\n";
+    for (int notes : { 1, 8 }) {
+      const double off = renderMs(configure(vital::SampleSource::kStretchOff, false), seconds, notes);
+      std::cout << notes << (notes == 1 ? " voice" : " voices") << " Off: " << off << " ms per " << seconds << " s\n";
+      struct Case { const char* name; int mode; bool formants; };
+      for (const Case& test : { Case { "Tempo", vital::SampleSource::kStretchTempo, false },
+                                Case { "Fixed", vital::SampleSource::kStretchFixed, false },
+                                Case { "Fixed with formants", vital::SampleSource::kStretchFixed, true } }) {
+        const double ms = renderMs(configure(test.mode, test.formants), seconds, notes);
+        // Milliseconds per second of audio is a tenth of a percent of one core.
+        const double per_voice = (ms - off) / notes / seconds;
+        std::cout << notes << (notes == 1 ? " voice " : " voices ") << test.name << ": " << ms << " ms, "
+                  << per_voice << " ms per voice per second of audio (" << per_voice / 10.0 << "% of a core)\n";
+      }
+    }
+    return 0;
+  }
+
   // Time for two seconds of a 16-note chord on the Spectral settings of a bell
   // keys patch at 2x oversampling. Prints only; a guide for optimising.
   int spectralCpu() {
@@ -1932,10 +2493,12 @@ int main(int argc, char** argv) {
     return cpu();
   if (argc > 1 && juce::String(argv[1]) == "--spectral-cpu")
     return spectralCpu();
+  if (argc > 1 && juce::String(argv[1]) == "--stretch-cpu")
+    return stretchCpu();
   if (argc > 1 && juce::String(argv[1]) == "--behaviour")
     return behaviour();
   if (argc > 1) {
-    std::cerr << "usage: AtlasSourceSlotTests [--behaviour | --cpu | --spectral-cpu | --smooth-interpolation | --write-presets <dir> | --capture <dir> | --compare <dir>]\n";
+    std::cerr << "usage: AtlasSourceSlotTests [--behaviour | --cpu | --spectral-cpu | --stretch-cpu | --smooth-interpolation | --write-presets <dir> | --capture <dir> | --compare <dir>]\n";
     return 2;
   }
   return behaviour();
