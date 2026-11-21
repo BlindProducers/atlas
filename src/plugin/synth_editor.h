@@ -1277,7 +1277,6 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     void pasteLfoPoints();
     void copyLfoShape();
     void pasteLfoShape();
-    void duplicateLfoShapeToNextSlot();
     void setLfoPointCurve(int curveIndex);
     LineGenerator* lfoGeneratorForIndex(int lfoIndex) const;
     LineGenerator* activeLfoGenerator() const;

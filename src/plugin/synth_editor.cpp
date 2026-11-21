@@ -11880,7 +11880,6 @@ String SynthEditor::keyboardHelpText() {
       "  Minus ( - ) / Equals ( = ) - Make grid coarser / finer\n"
       "  C / V - Copy / paste selected points\n"
       "  Shift+C / Shift+V - Copy / paste the whole shape\n"
-      "  Shift+D - Duplicate shape to the next LFO\n"
       "  Backspace - Clear the LFO shape\n"
       "\n"
       "Modulation remap editor (when its keyboard editor has focus)\n"
@@ -16962,10 +16961,6 @@ bool SynthEditor::handleLfoMsegShortcut(const KeyPress& key) {
     pasteLfoShape();
     return true;
   }
-  if (shift && character == 'd') {
-    duplicateLfoShapeToNextSlot();
-    return true;
-  }
   if (shift && character == 'a') {
     applyLfoShapePreset();
     return true;
@@ -17227,36 +17222,6 @@ void SynthEditor::pasteLfoShape() {
   selected_lfo_point_phases_.clear();
   syncLfoEditorState();
   postLfoAnnouncement("Pasted to LFO " + String(active_lfo_index_ + 1));
-}
-
-void SynthEditor::duplicateLfoShapeToNextSlot() {
-  auto* source = activeLfoGenerator();
-  if (source == nullptr)
-    return;
-
-  std::vector<CopiedLfoPoint> duplicate;
-  for (int i = 0; i < source->getNumPoints(); ++i)
-    duplicate.push_back({ source->getPoint(i), source->getPower(i) });
-  const bool smooth = source->smooth();
-  const int mode = source->getShapeMode();
-
-  const int destination = (active_lfo_index_ + 1) % vital::kNumLfos;
-  active_lfo_index_ = destination;
-  if (auto* target = activeLfoGenerator()) {
-    const int count = jmin(static_cast<int>(duplicate.size()), LineGenerator::kMaxPoints);
-    target->setNumPoints(count);
-    for (int i = 0; i < count; ++i) {
-      target->setPoint(i, duplicate[static_cast<size_t>(i)].point);
-      target->setPower(i, duplicate[static_cast<size_t>(i)].power);
-    }
-    target->setShapeMode(mode);
-    target->setSmooth(smooth);
-    target->render();
-  }
-  lfo_cursor_phase_ = 0.0f;
-  selected_lfo_point_phases_.clear();
-  syncLfoEditorState();
-  postLfoAnnouncement("Duplicated to LFO " + String(destination + 1));
 }
 
 void SynthEditor::applyLfoShapePreset() {
