@@ -9,6 +9,11 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#if JUCE_WINDOWS
+#include "stack_sampler_windows.h"
+#include <psapi.h>
+#endif
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -185,6 +190,10 @@ namespace {
     bool filters = false;
     bool child = false;
     juce::File save_audio;   // where each build's timed output goes (--save-audio)
+    bool load = false;       // time loading and opening the editor instead of rendering (--load)
+    bool focus = false;      // --load: bring the editor to the front and focus it, as opening it in a host does
+    juce::File profile;      // --load: where the message thread's sampled call stacks go (--profile, Windows)
+    Settings set;            // --load: controls changed in the state that is restored (--set name=value)
   };
 
   std::vector<Scenario> allScenarios(const Options& options) {
@@ -375,6 +384,233 @@ namespace {
         binary = found.getFirst();
     }
     return binary.getLastModificationTime().toISO8601(true);
+  }
+
+  // What the process has committed (its private bytes), which is what Windows
+  // runs out of; 0 where there is no such count.
+  double privateMiB() {
+#if JUCE_WINDOWS
+    PROCESS_MEMORY_COUNTERS_EX counters = {};
+    counters.cb = sizeof(counters);
+    if (GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&counters),
+                             sizeof(counters)))
+      return double(counters.PrivateUsage) / (1024.0 * 1024.0);
+#endif
+    return 0.0;
+  }
+
+  // --load, in a child process: what a user waits for when a host loads the
+  // plugin and opens its window. Each step runs on the message thread, as in a
+  // host, and is timed; an audio thread plays the instance meanwhile. Then the
+  // message thread is watched for a while: every stretch a message held it, the
+  // host's own window and a screen reader stood still too.
+  int runLoadChild(const Options& options) {
+    using Clock = std::chrono::steady_clock;
+    auto since = [](Clock::time_point from) {
+      return std::chrono::duration<double, std::milli>(Clock::now() - from).count();
+    };
+
+    juce::Array<juce::var> stages;
+    std::vector<std::string> stage_names;
+#if JUCE_WINDOWS
+    atlas_bench::StackSampler sampler;
+    if (options.profile != juce::File())
+      sampler.start();
+#endif
+    auto beginStage = [&](const char* name) {
+      stage_names.emplace_back(name);
+#if JUCE_WINDOWS
+      sampler.setStage(int(stage_names.size()) - 1);
+#endif
+    };
+    auto timed = [&](const char* name, auto&& work) {
+      beginStage(name);
+      const auto start = Clock::now();
+      work();
+      const double ms = since(start);
+      const double memory = privateMiB();
+      std::cout << "  " << juce::String(name).paddedRight(' ', 22) << juce::String(ms, 1).paddedLeft(' ', 8) << " ms";
+      if (memory > 0.0)
+        std::cout << juce::String(juce::roundToInt(memory)).paddedLeft(' ', 8) << " MiB committed";
+      std::cout << std::endl;
+      auto* stage = new juce::DynamicObject();
+      stage->setProperty("name", name);
+      stage->setProperty("ms", juce::Array<juce::var> { ms });
+      stage->setProperty("private_mib", juce::Array<juce::var> { memory });
+      stages.add(stage);
+    };
+
+    const juce::String path = options.plugins[0];
+    juce::VST3PluginFormat format;
+    juce::OwnedArray<juce::PluginDescription> types;
+    timed("scan", [&] { format.findAllTypesForFile(types, path); });
+    if (types.isEmpty()) {
+      std::cerr << "no VST3 plugin found in " << path << "\n";
+      return 1;
+    }
+    std::unique_ptr<juce::AudioPluginInstance> instance;
+    juce::String error;
+    timed("instantiate", [&] {
+      instance = format.createInstanceFromDescription(*types[0], options.sample_rate, options.block_size, error);
+    });
+    if (instance == nullptr) {
+      std::cerr << "cannot load " << path << ": " << error << "\n";
+      return 1;
+    }
+    timed("prepare", [&] {
+      instance->enableAllBuses();
+      instance->setRateAndBufferSizeDetails(options.sample_rate, options.block_size);
+      instance->prepareToPlay(options.sample_rate, options.block_size);
+    });
+    // A host restoring a project hands the instance its saved state: the
+    // initial patch, with the controls --set names changed.
+    juce::MemoryBlock state;
+    timed("save state", [&] { instance->getStateInformation(state); });
+    if (!options.set.empty()) {
+      juce::var changed = readPluginState(*instance);
+      if (auto* settings = changed.getProperty("settings", {}).getDynamicObject()) {
+        for (const auto& [name, value] : options.set)
+          settings->setProperty(name, value);
+        writePluginState(*instance, changed);
+        instance->getStateInformation(state);
+      }
+    }
+    timed("restore state", [&] { instance->setStateInformation(state.getData(), int(state.getSize())); });
+
+    // The host's audio thread, a block at a time at the speed of the audio.
+    std::atomic<bool> audio_running { true };
+    std::atomic<double> worst_block_ms { 0.0 };
+    std::thread audio([&] {
+      const int channels = std::max(2, std::max(instance->getTotalNumInputChannels(),
+                                                instance->getTotalNumOutputChannels()));
+      juce::AudioBuffer<float> buffer(channels, options.block_size);
+      juce::MidiBuffer midi;
+      const auto block_time = std::chrono::duration_cast<Clock::duration>(
+          std::chrono::duration<double>(options.block_size / options.sample_rate));
+      auto due = Clock::now();
+      while (audio_running) {
+        buffer.clear();
+        midi.clear();
+        const auto start = Clock::now();
+        instance->processBlock(buffer, midi);
+        worst_block_ms = std::max(worst_block_ms.load(), since(start));
+        due = std::max(due + block_time, Clock::now() - 10 * block_time);
+        std::this_thread::sleep_until(due);
+      }
+    });
+
+    // Dispatches messages for `ms`, keeping every stretch longer than 20 ms
+    // that one of them took.
+    juce::Array<juce::var> holds;
+    double longest_hold = 0.0;
+    auto watch = [&](const char* name, int ms) {
+      beginStage(name);
+      const auto start = Clock::now();
+      while (since(start) < ms) {
+        const auto before = Clock::now();
+        juce::MessageManager::getInstance()->runDispatchLoopUntil(1);
+        const double held = since(before);
+        if (held >= 20.0) {
+          const double at = std::chrono::duration<double, std::milli>(before - start).count();
+          auto* hold = new juce::DynamicObject();
+          hold->setProperty("after", name);
+          hold->setProperty("at_ms", at);
+          hold->setProperty("ms", held);
+          holds.add(hold);
+          longest_hold = std::max(longest_hold, held);
+          std::cout << "    message thread held " << juce::roundToInt(held) << " ms, " << juce::roundToInt(at)
+                    << " ms into " << name << std::endl;
+        }
+      }
+    };
+
+    auto show = [&](juce::AudioProcessorEditor& editor) {
+      editor.addToDesktop(juce::ComponentPeer::windowHasTitleBar | juce::ComponentPeer::windowAppearsOnTaskbar);
+      editor.setVisible(true);
+      if (options.focus) {
+        editor.toFront(true);
+        editor.grabKeyboardFocus();
+      }
+    };
+
+    std::unique_ptr<juce::AudioProcessorEditor> editor;
+    timed("create editor", [&] { editor.reset(instance->createEditorAndMakeActive()); });
+    if (editor == nullptr) {
+      std::cerr << "the plugin gave no editor\n";
+      audio_running = false;
+      audio.join();
+      return 1;
+    }
+    timed("show editor", [&] { show(*editor); });
+    watch("editor open", options.settle_ms);
+#if JUCE_WINDOWS
+    if (!options.focus && GetForegroundWindow() == static_cast<HWND>(editor->getWindowHandle()))
+      std::cout << "    note: the editor's window became the foreground window without --focus" << std::endl;
+#endif
+#if JUCE_WINDOWS
+    // The plugin and the libraries it brought are loaded now, and gone by the end.
+    sampler.noteModules();
+#endif
+    timed("close editor", [&] { editor.reset(); });
+    watch("editor closed", std::min(options.settle_ms, 500));
+    // Opening it again finds the plugin's code and data already in memory.
+    timed("create again", [&] { editor.reset(instance->createEditorAndMakeActive()); });
+    timed("show again", [&] { show(*editor); });
+    watch("editor open again", options.settle_ms);
+    timed("close again", [&] { editor.reset(); });
+
+    // A second instance beside the first, which is what every further
+    // instance in a project costs: the plugin's code and its tables are loaded.
+    std::unique_ptr<juce::AudioPluginInstance> second;
+    timed("second: instantiate", [&] {
+      second = format.createInstanceFromDescription(*types[0], options.sample_rate, options.block_size, error);
+    });
+    if (second != nullptr) {
+      timed("second: prepare", [&] {
+        second->enableAllBuses();
+        second->setRateAndBufferSizeDetails(options.sample_rate, options.block_size);
+        second->prepareToPlay(options.sample_rate, options.block_size);
+      });
+      timed("second: restore", [&] { second->setStateInformation(state.getData(), int(state.getSize())); });
+      timed("second: create editor", [&] { editor.reset(second->createEditorAndMakeActive()); });
+      if (editor != nullptr) {
+        timed("second: show editor", [&] { show(*editor); });
+        watch("second editor open", std::min(options.settle_ms, 1000));
+        timed("second: close", [&] { editor.reset(); });
+      }
+      timed("second: release", [&] {
+        second->releaseResources();
+        second.reset();
+      });
+    }
+
+    audio_running = false;
+    audio.join();
+    timed("release", [&] {
+      instance->releaseResources();
+      instance.reset();
+    });
+
+#if JUCE_WINDOWS
+    if (sampler.running()) {
+      sampler.stop();
+      if (!sampler.write(options.profile.getFullPathName().toWideCharPointer(), stage_names))
+        std::cerr << "cannot write " << options.profile.getFullPathName() << "\n";
+    }
+#endif
+
+    auto* plugin = new juce::DynamicObject();
+    plugin->setProperty("path", path);
+    plugin->setProperty("version", types[0]->version);
+    plugin->setProperty("modified", describePluginFile(juce::File(path)));
+    plugin->setProperty("stages", stages);
+    plugin->setProperty("holds", holds);
+    plugin->setProperty("longest_hold_ms", juce::Array<juce::var> { longest_hold });
+    plugin->setProperty("worst_block_ms", juce::Array<juce::var> { worst_block_ms.load() });
+    auto* root = new juce::DynamicObject();
+    root->setProperty("results_version", kResultsVersion);
+    root->setProperty("plugins", juce::Array<juce::var> { juce::var(plugin) });
+    return options.out.replaceWithText(juce::JSON::toString(juce::var(root))) ? 0 : 1;
   }
 
   // Child process: measure every scenario once for one build and write the results.
@@ -660,7 +896,139 @@ namespace {
       args.addArray({ "--save-audio", options.save_audio.getFullPathName() });
     if (!options.only.isEmpty())
       args.addArray({ "--only", options.only.joinIntoString(",") });
+    if (options.load)
+      args.add("--load");
+    if (options.focus)
+      args.add("--focus");
+    if (options.profile != juce::File())
+      args.addArray({ "--profile", options.profile.getFullPathName() });
+    for (const auto& [name, value] : options.set)
+      args.addArray({ "--set", name + "=" + juce::String(value) });
     return args;
+  }
+
+  double median(std::vector<double> values) {
+    if (values.empty())
+      return 0.0;
+    std::sort(values.begin(), values.end());
+    return values[values.size() / 2];
+  }
+
+  double largest(const std::vector<double>& values) {
+    return values.empty() ? 0.0 : *std::max_element(values.begin(), values.end());
+  }
+
+  double smallest(const std::vector<double>& values) {
+    return values.empty() ? 0.0 : *std::min_element(values.begin(), values.end());
+  }
+
+  std::vector<double> numbers(const juce::var& values) {
+    std::vector<double> result;
+    if (auto* array = values.getArray())
+      for (const juce::var& value : *array)
+        result.push_back(double(value));
+    return result;
+  }
+
+  juce::String milliseconds(double ms) {
+    return juce::String(juce::roundToInt(ms)).paddedLeft(' ', 8) + " ms";
+  }
+
+  // --load: every build in its own process each round, alternating, then a
+  // table of each step's median with its best and worst round.
+  int runLoadRounds(const Options& options) {
+    juce::Array<juce::var> merged;
+    merged.resize(options.plugins.size());
+    const juce::File temp = juce::File::createTempFile("atlas-bench");
+    for (int round = 0; round < options.rounds; ++round) {
+      for (int i = 0; i < options.plugins.size(); ++i) {
+        std::cout << "round " << round + 1 << "/" << options.rounds << ", [" << char('A' + i) << "] "
+                  << options.plugins[i] << std::endl;
+        Options child_options = options;
+        // The stacks of the first build's first round only.
+        if (round != 0 || i != 0)
+          child_options.profile = juce::File();
+        juce::ChildProcess child;
+        if (!child.start(childArguments(child_options, options.plugins[i], temp))) {
+          std::cerr << "cannot start the benchmark process\n";
+          return 1;
+        }
+        char buffer[256];
+        for (int read; (read = child.readProcessOutput(buffer, sizeof(buffer))) > 0;) {
+          std::cout.write(buffer, read);
+          std::cout.flush();
+        }
+        child.waitForProcessToFinish(-1);
+        const juce::var result = juce::JSON::parse(temp);
+        temp.deleteFile();
+        if (child.getExitCode() != 0 || !result.getProperty("plugins", {}).isArray()) {
+          std::cerr << "the run for " << options.plugins[i] << " failed\n";
+          return 1;
+        }
+        const juce::var plugin = result.getProperty("plugins", {})[0];
+        if (round == 0) {
+          merged.set(i, plugin);
+          continue;
+        }
+        juce::var& into = merged.getReference(i);
+        auto* stages = plugin.getProperty("stages", {}).getArray();
+        auto* into_stages = into.getProperty("stages", {}).getArray();
+        for (int stage = 0; stages != nullptr && into_stages != nullptr && stage < stages->size()
+                            && stage < into_stages->size(); ++stage)
+          for (const char* metric : { "ms", "private_mib" })
+            into_stages->getReference(stage).getProperty(metric, {}).getArray()->addArray(
+                *stages->getReference(stage).getProperty(metric, {}).getArray());
+        for (const char* metric : { "longest_hold_ms", "worst_block_ms", "holds" })
+          into.getProperty(metric, {}).getArray()->addArray(*plugin.getProperty(metric, {}).getArray());
+      }
+    }
+
+    for (int i = 0; i < merged.size(); ++i) {
+      const juce::var& plugin = merged.getReference(i);
+      std::cout << "\n[" << char('A' + i) << "] " << plugin.getProperty("path", "").toString() << " (version "
+                << plugin.getProperty("version", "").toString() << ", built "
+                << plugin.getProperty("modified", "").toString() << ")\n"
+                << juce::String("step").paddedRight(' ', 22) << "     median        best       worst   committed\n";
+      double to_instance = 0.0, to_editor = 0.0, second = 0.0;
+      if (auto* stages = plugin.getProperty("stages", {}).getArray()) {
+        for (const juce::var& stage : *stages) {
+          const juce::String name = stage.getProperty("name", "").toString();
+          const std::vector<double> ms = numbers(stage.getProperty("ms", {}));
+          std::cout << name.paddedRight(' ', 22) << milliseconds(median(ms)) << milliseconds(smallest(ms))
+                    << milliseconds(largest(ms));
+          const std::vector<double> memory = numbers(stage.getProperty("private_mib", {}));
+          if (!memory.empty() && median(memory) > 0.0)
+            std::cout << juce::String(juce::roundToInt(median(memory))).paddedLeft(' ', 9) << " MiB";
+          std::cout << "\n";
+          if (name == "scan" || name == "instantiate" || name == "prepare" || name == "restore state")
+            to_instance += median(ms);
+          if (name == "create editor" || name == "show editor")
+            to_editor += median(ms);
+          if (name.startsWith("second:"))
+            second += median(ms);
+        }
+      }
+      const std::vector<double> holds = numbers(plugin.getProperty("longest_hold_ms", {}));
+      const std::vector<double> blocks = numbers(plugin.getProperty("worst_block_ms", {}));
+      std::cout << "loading the first instance, median: " << juce::roundToInt(to_instance) << " ms\n"
+                << "opening its editor, median: " << juce::roundToInt(to_editor) << " ms\n"
+                << "loading and opening a second instance, median: " << juce::roundToInt(second) << " ms\n"
+                << "longest hold of the message thread with an editor open, median: "
+                << juce::roundToInt(median(holds)) << " ms (worst " << juce::roundToInt(largest(holds)) << " ms)\n"
+                << "slowest audio block meanwhile, median: " << juce::String(median(blocks), 1) << " ms\n";
+    }
+
+    if (options.out != juce::File()) {
+      auto* root = new juce::DynamicObject();
+      root->setProperty("results_version", kResultsVersion);
+      root->setProperty("date", juce::Time::getCurrentTime().toISO8601(true));
+      root->setProperty("machine", machineInfo());
+      root->setProperty("plugins", merged);
+      options.out.getParentDirectory().createDirectory();
+      options.out.replaceWithText(juce::JSON::toString(juce::var(root)));
+      std::cout << "results written to " << options.out.getFullPathName() << "\n";
+    }
+    return 0;
   }
 
   int runRounds(const Options& options) {
@@ -750,6 +1118,9 @@ namespace {
       "      Times each build. The first is the baseline the others are compared with.\n"
       "  AtlasBench --compare <results.json> [<results.json> ...]\n"
       "      Prints saved results side by side.\n"
+      "  AtlasBench --load --plugin <Atlas.vst3> [--plugin <Atlas.vst3> ...] [options]\n"
+      "      Times loading each build and opening its editor, and lists every stretch the\n"
+      "      message thread was held while the editor was open.\n"
       "  AtlasBench --list [--effects | --filters]\n"
       "\n"
       "options:\n"
@@ -764,7 +1135,14 @@ namespace {
       "  --rate <hz>         sample rate (default 48000)\n"
       "  --core <n>          pin the audio thread to this logical core\n"
       "  --warmup <s>        audio rendered before timing starts (default 1)\n"
-      "  --settle <ms>       time given to background work after loading a scenario (default 1500)\n";
+      "  --settle <ms>       time given to background work after loading a scenario (default 1500);\n"
+      "                      with --load, how long the open editor is watched\n"
+      "  --set <name=value>  with --load, change this control in the state that is restored (the\n"
+      "                      initial patch otherwise); repeat it for more controls\n"
+      "  --focus             with --load, bring the editor to the front and focus it, as a host\n"
+      "                      does: a running screen reader then reads it, and its work is timed too\n"
+      "  --profile <file>    with --load on Windows, sample the message thread's call stacks into\n"
+      "                      <file> (the first build's first round) for bench/symbolize_profile.py\n";
   }
 }
 
@@ -804,6 +1182,17 @@ int main(int argc, char** argv) {
       options.save_audio = juce::File::getCurrentWorkingDirectory().getChildFile(argv[++i]);
     else if (arg == "--child")
       options.child = true;
+    else if (arg == "--load")
+      options.load = true;
+    else if (arg == "--focus")
+      options.focus = true;
+    else if (arg == "--profile" && has_value)
+      options.profile = juce::File::getCurrentWorkingDirectory().getChildFile(argv[++i]);
+    else if (arg == "--set" && has_value) {
+      const juce::String setting(argv[++i]);
+      options.set.emplace_back(setting.upToFirstOccurrenceOf("=", false, false),
+                               setting.fromFirstOccurrenceOf("=", false, false).getDoubleValue());
+    }
     else if (arg == "--list")
       list = true;
     else if (arg == "--compare") {
@@ -829,6 +1218,8 @@ int main(int argc, char** argv) {
     printUsage();
     return 2;
   }
+  if (options.load)
+    return options.child ? runLoadChild(options) : runLoadRounds(options);
   if (selectedScenarios(options).empty()) {
     std::cerr << "no scenario matches --only\n";
     return 2;

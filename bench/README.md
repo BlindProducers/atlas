@@ -69,6 +69,60 @@ with itself to see how much.
 come from whatever the machine was doing that day, so for a decision, time
 both builds in one run.
 
+## Timing a load
+
+`--load` times what a user waits for instead of the audio: a host loading the
+plugin and opening its window. All of it runs on the host's message thread,
+and while that thread is held the host's own window stands still and a screen
+reader says nothing, so on Windows with NVDA a slow load is a silence.
+
+```powershell
+build\AtlasBench_artefacts\Release\AtlasBench.exe --load `
+  --plugin bench\baselines\e0b5035\Atlas.vst3 `
+  --plugin build\Atlas_artefacts\Release\VST3\Atlas.vst3
+```
+
+Each build runs in its own process each round, as above. In it AtlasBench
+loads the plugin, prepares it, saves its state and restores it (as a host
+does for a project), opens the editor in a window, closes it and opens it
+again, then does the same with a second instance beside the first, which is
+what every further instance in a project costs. An audio thread plays the
+first instance meanwhile. It prints each step's median, best and worst time,
+what the process had committed after it (Windows), and every stretch of 20 ms
+or more that one message held the message thread while an editor was open.
+
+- The window opens without taking the keyboard focus, so a running screen
+  reader ignores it. `--focus` brings it to the front and focuses it, as a
+  host does; the screen reader then reads it, and the time the plugin spends
+  answering its questions is in the figures. Warn whoever is using the
+  computer first.
+- `--set name=value` changes a control in the state that is restored, to time
+  a patch other than the initial one (`--set osc_1_type=2` for a Sample slot).
+- `--settle` is how long each open editor is watched (1500 ms).
+- The first instance pays for what the process does once: loading the
+  library, its static tables, the description of every effect type.
+
+### Where the time goes (Windows)
+
+`--profile <file>` samples the message thread's call stack about a thousand
+times a second through the first build's first round and writes the raw
+addresses. `bench/symbolize_profile.py` names them: the plugin's functions
+from the linker's map file, which needs no debug build, and the functions of
+system libraries from their export tables.
+
+```powershell
+cmake -S . -B build "-DCMAKE_MODULE_LINKER_FLAGS_RELEASE=/INCREMENTAL:NO /MAP:C:/temp/Atlas.map"
+cmake --build build --config Release --parallel 4 --target Atlas_VST3
+build\AtlasBench_artefacts\Release\AtlasBench.exe --load --rounds 1 `
+  --plugin build\Atlas_artefacts\Release\VST3\Atlas.vst3 --profile C:\temp\load.txt
+python bench\symbolize_profile.py C:\temp\load.txt --map C:\temp\Atlas.map --stage instantiate
+```
+
+For each stage it prints the functions the samples were in, the plugin
+functions on the stacks (each counted once a sample, so a caller shows the
+whole of what it called), and the commonest stacks. `--grep <text>` prints
+the whole stacks, every library, that have a matching function on them.
+
 ## How it measures
 
 Each round runs every build once, alternating (A, B, A, B, ...), each in its
