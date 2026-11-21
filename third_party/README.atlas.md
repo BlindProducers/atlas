@@ -39,6 +39,22 @@ Fetched by default, needed to build Atlas:
     1.2 to 1.0 percent, and focused from 1.5 to 1.2.
     `AtlasMacroTests --window-repaint` checks that an idle window still
     paints every repaint at once.
+  - `juce8-windows-software-rendering.patch`: on Windows JUCE 8 draws every
+    window with Direct2D, and makes a Direct3D device for each graphics
+    adapter with the first window, whichever renderer draws it, because its
+    vblank dispatcher goes through the same list of adapters. Making the
+    device loads the graphics driver into the host and holds the message
+    thread meanwhile: about 190 ms with an NVIDIA driver, which checks its
+    own signature first, the largest single part of what opening the first
+    Atlas editor in a host session cost, with no speech from the screen
+    reader until it ended. The patch makes the devices the first time
+    something asks for an adapter that has them, gives the vblank dispatcher
+    the adapters without them, and, where `ATLAS_JUCE_SOFTWARE_RENDERING` is
+    set (CMake sets it for every target of a Windows build), draws windows
+    with JUCE's software renderer and makes images software ones, as JUCE
+    already does under Wine. Atlas then makes no Direct3D device at all.
+    It changes the vblank dispatcher the idle-vblank patch changed, so it
+    is applied after it. `AtlasBench --load` times the editor opening.
   - `juce8-uia-text-reading.patch`: Windows screen readers read a text field
     through UI Automation text ranges. JUCE's `Move` worked out where a range
     should go but left it where it was, and gave a backward move a positive

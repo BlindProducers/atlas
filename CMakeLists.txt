@@ -21,6 +21,9 @@ if(MSVC)
   set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
   # MSVC only declares M_PI and the other <cmath> constants with this macro.
   add_compile_definitions(_USE_MATH_DEFINES)
+  # JUCE's software renderer draws every window, and nothing makes a Direct3D
+  # device (third_party/patches/juce8-windows-software-rendering.patch).
+  add_compile_definitions(ATLAS_JUCE_SOFTWARE_RENDERING=1)
   # JUCE turns on /MP, which starts one compiler per core inside each project.
   # The unity files need several GB each, so cap it like --parallel caps make.
   set(ATLAS_MSVC_COMPILE_JOBS 4 CACHE STRING "Compiler processes per Visual Studio project (/MP)")
