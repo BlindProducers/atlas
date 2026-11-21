@@ -11,7 +11,17 @@ class LfoMsegKeyboardComponent : public Component {
       setWantsKeyboardFocus(true);
       setTitle("LFO Editor");
       setDescription("Keyboard LFO shape editor with time, value, and curve announcements.");
-      setHelpText("In LFO mode, Left and Right move in time, Comma and Period select points, Up and Down change a point, I and K change its curve, and Option Up and Down bend the curve by 5%, with Shift by 1%. In Performer mode, Comma and Period select complete shapes, Up and Down move the whole shape vertically, I and K change every curve in that shape, A inserts the selected shape, and Delete removes it. In Step Sequencer mode, Left and Right select steps, Up and Down set the step value, Delete clears it, and curve commands are ignored. Shift 1 through Shift 0 switch LFOs. Backspace clears the complete LFO.");
+      setHelpText(String("In LFO mode, Left and Right move in time, Comma and Period select points, Up and Down change a point, I and K change its curve, and " + bendKey() + " Up and Down bend the curve by 5%, with Shift by 1%. In Performer mode, Comma and Period select complete shapes, Up and Down move the whole shape vertically, I and K change every curve in that shape, A inserts the selected shape, and Delete removes it. In Step Sequencer mode, Left and Right select steps, Up and Down set the step value, Delete clears it, and curve commands are ignored. Shift 1 through Shift 0 switch LFOs. Backspace clears the complete LFO."));
+    }
+
+    // The modifier that bends a curve, as this platform's keyboard names it
+    // (JUCE's Command modifier is Ctrl off the Mac).
+    static String bendKey() {
+#if JUCE_MAC
+      return "Command";
+#else
+      return "Ctrl";
+#endif
     }
 
     bool keyPressed(const KeyPress& key) override {

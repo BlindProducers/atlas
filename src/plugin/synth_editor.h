@@ -573,6 +573,8 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     String slicePositionText(const vital::Sample& sample, int samples) const;
     // Plays a slice on its key for its length.
     void auditionSlice(int oscillator, int slice, int start, int end);
+    // Releases the slices still auditioning (the editor is closing).
+    void releaseSliceAuditions();
     // The Slices editor's context menu: Randomize, and Show as.
     void showSliceEditorMenu(SampleSliceEditor& editor);
     bool refreshOscillatorModeRowsIfNeeded();
@@ -1831,6 +1833,8 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     int qwerty_octave_ = 5;
     int qwerty_velocity_ = 127;
     std::set<int> qwerty_notes_down_;
+    // The notes auditionSlice holds until their slices' lengths have passed.
+    std::vector<int> slice_audition_notes_;
     std::set<int> qwerty_control_keys_down_;
     // Focused controls see a key before this editor does. While the virtual keyboard is on,
     // this listener sits on the focused control and hands note, octave and velocity keys to

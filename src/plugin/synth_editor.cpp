@@ -592,6 +592,14 @@ namespace {
       postAnnouncement(message, AccessibilityHandler::AnnouncementPriority::high);
   }
 
+  // What Copy or Paste on a modulator's heading did. The user chose it from
+  // the menu and waits to hear it; filed by its wording instead, "Copied
+  // Envelope 2" was Navigation's to silence and "Copied Random 2" Other's.
+  void postClipboardAnnouncement(const String& message) {
+    if (accessibilitySpeechSettings().speech_feedback)
+      postAnnouncement(message, AccessibilityHandler::AnnouncementPriority::high);
+  }
+
   // What the screen reader would read from a control where JUCE gives NVDA
   // nothing to read: the row a list's selection keys landed on (see
   // SelectionKeyList) and a toggle's new state (see SpokenToggleButton).
@@ -7976,6 +7984,9 @@ SynthEditor::~SynthEditor() {
   revertModulationAudition();
   // Key releases can no longer reach this editor; don't leave notes held.
   allQwertyNotesOff();
+  // Nor a slice still auditioning (up to four seconds, for ever with Slice
+  // Loop on): its release was due from this editor.
+  releaseSliceAuditions();
   detachQwertyKeyInterceptor();
   if (ir_browser_scan_) ir_browser_scan_->cancelled.store(true);
   if (ir_browser_scan_thread_.joinable()) ir_browser_scan_thread_.join();
@@ -12010,10 +12021,9 @@ namespace {
   // and adds comma and period stepping through effect slots.
   String keyboardHelpForPlatform(const char* text) {
 #if JUCE_MAC
-    const String command = "Cmd", option = "Option", context_menu = "Right bracket ( ] ) or Shift+M",
-                 heading_menu = "Shift+M";
+    const String command = "Cmd", context_menu = "Right bracket ( ] ) or Shift+M", heading_menu = "Shift+M";
 #else
-    const String command = "Ctrl", option = "Alt", context_menu = "Shift+M or Shift+F10", heading_menu = context_menu;
+    const String command = "Ctrl", context_menu = "Shift+M or Shift+F10", heading_menu = context_menu;
 #endif
     const String effect_slot_steps = kSectionKeysStepThroughEffectSlots
         ? (kSectionKeysStepThroughEffectGroups
@@ -12021,7 +12031,7 @@ namespace {
                  "groupings inside them, such as an EQ's bands or Glitch Delay's groups\n"
                : "  On an effects chain, Comma / Period also step through its effects (Slot 1, Slot 2 and so on)\n")
         : "";
-    return String::fromUTF8(text).replace("{Cmd}", command).replace("{Opt}", option)
+    return String::fromUTF8(text).replace("{Cmd}", command)
                        .replace("{ContextMenuKeys}", context_menu)
                        .replace("{HeadingMenuKeys}", heading_menu)
                        .replace("{EffectSlotSteps}", effect_slot_steps);
@@ -12148,8 +12158,7 @@ String SynthEditor::keyboardHelpText() {
       "  R - Clear all selections\n"
       "  E or Delete - Delete the current point, complete performer shape, or step\n"
       "  I / K - Cycle curve type in LFO/Performer; ignored in Step Sequencer\n"
-      "  {Cmd} + Up / Down - Cycle curve type up / down\n"
-      "  {Opt} + Up / Down - Bend the following segment's curve by 5%, from -100% to 100%; with Shift by 1%\n"
+      "  {Cmd} + Up / Down - Bend the following segment's curve by 5%, from -100% to 100%; with Shift by 1%\n"
       "  J / L - Move point in time left / right\n"
       "  G / H - Cycle shape presets backward / forward\n"
       "  Shift+A - Apply selected shape preset\n"
@@ -13871,39 +13880,49 @@ void SynthEditor::populatePresetFilters() {
   if (!preset_tags_.contains(last_preset_tag_))
     last_preset_tag_ = kAllTags;
 
-  auto matchesLibrary = [](const PresetBrowserItem& item, const String& library) {
-    return library == kAllLibraries || item.library == library;
-  };
-  auto matchesBank = [](const PresetBrowserItem& item, const String& bank) {
-    return bank == kAllBanks || item.bank == bank;
-  };
-  auto matchesCategory = [](const PresetBrowserItem& item, const String& category) {
-    return category == kAllCategories || item.category == category;
-  };
-  auto matchesTag = [](const PresetBrowserItem& item, const String& tag) {
-    return tag == kAllTags || item.tags.contains(tag);
-  };
-  auto countMatching = [this](auto predicate) {
-    int count = 0;
-    for (const auto& item : activePresetIndex()) {
-      if (predicate(item))
-        ++count;
+  // One pass over the presets counts every row of every list. Counting each
+  // row with a pass of its own (presets times rows, comparing strings) held
+  // the message thread for a second and more with a few thousand presets,
+  // each time the list loaded or a filter changed.
+  const bool any_library = last_preset_library_ == kAllLibraries;
+  const bool any_bank = last_preset_bank_ == kAllBanks;
+  const bool any_category = last_preset_category_ == kAllCategories;
+  const bool any_tag = last_preset_tag_ == kAllTags;
+  std::map<String, int> library_counts, bank_counts, category_counts, tag_counts;
+  int total = 0, in_library = 0, in_bank = 0, in_category = 0;
+  int all_matching_count = 0, favorite_matching_count = 0;
+  for (const auto& item : activePresetIndex()) {
+    ++total;
+    ++library_counts[item.library];
+    if (!any_library && item.library != last_preset_library_)
+      continue;
+    ++in_library;
+    ++bank_counts[item.bank];
+    if (!any_bank && item.bank != last_preset_bank_)
+      continue;
+    ++in_bank;
+    ++category_counts[item.category];
+    if (!any_category && item.category != last_preset_category_)
+      continue;
+    ++in_category;
+    // A preset listing a tag twice still counts once for it.
+    for (int tag = 0; tag < item.tags.size(); ++tag) {
+      if (item.tags.indexOf(item.tags[tag]) == tag)
+        ++tag_counts[item.tags[tag]];
     }
-    return count;
+    if (any_tag || item.tags.contains(last_preset_tag_)) {
+      ++all_matching_count;
+      if (preset_favorites_.count(item.file.getFullPathName().toStdString()) != 0)
+        ++favorite_matching_count;
+    }
+  }
+  auto countOf = [](const std::map<String, int>& counts, const String& value) {
+    const auto found = counts.find(value);
+    return found == counts.end() ? 0 : found->second;
   };
   auto addFacet = [this](int kind, const String& section, const String& value, int count, bool active) {
     preset_facets_.push_back({ kind, section, value, count, active });
   };
-
-  const int all_matching_count = countMatching([&](const PresetBrowserItem& item) {
-    return matchesLibrary(item, last_preset_library_) && matchesBank(item, last_preset_bank_) &&
-           matchesCategory(item, last_preset_category_) && matchesTag(item, last_preset_tag_);
-  });
-  const int favorite_matching_count = countMatching([&](const PresetBrowserItem& item) {
-    return matchesLibrary(item, last_preset_library_) && matchesBank(item, last_preset_bank_) &&
-           matchesCategory(item, last_preset_category_) && matchesTag(item, last_preset_tag_) &&
-           preset_favorites_.count(item.file.getFullPathName().toStdString()) != 0;
-  });
 
   preset_facets_.clear();
   const PresetCollection collection = presetCollection();
@@ -13917,32 +13936,21 @@ void SynthEditor::populatePresetFilters() {
     addFacet(kCollectionFacet, "Collection", kCommunityBanksCollection, static_cast<int>(community_bank_index_.size()),
              collection == PresetCollection::kCommunityBanks);
   }
-  for (const auto& library : preset_libraries_) {
-    const int count = countMatching([&](const PresetBrowserItem& item) {
-      return matchesLibrary(item, library);
-    });
-    addFacet(kLibraryFacet, "Library", library, count, library == last_preset_library_);
-  }
-  for (const auto& bank : preset_banks_) {
-    const int count = countMatching([&](const PresetBrowserItem& item) {
-      return matchesLibrary(item, last_preset_library_) && matchesBank(item, bank);
-    });
-    addFacet(kBankFacet, "Bank", bank, count, bank == last_preset_bank_);
-  }
-  for (const auto& category : preset_categories_) {
-    const int count = countMatching([&](const PresetBrowserItem& item) {
-      return matchesLibrary(item, last_preset_library_) && matchesBank(item, last_preset_bank_) &&
-             matchesCategory(item, category);
-    });
-    addFacet(kCategoryFacet, "Category", category, count, category == last_preset_category_);
-  }
-  for (const auto& tag : preset_tags_) {
-    const int count = countMatching([&](const PresetBrowserItem& item) {
-      return matchesLibrary(item, last_preset_library_) && matchesBank(item, last_preset_bank_) &&
-             matchesCategory(item, last_preset_category_) && matchesTag(item, tag);
-    });
-    addFacet(kTagFacet, "Tag", tag, count, tag == last_preset_tag_);
-  }
+  // Each list's first row stands for every value: it counts what the lists
+  // before it let through.
+  for (const auto& library : preset_libraries_)
+    addFacet(kLibraryFacet, "Library", library,
+             library == kAllLibraries ? total : countOf(library_counts, library), library == last_preset_library_);
+  for (const auto& bank : preset_banks_)
+    addFacet(kBankFacet, "Bank", bank, bank == kAllBanks ? in_library : countOf(bank_counts, bank),
+             bank == last_preset_bank_);
+  for (const auto& category : preset_categories_)
+    addFacet(kCategoryFacet, "Category", category,
+             category == kAllCategories ? in_bank : countOf(category_counts, category),
+             category == last_preset_category_);
+  for (const auto& tag : preset_tags_)
+    addFacet(kTagFacet, "Tag", tag, tag == kAllTags ? in_category : countOf(tag_counts, tag),
+             tag == last_preset_tag_);
 
   for (int kind = kLibraryFacet; kind <= kCollectionFacet; ++kind) {
     auto* table = presetFacetTableForKind(kind);
@@ -18192,7 +18200,7 @@ void SynthEditor::showModulatorContextMenu(const String& sectionName, Component&
     if (result == kCopyItem) {
       clipboard.parameters = copyParameters(prefix);
       clipboard.shape = generator != nullptr ? generator->stateToJson() : json();
-      postPluginAnnouncement("Copied " + sectionName, AccessibilityHandler::AnnouncementPriority::high);
+      postClipboardAnnouncement("Copied " + sectionName);
     }
     else if (result == kPasteItem && !clipboard.parameters.empty()) {
       synth_.undoHistory().describeNextStep("paste to " + sectionName);
@@ -18209,7 +18217,7 @@ void SynthEditor::showModulatorContextMenu(const String& sectionName, Component&
         selected_lfo_point_phases_.clear();
         syncLfoEditorState();
       }
-      postPluginAnnouncement("Pasted to " + sectionName, AccessibilityHandler::AnnouncementPriority::high);
+      postClipboardAnnouncement("Pasted to " + sectionName);
     }
   });
 }
@@ -23792,7 +23800,12 @@ void SynthEditor::addSampleModeGroup(int oscillator, AccessibleSectionHeader& pa
     button_ptr->setExplicitFocusOrder(focus_order++);
     // The timer rebuilds the slot's rows for the new mode and brings the
     // focus back to this button by its title.
-    button_ptr->onClick = [this, id, mode, title] {
+    // A radio group also clicks the button it turns off, and first: without
+    // the check, choosing Slicer set Classic and said "Classic mode" before
+    // it set and said Slicer, and NVDA speaks both.
+    button_ptr->onClick = [this, id, mode, title, safe_button = Component::SafePointer<Button>(button_ptr)] {
+      if (safe_button == nullptr || !safe_button->getToggleState())
+        return;
       setParameterEngineValue(id, static_cast<float>(mode));
       postLfoAnnouncement(title + " mode");
     };
@@ -23887,13 +23900,28 @@ void SynthEditor::auditionSlice(int oscillator, int slice, int start, int end) {
   // Held for the slice's length in the file, at least a tenth of a second.
   const int milliseconds = jlimit(100, 4000, roundToInt((end - start) * 1000.0 / jmax(1, sample->sampleRate())));
   state->noteOn(1, note, 0.8f);
+  slice_audition_notes_.push_back(note);
   Component::SafePointer<SynthEditor> safe_this(this);
   Timer::callAfterDelay(milliseconds, [safe_this, note] {
+    // An editor closed meanwhile released the note as it went.
     if (safe_this == nullptr)
       return;
+    auto& notes = safe_this->slice_audition_notes_;
+    const auto held = std::find(notes.begin(), notes.end(), note);
+    if (held == notes.end())
+      return;
+    notes.erase(held);
     if (MidiKeyboardState* keyboard = safe_this->synth_.getKeyboardState())
       keyboard->noteOff(1, note, 0.0f);
   });
+}
+
+void SynthEditor::releaseSliceAuditions() {
+  if (MidiKeyboardState* keyboard = synth_.getKeyboardState()) {
+    for (int note : slice_audition_notes_)
+      keyboard->noteOff(1, note, 0.0f);
+  }
+  slice_audition_notes_.clear();
 }
 
 namespace {
