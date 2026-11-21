@@ -187,6 +187,27 @@ namespace {
     keyboard->keyPressed(characterKey('e'));
     expect(source->numFrames() == 4 && layer->getText() == "Layer 1, Wave source, 4 frames",
            "the Layer row counts the frames left after a deletion (" + layer->getText().toStdString() + ")");
+
+    // Keyframe edits are undo steps: undo puts back the frames Spread frames evenly moved.
+    auto positions = [&] {
+      std::vector<int> result;
+      if (auto* now = atlas::wavetable_edit::waveSourceOfLayer(synth.getWavetableCreator(0), 0))
+        for (int i = 0; i < now->numFrames(); ++i)
+          result.push_back(now->getFrameAt(i)->position());
+      return result;
+    };
+    auto* spread = dynamic_cast<Button*>(titled(*section, "Spread frames evenly"));
+    expect(spread != nullptr, "the wave source has Spread frames evenly");
+    if (spread == nullptr)
+      return;
+    synth.undoHistory().commitPendingEdits();
+    const auto before = positions();
+    spread->onClick();
+    const auto spread_out = positions();
+    expect(spread_out != before && synth.undoHistory().undoDescription() == "Oscillator 1 wavetable",
+           "Spread frames evenly is an undo step (" + synth.undoHistory().undoDescription().toStdString() + ")");
+    expect(synth.undoHistory().undo().applied && positions() == before,
+           "undo puts back the frames Spread frames evenly moved");
   }
 
   // A list's selection keys say the row on Windows, where JUCE leaves NVDA

@@ -22191,7 +22191,7 @@ void SynthEditor::syncWavetableEditorRows(int oscillator) {
     phase_slider->setValue(wavetableHarmonicPhase(wave_frame, harmonic) * 180.0f / vital::kPi, dontSendNotification);
 }
 
-void SynthEditor::finishWavetableFrameEdit(int oscillator) {
+void SynthEditor::finishWavetableEdit(int oscillator) {
   if (auto* creator = synth_.getWavetableCreator(oscillator))
     creator->render();
   synth_.markStateChanged(wavetableUndoBlock(oscillator));
@@ -22363,7 +22363,7 @@ void SynthEditor::adjustWavetableHarmonicLevel(int oscillator, float deltaPercen
     setWavetableHarmonic(wave_frame, harmonic, std::polar(level * 0.01f * kWavetableHarmonicFullScale,
                                                           wavetableHarmonicPhase(wave_frame, harmonic)));
   }
-  finishWavetableFrameEdit(oscillator);
+  finishWavetableEdit(oscillator);
   postWavetableEditorAnnouncement(wavetableHarmonicStatusText(oscillator, true, false) +
                                       (targets.size() > 1 ? ", " + String(targets.size()) + " frames" : ""),
                                   AccessibilityHandler::AnnouncementPriority::high);
@@ -22386,7 +22386,7 @@ void SynthEditor::adjustWavetableHarmonicPhase(int oscillator, float deltaDegree
     setWavetableHarmonic(wave_frame, harmonic, std::polar(std::abs(wave_frame.frequency_domain[harmonic]),
                                                           wavetableHarmonicPhase(wave_frame, harmonic) + delta));
   }
-  finishWavetableFrameEdit(oscillator);
+  finishWavetableEdit(oscillator);
   postWavetableEditorAnnouncement(wavetableHarmonicStatusText(oscillator, false, true) +
                                       (targets.size() > 1 ? ", " + String(targets.size()) + " frames" : ""),
                                   AccessibilityHandler::AnnouncementPriority::high);
@@ -22445,7 +22445,7 @@ void SynthEditor::pasteWavetableFrames(int oscillator) {
       wave_frame->toFrequencyDomain();
     }
   }
-  finishWavetableFrameEdit(oscillator);
+  finishWavetableEdit(oscillator);
   postWavetableEditorAnnouncement("Pasted into " + String(targets.size()) + " wavetable frame" +
                                   (targets.size() == 1 ? String() : String("s")),
                                   AccessibilityHandler::AnnouncementPriority::high);
@@ -22481,7 +22481,7 @@ void SynthEditor::addWavetableFrame(int oscillator) {
   inserted_wave->setSampleRate(current_wave->sample_rate);
   state.frame = source->indexOf(inserted);
   state.selected_frames.clear();
-  finishWavetableFrameEdit(oscillator);
+  finishWavetableEdit(oscillator);
   postWavetableEditorAnnouncement("Frame added, " + wavetableFrameStatusText(oscillator),
                                   AccessibilityHandler::AnnouncementPriority::high);
 }
@@ -22507,7 +22507,7 @@ void SynthEditor::deleteWavetableFrames(int oscillator) {
   auto& state = wavetable_keyboard_state_[oscillator];
   state.frame = jlimit(0, source->numFrames() - 1, next_cursor);
   state.selected_frames.clear();
-  finishWavetableFrameEdit(oscillator);
+  finishWavetableEdit(oscillator);
   postWavetableEditorAnnouncement("Deleted " + String(targets.size()) + " wavetable frame" +
                                   (targets.size() == 1 ? String() : String("s")) + ", " +
                                   wavetableFrameStatusText(oscillator),
@@ -22539,7 +22539,7 @@ void SynthEditor::setWavetableFramePosition(int oscillator, int frame, int posit
   keyframe->setPosition(target);
   source->reposition(keyframe);
   wavetable_keyboard_state_[oscillator].frame = source->indexOf(keyframe);
-  finishWavetableFrameEdit(oscillator);
+  finishWavetableEdit(oscillator);
 }
 
 void SynthEditor::clearWavetableDc(int oscillator) {
@@ -22556,7 +22556,7 @@ void SynthEditor::clearWavetableDc(int oscillator) {
     wave_frame->toTimeDomain();
     wave_frame->toFrequencyDomain();
   }
-  finishWavetableFrameEdit(oscillator);
+  finishWavetableEdit(oscillator);
   postWavetableEditorAnnouncement("Removed DC offset from " + String(targets.size()) + " wavetable frame" +
                                   (targets.size() == 1 ? String() : String("s")),
                                   AccessibilityHandler::AnnouncementPriority::high);
@@ -22570,7 +22570,7 @@ void SynthEditor::setWavetableInterpolation(int oscillator, int interpolation) {
   if (source == nullptr)
     return;
   atlas::wavetable_edit::setValue(source, "interpolation", 0, jlimit(0, 4, interpolation));
-  synth_.getWavetableCreator(oscillator)->render();
+  finishWavetableEdit(oscillator);
   if (atlas::wavetable_edit::interpolatedPositions(source) == 0 && source->numFrames() > 1)
     postWavetableEditorAnnouncement("The frames sit on neighbouring positions, so there is nothing between them to interpolate. "
                                     "Use Spread frames evenly or move a frame's timeline position",
@@ -22642,7 +22642,7 @@ void SynthEditor::resetWavetableModifier(int oscillator, int component_index) {
   const String name = atlas::wavetable_edit::componentName(component);
   component->reset();
   wavetable_keyboard_state_[oscillator].keyframes[component_index] = 0;
-  synth_.getWavetableCreator(oscillator)->render();
+  finishWavetableEdit(oscillator);
   postWavetableEditorAnnouncement(name + " reset", AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, name + " " + String(component_index) + " reset");
 }
@@ -22808,7 +22808,7 @@ void SynthEditor::replaceWavetableLayerAudio(int oscillator, const File& file) {
     postWavetableEditorAnnouncement("Unable to load " + file.getFileName(), AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
-  synth_.getWavetableCreator(oscillator)->render();
+  finishWavetableEdit(oscillator);
   postWavetableEditorAnnouncement("Layer audio replaced with " + file.getFileNameWithoutExtension(),
                                   AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, "Replace audio");
@@ -22856,7 +22856,7 @@ void SynthEditor::setWavetableComponentValue(int oscillator, int componentIndex,
   const auto found = keyframes.find(componentIndex);
   const int keyframe = found != keyframes.end() ? found->second : 0;
   if (atlas::wavetable_edit::setValue(component, id, keyframe, value))
-    synth_.getWavetableCreator(oscillator)->render();
+    finishWavetableEdit(oscillator);
 }
 
 void SynthEditor::moveWavetableKeyframe(int oscillator, int componentIndex, int position) {
@@ -22872,7 +22872,7 @@ void SynthEditor::moveWavetableKeyframe(int oscillator, int componentIndex, int 
   if (moved != position)
     postWavetableEditorAnnouncement("Keyframes cannot cross their neighbours", AccessibilityHandler::AnnouncementPriority::medium);
   if (moved != previous)
-    synth_.getWavetableCreator(oscillator)->render();
+    finishWavetableEdit(oscillator);
 }
 
 void SynthEditor::addWavetableKeyframe(int oscillator, int componentIndex, const String& focusPrefix) {
@@ -22888,7 +22888,7 @@ void SynthEditor::addWavetableKeyframe(int oscillator, int componentIndex, const
     return;
   }
   state.keyframes[componentIndex] = added;
-  synth_.getWavetableCreator(oscillator)->render();
+  finishWavetableEdit(oscillator);
   postWavetableEditorAnnouncement("Added " + atlas::wavetable_edit::describeKeyframe(component, added).toLowerCase(),
                                   AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, focusPrefix + " keyframe");
@@ -22905,7 +22905,7 @@ void SynthEditor::removeWavetableKeyframe(int oscillator, int componentIndex, co
     return;
   }
   state.keyframes[componentIndex] = jlimit(0, component->numFrames() - 1, keyframe);
-  synth_.getWavetableCreator(oscillator)->render();
+  finishWavetableEdit(oscillator);
   postWavetableEditorAnnouncement("Keyframe removed, " + atlas::wavetable_edit::describeKeyframe(component, state.keyframes[componentIndex]),
                                   AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, focusPrefix + " keyframe");
@@ -22921,7 +22921,7 @@ void SynthEditor::spreadWavetableKeyframes(int oscillator, int componentIndex, c
                                     AccessibilityHandler::AnnouncementPriority::high);
     return;
   }
-  synth_.getWavetableCreator(oscillator)->render();
+  finishWavetableEdit(oscillator);
   postWavetableEditorAnnouncement(String(component->numFrames()) + (frames ? " frames" : " keyframes") +
                                   " spread across the timeline", AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, frames ? String("Spread frames evenly") : focusPrefix + " spread keyframes evenly");
@@ -22933,7 +22933,7 @@ void SynthEditor::setWavetableLinePointValue(int oscillator, int componentIndex,
     return;
   auto& state = wavetable_keyboard_state_[oscillator];
   if (atlas::wavetable_edit::setLinePointValue(line, state.keyframes[componentIndex], state.line_point, field, value))
-    synth_.getWavetableCreator(oscillator)->render();
+    finishWavetableEdit(oscillator);
 }
 
 void SynthEditor::addWavetableLinePoint(int oscillator, int componentIndex, const String& focusPrefix) {
@@ -22947,7 +22947,7 @@ void SynthEditor::addWavetableLinePoint(int oscillator, int componentIndex, cons
     return;
   }
   state.line_point = added;
-  synth_.getWavetableCreator(oscillator)->render();
+  finishWavetableEdit(oscillator);
   postWavetableEditorAnnouncement("Added point " + String(added + 1) + " of " + String(atlas::wavetable_edit::numLinePoints(line)),
                                   AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, focusPrefix + " line point");
@@ -22963,7 +22963,7 @@ void SynthEditor::removeWavetableLinePoint(int oscillator, int componentIndex, c
     return;
   }
   state.line_point = jlimit(0, atlas::wavetable_edit::numLinePoints(line) - 1, state.line_point);
-  synth_.getWavetableCreator(oscillator)->render();
+  finishWavetableEdit(oscillator);
   postWavetableEditorAnnouncement("Point removed, " + String(atlas::wavetable_edit::numLinePoints(line)) + " points",
                                   AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, focusPrefix + " line point");
@@ -23148,7 +23148,7 @@ void SynthEditor::applyWavetableHarmonicEdit(int oscillator, int frame, bool all
                                                phaseDegrees * vital::kPi / 180.0f);
   for (int i : targets)
     setWavetableHarmonic(*source->getKeyframe(i)->wave_frame(), harmonic, value);
-  finishWavetableFrameEdit(oscillator);
+  finishWavetableEdit(oscillator);
 
   postWavetableEditorAnnouncement("Set harmonic " + String(harmonic) +
                                   (targets.size() == 1 ? " on frame " + String(targets.front() + 1) :
@@ -23183,7 +23183,7 @@ void SynthEditor::applyWavetableStartingShape(int oscillator, int frame, bool al
   const vital::WaveFrame* starting_frame = vital::PredefinedWaveFrames::getWaveFrame(predefined_shape);
   for (int index : targets)
     source->getKeyframe(index)->wave_frame()->copy(starting_frame);
-  finishWavetableFrameEdit(oscillator);
+  finishWavetableEdit(oscillator);
 
   static const char* const kShapeNames[] = {
     "Sine", "Saturated sine", "Triangle", "Square", "Pulse 25 percent", "Saw"
@@ -23218,7 +23218,7 @@ void SynthEditor::clearWavetableHarmonic(int oscillator, int frame, bool allFram
 
   for (int i : targets)
     setWavetableHarmonic(*source->getKeyframe(i)->wave_frame(), harmonic, 0.0f);
-  finishWavetableFrameEdit(oscillator);
+  finishWavetableEdit(oscillator);
 
   postWavetableEditorAnnouncement("Cleared harmonic " + String(harmonic) +
                                   (targets.size() == 1 ? " on frame " + String(targets.front() + 1) :
@@ -23252,7 +23252,7 @@ void SynthEditor::normalizeWavetableFrame(int oscillator, int frame, bool allFra
     wave_frame->normalize(true);
     wave_frame->toFrequencyDomain();
   }
-  finishWavetableFrameEdit(oscillator);
+  finishWavetableEdit(oscillator);
 
   postWavetableEditorAnnouncement(targets.size() == 1 ? "Normalized wavetable frame " + String(targets.front() + 1) :
                                                         "Normalized " + String(static_cast<int>(targets.size())) +

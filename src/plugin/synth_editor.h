@@ -1035,8 +1035,9 @@ class SynthEditor : public AudioProcessorEditor, public SynthGuiInterface,
     std::vector<int> wavetableTargetFrameIndices(int oscillator, int frameCount) const;
     void pruneWavetableFrameSelection(int oscillator, int frameCount);
     void syncWavetableEditorRows(int oscillator);
-    // Renders a frame edit, records it for undo and updates the rows above.
-    void finishWavetableFrameEdit(int oscillator);
+    // Renders an edit to the wavetable, records it for undo and updates the
+    // rows that follow the wave source.
+    void finishWavetableEdit(int oscillator);
     void setWavetableEditorVisible(int oscillator, bool visible);
     void applyWavetableHarmonicEdit(int oscillator, int frame, bool allFrames,
                                     int harmonic, float levelPercent, float phaseDegrees);
