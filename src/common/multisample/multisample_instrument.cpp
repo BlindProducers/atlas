@@ -70,6 +70,9 @@ namespace multisample {
     };
 
     uses_cc_state = false;
+    key_switches.fill(false);
+    std::array<bool, kNumKeys> in_switch_range {};
+    std::array<bool, kNumKeys> played {};
     for (int index = 0; index < static_cast<int>(regions.size()); ++index) {
       Region& region = regions[index];
       region.group_slot = region.group != 0 ? slotFor(region.group) : -1;
@@ -79,14 +82,12 @@ namespace multisample {
         uses_cc_state = true;
       }
 
-      if (region.sw_lokey >= 0 && region.sw_hikey >= region.sw_lokey) {
-        sw_lokey = std::min(sw_lokey, region.sw_lokey);
-        sw_hikey = std::max(sw_hikey, region.sw_hikey);
+      if (region.sw_lokey >= 0) {
+        for (int key = region.sw_lokey; key <= std::min(kNumKeys - 1, region.sw_hikey); ++key)
+          in_switch_range[key] = true;
       }
-      if (region.sw_last >= 0) {
-        sw_lokey = std::min(sw_lokey, region.sw_last);
-        sw_hikey = std::max(sw_hikey, region.sw_last);
-      }
+      if (region.sw_last >= 0 && region.sw_last < kNumKeys)
+        key_switches[region.sw_last] = true;
 
       if (region.trigger == Trigger::kCc) {
         if (region.on_cc >= 0 && region.on_cc < kNumCcs) {
@@ -103,8 +104,11 @@ namespace multisample {
           release_by_key[key].push_back(index);
         else
           attack_by_key[key].push_back(index);
+        played[key] = played[key] || !region.silent;
       }
     }
+    for (int key = 0; key < kNumKeys; ++key)
+      key_switches[key] = key_switches[key] || (in_switch_range[key] && !played[key]);
     num_group_slots = static_cast<int>(group_slots.size());
   }
 

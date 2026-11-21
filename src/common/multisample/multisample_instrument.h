@@ -220,8 +220,11 @@ namespace multisample {
       // Controls whose bindings change the sound here, in panel order.
       std::vector<Control> controls;
       int sw_default = -1;
-      int sw_lokey = 128;
-      int sw_hikey = -1;
+      // Keys that select an sw_last articulation: every key a region names in
+      // sw_last, and the keys of the sw_lokey to sw_hikey ranges that no
+      // region plays. Sforzando reads a range that covers the playable keys
+      // this way (UI Metal GTX: sw_lokey=e-1 sw_hikey=d7).
+      std::array<bool, kNumKeys> key_switches {};
       int num_group_slots = 0;
       bool uses_cc_state = false;
 
@@ -235,7 +238,7 @@ namespace multisample {
 
       // Builds the lookup tables. Call once every region is complete.
       void build();
-      bool isKeySwitch(int key) const { return key >= sw_lokey && key <= sw_hikey; }
+      bool isKeySwitch(int key) const { return key >= 0 && key < kNumKeys && key_switches[key]; }
   };
 
   // SFZ note names: c4 = 60, c#4 / db4 = 61. Returns -1 when the text is not a note.

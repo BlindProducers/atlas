@@ -33,6 +33,7 @@ Behaviour matches sfizz and FluidSynth where noted below.
   - Note names (`c4` = 60).
   - A path that doesn't match exactly is retried ignoring case.
 - **Mapping:** `lokey`, `hikey`, `key`, `lovel`, `hivel`, `lorand`, `hirand`, `seq_length`, `seq_position`, `locc`/`hicc` and `lohdcc`/`hihdcc`, `sw_last`, `sw_lokey`, `sw_hikey` and `sw_default`. Round-robin counters advance whatever the CC state, so mic layers stay in step.
+  - Every key named in `sw_last` is a keyswitch. So is every key of an `sw_lokey` to `sw_hikey` range that no region plays; a key a region plays stays a note, as in sforzando. UI Metal GTX sets its range over the whole keyboard (`sw_lokey=e-1 sw_hikey=d7`) and stays silent if every key in it switches.
 - **Triggers:**
   - `trigger=attack|release|release_key|first|legato`. `first` and `legato` play like `attack`.
   - `on_loccN`/`on_hiccN` (and `start_` forms) for regions with no key, such as pedal noises.

@@ -863,6 +863,29 @@ namespace {
     close(hit(65, 1.0f), 300.0, "sw_default selects the first articulation", 2.0);
     hit(25, 1.0f);
     close(hit(65, 1.0f), 1200.0, "a keyswitch selects the second articulation", 3.0);
+
+    // A switch range over the whole keyboard, as UI Metal GTX writes it: the
+    // keys the regions play are notes, the others select articulations.
+    writeText(temp.folder.getChildFile("overlap.sfz"),
+              "<global> pitch_keycenter=60 pitch_keytrack=0 loop_mode=one_shot sw_lokey=e-1 sw_hikey=d7\n"
+              "<group> lokey=40 hikey=80 sw_last=f0\n<region> sample=a.wav\n"
+              "<group> lokey=40 hikey=80 sw_last=g0\n<region> sample=c.wav\n"
+              "<group> sw_last=a0\n<region> key=a0 sample=b.wav\n");
+    auto overlap = loadSfz(temp.folder.getChildFile("overlap.sfz"));
+    if (overlap) {
+      expect(!overlap->isKeySwitch(60) && overlap->isKeySwitch(17) && overlap->isKeySwitch(16) &&
+             overlap->isKeySwitch(21), "a switch range keeps the keys its regions play as notes");
+      setInstrument(plugin, 0, overlap);
+      auto silent = render(plugin, kRate / 4, { { 0, juce::MidiMessage::noteOn(1, 60, 1.0f) },
+                                                { kRate / 5, juce::MidiMessage::noteOff(1, 60) } });
+      expect(rms(silent, 0, kRate / 5) < 1.0e-6, "keyswitched regions wait for a keyswitch without sw_default");
+      render(plugin, kRate / 5, {});
+      hit(17, 1.0f);
+      close(hit(60, 1.0f), 300.0, "f0 selects the first articulation", 2.0);
+      close(hit(72, 1.0f), 300.0, "a played note keeps the articulation", 2.0);
+      hit(19, 1.0f);
+      close(hit(60, 1.0f), 1200.0, "g0 selects the second articulation", 3.0);
+    }
     return finish("select");
   }
 
