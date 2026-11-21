@@ -67,6 +67,10 @@ void WavetableCreator::removeGroup(int index) {
 }
 
 float WavetableCreator::render(int position) {
+  return renderFrame(position, false);
+}
+
+float WavetableCreator::renderFrame(int position, bool in_order) {
   const bool started_edit = wavetable_->beginEdit();
   compute_frame_combine_.clear();
   compute_frame_combine_.index = position;
@@ -90,7 +94,27 @@ float WavetableCreator::render(int position) {
     min_value = std::min(compute_frame_combine_.time_domain[i], min_value);
   }
 
-  wavetable_->loadWaveFrame(&compute_frame_combine_);
+  // A shape held from one keyframe to the next gives the frame before it
+  // again (most of Basic Shapes' 225 frames are one of seven). What the table
+  // keeps of a frame follows from its wave and harmonics alone, so such a
+  // frame is copied from its neighbour in the table instead of worked out.
+  const size_t time_bytes = sizeof(held_time_);
+  const size_t harmonic_bytes = sizeof(held_harmonics_);
+  const bool held = in_order && held_position_ == position - 1 &&
+                    memcmp(held_time_, compute_frame_combine_.time_domain, time_bytes) == 0 &&
+                    memcmp(held_harmonics_, compute_frame_combine_.frequency_domain, harmonic_bytes) == 0;
+  if (held) {
+    wavetable_->copyWaveFrame(position - 1, position);
+  }
+  else {
+    wavetable_->loadWaveFrame(&compute_frame_combine_);
+    if (in_order) {
+      memcpy(held_time_, compute_frame_combine_.time_domain, time_bytes);
+      memcpy(held_harmonics_, compute_frame_combine_.frequency_domain, harmonic_bytes);
+    }
+  }
+  held_position_ = in_order ? position : -1;
+
   const float span = max_value - min_value;
   if (started_edit)
     wavetable_->commitEdit();
@@ -112,8 +136,10 @@ void WavetableCreator::render() {
   wavetable_->setNumFrames(last_waveframe + 1);
   wavetable_->setShepardTable(shepard);
   float max_span = 0.0f;
+  held_position_ = -1;
   for (int i = 0; i < last_waveframe + 1; ++i)
-    max_span = std::max(render(i), max_span);
+    max_span = std::max(renderFrame(i, true), max_span);
+  held_position_ = -1;
   wavetable_->setFrequencyRatio(compute_frame_.frequency_ratio);
   wavetable_->setSampleRate(compute_frame_.sample_rate);
 
@@ -204,7 +230,7 @@ void WavetableCreator::initPredefinedWaves() {
   render();
 }
 
-void WavetableCreator::initBasicShapes() {
+void WavetableCreator::initBasicShapes(bool render_table) {
   // Each shape starts at zero, or high for the square and pulses, and holds
   // until the next: Vital's factory Basic Shapes table, drawn here rather than
   // shipped, since Vital's factory content may not be redistributed.
@@ -248,7 +274,8 @@ void WavetableCreator::initBasicShapes() {
 
   new_group->addComponent(wave_source);
   addGroup(new_group);
-  render();
+  if (render_table)
+    render();
 }
 
 void WavetableCreator::initFromAudioFile(const float* audio_buffer, int num_samples, int sample_rate,
@@ -367,7 +394,7 @@ void WavetableCreator::initFromPitchedAudioFile(const float* audio_buffer, int n
   render();
 }
 
-void WavetableCreator::initFromLineGenerator(LineGenerator* line_generator) {
+void WavetableCreator::initFromLineGenerator(LineGenerator* line_generator, bool render_table) {
   clear();
 
   wavetable_->setName(line_generator->getName());
@@ -380,7 +407,8 @@ void WavetableCreator::initFromLineGenerator(LineGenerator* line_generator) {
 
   new_group->addComponent(line_source);
   addGroup(new_group);
-  render();
+  if (render_table)
+    render();
 }
 
 bool WavetableCreator::isValidJson(json data) {
@@ -559,11 +587,29 @@ json WavetableCreator::stateToJson() {
   };
 }
 
-void WavetableCreator::jsonToState(json data) {
+bool WavetableCreator::holdsState(const json& data) {
+  if (!data.is_object() || !data.count("name") || !data["name"].is_string() ||
+      data["name"].get<std::string>() != wavetable_->getName() ||
+      !data.count("groups") || !data["groups"].is_array() || data["groups"].size() != groups_.size() ||
+      !data.count("version") || !data["version"].is_string())
+    return false;
+  // States from before 0.7.7 are converted as they load (updateJson), so they
+  // never read the same as what stateToJson writes.
+  if (LoadSave::compareVersionStrings(data["version"].get<std::string>(), "0.7.7") < 0)
+    return false;
+  // The same table whichever version saved it.
+  json held = stateToJson();
+  json given = data;
+  held.erase("version");
+  given.erase("version");
+  return held == given;
+}
+
+void WavetableCreator::jsonToState(json data, bool render_table) {
   if (LineGenerator::isValidJson(data)) {
     LineGenerator generator(vital::WaveFrame::kWaveformSize);
     generator.jsonToState(data);
-    initFromLineGenerator(&generator);
+    initFromLineGenerator(&generator, render_table);
     return;
   }
 
@@ -594,5 +640,6 @@ void WavetableCreator::jsonToState(json data) {
     addGroup(new_group);
   }
 
-  render();
+  if (render_table)
+    render();
 }

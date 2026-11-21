@@ -67,7 +67,10 @@ namespace vital {
         JUCE_LEAK_DETECTOR(SampleData)
       };
     
-      Sample();
+      // `default_variant` picks which built-in default (a white noise of its
+      // own) the sample starts with and init() returns to: an oscillator
+      // slot's index, so no two slots of an instance play the same noise.
+      explicit Sample(int default_variant = 0);
 
       using LoadCallback = std::function<void(const mono_float*, const mono_float*, int, int)>;
 
@@ -190,12 +193,17 @@ namespace vital {
       std::string last_browsed_file_;
       SampleData* current_data_;
       std::atomic<SampleData*> active_audio_data_;
-      std::unique_ptr<SampleData> data_;
+      // Shared while it is the built-in default (see init), which every
+      // instance's samples of a variant hold; a loaded file's is this sample's alone.
+      std::shared_ptr<SampleData> data_;
       std::unique_ptr<Slices> slices_;
       std::atomic<Slices*> current_slices_ { nullptr };
       std::atomic<Slices*> active_slices_ { nullptr };
       bool is_default_ = false;
+      int default_variant_ = 0;
       LoadCallback load_callback_;
+
+      void installData(std::shared_ptr<SampleData> data);
 
       JUCE_LEAK_DETECTOR(Sample)
   };

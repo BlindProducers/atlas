@@ -22,6 +22,8 @@
 #include "synth_constants.h"
 
 #include <algorithm>
+#include <map>
+#include <mutex>
 #include <new>
 #include <thread>
 
@@ -188,6 +190,15 @@ namespace vital {
     force_inline mono_float getFilteredLoopSample(const mono_float* buffer, int index, int size, int stride = 1) {
       int radius = SampleSource::kNumDownsampleTaps / 2;
       mono_float total = 0.0f;
+      // Away from the ends of the cycle no tap wraps, which spares each one
+      // its remainder: most of what this costs on a long file.
+      const long long reach = static_cast<long long>(radius) * stride;
+      if (index >= reach && index + reach < size) {
+        const mono_float* first = buffer + (index - radius * stride);
+        for (int i = 0; i < SampleSource::kNumDownsampleTaps; ++i)
+          total += kDownsampleCoefficients[i] * first[i * stride];
+        return total;
+      }
       for (int i = 0; i < SampleSource::kNumDownsampleTaps; ++i) {
         int buffer_index = (index + (i - radius) * stride) % size;
         total += kDownsampleCoefficients[i] * buffer[buffer_index < 0 ? buffer_index + size : buffer_index];
@@ -214,6 +225,13 @@ namespace vital {
     force_inline mono_float getInterpolatedLoopSample(const mono_float* buffer, int index, int size) {
       int radius = SampleSource::kNumUpsampleTaps / 2;
       mono_float total = 0.0f;
+      // As in getFilteredLoopSample: no tap wraps away from the ends.
+      if (index >= radius - 1 && index + radius < size) {
+        const mono_float* first = buffer + (index - radius + 1);
+        for (int i = 0; i < SampleSource::kNumUpsampleTaps; ++i)
+          total += kUpsampleCoefficients[i] * first[i];
+        return total;
+      }
       for (int i = index - radius + 1; i <= index + radius; ++i)
         total += kUpsampleCoefficients[i - index + radius - 1] * buffer[(i % size + size) % size];
       return total;
@@ -356,9 +374,36 @@ namespace vital {
         peak = std::max(peak, std::fabs(buffer[i]));
       return peak;
     }
+
+    // The built-in default, a second of white noise filtered into every
+    // resolution. It never changes and takes milliseconds to build, and an
+    // instance has eight slots, so the process builds each variant once and
+    // every sample on it shares the data. A variant is a noise of its own:
+    // two slots playing the same one would double instead of mixing.
+    std::shared_ptr<Sample::SampleData> defaultData(int variant) {
+      struct Pool {
+        // Makes SampleData's leak counter (debug builds) before the pool, so
+        // that it outlives the data the pool still holds as the process ends.
+        Pool() { Sample::SampleData counted(0, kDefaultSampleRate, false); }
+        std::mutex mutex;
+        std::map<int, std::shared_ptr<Sample::SampleData>> data;
+      };
+      static Pool pool;
+      std::lock_guard<std::mutex> lock(pool.mutex);
+      std::shared_ptr<Sample::SampleData>& data = pool.data[variant];
+      if (data == nullptr) {
+        std::unique_ptr<mono_float[]> buffer = std::make_unique<mono_float[]>(Sample::kDefaultSampleLength);
+        utils::RandomGenerator random_generator(-0.9f, 0.9f);
+        for (int i = 0; i < Sample::kDefaultSampleLength; ++i)
+          buffer[i] = random_generator.next();
+        data = Sample::createData(buffer.get(), nullptr, Sample::kDefaultSampleLength, kDefaultSampleRate);
+      }
+      return data;
+    }
   }
 
-  Sample::Sample() : name_(kDefaultName), current_data_(nullptr), active_audio_data_(nullptr) {
+  Sample::Sample(int default_variant) : name_(kDefaultName), current_data_(nullptr), active_audio_data_(nullptr),
+                                        default_variant_(default_variant) {
     init();
   }
 
@@ -376,9 +421,13 @@ namespace vital {
   }
 
   void Sample::loadData(std::unique_ptr<SampleData> data) {
+    installData(std::move(data));
+  }
+
+  void Sample::installData(std::shared_ptr<SampleData> data) {
     VITAL_ASSERT(active_audio_data_.is_lock_free());
     is_default_ = false;
-    std::unique_ptr<SampleData> old_data = std::move(data_);
+    std::shared_ptr<SampleData> old_data = std::move(data_);
     data_ = std::move(data);
 
     current_data_ = data_.get();
@@ -515,13 +564,7 @@ namespace vital {
 
   void Sample::init() {
     name_ = kDefaultName;
-    mono_float buffer[kDefaultSampleLength];
-    utils::RandomGenerator random_generator(-0.9f, 0.9f);
-
-    for (int i = 0; i < kDefaultSampleLength; ++i)
-      buffer[i] = random_generator.next();
-
-    loadSample(buffer, kDefaultSampleLength, kDefaultSampleRate);
+    installData(defaultData(default_variant_));
     is_default_ = true;
   }
 

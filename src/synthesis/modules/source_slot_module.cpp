@@ -46,7 +46,7 @@ namespace vital {
   SourceSlotModule::SourceSlotModule(int slot, const Output* beats_per_second) :
       SynthModule(kNumInputs, kNumOutputs), slot_(slot), prefix_(source_types::slotPrefix(slot)),
       beats_per_second_(beats_per_second), wavetable_(std::make_shared<Wavetable>(kNumOscillatorWaveFrames)),
-      sample_(std::make_shared<Sample>()), multisample_(std::make_shared<MultiSampleSlot>()),
+      sample_(std::make_shared<Sample>(slot)), multisample_(std::make_shared<MultiSampleSlot>()),
       speech_(std::make_shared<SpeechSlot>()),
       playhead_(std::make_shared<PlayheadOutput>()), modulation_output_(std::make_shared<ModulationOutput>()),
       was_on_(std::make_shared<bool>(true)), state_(std::make_shared<ActiveState>()),

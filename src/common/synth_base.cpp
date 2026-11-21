@@ -197,8 +197,9 @@ SynthBase::SynthBase() : expired_(false) {
   for (int i = 0; i < vital::kNumOscillators; ++i) {
     vital::Wavetable* wavetable = engine_->getWavetable(i);
     if (wavetable) {
+      // Rendered below, once the controls say which slots play a wavetable.
       wavetable_creators_[i] = std::make_unique<WavetableCreator>(wavetable);
-      wavetable_creators_[i]->initBasicShapes();
+      wavetable_creators_[i]->initBasicShapes(false);
     }
   }
 
@@ -215,10 +216,15 @@ SynthBase::SynthBase() : expired_(false) {
   memory_index_ = 0;
 
   controls_ = engine_->getControls();
-  // The engine built its default slot types in its own init; the default
-  // (one-frame) tables are already rendered, so only the flags need setting.
-  for (int i = 0; i < vital::kNumOscillators; ++i)
+  // The engine built its default slot types in its own init. A slot that
+  // plays a wavetable renders Basic Shapes now; the others keep the one-frame
+  // table they were made with and render when they turn to one
+  // (prepareSelectedSources), instead of rendering it here to drop it there.
+  for (int i = 0; i < vital::kNumOscillators; ++i) {
     wavetable_render_pending_[i] = !slotUsesWavetable(i);
+    if (!wavetable_render_pending_[i] && wavetable_creators_[i] != nullptr)
+      wavetable_creators_[i]->render();
+  }
   for (int arp = 0; arp < vital::kNumArpeggiators; ++arp) {
     const std::string prefix = "arp_" + std::to_string(arp + 1) + "_";
     for (size_t i = 0; i < kArpeggiatorControlNames.size(); ++i) {
@@ -487,19 +493,36 @@ void SynthBase::scheduleReslice(int slot) {
     resliceSample(slot);
     return;
   }
+  // One cut waits at a time, however fast the control moves: an automated
+  // Sensitivity sent a message a block, each analysing the whole file with
+  // processing paused, and Windows drops every message past ten thousand.
+  if (!isPositiveAndBelow(slot, vital::kNumOscillators) || reslice_queued_[slot].exchange(true))
+    return;
   std::shared_ptr<std::atomic<bool>> alive = alive_;
   MessageManager::callAsync([this, alive, slot] {
-    if (alive->load())
-      resliceSample(slot);
+    if (!alive->load())
+      return;
+    reslice_queued_[slot] = false;
+    resliceSample(slot);
   });
 }
 
 namespace {
-  // The slot of an osc_N_sample_<suffix> control, or -1.
+  // The slot of an osc_N_sample_<suffix> control, or -1. Every changed
+  // control comes through here, on the audio thread when a host automates it,
+  // so the name is compared in place: no string is built.
   int sampleControlSlot(const std::string& name, const char* control) {
-    const std::string suffix = std::string("_sample_") + control;
-    if (name.rfind("osc_", 0) != 0 || name.size() <= suffix.size() ||
-        name.compare(name.size() - suffix.size(), suffix.size(), suffix) != 0)
+    static constexpr char kMiddle[] = "_sample_";
+    constexpr size_t kMiddleLength = sizeof(kMiddle) - 1;
+    if (name.compare(0, 4, "osc_") != 0)
+      return -1;
+    const size_t control_length = std::strlen(control);
+    const size_t suffix_length = kMiddleLength + control_length;
+    if (name.size() <= suffix_length)
+      return -1;
+    const size_t middle = name.size() - suffix_length;
+    if (name.compare(middle, kMiddleLength, kMiddle) != 0 ||
+        name.compare(middle + kMiddleLength, control_length, control) != 0)
       return -1;
     const int slot = std::atoi(name.c_str() + 4) - 1;
     return slot >= 0 && slot < vital::kNumOscillators ? slot : -1;

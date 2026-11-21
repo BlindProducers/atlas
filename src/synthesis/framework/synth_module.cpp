@@ -356,11 +356,16 @@ namespace vital {
     data_->status_outputs[name] = std::make_unique<StatusOutput>(source);
   }
 
+  // These gather a module's own entries and its sub modules' into one map. A
+  // sub module's map is a temporary, so its entries are moved into the
+  // parent's (merge keeps what the parent already has, as insert did) rather
+  // than copied again at every level: the engine has some fifty thousand
+  // controls, four or five modules deep.
   control_map SynthModule::getControls() {
     control_map all_controls = data_->controls;
     for (SynthModule* sub_module : data_->sub_modules) {
       control_map sub_controls = sub_module->getControls();
-      all_controls.insert(sub_controls.begin(), sub_controls.end());
+      all_controls.merge(sub_controls);
     }
 
     return all_controls;
@@ -491,7 +496,7 @@ namespace vital {
     input_map all_destinations = data_->mono_mod_destinations;
     for (SynthModule* sub_module : data_->sub_modules) {
       input_map sub_destinations = sub_module->getMonoModulationDestinations();
-      all_destinations.insert(sub_destinations.begin(), sub_destinations.end());
+      all_destinations.merge(sub_destinations);
     }
 
     return all_destinations;
@@ -501,7 +506,7 @@ namespace vital {
     input_map all_destinations = data_->poly_mod_destinations;
     for (SynthModule* sub_module : data_->sub_modules) {
       input_map sub_destinations = sub_module->getPolyModulationDestinations();
-      all_destinations.insert(sub_destinations.begin(), sub_destinations.end());
+      all_destinations.merge(sub_destinations);
     }
 
     return all_destinations;
@@ -511,7 +516,7 @@ namespace vital {
     output_map all_readouts = data_->mono_modulation_readout;
     for (SynthModule* sub_module : data_->sub_modules) {
       output_map sub_readouts = sub_module->getMonoModulations();
-      all_readouts.insert(sub_readouts.begin(), sub_readouts.end());
+      all_readouts.merge(sub_readouts);
     }
 
     return all_readouts;
@@ -521,7 +526,7 @@ namespace vital {
     output_map all_readouts = data_->poly_modulation_readout;
     for (SynthModule* sub_module : data_->sub_modules) {
       output_map sub_readouts = sub_module->getPolyModulations();
-      all_readouts.insert(sub_readouts.begin(), sub_readouts.end());
+      all_readouts.merge(sub_readouts);
     }
 
     return all_readouts;

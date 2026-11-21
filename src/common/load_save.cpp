@@ -930,9 +930,18 @@ void LoadSave::loadWavetables(SynthBase* synth, const json& wavetables) {
 
     WavetableCreator* wavetable_creator = synth->getWavetableCreator(i);
     try {
-      wavetable_creator->jsonToState(wavetable);
+      // A slot that plays this very table and has it rendered keeps it: a
+      // project's state arriving at a new instance, a preset's oscillators
+      // left on the default table. Rendering it again changes nothing.
+      if (synth->slotUsesWavetable(i) && !synth->isWavetableRenderPending(i) &&
+          wavetable_creator->holdsState(wavetable)) {
+        i++;
+        continue;
+      }
       // Controls are loaded already, so the slot's type decides whether the
-      // table renders now or waits for the slot to play a wavetable.
+      // table renders now or waits for the slot to play a wavetable. Taking
+      // the state does not render it as well: that was every table twice.
+      wavetable_creator->jsonToState(wavetable, false);
       synth->renderWavetable(i);
     }
     catch (const json::exception&) { }

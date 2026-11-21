@@ -175,6 +175,21 @@ namespace vital {
     memcpy(current_data_->wave_data[to_index], wave_frame->time_domain, kWaveformSize * sizeof(mono_float));
   }
 
+  void Wavetable::copyWaveFrame(int from_index, int to_index) {
+    if (from_index < 0 || to_index < 0 || from_index == to_index ||
+        std::max(from_index, to_index) >= current_data_->num_frames)
+      return;
+
+    const size_t frequency_size = kPolyFrequencySize * sizeof(poly_float);
+    memcpy(current_data_->frequency_amplitudes[to_index], current_data_->frequency_amplitudes[from_index],
+           frequency_size);
+    memcpy(current_data_->normalized_frequencies[to_index], current_data_->normalized_frequencies[from_index],
+           frequency_size);
+    memcpy(current_data_->phases[to_index], current_data_->phases[from_index], frequency_size);
+    memcpy(current_data_->wave_data[to_index], current_data_->wave_data[from_index],
+           kWaveformSize * sizeof(mono_float));
+  }
+
   void Wavetable::postProcess(float max_span) {
     static constexpr float kMinAmplitudePhase = 0.1f;
 

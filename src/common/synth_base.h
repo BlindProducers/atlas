@@ -356,6 +356,8 @@ class SynthBase : public MidiManager::Listener {
     bool source_preparation_queued_ = false;
     void scheduleSourcePreparation();
     std::atomic<bool> effect_reservation_queued_ { false };
+    // A slot's slices wait to be cut again on the message thread (scheduleReslice).
+    std::atomic<bool> reslice_queued_[vital::kNumOscillators] = {};
     void scheduleEffectControlReservation();
     // Live and parked effects as the slots select them. Queued route changes
     // point at wiring that parking may remove, so they are applied first.
