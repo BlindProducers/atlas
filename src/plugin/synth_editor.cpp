@@ -12105,7 +12105,7 @@ void SynthEditor::undoOrRedo(bool redo) {
     timerCallback();
     // A wavetable step may have added or removed frames.
     for (int oscillator = 0; oscillator < vital::kNumOscillators; ++oscillator)
-      syncWavetableFrameSliders(oscillator);
+      syncWavetableEditorRows(oscillator);
   }
   postUndoAnnouncement(undoAnnouncement(outcome, redo));
 }
@@ -21674,7 +21674,8 @@ int SynthEditor::addAccessibleWavetableEditorControls(int oscillator, Component&
     return editor_outer_y + editor_height + 8;
   };
 
-  addText("Wavetable overview", creator != nullptr ? edit::describeWavetable(*creator) : String("No wavetable"));
+  wavetable_overview_label_[oscillator] =
+      addText("Wavetable overview", creator != nullptr ? edit::describeWavetable(*creator) : String("No wavetable"));
   if (creator == nullptr || layers == 0)
     return finish();
 
@@ -21687,6 +21688,7 @@ int SynthEditor::addAccessibleWavetableEditorControls(int oscillator, Component&
   layer_combo->onChange = [this, oscillator, layer_combo] {
     selectWavetableLayer(oscillator, layer_combo->getSelectedId() - 1);
   };
+  wavetable_layer_combo_[oscillator] = layer_combo;
   auto* new_layer_type = addCombo("New layer source", "The source a new layer starts with: a wave source of frames "
                                   "you shape harmonic by harmonic, a line source of points, or an audio file",
                                   edit::sourceTypeNames(), state.new_layer_type + 1);
@@ -21956,18 +21958,9 @@ int SynthEditor::addAccessibleWavetableEditorControls(int oscillator, Component&
     auto* harmonic_slider = addSlider("Harmonic", "Selected harmonic number", 1.0,
                                       vital::WaveFrame::kNumRealComplex - 2,
                                       keyboard_state.harmonic, 1.0, "", 0);
-    frame_slider->onValueChange = [this, oscillator, frame_slider, frame_position_slider] {
+    frame_slider->onValueChange = [this, oscillator, frame_slider] {
       wavetable_keyboard_state_[oscillator].frame = jmax(0, roundToInt(frame_slider->getValue()) - 1);
-      if (auto* source = currentWaveSource(oscillator);
-          source != nullptr && source->numFrames() > 0) {
-        const int frame = jlimit(0, source->numFrames() - 1, wavetable_keyboard_state_[oscillator].frame);
-        frame_position_slider->setValue(source->getFrameAt(frame)->position() + 1,
-                                        dontSendNotification);
-      }
-      else {
-        const int frame = wavetable_keyboard_state_[oscillator].frame;
-        frame_position_slider->setValue(frame + 1.0, dontSendNotification);
-      }
+      syncWavetableEditorRows(oscillator);
     };
     frame_position_slider->onValueChange = [this, oscillator, frame_slider, frame_position_slider] {
       const int frame = jmax(0, roundToInt(frame_slider->getValue()) - 1);
@@ -21982,11 +21975,20 @@ int SynthEditor::addAccessibleWavetableEditorControls(int oscillator, Component&
     };
     harmonic_slider->onValueChange = [this, oscillator, harmonic_slider] {
       wavetable_keyboard_state_[oscillator].harmonic = roundToInt(harmonic_slider->getValue());
+      syncWavetableEditorRows(oscillator);
     };
+    // They show the selected harmonic, so Set harmonic changes only what the
+    // user changes; continuous, so they hold its exact level and phase.
     auto* level_slider = addSlider("Harmonic level", "Harmonic level as percent", 0.0, 400.0,
-                                   100.0, 1.0, "%", 0);
+                                   100.0, 0.0, "%", 1);
+    level_slider->adjustmentStep = [] { return 1.0; };
     auto* phase_slider = addSlider("Harmonic phase", "Harmonic phase in degrees", -180.0, 180.0,
-                                   0.0, 1.0, " degrees", 0);
+                                   0.0, 0.0, " degrees", 1);
+    phase_slider->adjustmentStep = [] { return 1.0; };
+    wavetable_harmonic_slider_[oscillator] = harmonic_slider;
+    wavetable_harmonic_level_slider_[oscillator] = level_slider;
+    wavetable_harmonic_phase_slider_[oscillator] = phase_slider;
+    syncWavetableEditorRows(oscillator);
 
     auto selected_harmonic = [harmonic_slider] { return roundToInt(harmonic_slider->getValue()); };
     addButton("Set harmonic", "Set or add the selected harmonic at the chosen level and phase",
@@ -22010,12 +22012,11 @@ int SynthEditor::addAccessibleWavetableEditorControls(int oscillator, Component&
 
     addButton("Add frame", "Add a copy of the selected frame after it, midway to the next frame or at the end of "
               "the timeline, so interpolation has positions to fill", [this, oscillator] { addWavetableFrame(oscillator); });
-    if (frames > 1) {
-      addButton("Remove frame", "Remove the selected frames", [this, oscillator] { deleteWavetableFrames(oscillator); });
-      addButton("Spread frames evenly", "Space the frames evenly from the first to the last timeline position, so "
-                "interpolation morphs between them across the whole table",
-                [this, oscillator] { spreadWavetableKeyframes(oscillator, 0, "Frame"); });
-    }
+    // Built whatever the count, which frame edits change without a rebuild.
+    addButton("Remove frame", "Remove the selected frames", [this, oscillator] { deleteWavetableFrames(oscillator); });
+    addButton("Spread frames evenly", "Space the frames evenly from the first to the last timeline position, so "
+              "interpolation morphs between them across the whole table",
+              [this, oscillator] { spreadWavetableKeyframes(oscillator, 0, "Frame"); });
   }
   else {
     addComponentRows(0, source, "Source");
@@ -22123,21 +22124,78 @@ void SynthEditor::pruneWavetableFrameSelection(int oscillator, int frameCount) {
   }
 }
 
-void SynthEditor::syncWavetableFrameSliders(int oscillator) {
+namespace {
+  // A harmonic at 100% is a sine of full scale.
+  constexpr float kWavetableHarmonicFullScale = vital::WaveFrame::kWaveformSize * 0.5f;
+  // Below this share of full scale a harmonic is silent: its bin holds the
+  // transform's rounding noise, whose phase means nothing.
+  constexpr float kSilentWavetableHarmonic = 1.0e-5f;
+
+  float wavetableHarmonicLevelPercent(const vital::WaveFrame& frame, int harmonic) {
+    return 100.0f * std::abs(frame.frequency_domain[harmonic]) / kWavetableHarmonicFullScale;
+  }
+
+  // In radians; 0 for a silent harmonic.
+  float wavetableHarmonicPhase(const vital::WaveFrame& frame, int harmonic) {
+    const std::complex<float> value = frame.frequency_domain[harmonic];
+    return std::abs(value) < kSilentWavetableHarmonic * kWavetableHarmonicFullScale ? 0.0f : std::arg(value);
+  }
+
+  // Changes one harmonic and rebuilds the waveform from the spectrum, so every
+  // other harmonic keeps its level and phase exactly.
+  void setWavetableHarmonic(vital::WaveFrame& frame, int harmonic, std::complex<float> value) {
+    frame.frequency_domain[harmonic] = value;
+    frame.toTimeDomain();
+  }
+}
+
+void SynthEditor::syncWavetableEditorRows(int oscillator) {
   if (!isPositiveAndBelow(oscillator, vital::kNumOscillators))
     return;
-  auto* frame_slider = wavetable_frame_slider_[oscillator].getComponent();
-  auto* source = currentWaveSource(oscillator);
-  if (frame_slider == nullptr || source == nullptr || source->numFrames() == 0)
-    return;
+  if (auto* creator = synth_.getWavetableCreator(oscillator)) {
+    if (auto* overview = wavetable_overview_label_[oscillator].getComponent()) {
+      const String text = atlas::wavetable_edit::describeWavetable(*creator);
+      overview->setText(text, dontSendNotification);
+      overview->setDescription(text);
+    }
+    if (auto* layer = wavetable_layer_combo_[oscillator].getComponent()) {
+      // Read before renaming: getSelectedId is 0 once the label differs from its item.
+      const int selected = layer->getSelectedId();
+      for (int index = 0; index < jmin(creator->numGroups(), layer->getNumItems()); ++index)
+        layer->changeItemText(index + 1, atlas::wavetable_edit::describeLayer(*creator, index));
+      // changeItemText leaves the label as it was; this shows the new text.
+      layer->setSelectedId(selected, dontSendNotification);
+    }
+  }
 
+  auto* source = currentWaveSource(oscillator);
+  if (source == nullptr || source->numFrames() == 0)
+    return;
   const int frames = source->numFrames();
   pruneWavetableFrameSelection(oscillator, frames);
-  const int frame = wavetable_keyboard_state_[oscillator].frame;
-  frame_slider->setRange(1.0, jmax(1.000001, double(frames)), 1.0);
-  frame_slider->setValue(frame + 1.0, dontSendNotification);
+  const auto& state = wavetable_keyboard_state_[oscillator];
+  if (auto* frame_slider = wavetable_frame_slider_[oscillator].getComponent()) {
+    frame_slider->setRange(1.0, jmax(1.000001, double(frames)), 1.0);
+    frame_slider->setValue(state.frame + 1.0, dontSendNotification);
+  }
   if (auto* position_slider = wavetable_frame_position_slider_[oscillator].getComponent())
-    position_slider->setValue(source->getFrameAt(frame)->position() + 1.0, dontSendNotification);
+    position_slider->setValue(source->getFrameAt(state.frame)->position() + 1.0, dontSendNotification);
+
+  const int harmonic = jlimit(1, vital::WaveFrame::kNumRealComplex - 2, state.harmonic);
+  const auto& wave_frame = *source->getKeyframe(state.frame)->wave_frame();
+  if (auto* harmonic_slider = wavetable_harmonic_slider_[oscillator].getComponent())
+    harmonic_slider->setValue(harmonic, dontSendNotification);
+  if (auto* level_slider = wavetable_harmonic_level_slider_[oscillator].getComponent())
+    level_slider->setValue(wavetableHarmonicLevelPercent(wave_frame, harmonic), dontSendNotification);
+  if (auto* phase_slider = wavetable_harmonic_phase_slider_[oscillator].getComponent())
+    phase_slider->setValue(wavetableHarmonicPhase(wave_frame, harmonic) * 180.0f / vital::kPi, dontSendNotification);
+}
+
+void SynthEditor::finishWavetableFrameEdit(int oscillator) {
+  if (auto* creator = synth_.getWavetableCreator(oscillator))
+    creator->render();
+  synth_.markStateChanged(wavetableUndoBlock(oscillator));
+  syncWavetableEditorRows(oscillator);
 }
 
 String SynthEditor::wavetableKeyboardStatusText(int oscillator) const {
@@ -22183,8 +22241,6 @@ String SynthEditor::wavetableFrameStatusText(int oscillator) const {
 }
 
 String SynthEditor::wavetableHarmonicStatusText(int oscillator, bool includeLevel, bool includePhase) const {
-  auto* creator = isPositiveAndBelow(oscillator, vital::kNumOscillators) ?
-                      synth_.getWavetableCreator(oscillator) : nullptr;
   auto* source = currentWaveSource(oscillator);
   if (source == nullptr || source->numFrames() == 0)
     return "No editable harmonics";
@@ -22192,12 +22248,9 @@ String SynthEditor::wavetableHarmonicStatusText(int oscillator, bool includeLeve
   const auto& state = wavetable_keyboard_state_[oscillator];
   const int frame = jlimit(0, source->numFrames() - 1, state.frame);
   const int harmonic = jlimit(1, vital::WaveFrame::kNumRealComplex - 2, state.harmonic);
-  const auto* wave_frame = source->getKeyframe(frame)->wave_frame();
-  const float scale = vital::WaveFrame::kWaveformSize * 0.5f;
-  const float level = 100.0f * std::abs(wave_frame->frequency_domain[harmonic]) / scale;
-  float phase = std::arg(wave_frame->frequency_domain[harmonic]) * 180.0f / vital::kPi;
-  if (std::abs(level) < 0.0001f)
-    phase = 0.0f;
+  const auto& wave_frame = *source->getKeyframe(frame)->wave_frame();
+  const float level = wavetableHarmonicLevelPercent(wave_frame, harmonic);
+  const float phase = wavetableHarmonicPhase(wave_frame, harmonic) * 180.0f / vital::kPi;
 
   String result = "Harmonic " + String(harmonic);
   if (includeLevel)
@@ -22240,7 +22293,7 @@ void SynthEditor::moveWavetableFrameCursor(int oscillator, int direction, bool e
     for (int frame = first; frame <= last; ++frame)
       state.selected_frames.insert(frame);
   }
-  syncWavetableFrameSliders(oscillator);
+  syncWavetableEditorRows(oscillator);
   postWavetableEditorAnnouncement(wavetableFrameStatusText(oscillator),
                                   AccessibilityHandler::AnnouncementPriority::high);
 }
@@ -22250,6 +22303,7 @@ void SynthEditor::moveWavetableHarmonicCursor(int oscillator, int direction) {
     return;
   auto& state = wavetable_keyboard_state_[oscillator];
   state.harmonic = jlimit(1, vital::WaveFrame::kNumRealComplex - 2, state.harmonic + direction);
+  syncWavetableEditorRows(oscillator);
   postWavetableEditorAnnouncement(wavetableHarmonicStatusText(oscillator, true, true),
                                   AccessibilityHandler::AnnouncementPriority::high);
 }
@@ -22302,20 +22356,14 @@ void SynthEditor::adjustWavetableHarmonicLevel(int oscillator, float deltaPercen
   const auto targets = wavetableTargetFrameIndices(oscillator, source->numFrames());
   const int harmonic = jlimit(1, vital::WaveFrame::kNumRealComplex - 2,
                               wavetable_keyboard_state_[oscillator].harmonic);
-  const float scale = vital::WaveFrame::kWaveformSize * 0.5f;
 
   for (int frame : targets) {
-    auto* wave_frame = source->getKeyframe(frame)->wave_frame();
-    const float current = 100.0f * std::abs(wave_frame->frequency_domain[harmonic]) / scale;
-    const float level = jlimit(0.0f, 400.0f, current + deltaPercent);
-    const float phase = std::arg(wave_frame->frequency_domain[harmonic]);
-    wave_frame->frequency_domain[harmonic] = std::polar(level * 0.01f * scale, phase);
-    wave_frame->toTimeDomain();
-    wave_frame->normalize();
-    wave_frame->toFrequencyDomain();
+    auto& wave_frame = *source->getKeyframe(frame)->wave_frame();
+    const float level = jlimit(0.0f, 400.0f, wavetableHarmonicLevelPercent(wave_frame, harmonic) + deltaPercent);
+    setWavetableHarmonic(wave_frame, harmonic, std::polar(level * 0.01f * kWavetableHarmonicFullScale,
+                                                          wavetableHarmonicPhase(wave_frame, harmonic)));
   }
-  creator->render();
-  synth_.markStateChanged(wavetableUndoBlock(oscillator));
+  finishWavetableFrameEdit(oscillator);
   postWavetableEditorAnnouncement(wavetableHarmonicStatusText(oscillator, true, false) +
                                       (targets.size() > 1 ? ", " + String(targets.size()) + " frames" : ""),
                                   AccessibilityHandler::AnnouncementPriority::high);
@@ -22334,15 +22382,11 @@ void SynthEditor::adjustWavetableHarmonicPhase(int oscillator, float deltaDegree
   const float delta = deltaDegrees * vital::kPi / 180.0f;
 
   for (int frame : targets) {
-    auto* wave_frame = source->getKeyframe(frame)->wave_frame();
-    const float level = std::abs(wave_frame->frequency_domain[harmonic]);
-    const float phase = std::arg(wave_frame->frequency_domain[harmonic]) + delta;
-    wave_frame->frequency_domain[harmonic] = std::polar(level, phase);
-    wave_frame->toTimeDomain();
-    wave_frame->toFrequencyDomain();
+    auto& wave_frame = *source->getKeyframe(frame)->wave_frame();
+    setWavetableHarmonic(wave_frame, harmonic, std::polar(std::abs(wave_frame.frequency_domain[harmonic]),
+                                                          wavetableHarmonicPhase(wave_frame, harmonic) + delta));
   }
-  creator->render();
-  synth_.markStateChanged(wavetableUndoBlock(oscillator));
+  finishWavetableFrameEdit(oscillator);
   postWavetableEditorAnnouncement(wavetableHarmonicStatusText(oscillator, false, true) +
                                       (targets.size() > 1 ? ", " + String(targets.size()) + " frames" : ""),
                                   AccessibilityHandler::AnnouncementPriority::high);
@@ -22401,8 +22445,7 @@ void SynthEditor::pasteWavetableFrames(int oscillator) {
       wave_frame->toFrequencyDomain();
     }
   }
-  creator->render();
-  synth_.markStateChanged(wavetableUndoBlock(oscillator));
+  finishWavetableFrameEdit(oscillator);
   postWavetableEditorAnnouncement("Pasted into " + String(targets.size()) + " wavetable frame" +
                                   (targets.size() == 1 ? String() : String("s")),
                                   AccessibilityHandler::AnnouncementPriority::high);
@@ -22438,9 +22481,7 @@ void SynthEditor::addWavetableFrame(int oscillator) {
   inserted_wave->setSampleRate(current_wave->sample_rate);
   state.frame = source->indexOf(inserted);
   state.selected_frames.clear();
-  creator->render();
-  synth_.markStateChanged(wavetableUndoBlock(oscillator));
-  syncWavetableFrameSliders(oscillator);
+  finishWavetableFrameEdit(oscillator);
   postWavetableEditorAnnouncement("Frame added, " + wavetableFrameStatusText(oscillator),
                                   AccessibilityHandler::AnnouncementPriority::high);
 }
@@ -22466,9 +22507,7 @@ void SynthEditor::deleteWavetableFrames(int oscillator) {
   auto& state = wavetable_keyboard_state_[oscillator];
   state.frame = jlimit(0, source->numFrames() - 1, next_cursor);
   state.selected_frames.clear();
-  creator->render();
-  synth_.markStateChanged(wavetableUndoBlock(oscillator));
-  syncWavetableFrameSliders(oscillator);
+  finishWavetableFrameEdit(oscillator);
   postWavetableEditorAnnouncement("Deleted " + String(targets.size()) + " wavetable frame" +
                                   (targets.size() == 1 ? String() : String("s")) + ", " +
                                   wavetableFrameStatusText(oscillator),
@@ -22500,8 +22539,7 @@ void SynthEditor::setWavetableFramePosition(int oscillator, int frame, int posit
   keyframe->setPosition(target);
   source->reposition(keyframe);
   wavetable_keyboard_state_[oscillator].frame = source->indexOf(keyframe);
-  creator->render();
-  synth_.markStateChanged(wavetableUndoBlock(oscillator));
+  finishWavetableFrameEdit(oscillator);
 }
 
 void SynthEditor::clearWavetableDc(int oscillator) {
@@ -22518,8 +22556,7 @@ void SynthEditor::clearWavetableDc(int oscillator) {
     wave_frame->toTimeDomain();
     wave_frame->toFrequencyDomain();
   }
-  creator->render();
-  synth_.markStateChanged(wavetableUndoBlock(oscillator));
+  finishWavetableFrameEdit(oscillator);
   postWavetableEditorAnnouncement("Removed DC offset from " + String(targets.size()) + " wavetable frame" +
                                   (targets.size() == 1 ? String() : String("s")),
                                   AccessibilityHandler::AnnouncementPriority::high);
@@ -22876,10 +22913,15 @@ void SynthEditor::removeWavetableKeyframe(int oscillator, int componentIndex, co
 
 void SynthEditor::spreadWavetableKeyframes(int oscillator, int componentIndex, const String& focusPrefix) {
   auto* component = wavetableComponent(oscillator, componentIndex);
-  if (component == nullptr || !atlas::wavetable_edit::spreadKeyframes(component))
+  if (component == nullptr)
     return;
-  synth_.getWavetableCreator(oscillator)->render();
   const bool frames = component->getType() == WavetableComponentFactory::kWaveSource;
+  if (!atlas::wavetable_edit::spreadKeyframes(component)) {
+    postWavetableEditorAnnouncement(String("Spreading needs at least two ") + (frames ? "frames" : "keyframes"),
+                                    AccessibilityHandler::AnnouncementPriority::high);
+    return;
+  }
+  synth_.getWavetableCreator(oscillator)->render();
   postWavetableEditorAnnouncement(String(component->numFrames()) + (frames ? " frames" : " keyframes") +
                                   " spread across the timeline", AccessibilityHandler::AnnouncementPriority::high);
   rebuildWavetableEditor(oscillator, frames ? String("Spread frames evenly") : focusPrefix + " spread keyframes evenly");
@@ -22967,7 +23009,7 @@ bool SynthEditor::handleWavetableShortcut(int oscillator, const KeyPress& key, C
       for (int frame = jmin(previous, state.frame); frame <= jmax(previous, state.frame); ++frame)
         state.selected_frames.insert(frame);
     }
-    syncWavetableFrameSliders(oscillator);
+    syncWavetableEditorRows(oscillator);
     postWavetableEditorAnnouncement(wavetableFrameStatusText(oscillator),
                                     AccessibilityHandler::AnnouncementPriority::high);
     return true;
@@ -23102,19 +23144,11 @@ void SynthEditor::applyWavetableHarmonicEdit(int oscillator, int frame, bool all
   }
   else
     targets = wavetableTargetFrameIndices(oscillator, source->numFrames());
-  const float amplitude = jlimit(0.0f, 4.0f, levelPercent / 100.0f) *
-                          (vital::WaveFrame::kWaveformSize * 0.5f);
-  const float phase = phaseDegrees * vital::kPi / 180.0f;
-
-  for (int i : targets) {
-    auto* wave_frame = source->getKeyframe(i)->wave_frame();
-    wave_frame->frequency_domain[harmonic] = std::polar(amplitude, phase);
-    wave_frame->toTimeDomain();
-    wave_frame->normalize(true);
-    wave_frame->toFrequencyDomain();
-  }
-  creator->render();
-  synth_.markStateChanged(wavetableUndoBlock(oscillator));
+  const std::complex<float> value = std::polar(jlimit(0.0f, 4.0f, levelPercent / 100.0f) * kWavetableHarmonicFullScale,
+                                               phaseDegrees * vital::kPi / 180.0f);
+  for (int i : targets)
+    setWavetableHarmonic(*source->getKeyframe(i)->wave_frame(), harmonic, value);
+  finishWavetableFrameEdit(oscillator);
 
   postWavetableEditorAnnouncement("Set harmonic " + String(harmonic) +
                                   (targets.size() == 1 ? " on frame " + String(targets.front() + 1) :
@@ -23149,8 +23183,7 @@ void SynthEditor::applyWavetableStartingShape(int oscillator, int frame, bool al
   const vital::WaveFrame* starting_frame = vital::PredefinedWaveFrames::getWaveFrame(predefined_shape);
   for (int index : targets)
     source->getKeyframe(index)->wave_frame()->copy(starting_frame);
-  creator->render();
-  synth_.markStateChanged(wavetableUndoBlock(oscillator));
+  finishWavetableFrameEdit(oscillator);
 
   static const char* const kShapeNames[] = {
     "Sine", "Saturated sine", "Triangle", "Square", "Pulse 25 percent", "Saw"
@@ -23183,14 +23216,9 @@ void SynthEditor::clearWavetableHarmonic(int oscillator, int frame, bool allFram
   else
     targets = wavetableTargetFrameIndices(oscillator, source->numFrames());
 
-  for (int i : targets) {
-    auto* wave_frame = source->getKeyframe(i)->wave_frame();
-    wave_frame->frequency_domain[harmonic] = 0.0f;
-    wave_frame->toTimeDomain();
-    wave_frame->toFrequencyDomain();
-  }
-  creator->render();
-  synth_.markStateChanged(wavetableUndoBlock(oscillator));
+  for (int i : targets)
+    setWavetableHarmonic(*source->getKeyframe(i)->wave_frame(), harmonic, 0.0f);
+  finishWavetableFrameEdit(oscillator);
 
   postWavetableEditorAnnouncement("Cleared harmonic " + String(harmonic) +
                                   (targets.size() == 1 ? " on frame " + String(targets.front() + 1) :
@@ -23224,8 +23252,7 @@ void SynthEditor::normalizeWavetableFrame(int oscillator, int frame, bool allFra
     wave_frame->normalize(true);
     wave_frame->toFrequencyDomain();
   }
-  creator->render();
-  synth_.markStateChanged(wavetableUndoBlock(oscillator));
+  finishWavetableFrameEdit(oscillator);
 
   postWavetableEditorAnnouncement(targets.size() == 1 ? "Normalized wavetable frame " + String(targets.front() + 1) :
                                                         "Normalized " + String(static_cast<int>(targets.size())) +

@@ -1,6 +1,8 @@
 #pragma once
 
 #include "screen_reader_speech.h"
+#include "wave_source.h"
+#include "wavetable_edit_model.h"
 #if JUCE_WINDOWS
 #include "windows_screen_reader.h"
 #endif
@@ -123,6 +125,68 @@ namespace {
     if (wavetable != nullptr) wavetable->keyPressed(KeyPress(KeyPress::leftKey));
     expect(spoken.messages.isEmpty(), "Use speech feedback off silences the keyboard editors");
     atlas::speech::settings().speech_feedback = true;
+  }
+
+  // Issue 5: a harmonic edit changes that harmonic alone, the harmonic sliders
+  // show the selected harmonic, and the rows that count frames follow a deletion.
+  void testWavetableFrameEdits() {
+    SpokenMessages spoken;
+    SynthPlugin synth;
+    SynthEditor editor(synth);
+    editor.updateFullGui();
+    editor.addToDesktop(0);
+    editor.setVisible(true);
+    pumpEditorEvents();
+    auto* show = dynamic_cast<Button*>(titled(*editorSection(editor, "Oscillator 1"), "Show wavetable editor"));
+    if (show != nullptr && show->onClick)
+      show->onClick();
+    pumpUntil([&] { return spoken.messages.joinIntoString(" ").contains("Wavetable editor shown"); });
+    auto* section = editorSection(editor, "Oscillator 1 wavetable editor");
+    auto* keyboard = section != nullptr ? titled(*section, "Wavetable keyboard editor") : nullptr;
+    auto* level = section != nullptr ? dynamic_cast<Slider*>(titled(*section, "Harmonic level")) : nullptr;
+    auto* phase = section != nullptr ? dynamic_cast<Slider*>(titled(*section, "Harmonic phase")) : nullptr;
+    auto* set = section != nullptr ? dynamic_cast<Button*>(titled(*section, "Set harmonic")) : nullptr;
+    auto* layer = section != nullptr ? dynamic_cast<ComboBox*>(titled(*section, "Layer")) : nullptr;
+    auto* source = atlas::wavetable_edit::waveSourceOfLayer(synth.getWavetableCreator(0), 0);
+    expect(keyboard && level && phase && set && layer && source, "the wavetable editor has its harmonic rows");
+    if (!(keyboard && level && phase && set && layer && source))
+      return;
+
+    // Frame 2, the saturated sine: harmonics 1, 3 and 5, in sine phase.
+    auto bin = [&](int harmonic) { return source->getKeyframe(1)->wave_frame()->frequency_domain[harmonic]; };
+    auto percent = [&](int harmonic) { return 100.0f * std::abs(bin(harmonic)) / (vital::WaveFrame::kWaveformSize * 0.5f); };
+    keyboard->keyPressed(KeyPress(KeyPress::homeKey));
+    keyboard->keyPressed(KeyPress(KeyPress::rightKey));
+    const auto third = bin(3);
+    const auto fifth = bin(5);
+    const KeyPress shift_up(KeyPress::upKey, ModifierKeys::shiftModifier, 0);
+    const KeyPress shift_down(KeyPress::downKey, ModifierKeys::shiftModifier, 0);
+    keyboard->keyPressed(characterKey('.'));
+    for (int i = 0; i < 16; ++i)
+      keyboard->keyPressed(shift_up);
+    expect(std::abs(percent(2) - 80.0f) < 0.01f && std::abs(std::arg(bin(2))) < 1.0e-4f,
+           "a silent harmonic raised to 80% starts at phase 0 (" + std::to_string(percent(2)) + "%)");
+    keyboard->keyPressed(characterKey(','));
+    for (int i = 0; i < 4; ++i)
+      keyboard->keyPressed(shift_down);
+    expect(std::abs(percent(1) - 80.0f) < 0.01f && std::abs(percent(2) - 80.0f) < 0.01f && bin(3) == third &&
+           bin(5) == fifth, "lowering harmonic 1 leaves the other harmonics as they were");
+    expect(std::abs(level->getValue() - 80.0) < 0.01 && std::abs(phase->getValue() + 90.0) < 0.01,
+           "the level and phase sliders show harmonic 1 (" + level->getTextFromValue(level->getValue()).toStdString() +
+           ", " + phase->getTextFromValue(phase->getValue()).toStdString() + ")");
+
+    level->setValue(50.0, sendNotificationSync);
+    set->onClick();
+    expect(std::abs(percent(1) - 50.0f) < 0.01f && std::abs(std::arg(bin(1)) + vital::kPi / 2.0f) < 1.0e-3f &&
+           std::abs(percent(2) - 80.0f) < 0.01f && bin(3) == third && bin(5) == fifth,
+           "Set harmonic changes the level it is given and keeps the phase and the other harmonics");
+
+    // Delete frames 2 to 4 of 7.
+    for (int i = 0; i < 2; ++i)
+      keyboard->keyPressed(KeyPress(KeyPress::rightKey, ModifierKeys::shiftModifier, 0));
+    keyboard->keyPressed(characterKey('e'));
+    expect(source->numFrames() == 4 && layer->getText() == "Layer 1, Wave source, 4 frames",
+           "the Layer row counts the frames left after a deletion (" + layer->getText().toStdString() + ")");
   }
 
   // A list's selection keys say the row on Windows, where JUCE leaves NVDA
