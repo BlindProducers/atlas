@@ -21404,17 +21404,17 @@ bool SynthEditor::loadWavetableIntoCreator(WavetableCreator& creator, const File
       creator.initFromAudioFile(sample_buffer.getReadPointer(0), sample_buffer.getNumSamples(),
                                 sample_rate, static_cast<WavetableCreator::AudioFileLoadStyle>(audioLoadStyle),
                                 getFadeStyleFromWavetableString(wavetable_string));
-      creator.setName(file.getFileNameWithoutExtension().toStdString());
       creator.setAuthor(getAuthorFromWavetableString(wavetable_string).toStdString());
     }
     else {
-      // Do not preflight with WavetableCreator::isValidJson() here. Older factory
-      // Older tables may omit version/name fields but jsonToState() can still
+      // Do not preflight with WavetableCreator::isValidJson() here. Older
+      // tables may omit version/name fields but jsonToState() can still
       // migrate and load them through WavetableCreator::updateJson().
       creator.jsonToState(data);
-      if (creator.getName().empty())
-        creator.setName(file.getFileNameWithoutExtension().toStdString());
     }
+    // A table file is named after the file, as an audio file is: the name stored
+    // inside is what the table was called when it was exported, often another.
+    creator.setName(file.getFileNameWithoutExtension().toStdString());
     creator.setFileLoaded(file.getFullPathName().toStdString());
     creator.render();
     synth_.markStateChanged(wavetableUndoBlock(&creator));
@@ -21441,6 +21441,7 @@ void SynthEditor::loadWavetableFile(const File& file, int audioLoadStyle) {
       if (!loadWavetableIntoCreator(*creator, file, audioLoadStyle, error))
         throw std::runtime_error(error.toStdString());
       creator->setFileLoaded(file.getFullPathName().toStdString());
+      refreshWavetableNameLabel(active_oscillator_);
       // The new table has its own layers and frames; the editor's cursors and
       // controls describe the old one until it is rebuilt.
       wavetable_keyboard_state_[active_oscillator_] = {};
@@ -21556,10 +21557,19 @@ void SynthEditor::saveWavetableFile(int oscillator) {
     if (file != File()) {
       if (auto* creator = synth_.getWavetableCreator(oscillator)) {
         const File destination = file.withFileExtension(vital::kWavetableExtension);
-        const bool saved = destination.replaceWithText(String(creator->stateToJson().dump(2)));
-        if (saved)
-          postPluginAnnouncement("Exported wavetable " + destination.getFileNameWithoutExtension(),
-                                                 AccessibilityHandler::AnnouncementPriority::high);
+        // The file and the oscillator's table take the name it is saved under.
+        const std::string name = destination.getFileNameWithoutExtension().toStdString();
+        json data = creator->stateToJson();
+        data["name"] = name;
+        if (destination.replaceWithText(String(data.dump(2)))) {
+          creator->setFileLoaded(destination.getFullPathName().toStdString());
+          if (creator->getName() != name) {
+            creator->setName(name);
+            synth_.markStateChanged(wavetableUndoBlock(oscillator));
+            refreshWavetableNameLabel(oscillator);
+          }
+          postPluginAnnouncement("Exported wavetable " + String(name), AccessibilityHandler::AnnouncementPriority::high);
+        }
         else
           showWarningBox("Unable to export wavetable",
                          "The wavetable file could not be written.");
