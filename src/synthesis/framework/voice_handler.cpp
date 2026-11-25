@@ -703,7 +703,11 @@ namespace vital {
   int VoiceHandler::grabNextUnplayedPressedNote() {
     auto iter = pressed_notes_.begin();
 
-    if (voice_priority_ == kNewest) {
+    // Round Robin decides which voice a new note takes. A released key hands
+    // its voice to the newest held key, as with Newest: Vital moved the key it
+    // returned to behind the others, so one voice alternated between two
+    // held keys each time a third was tapped.
+    if (voice_priority_ == kNewest || voice_priority_ == kRoundRobin) {
       iter = pressed_notes_.end();
 
       while (iter != pressed_notes_.begin()) {
@@ -719,12 +723,7 @@ namespace vital {
       }
     }
 
-    int old_note_value = *iter;
-    if (voice_priority_ == kRoundRobin) {
-      pressed_notes_.erase(iter);
-      pressed_notes_.push_back(old_note_value);
-    }
-    return old_note_value;
+    return *iter;
   }
 
   void VoiceHandler::sortVoicePriority() {

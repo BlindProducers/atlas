@@ -1817,6 +1817,33 @@ namespace {
            "A held legato transition must remain continuous while an older tail is fading");
   }
 
+  // One voice, two keys held, a third tapped again and again: each release
+  // returns to the key pressed last, never to the two held keys in turn.
+  void testMonoReleaseReturnsToLastHeldKey() {
+    for (bool legato : { true, false }) {
+      vital::VoiceHandler voices(0, 1, true);
+      configureMonoVoiceHandler(voices, legato);
+
+      voices.noteOn(60, 1.0f, 0, 0);
+      voices.process(32);
+      voices.noteOn(64, 1.0f, 0, 0);
+      voices.process(32);
+      for (int tap = 0; tap < 4; ++tap) {
+        voices.noteOn(67, 1.0f, 0, 0);
+        voices.process(32);
+        expect(voices.isNotePlaying(67) && !voices.isNotePlaying(64), "A tapped key must play over the held keys");
+        voices.noteOff(67, 0.5f, 0, 0);
+        voices.process(32);
+        expect(voices.isNotePlaying(64) && !voices.isNotePlaying(60),
+               "Releasing a tapped key on one voice must return to the key pressed last");
+      }
+
+      voices.noteOff(64, 0.5f, 0, 0);
+      voices.process(32);
+      expect(voices.isNotePlaying(60), "Releasing the last held key must return to the one held before it");
+    }
+  }
+
   void testReverbMixConsumesAudioRateModulation() {
     vital::ReverbModule module;
     module.init();
@@ -3120,6 +3147,7 @@ int main(int argc, char** argv) {
   testMonoLegatoKeepsVoiceAndRandomContinuous();
   testLegatoModeSeamlesslyRetriggersAfterARealGap();
   testLegatoTransitionIgnoresFadingTail();
+  testMonoReleaseReturnsToLastHeldKey();
   testReverbMixConsumesAudioRateModulation();
   testMonoVoiceLaneRotationKeepsLfoToFxIdentical();
   testStationaryZeroModWheelRouteIsTransparent();
