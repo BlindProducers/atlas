@@ -11744,9 +11744,10 @@ namespace {
   // and adds comma and period stepping through effect slots.
   String keyboardHelpForPlatform(const char* text) {
 #if JUCE_MAC
-    const String command = "Cmd", context_menu = "Right bracket ( ] ) or Shift+M", heading_menu = "Shift+M";
+    // The Mac's keyboard names Alt Option.
+    const String command = "Cmd", alt = "Option", context_menu = "Right bracket ( ] ) or Shift+M", heading_menu = "Shift+M";
 #else
-    const String command = "Ctrl", context_menu = "Shift+M or Shift+F10", heading_menu = context_menu;
+    const String command = "Ctrl", alt = "Alt", context_menu = "Shift+M or Shift+F10", heading_menu = context_menu;
 #endif
     const String effect_slot_steps = kSectionKeysStepThroughEffectSlots
         ? (kSectionKeysStepThroughEffectGroups
@@ -11754,7 +11755,7 @@ namespace {
                  "groupings inside them, such as an EQ's bands or Glitch Delay's groups\n"
                : "  On an effects chain, Comma / Period also step through its effects (Slot 1, Slot 2 and so on)\n")
         : "";
-    return String::fromUTF8(text).replace("{Cmd}", command).replace("{ContextMenuKeys}", context_menu)
+    return String::fromUTF8(text).replace("{Cmd}", command).replace("{Alt}", alt).replace("{ContextMenuKeys}", context_menu)
                        .replace("{HeadingMenuKeys}", heading_menu)
                        .replace("{EffectSlotSteps}", effect_slot_steps);
   }
@@ -11767,14 +11768,7 @@ String SynthEditor::keyboardHelpText() {
   // handleWavetableShortcut, handleMacroShortcut, and the preset/popup browser keyPressed overrides),
   // add or update its entry below under the matching group.
   static const char* const kHelpText =
-      "ATLAS keyboard shortcuts\n"
-      "\nTrance gate editor\n"
-      "  Left/Right move between steps.\n"
-      "  G/H change the step's shape: Whole, Medium, Short, Ramp down or Ramp up.\n"
-      "  M mutes or unmutes the step.\n"
-      "  Minus/Equals make the grid coarser/finer. Semicolon/Apostrophe shorten/lengthen the pattern.\n"
-      "  Backspace resets the pattern to its default: every step Whole at full level, grid and length too.\n"
-      "  Global controls use Atlas slider shortcuts. Navigation announces position first; edits announce only what changed.\n"
+      "Atlas keyboard shortcuts\n"
       "\n"
       "Most single-letter shortcuts work when a parameter or the editor has focus, but not while a "
       "text field is focused.\n"
@@ -11837,7 +11831,7 @@ String SynthEditor::keyboardHelpText() {
       "  {ContextMenuKeys} - Open context menu\n"
       "\n"
       "Virtual musical keyboard\n"
-      "  Alt+K - Toggle the computer-keyboard piano on or off\n"
+      "  {Alt}+K - Toggle the computer-keyboard piano on or off\n"
       "  While active:\n"
       "    C - Octave up\n"
       "    X - Octave down\n"
@@ -11883,9 +11877,17 @@ String SynthEditor::keyboardHelpText() {
       "  Shift+D - Duplicate shape to the next LFO\n"
       "  Backspace - Clear the LFO shape\n"
       "\n"
+      "Trance gate editor\n"
+      "  Left/Right move between steps.\n"
+      "  G/H change the step's shape: Whole, Medium, Short, Ramp down or Ramp up.\n"
+      "  M mutes or unmutes the step.\n"
+      "  Minus/Equals make the grid coarser/finer. Semicolon/Apostrophe shorten/lengthen the pattern.\n"
+      "  Backspace resets the pattern to its default: every step Whole at full level, grid and length too.\n"
+      "  Global controls use Atlas slider shortcuts. Navigation announces position first; edits announce only what changed.\n"
+      "\n"
       "Modulation remap editor (when its keyboard editor has focus)\n"
       "  Left / Right or Comma ( , ) / Period ( . ) - Previous / next point\n"
-      "  Shift + Left / Right - Move an interior point's input by 1% (Alt for 5%)\n"
+      "  Shift + Left / Right - Move an interior point's input by 1% ({Alt} for 5%)\n"
       "  Up / Down - Change point output by 1% (Shift for 5%)\n"
       "  A - Add a point in the largest gap\n"
       "  E or Delete - Delete the selected interior point\n"
