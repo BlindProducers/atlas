@@ -4658,14 +4658,23 @@ namespace {
     return toggle ? "Enable or disable " + accessible_name + "." : "Adjust " + accessible_name + ".";
   }
 
+  // Up to ninety-nine in words, so all 64 modulation slots read the same
+  // way ("Modulation twenty-one", not "Modulation 21" after "twenty").
   String numberWord(int number) {
-    static const std::array<const char*, 20> words = {{
+    static const std::array<const char*, 19> words = {{
       "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
       "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen", "seventeen",
-      "eighteen", "nineteen", "twenty"
+      "eighteen", "nineteen"
     }};
-    if (number >= 1 && number <= static_cast<int>(words.size()))
-      return words[number - 1];
+    static const std::array<const char*, 8> tens = {{
+      "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety"
+    }};
+    if (number >= 1 && number < 20)
+      return words[static_cast<size_t>(number - 1)];
+    if (number >= 20 && number < 100) {
+      const String ten = tens[static_cast<size_t>(number / 10 - 2)];
+      return number % 10 == 0 ? ten : ten + "-" + words[static_cast<size_t>(number % 10 - 1)];
+    }
     return String(number);
   }
 
