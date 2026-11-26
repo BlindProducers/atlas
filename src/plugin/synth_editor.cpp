@@ -262,6 +262,11 @@ namespace {
   }
 
   String compactFloat(float value, int decimals) {
+    // JUCE writes every digit it has for zero decimal places ("261.626"), so
+    // round to a whole number here: formatHz and lfoHertzText ask for none
+    // from 100 Hz up.
+    if (decimals <= 0)
+      return String(roundToInt(value));
     String result(value, decimals);
     if (result.containsChar('.')) {
       while (result.endsWithChar('0'))
