@@ -346,6 +346,20 @@ class ValueBridge : public AudioProcessorParameterWithID {
       return result;
     }
 
+    // A unit after a number, singular for exactly one: "1 voice", "1 sec",
+    // "-1 semitone", where a plural would be read out as "1 voices".
+    static String withUnits(const String& number, const String& units) {
+      static const char* const kPlurals[] = { "secs", "semitones", "cents", "voices", "degrees", "octaves" };
+      const String unit = units.trim();
+      if (number == "1" || number == "-1" || number == "+1") {
+        for (const char* plural : kPlurals) {
+          if (unit == plural)
+            return number + " " + unit.dropLastCharacters(1);
+        }
+      }
+      return number + units;
+    }
+
     String formatDisplayValue(float display_value) const {
       if (usesPercentDisplay()) {
         float percent = details_.display_units == "%" ? display_value : display_value * 100.0f;
@@ -359,7 +373,7 @@ class ValueBridge : public AudioProcessorParameterWithID {
       if (trimmed_units == "secs") {
         if (std::abs(display_value) < 1.0f)
           return compactFloat(display_value * 1000.0f, std::abs(display_value) < 0.01f ? 2 : 1) + " ms";
-        return compactFloat(display_value, display_value < 10.0f ? 2 : 1) + " secs";
+        return withUnits(compactFloat(display_value, display_value < 10.0f ? 2 : 1), " secs");
       }
 
       if (trimmed_units == "dB")
@@ -369,13 +383,16 @@ class ValueBridge : public AudioProcessorParameterWithID {
       // Resonator's Fine Tune and Spread step 0.1 cent with Shift; show that step.
       if (trimmed_units == "cents" && (name_.startsWith("resonator_") || name_.contains("_resonator_")))
         return compactFloat(std::abs(display_value) < 0.05f ? 0.0f : display_value, 1) + " cents";
+      // Detune Range and other continuous semitone amounts keep their fraction.
+      if (trimmed_units == "semitones" && details_.value_scale != vital::ValueDetails::kIndexed)
+        return withUnits(compactFloat(display_value, 2), " semitones");
       if (trimmed_units == "semitones" || trimmed_units == "cents" || trimmed_units == "voices")
-        return String(static_cast<int>(std::round(display_value))) + " " + trimmed_units;
+        return withUnits(String(static_cast<int>(std::round(display_value))), " " + trimmed_units);
       if (trimmed_units == "Hz")
         return compactFloat(display_value, std::abs(display_value) < 10.0f ? 2 : 1) + " Hz";
 
       const int decimals = std::abs(display_value) < 10.0f ? 3 : (std::abs(display_value) < 100.0f ? 2 : 1);
-      return compactFloat(display_value, decimals) + units;
+      return withUnits(compactFloat(display_value, decimals), units);
     }
 
     float skewValue(float value) const {
