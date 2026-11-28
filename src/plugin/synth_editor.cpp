@@ -13009,7 +13009,9 @@ void SynthEditor::namePresetFacetTable(PresetTableListBox& table, const String& 
     return;
   table.setTitle(title);
   table.setDescription("Filter presets by " + title.toLowerCase() + ". The selected row is applied immediately.");
-  table.setHelpText("Use Up and Down to select a " + title.toLowerCase() + ".");
+  // One tag, an author: "select a tags" and "select a author" read wrongly.
+  const String noun = title == "Tags" ? String("tag") : title.toLowerCase();
+  table.setHelpText("Use Up and Down to select " + String(String("aeiou").containsChar(noun[0]) ? "an " : "a ") + noun + ".");
   table.getHeader().setColumnName(1, title);
   if (auto* handler = table.getAccessibilityHandler())
     handler->notifyAccessibilityEvent(AccessibilityEvent::titleChanged);
