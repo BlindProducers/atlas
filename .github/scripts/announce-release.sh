@@ -45,16 +45,23 @@ if has_file "-Windows.exe"; then
   message+=$'\n'"[Download Windows installer](${page}/windows/)"
 fi
 
-# What changed, as far as it fits: whole lines of the release's notes.
+# What changed, as far as it fits: whole lines of the release's notes, up to
+# their first "## " heading after some text, so notes that open with a
+# summary are announced with the summary alone.
 notes="docs/releases/${TAG}.md"
 if [ -f "$notes" ]; then
   message+=$'\n'
+  has_text=false
   while IFS= read -r line || [ -n "$line" ]; do
-    if [ $(( ${#message} + ${#line} + 1 )) -gt "$limit" ]; then
+    if { [ "$has_text" = true ] && [[ "$line" == "## "* ]]; } ||
+       [ $(( ${#message} + ${#line} + 1 )) -gt "$limit" ]; then
       message+=$'\n'"[The rest is on the download page](${page}/)"
       break
     fi
     message+=$'\n'"$line"
+    if [[ "$line" == *[![:space:]]* && "$line" != "#"* ]]; then
+      has_text=true
+    fi
   done < "$notes"
 fi
 
