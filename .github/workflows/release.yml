@@ -29,7 +29,7 @@ env:
   # of the release notes. Empty ("") for an update with no beta or RC: the tag
   # is then v<version>, the title "Atlas <version>" and the notes
   # docs/releases/v<version>.md, the ones the release on main uses too.
-  ATLAS_PRERELEASE: ""
+  ATLAS_PRERELEASE: "beta.1"
   # true on main (and a run by hand on main): the build is the release itself.
   ATLAS_OFFICIAL: ${{ github.ref == 'refs/heads/main' }}
 
